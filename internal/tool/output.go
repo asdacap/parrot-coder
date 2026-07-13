@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
 type OutputConfig struct {
@@ -34,6 +36,22 @@ type OutputStore struct {
 	mu     sync.Mutex
 	config OutputConfig
 	total  int64
+}
+
+type processOutputStore struct{ store *OutputStore }
+
+// NewProcessOutputStore adapts the private managed output store to the process
+// runner without coupling the process package to tool implementations.
+func NewProcessOutputStore(store *OutputStore) process.OutputStore {
+	if store == nil {
+		return nil
+	}
+	return processOutputStore{store: store}
+}
+
+func (a processOutputStore) Store(ctx context.Context, reader io.Reader) (process.StoredOutput, error) {
+	stored, err := a.store.Store(ctx, reader)
+	return process.StoredOutput{ID: stored.ID, Size: stored.Size, Preview: stored.Preview}, err
 }
 
 func NewOutputStore(config OutputConfig) (*OutputStore, error) {

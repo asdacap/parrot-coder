@@ -182,6 +182,51 @@ func TestPromotionCutoffQueueAndMessageProjection(t *testing.T) {
 	}
 }
 
+func TestTodosOrderedReplacementValidationAndConcurrency(t *testing.T) {
+	ctx, db, _, _, sessionID := newService(t)
+	service := session.NewTodoService(db)
+	items, err := service.Replace(ctx, sessionID, []session.Todo{
+		{Content: "second", Status: session.TodoInProgress, Priority: session.TodoHigh},
+		{Content: "first", Status: session.TodoPending, Priority: session.TodoLow},
+	})
+	if err != nil || len(items) != 2 || items[0].Position != 0 || items[1].Position != 1 {
+		t.Fatalf("replace = %#v, %v", items, err)
+	}
+	listed, err := service.List(ctx, sessionID)
+	if err != nil || listed[0].Content != "second" || listed[1].Content != "first" {
+		t.Fatalf("list = %#v, %v", listed, err)
+	}
+	if _, err := service.Replace(ctx, sessionID, []session.Todo{{Content: "bad", Status: "unknown", Priority: session.TodoLow}}); err == nil {
+		t.Fatal("invalid status accepted")
+	}
+	if got, _ := service.List(ctx, sessionID); len(got) != 2 {
+		t.Fatal("invalid replacement changed existing todos")
+	}
+
+	const writers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, writers)
+	for i := 0; i < writers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := service.Replace(ctx, sessionID, []session.Todo{{Content: "concurrent", Status: session.TodoCompleted, Priority: session.TodoMedium}})
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	listed, err = service.List(ctx, sessionID)
+	if err != nil || len(listed) != 1 || listed[0].Position != 0 {
+		t.Fatalf("concurrent list = %#v, %v", listed, err)
+	}
+}
+
 func newService(t *testing.T) (context.Context, *store.DB, *event.Repository, *session.Service, string) {
 	t.Helper()
 	ctx := context.Background()

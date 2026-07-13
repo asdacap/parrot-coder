@@ -13,7 +13,12 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/change"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
+	"github.com/amirulashraf/parrot-coder/internal/process"
+	"github.com/amirulashraf/parrot-coder/internal/question"
+	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -21,6 +26,11 @@ type CallContext struct {
 	Workspace *workspace.Workspace
 	Outputs   *OutputStore
 	SessionID string
+	Changes   *change.Service
+	Snapshots *snapshot.Service
+	Processes *process.Runner
+	Todos     *session.TodoService
+	Questions *question.Broker
 }
 
 type Plan struct {
