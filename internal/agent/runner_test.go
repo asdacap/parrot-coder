@@ -1,0 +1,489 @@
+package agent
+
+import (
+	"context"
+	"database/sql"
+	"encoding/json"
+	"errors"
+	"io"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/protocol"
+	"github.com/amirulashraf/parrot-coder/internal/provider"
+	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
+	"github.com/amirulashraf/parrot-coder/internal/tool"
+)
+
+type fakeProvider struct {
+	mu       sync.Mutex
+	requests []protocol.Request
+	stream   func(int, context.Context, protocol.Request) (provider.Stream, error)
+}
+
+func (*fakeProvider) ID() string { return "fake" }
+func (*fakeProvider) Models() []provider.Model {
+	return []provider.Model{{ID: "model", Capabilities: provider.Capabilities{Tools: true}}}
+}
+func (p *fakeProvider) Stream(ctx context.Context, request protocol.Request) (provider.Stream, error) {
+	p.mu.Lock()
+	index := len(p.requests)
+	p.requests = append(p.requests, request)
+	p.mu.Unlock()
+	return p.stream(index, ctx, request)
+}
+func (p *fakeProvider) Requests() []protocol.Request {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]protocol.Request(nil), p.requests...)
+}
+
+type sliceStream struct {
+	events []protocol.Event
+	index  int
+}
+
+func (s *sliceStream) Next(context.Context) (protocol.Event, error) {
+	if s.index == len(s.events) {
+		return protocol.Event{}, io.EOF
+	}
+	event := s.events[s.index]
+	s.index++
+	return event, nil
+}
+func (*sliceStream) Close() error { return nil }
+
+func events(items ...protocol.Event) provider.Stream { return &sliceStream{events: items} }
+
+type blockingStream struct {
+	started chan struct{}
+	release <-chan struct{}
+	events  *sliceStream
+	once    sync.Once
+}
+
+func (s *blockingStream) Next(ctx context.Context) (protocol.Event, error) {
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+		return s.events.Next(ctx)
+	case <-ctx.Done():
+		return protocol.Event{}, ctx.Err()
+	}
+}
+func (*blockingStream) Close() error { return nil }
+
+type fakeTool struct {
+	id      string
+	execute func(context.Context) (tool.Result, error)
+}
+
+func (t *fakeTool) ID() string          { return t.id }
+func (t *fakeTool) Description() string { return t.id }
+func (t *fakeTool) JSONSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","additionalProperties":true}`)
+}
+func (t *fakeTool) Plan(_ context.Context, raw json.RawMessage, _ tool.CallContext) (tool.Plan, error) {
+	return tool.NewPlan(t.id, raw, nil, nil, nil)
+}
+func (t *fakeTool) Execute(ctx context.Context, _ tool.Plan, _ tool.CallContext) (tool.Result, error) {
+	if t.execute == nil {
+		return tool.Result{Text: "ok"}, nil
+	}
+	return t.execute(ctx)
+}
+
+type runnerHarness struct {
+	db         *store.DB
+	sessions   *session.Service
+	repository *event.Repository
+	sessionID  string
+	runner     *Runner
+}
+
+func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tools ...tool.Tool) *runnerHarness {
+	t.Helper()
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "runner.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	repository := event.NewRepository(db)
+	sessions := session.NewService(db, repository)
+	created, err := sessions.Create(ctx, session.CreateParams{Title: "runner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := NewRegistry(profiles...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := BuildID
+	if len(profiles) > 0 {
+		profile = profiles[0].ID
+	}
+	if err := sessions.SetSelection(ctx, created.ID, session.Selection{Agent: profile, Provider: "fake", Model: "model"}); err != nil {
+		t.Fatal(err)
+	}
+	providers, err := NewProviderRegistry(fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolRegistry := tool.NewRegistry()
+	for _, item := range tools {
+		if err := toolRegistry.Register(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := toolRegistry.Materialize()
+	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
+	runner, err := NewRunner(RunnerConfig{
+		Sessions:           sessions,
+		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
+		Agents:             agents,
+		Providers:          providers,
+		ToolSnapshot:       func() tool.Snapshot { return snapshot },
+		ToolExecutor:       func(snapshot tool.Snapshot) tool.Executor { return tool.Executor{Snapshot: snapshot} },
+		MaxConcurrentTools: 2,
+		CleanupTimeout:     time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &runnerHarness{db: db, sessions: sessions, repository: repository, sessionID: created.ID, runner: runner}
+}
+
+func (h *runnerHarness) admit(t *testing.T, id, content string, delivery session.Delivery) {
+	t.Helper()
+	if _, err := h.sessions.Admit(context.Background(), h.sessionID, session.AdmitParams{MessageID: id, Content: content, Delivery: delivery}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRunnerPersistsStreamedFinalText(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "hello "},
+			protocol.Event{Type: protocol.EventTextDelta, Text: "world"},
+			protocol.Event{Type: protocol.EventUsage, Usage: &protocol.Usage{TotalTokens: 3}},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	h.admit(t, "user", "question", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := h.sessions.ListMessages(context.Background(), h.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last := messages[len(messages)-1]
+	if last.Role != "assistant" || last.Content != "hello world" || last.Status != "complete" || last.FinishReason != string(protocol.FinishStop) {
+		t.Fatalf("assistant = %#v", last)
+	}
+	var usage protocol.Usage
+	if err := json.Unmarshal(last.Usage, &usage); err != nil || usage.TotalTokens != 3 {
+		t.Fatalf("usage = %#v, %v", usage, err)
+	}
+}
+
+func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testing.T) {
+	var h *runnerHarness
+	executed := make(chan struct{}, 1)
+	item := &fakeTool{id: "mutate", execute: func(context.Context) (tool.Result, error) {
+		var status string
+		if err := h.db.SQL().QueryRow(`SELECT status FROM session_tool_call WHERE session_id=? AND id='call-1'`, h.sessionID).Scan(&status); err != nil {
+			return tool.Result{}, err
+		}
+		if status != "running" {
+			return tool.Result{}, errors.New("tool call was not durably running")
+		}
+		executed <- struct{}{}
+		return tool.Result{Text: "tool output"}, nil
+	}}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			call := protocol.ToolCall{ID: "call-1", Name: "mutate", Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}
+		if len(request.Messages) == 0 || request.Messages[len(request.Messages)-1].Role != protocol.RoleTool {
+			return nil, errors.New("continuation started before tool result")
+		}
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "final"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h = newRunnerHarness(t, fake, nil, item)
+	h.admit(t, "user", "run tool", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-executed:
+	default:
+		t.Fatal("tool did not execute")
+	}
+	status, result := toolState(t, h, "call-1")
+	if status != "success" || result != "tool output" {
+		t.Fatalf("tool state = %q, %q", status, result)
+	}
+	if len(fake.Requests()) != 2 {
+		t.Fatalf("provider turns = %d", len(fake.Requests()))
+	}
+}
+
+func TestRunnerBoundsConcurrentToolsAndSettlesAllBeforeContinuation(t *testing.T) {
+	gate := make(chan struct{})
+	started := make(chan struct{}, 5)
+	var active, maximum atomic.Int32
+	item := &fakeTool{id: "parallel", execute: func(context.Context) (tool.Result, error) {
+		current := active.Add(1)
+		for {
+			old := maximum.Load()
+			if current <= old || maximum.CompareAndSwap(old, current) {
+				break
+			}
+		}
+		started <- struct{}{}
+		<-gate
+		active.Add(-1)
+		return tool.Result{Text: "ok"}, nil
+	}}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			stream := &sliceStream{}
+			for i := 0; i < 5; i++ {
+				call := protocol.ToolCall{ID: "call-" + string(rune('a'+i)), Name: "parallel", Input: json.RawMessage(`{}`)}
+				stream.events = append(stream.events, protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call})
+			}
+			stream.events = append(stream.events, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls})
+			return stream, nil
+		}
+		for _, message := range request.Messages {
+			if message.Role == protocol.RoleTool {
+				continue
+			}
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil, item)
+	h.admit(t, "user", "parallel", session.DeliverySteer)
+	done := make(chan error, 1)
+	go func() { done <- h.runner.Drain(context.Background(), h.sessionID) }()
+	for i := 0; i < 2; i++ {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("tools did not start")
+		}
+	}
+	select {
+	case <-started:
+		t.Fatal("more than two tools ran concurrently")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(gate)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if maximum.Load() != 2 {
+		t.Fatalf("maximum concurrency = %d", maximum.Load())
+	}
+	for i := 0; i < 5; i++ {
+		status, _ := toolState(t, h, "call-"+string(rune('a'+i)))
+		if status != "success" {
+			t.Fatalf("tool %d status = %s", i, status)
+		}
+	}
+}
+
+func TestRunnerSteerDuringBlockedTurnPromotesOnNextTurnOnly(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	item := &fakeTool{id: "read", execute: nil}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			call := protocol.ToolCall{ID: "call", Name: "read", Input: json.RawMessage(`{}`)}
+			return &blockingStream{started: started, release: release, events: &sliceStream{events: []protocol.Event{{Type: protocol.EventToolCallComplete, ToolCall: &call}, {Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}}}}, nil
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil, item)
+	h.admit(t, "initial", "initial", session.DeliverySteer)
+	done := make(chan error, 1)
+	go func() { done <- h.runner.Drain(context.Background(), h.sessionID) }()
+	<-started
+	h.admit(t, "steer", "late steer", session.DeliverySteer)
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	requests := fake.Requests()
+	if len(requests) != 2 || containsText(requests[0].Messages, "late steer") || !containsText(requests[1].Messages, "late steer") {
+		t.Fatalf("steer request placement = %#v", requests)
+	}
+}
+
+func TestRunnerQueueWaitsUntilCurrentContinuationIsIdle(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	h.admit(t, "initial", "initial", session.DeliverySteer)
+	h.admit(t, "queued", "queued", session.DeliveryQueue)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	requests := fake.Requests()
+	if len(requests) != 2 || containsText(requests[0].Messages, "queued") || !containsText(requests[1].Messages, "queued") {
+		t.Fatalf("queue request placement = %#v", requests)
+	}
+}
+
+func TestRunnerCancellationSettlesAssistantAndTools(t *testing.T) {
+	t.Run("assistant", func(t *testing.T) {
+		started := make(chan struct{})
+		release := make(chan struct{})
+		fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+			return &blockingStream{started: started, release: release, events: &sliceStream{}}, nil
+		}}
+		h := newRunnerHarness(t, fake, nil)
+		h.admit(t, "user", "cancel", session.DeliverySteer)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- h.runner.Drain(ctx, h.sessionID) }()
+		<-started
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("Drain error = %v", err)
+		}
+		messages, _ := h.sessions.ListMessages(context.Background(), h.sessionID)
+		if messages[len(messages)-1].Status != "interrupted" {
+			t.Fatalf("assistant status = %s", messages[len(messages)-1].Status)
+		}
+	})
+
+	t.Run("tools", func(t *testing.T) {
+		started := make(chan struct{})
+		item := &fakeTool{id: "block", execute: func(ctx context.Context) (tool.Result, error) {
+			close(started)
+			<-ctx.Done()
+			return tool.Result{}, ctx.Err()
+		}}
+		fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+			call := protocol.ToolCall{ID: "blocked", Name: "block", Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}}
+		h := newRunnerHarness(t, fake, nil, item)
+		h.admit(t, "user", "cancel tool", session.DeliverySteer)
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() { done <- h.runner.Drain(ctx, h.sessionID) }()
+		<-started
+		cancel()
+		if err := <-done; !errors.Is(err, context.Canceled) {
+			t.Fatalf("Drain error = %v", err)
+		}
+		status, _ := toolState(t, h, "blocked")
+		if status != "interrupted" {
+			t.Fatalf("tool status = %s", status)
+		}
+	})
+}
+
+func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {
+	var executed atomic.Bool
+	mutation := &fakeTool{id: "mutate", execute: func(context.Context) (tool.Result, error) {
+		executed.Store(true)
+		return tool.Result{Text: "mutated"}, nil
+	}}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			call := protocol.ToolCall{ID: "denied", Name: "mutate", Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, []Profile{Builtins()[1]}, mutation)
+	h.admit(t, "user", "plan", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if executed.Load() {
+		t.Fatal("mutation tool executed")
+	}
+	if len(fake.Requests()[0].Tools) != 0 {
+		t.Fatalf("plan request exposed mutation tool: %#v", fake.Requests()[0].Tools)
+	}
+	status, _ := toolState(t, h, "denied")
+	if status != "failure" {
+		t.Fatalf("denied tool status = %s", status)
+	}
+}
+
+func TestRunnerMaxTurnsOmitsTools(t *testing.T) {
+	item := &fakeTool{id: "available"}
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if len(request.Tools) != 0 {
+			return nil, errors.New("tools were present on final turn")
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	profile := Profile{ID: "one-turn", Prompt: "finish", MaxTurns: 1}
+	h := newRunnerHarness(t, fake, []Profile{profile}, item)
+	h.admit(t, "user", "finish", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.Requests()) != 1 {
+		t.Fatalf("provider turns = %d", len(fake.Requests()))
+	}
+}
+
+func TestRunnerProviderErrorLeavesTerminalAssistant(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "partial"},
+			protocol.Event{Type: protocol.EventProviderError, ProviderError: &protocol.ProviderError{Message: "provider failed"}},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	h.admit(t, "user", "error", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err == nil {
+		t.Fatal("Drain succeeded")
+	}
+	messages, _ := h.sessions.ListMessages(context.Background(), h.sessionID)
+	last := messages[len(messages)-1]
+	if last.Status != "error" || last.Content != "partial" || last.Error != "provider failed" {
+		t.Fatalf("assistant = %#v", last)
+	}
+}
+
+func toolState(t *testing.T, h *runnerHarness, callID string) (string, string) {
+	t.Helper()
+	var status, result string
+	if err := h.db.SQL().QueryRow(`SELECT status,result_text FROM session_tool_call WHERE session_id=? AND id=?`, h.sessionID, callID).Scan(&status, &result); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			t.Fatalf("tool call %s was not persisted", callID)
+		}
+		t.Fatal(err)
+	}
+	return status, result
+}
+
+func containsText(messages []protocol.Message, want string) bool {
+	for _, message := range messages {
+		for _, part := range message.Content {
+			if part.Text == want {
+				return true
+			}
+		}
+	}
+	return false
+}

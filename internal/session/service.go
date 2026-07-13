@@ -31,6 +31,9 @@ type Session struct {
 	ID        string
 	ProjectID string
 	Title     string
+	Agent     string
+	Provider  string
+	Model     string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -65,13 +68,18 @@ type Admission struct {
 }
 
 type Message struct {
-	ID        string
-	SessionID string
-	Role      string
-	Content   string
-	InputID   string
-	Sequence  int64
-	CreatedAt time.Time
+	ID           string
+	SessionID    string
+	Role         string
+	Content      string
+	Parts        json.RawMessage
+	Status       string
+	FinishReason string
+	Error        string
+	Usage        json.RawMessage
+	InputID      string
+	Sequence     int64
+	CreatedAt    time.Time
 }
 
 type Service struct {
@@ -105,13 +113,13 @@ func (s *Service) Create(ctx context.Context, params CreateParams) (Session, err
 
 func (s *Service) Get(ctx context.Context, sessionID string) (Session, error) {
 	return scanSession(s.db.SQL().QueryRowContext(ctx, `
-        SELECT id, COALESCE(project_id, ''), title, created_at, updated_at
+		SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, created_at, updated_at
         FROM session WHERE id = ?`, sessionID))
 }
 
 func (s *Service) List(ctx context.Context) ([]Session, error) {
 	rows, err := s.db.SQL().QueryContext(ctx, `
-        SELECT id, COALESCE(project_id, ''), title, created_at, updated_at
+		SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, created_at, updated_at
         FROM session ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("session: list: %w", err)
@@ -321,7 +329,8 @@ func (s *Service) promote(ctx context.Context, sessionID string, delivery Delive
 
 func (s *Service) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
 	rows, err := s.db.SQL().QueryContext(ctx, `
-        SELECT id, session_id, role, content, COALESCE(input_id, ''), sequence, created_at
+		SELECT id, session_id, role, content, parts_json, status, finish_reason, error_text,
+		       usage_json, COALESCE(input_id, ''), sequence, created_at
         FROM session_message WHERE session_id = ? ORDER BY sequence`, sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("session: list messages: %w", err)
@@ -331,10 +340,14 @@ func (s *Service) ListMessages(ctx context.Context, sessionID string) ([]Message
 	for rows.Next() {
 		var item Message
 		var createdAt string
+		var parts, usage []byte
 		if err := rows.Scan(&item.ID, &item.SessionID, &item.Role, &item.Content,
+			&parts, &item.Status, &item.FinishReason, &item.Error, &usage,
 			&item.InputID, &item.Sequence, &createdAt); err != nil {
 			return nil, fmt.Errorf("session: scan message: %w", err)
 		}
+		item.Parts = append(json.RawMessage(nil), parts...)
+		item.Usage = append(json.RawMessage(nil), usage...)
 		item.CreatedAt, err = parseTime(createdAt)
 		if err != nil {
 			return nil, err
@@ -369,7 +382,7 @@ type rowScanner interface {
 func scanSession(row rowScanner) (Session, error) {
 	var item Session
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.ProjectID, &item.Title, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.ProjectID, &item.Title, &item.Agent, &item.Provider, &item.Model, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}
