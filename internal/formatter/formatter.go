@@ -327,6 +327,7 @@ func (r *Registry) stop(pid int, wait <-chan error) error {
 	defer timer.Stop()
 	select {
 	case err := <-wait:
+		_ = syscall.Kill(-pid, syscall.SIGKILL)
 		return err
 	case <-timer.C:
 		_ = syscall.Kill(-pid, syscall.SIGKILL)
@@ -361,7 +362,7 @@ func (r *Registry) readWorkspaceFile(path string) (string, []byte, error) {
 	if err != nil {
 		return "", nil, err
 	}
-	data, err := os.ReadFile(resolved)
+	data, err := readBoundedFile(resolved, r.config.MaxOutputBytes)
 	if err != nil {
 		return "", nil, err
 	}

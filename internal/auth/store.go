@@ -15,6 +15,8 @@ import (
 
 var ErrCredentialNotFound = errors.New("auth: credential not found")
 
+const maxCredentialStoreBytes = 16 << 20
+
 type Store interface {
 	Get(context.Context, string) (Credential, error)
 	Put(context.Context, string, Credential) error
@@ -110,12 +112,23 @@ func (s *FileStore) read() (map[string]Credential, error) {
 	if s.path == "" {
 		return nil, errors.New("auth: credential store path is empty")
 	}
-	data, err := os.ReadFile(s.path)
+	handle, err := os.Open(s.path)
 	if errors.Is(err, os.ErrNotExist) {
 		return make(map[string]Credential), nil
 	}
 	if err != nil {
 		return nil, fmt.Errorf("auth: read credential store: %w", err)
+	}
+	data, readErr := io.ReadAll(io.LimitReader(handle, maxCredentialStoreBytes+1))
+	closeErr := handle.Close()
+	if readErr != nil {
+		return nil, fmt.Errorf("auth: read credential store: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("auth: close credential store: %w", closeErr)
+	}
+	if len(data) > maxCredentialStoreBytes {
+		return nil, errors.New("auth: credential store exceeds byte limit")
 	}
 	var file storeFile
 	if err := strictJSON(data, &file); err != nil {

@@ -63,7 +63,7 @@ func (c Config) normalized() (Config, error) {
 		c.MaxDiagnosticURIs = 256
 	}
 	for name, value := range c.Environment {
-		if !validEnv(name, value) {
+		if !validEnv(name, value) || unsafeEnv(name) {
 			return Config{}, errors.New("lsp: invalid environment")
 		}
 	}

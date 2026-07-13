@@ -128,7 +128,11 @@ func (s *Service) ReconcileContext(ctx context.Context, sessionID, text string, 
 		messageID := ""
 		pending := event.NewEvent{Type: "session.context.observed", Data: json.RawMessage(`{}`)}
 		if text != "" {
-			messageID, _ = id.New("msg")
+			generated, err := id.New("msg")
+			if err != nil {
+				return nil, nil, err
+			}
+			messageID = generated
 			data, _ := json.Marshal(map[string]string{"message_id": messageID, "content": text})
 			pending = event.NewEvent{Type: "session.context.changed", Data: data}
 		}

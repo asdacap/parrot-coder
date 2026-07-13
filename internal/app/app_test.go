@@ -248,6 +248,36 @@ func TestConfigExecutableErrorNamesEntry(t *testing.T) {
 	}
 }
 
+func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
+	projectFile := filepath.Join(t.TempDir(), ".parrot", config.FileName)
+	for _, field := range []string{
+		"providers.local.base_url",
+		"providers.local.api_key_env",
+		"mcp.server.command",
+		"lsp.go.command",
+		"formatters.gofmt.command",
+		"web_fetch.allow_private",
+	} {
+		loaded := config.Result{
+			Sources:    []config.Source{{Path: projectFile, Kind: config.SourceProject}},
+			Provenance: map[string]string{field: projectFile},
+		}
+		if err := validateConfigTrust(loaded); err == nil || !strings.Contains(err.Error(), "requires global configuration") {
+			t.Fatalf("field %q error = %v", field, err)
+		}
+	}
+	loaded := config.Result{
+		Sources: []config.Source{{Path: projectFile, Kind: config.SourceProject}},
+		Provenance: map[string]string{
+			"model":                               projectFile,
+			"providers.local.models.code.context": projectFile,
+		},
+	}
+	if err := validateConfigTrust(loaded); err != nil {
+		t.Fatalf("safe project overrides rejected: %v", err)
+	}
+}
+
 func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -402,5 +432,12 @@ func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
 	var attemptStatus string
 	if err := db.SQL().QueryRowContext(ctx, `SELECT status FROM compaction_attempt WHERE id='cmpa'`).Scan(&attemptStatus); err != nil || attemptStatus != "interrupted" {
 		t.Fatalf("attempt status = %q, %v", attemptStatus, err)
+	}
+	second, err := application.Maintain(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second != (MaintenanceReport{}) {
+		t.Fatalf("second maintenance was not a no-op: %#v", second)
 	}
 }

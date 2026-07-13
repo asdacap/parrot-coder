@@ -160,6 +160,24 @@ func TestLoadPhase9MapsMergeAndDecode(t *testing.T) {
 	}
 }
 
+func TestLoadRejectsUnknownTypedField(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	writeFile(t, filepath.Join(configDir, FileName), `{"web_fecth":{"allow_private":true}}`)
+	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), "unknown field") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
+func TestLoadRejectsOversizedConfig(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	writeFile(t, filepath.Join(configDir, FileName), `{"padding":"`+strings.Repeat("x", maxConfigBytes)+`"}`)
+	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("Load error = %v", err)
+	}
+}
+
 func writeFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

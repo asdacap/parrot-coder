@@ -343,14 +343,14 @@ func (c *Client) readLoop(p *serverProcess, stdout io.Reader) {
 }
 
 func readFrame(reader *bufio.Reader, max int64) ([]byte, error) {
+	const maxHeaderBytes = 8 << 10
 	length := int64(-1)
+	headerBytes := 0
 	for {
-		line, err := reader.ReadString('\n')
+		line, err := readHeaderLine(reader, maxHeaderBytes-headerBytes)
+		headerBytes += len(line)
 		if err != nil {
 			return nil, err
-		}
-		if len(line) > 8<<10 {
-			return nil, errors.New("lsp: oversized header")
 		}
 		line = strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
 		if line == "" {
@@ -361,7 +361,14 @@ func readFrame(reader *bufio.Reader, max int64) ([]byte, error) {
 			return nil, errors.New("lsp: malformed header")
 		}
 		if strings.EqualFold(strings.TrimSpace(name), "Content-Length") {
-			length, err = strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+			if length >= 0 {
+				return nil, errors.New("lsp: duplicate content length")
+			}
+			value = strings.TrimSpace(value)
+			if value == "" || strings.HasPrefix(value, "+") || strings.HasPrefix(value, "-") {
+				return nil, errors.New("lsp: invalid content length")
+			}
+			length, err = strconv.ParseInt(value, 10, 64)
 			if err != nil {
 				return nil, errors.New("lsp: invalid content length")
 			}
@@ -373,6 +380,26 @@ func readFrame(reader *bufio.Reader, max int64) ([]byte, error) {
 	body := make([]byte, length)
 	_, err := io.ReadFull(reader, body)
 	return body, err
+}
+
+func readHeaderLine(reader *bufio.Reader, remaining int) (string, error) {
+	if remaining <= 0 {
+		return "", errors.New("lsp: frame headers exceed byte limit")
+	}
+	var output []byte
+	for {
+		part, err := reader.ReadSlice('\n')
+		output = append(output, part...)
+		if len(output) > remaining {
+			return "", errors.New("lsp: frame headers exceed byte limit")
+		}
+		if err == nil {
+			return string(output), nil
+		}
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			return "", err
+		}
+	}
 }
 
 func (c *Client) recordDiagnostics(raw json.RawMessage) {
@@ -419,6 +446,9 @@ func (c *Client) failProcess(p *serverProcess, cause error) {
 
 func (c *Client) waitLoop(p *serverProcess) {
 	err := p.cmd.Wait()
+	if p.cmd.Process != nil {
+		_ = syscall.Kill(-p.cmd.Process.Pid, syscall.SIGKILL)
+	}
 	close(p.done)
 	if err == nil {
 		err = io.EOF

@@ -82,3 +82,14 @@ func TestBuiltinsRejectWorkingDirectoryOutsideCanonicalRoot(t *testing.T) {
 		t.Fatal("symlink escape was accepted")
 	}
 }
+
+func TestFileSourceRejectsOversizedInput(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "AGENTS.md")
+	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	source := FileSource{SourceKey: "agents:test", Path: path, Label: "test", MaxBytes: 4}
+	if _, err := source.Observe(context.Background()); err == nil {
+		t.Fatal("oversized context file was accepted")
+	}
+}

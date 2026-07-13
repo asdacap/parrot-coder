@@ -171,6 +171,13 @@ func TestFramingAndCanonicalURI(t *testing.T) {
 	if _, err := readFrame(bufio.NewReader(bytesReader([]byte("Content-Length: 101\r\n\r\n"))), 100); err == nil {
 		t.Fatal("oversized frame accepted")
 	}
+	if _, err := readFrame(bufio.NewReader(strings.NewReader("Content-Length: 1\r\nContent-Length: 1\r\n\r\n{}")), 100); err == nil {
+		t.Fatal("duplicate content length accepted")
+	}
+	oversizedHeaders := strings.Repeat("X: y\r\n", 2000) + "Content-Length: 0\r\n\r\n"
+	if _, err := readFrame(bufio.NewReader(strings.NewReader(oversizedHeaders)), 100); err == nil {
+		t.Fatal("oversized aggregate headers accepted")
+	}
 	root := t.TempDir()
 	path := filepath.Join(root, "a b.go")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {

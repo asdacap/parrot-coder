@@ -319,9 +319,22 @@ func ExtractAccountID(token string) string {
 }
 
 func decodeLimitedJSON(reader io.Reader, target any) error {
-	limited := io.LimitReader(reader, 1<<20)
-	decoder := json.NewDecoder(limited)
+	const limit = 1 << 20
+	data, err := io.ReadAll(io.LimitReader(reader, limit+1))
+	if err != nil {
+		return err
+	}
+	if len(data) > limit {
+		return errors.New("JSON response exceeds byte limit")
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
 	if err := decoder.Decode(target); err != nil {
+		return err
+	}
+	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
 		return err
 	}
 	return nil

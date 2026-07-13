@@ -109,6 +109,22 @@ func TestParserRejectsMalformedEventAndToolJSON(t *testing.T) {
 	}
 }
 
+func TestParserEmitsFinishAtEOFAndRejectsMissingTerminal(t *testing.T) {
+	fixture := "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n"
+	parser := NewParser(strings.NewReader(fixture), 1024)
+	event, err := parser.Next(context.Background())
+	if err != nil || event.Type != protocol.EventFinish || event.FinishReason != protocol.FinishStop {
+		t.Fatalf("finish = %#v, %v", event, err)
+	}
+	parser = NewParser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n"), 1024)
+	if _, err := parser.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.Next(context.Background()); err == nil || !strings.Contains(err.Error(), "terminal event") {
+		t.Fatalf("missing terminal error = %v", err)
+	}
+}
+
 func collect(t *testing.T, parser *Parser) []protocol.Event {
 	t.Helper()
 	var events []protocol.Event

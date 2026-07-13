@@ -5,6 +5,7 @@ package chatcompletions
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sort"
@@ -92,11 +93,12 @@ type toolAccumulator struct {
 
 // Parser converts a Chat Completions SSE stream into canonical events.
 type Parser struct {
-	decoder *sse.Decoder
-	tools   map[int]*toolAccumulator
-	pending []protocol.Event
-	finish  *protocol.Event
-	done    bool
+	decoder  *sse.Decoder
+	tools    map[int]*toolAccumulator
+	pending  []protocol.Event
+	finish   *protocol.Event
+	terminal bool
+	done     bool
 }
 
 // NewParser creates a streaming parser.
@@ -115,12 +117,30 @@ func (p *Parser) Next(ctx context.Context) (protocol.Event, error) {
 		}
 		record, err := p.decoder.Next(ctx)
 		if err != nil {
+			if errors.Is(err, io.EOF) && p.finish != nil {
+				p.pending = append(p.pending, *p.finish)
+				p.finish = nil
+				p.terminal = true
+				p.done = true
+				continue
+			}
+			if errors.Is(err, io.EOF) && p.terminal {
+				p.done = true
+				continue
+			}
+			if errors.Is(err, io.EOF) {
+				return protocol.Event{}, errors.New("chatcompletions: stream ended without a terminal event")
+			}
 			return protocol.Event{}, err
 		}
 		if record.Data == "[DONE]" {
+			if p.finish == nil && !p.terminal {
+				return protocol.Event{}, errors.New("chatcompletions: stream ended without a terminal event")
+			}
 			if p.finish != nil {
 				p.pending = append(p.pending, *p.finish)
 				p.finish = nil
+				p.terminal = true
 			}
 			p.done = true
 			continue
@@ -230,6 +250,7 @@ func (p *Parser) consume(data []byte) error {
 		if p.finish != nil {
 			p.pending = append(p.pending, *p.finish)
 			p.finish = nil
+			p.terminal = true
 		}
 	}
 	return nil
@@ -243,6 +264,9 @@ func (p *Parser) finalizeTools() error {
 	sort.Ints(indexes)
 	for _, index := range indexes {
 		item := p.tools[index]
+		if index < 0 || item.id == "" || item.name == "" {
+			return fmt.Errorf("chatcompletions: tool call %d requires an ID and name", index)
+		}
 		input := json.RawMessage(item.input)
 		if !json.Valid(input) {
 			return fmt.Errorf("chatcompletions: tool call %d (%q) has invalid JSON input", index, item.name)

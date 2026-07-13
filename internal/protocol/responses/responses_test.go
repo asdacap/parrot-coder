@@ -105,6 +105,23 @@ func TestParserRejectsMalformedJSON(t *testing.T) {
 	}
 }
 
+func TestParserRejectsMissingTerminalEventAndToolIdentity(t *testing.T) {
+	parser := NewParser(strings.NewReader(streamFixture(`{"type":"response.output_text.delta","delta":"partial"}`)), 1024)
+	if _, err := parser.Next(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parser.Next(context.Background()); err == nil || !strings.Contains(err.Error(), "terminal event") {
+		t.Fatalf("missing terminal error = %v", err)
+	}
+	parser = NewParser(strings.NewReader(streamFixture(
+		`{"type":"response.output_item.added","item":{"type":"function_call","arguments":"{}"}}`,
+		`{"type":"response.completed","response":{}}`,
+	)), 1024)
+	if _, err := parser.Next(context.Background()); err == nil || !strings.Contains(err.Error(), "ID and name") {
+		t.Fatalf("missing tool identity error = %v", err)
+	}
+}
+
 func streamFixture(events ...string) string {
 	var builder strings.Builder
 	for _, event := range events {

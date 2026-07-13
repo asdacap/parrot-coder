@@ -32,6 +32,8 @@ var forbiddenHeaders = map[string]struct{}{
 	"proxy-authorization": {},
 }
 
+var ErrStreamTooLarge = errors.New("provider: response stream exceeds byte limit")
+
 // HTTPError is a bounded, safe representation of a non-success response.
 type HTTPError struct {
 	StatusCode int
@@ -170,14 +172,39 @@ func startStream(ctx context.Context, client *http.Client, endpoint *url.URL, bo
 	if response.Body == nil {
 		return nil, errors.New("provider: response has no body")
 	}
-	bounded := &boundedReadCloser{Reader: io.LimitReader(response.Body, maxStreamBytes), Closer: response.Body}
-	return parser(bounded, maxEventBytes), nil
+	bounded := &boundedReadCloser{reader: response.Body, closer: response.Body, remaining: maxStreamBytes}
+	return &redactingStream{Stream: parser(bounded, maxEventBytes), secrets: append([]string(nil), secrets...)}, nil
 }
 
 type boundedReadCloser struct {
-	io.Reader
-	io.Closer
+	reader    io.Reader
+	closer    io.Closer
+	remaining int64
 }
+
+func (r *boundedReadCloser) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		var extra [1]byte
+		n, err := r.reader.Read(extra[:])
+		if n != 0 {
+			return 0, ErrStreamTooLarge
+		}
+		return 0, err
+	}
+	if int64(len(p)) > r.remaining+1 {
+		p = p[:r.remaining+1]
+	}
+	n, err := r.reader.Read(p)
+	if int64(n) > r.remaining {
+		n = int(r.remaining)
+		r.remaining = 0
+		return n, ErrStreamTooLarge
+	}
+	r.remaining -= int64(n)
+	return n, err
+}
+
+func (r *boundedReadCloser) Close() error { return r.closer.Close() }
 
 func parseHTTPError(response *http.Response, secrets []string) error {
 	limited := io.LimitReader(response.Body, maxErrorBytes+1)

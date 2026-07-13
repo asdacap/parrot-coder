@@ -92,6 +92,20 @@ func NewService(db *store.DB, events *event.Repository) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, params CreateParams) (Session, error) {
+	return s.create(ctx, params, Selection{})
+}
+
+// CreateSelected persists a new session and its initial execution selection in
+// one SQLite statement, so concurrent readers cannot observe a half-configured
+// session.
+func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selection Selection) (Session, error) {
+	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
+		return Session{}, errors.New("session: agent, provider, and model are required")
+	}
+	return s.create(ctx, params, selection)
+}
+
+func (s *Service) create(ctx context.Context, params CreateParams, selection Selection) (Session, error) {
 	sessionID, err := id.New("ses")
 	if err != nil {
 		return Session{}, fmt.Errorf("session: generate ID: %w", err)
@@ -102,13 +116,13 @@ func (s *Service) Create(ctx context.Context, params CreateParams) (Session, err
 		projectID = params.ProjectID
 	}
 	_, err = s.db.SQL().ExecContext(ctx, `
-        INSERT INTO session(id, project_id, title, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?)`,
-		sessionID, projectID, params.Title, formatTime(now), formatTime(now))
+		INSERT INTO session(id, project_id, title, selected_agent, selected_provider, selected_model, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, projectID, params.Title, selection.Agent, selection.Provider, selection.Model, formatTime(now), formatTime(now))
 	if err != nil {
 		return Session{}, fmt.Errorf("session: create: %w", err)
 	}
-	return Session{ID: sessionID, ProjectID: params.ProjectID, Title: params.Title, CreatedAt: now, UpdatedAt: now}, nil
+	return Session{ID: sessionID, ProjectID: params.ProjectID, Title: params.Title, Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (s *Service) Get(ctx context.Context, sessionID string) (Session, error) {

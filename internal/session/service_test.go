@@ -53,6 +53,21 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	}
 }
 
+func TestCreateSelectedPersistsCompleteInitialSelection(t *testing.T) {
+	ctx, _, _, service, _ := newService(t)
+	created, err := service.CreateSelected(ctx, session.CreateParams{Title: "selected"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Agent != "build" || loaded.Provider != "local" || loaded.Model != "code" {
+		t.Fatalf("selection = %#v", loaded)
+	}
+}
+
 func TestAdmitIsExactlyIdempotent(t *testing.T) {
 	ctx, _, repository, service, sessionID := newService(t)
 	params := session.AdmitParams{MessageID: "msg_1", Content: "first", Delivery: session.DeliverySteer}

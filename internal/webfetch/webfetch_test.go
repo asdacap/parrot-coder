@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
@@ -102,5 +103,18 @@ func TestSanitizeMalformedHTML(t *testing.T) {
 	got := SanitizeHTML(`<h1>Title</h1><!-- comment > still comment --><p>A&nbsp; B</p><script>bad</script><div title=">">C</div>`)
 	if strings.Contains(got, "comment") || strings.Contains(got, "bad") || got != "Title\n\nA B\n\nC" {
 		t.Fatalf("sanitized HTML = %q", got)
+	}
+}
+
+func TestValidateIPRejectsSpecialUseNetworks(t *testing.T) {
+	for _, raw := range []string{"0.0.0.1", "100.64.0.1", "192.0.2.1", "198.18.0.1", "198.51.100.1", "203.0.113.1", "240.0.0.1", "64:ff9b:1::1", "100::1", "2001:db8::1"} {
+		if err := validateIP(netip.MustParseAddr(raw), false); err == nil {
+			t.Errorf("special-use address %s accepted", raw)
+		}
+	}
+	for _, raw := range []string{"8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"} {
+		if err := validateIP(netip.MustParseAddr(raw), false); err != nil {
+			t.Errorf("public address %s rejected: %v", raw, err)
+		}
 	}
 }

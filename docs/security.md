@@ -1,7 +1,9 @@
 # Security Model
 
 Model output, tool arguments, compatible provider responses, MCP servers,
-project files, and repository configuration are untrusted inputs.
+project files, and repository configuration are untrusted inputs. Project
+configuration cannot introduce endpoints, credential sources, local service
+executables, or private web access; those fields require global configuration.
 
 ## Credentials
 
@@ -37,9 +39,10 @@ An approval is bound to an operation hash containing tool input, resolved
 resources, and review data. Changed arguments, paths, commands, or file hashes
 invalidate the approval.
 
-Hard denies cannot be overridden by remembered grants. Remembered grants default
-to session scope. Persistent workspace grants require a separate explicit
-choice. Questions and security permissions use separate APIs and presentation.
+Hard denies cannot be overridden by remembered grants. A reply may allow once
+or explicitly remember an in-memory process, session, or workspace grant; grants
+are not persisted across process restarts. Questions and security permissions
+use separate APIs and presentation.
 
 ## Processes
 
@@ -58,12 +61,12 @@ security boundary.
 ## Changes and Recovery
 
 Edits and patches are planned before permission. The approved operation includes
-the exact diff and preimage hashes. Multi-file changes are staged and either
-commit completely or roll back.
+the exact diff and preimage hashes. Multi-file changes are staged and runtime
+failures trigger reverse rollback. Filesystem state is not transactionally
+atomic across a process or machine crash.
 
-Undo and redo refuse to overwrite divergent current state without a new,
-explicit force confirmation. Snapshot blobs are private, bounded, and retained
-according to policy.
+Undo and redo refuse to overwrite divergent current state. Snapshot blobs are
+private, bounded, and retained according to policy.
 
 Tool calls are durable before side effects. Cancellation and restart repair all
 nonterminal local tool calls to an explicit terminal failure. Uncertain provider
@@ -71,7 +74,7 @@ requests are not retried automatically.
 
 ## Resource Limits
 
-Bound all request bodies, JSON depth, SSE events, tool arguments, file reads,
-search results, process output, managed output, attachments, concurrent tools,
-subagents, MCP calls, and provider streams. No client subscription or tool may
-cause unbounded memory growth.
+Request bodies, tool-input JSON depth, SSE events, tool arguments, file reads,
+search results, process output, managed output, concurrent tools, subagents, MCP
+calls, and provider streams have explicit bounds. Slow live subscribers are
+disconnected rather than allowed to grow an unbounded queue.

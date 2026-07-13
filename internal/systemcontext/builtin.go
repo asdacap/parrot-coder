@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -60,16 +61,32 @@ type FileSource struct {
 	SourceKey string
 	Path      string
 	Label     string
+	MaxBytes  int64
 }
 
 func (s FileSource) Key() string { return s.SourceKey }
 func (s FileSource) Observe(context.Context) (Observation, error) {
-	data, err := os.ReadFile(s.Path)
+	max := s.MaxBytes
+	if max <= 0 {
+		max = 256 << 10
+	}
+	file, err := os.Open(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Observation{Available: true, Removal: s.Label + " was removed."}, nil
 	}
 	if err != nil {
 		return Observation{Available: false}, err
+	}
+	data, readErr := io.ReadAll(io.LimitReader(file, max+1))
+	closeErr := file.Close()
+	if readErr != nil {
+		return Observation{Available: false}, readErr
+	}
+	if closeErr != nil {
+		return Observation{Available: false}, closeErr
+	}
+	if int64(len(data)) > max {
+		return Observation{Available: false}, errors.New("systemcontext: file exceeds byte limit")
 	}
 	raw, _ := json.Marshal(string(data))
 	text := s.Label + ":\n" + string(data)
@@ -122,7 +139,7 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 		paths = append(paths, struct{ path, key, label string }{path, fmt.Sprintf("agents:project-%04d", i), "AGENTS.md at " + dir})
 	}
 	for _, item := range paths {
-		sources = append(sources, FileSource{item.key, item.path, item.label})
+		sources = append(sources, FileSource{SourceKey: item.key, Path: item.path, Label: item.label})
 	}
 	return sources, nil
 }

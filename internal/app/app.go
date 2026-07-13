@@ -168,6 +168,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: config: %w", err)
 	}
+	if err := validateConfigTrust(loaded); err != nil {
+		return nil, err
+	}
 	credentials := auth.NewFileStore(filepath.Join(paths.Data, CredentialFile))
 	providers, err := BuildProviders(ctx, loaded.Config, credentials, options.HTTPClient)
 	if err != nil {
@@ -412,6 +415,33 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	return result, nil
 }
 
+// Project configuration may select models and override model metadata, but it
+// cannot introduce endpoints, credentials, private-network access, or local
+// executables. Those capabilities require a file in the user's global config.
+func validateConfigTrust(loaded config.Result) error {
+	kinds := make(map[string]config.SourceKind, len(loaded.Sources))
+	for _, source := range loaded.Sources {
+		kinds[source.Path] = source.Kind
+	}
+	for field, source := range loaded.Provenance {
+		if kinds[source] != config.SourceProject {
+			continue
+		}
+		restricted := strings.HasPrefix(field, "mcp.") ||
+			strings.HasPrefix(field, "lsp.") ||
+			strings.HasPrefix(field, "formatters.") ||
+			field == "web_fetch.allow_private"
+		if strings.HasPrefix(field, "providers.") {
+			parts := strings.Split(field, ".")
+			restricted = len(parts) < 4 || parts[2] != "models"
+		}
+		if restricted {
+			return fmt.Errorf("app: config field %q in project source %q requires global configuration", field, source)
+		}
+	}
+	return nil
+}
+
 type compactionContextObserver struct{ manager systemcontext.Manager }
 
 func (o compactionContextObserver) ObserveFull(ctx context.Context) (compaction.FullContext, error) {
@@ -529,12 +559,8 @@ type compositionBackend struct {
 }
 
 func (b *compositionBackend) CreateSession(ctx context.Context, request v1.CreateSessionRequest) (v1.Session, error) {
-	item, err := b.DomainBackend.CreateSession(ctx, request)
+	item, err := b.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: request.ProjectID, Title: request.Title}, b.selection)
 	if err != nil {
-		return item, err
-	}
-	if err := b.sessions.SetSelection(ctx, item.ID, b.selection); err != nil {
-		_ = b.sessions.Delete(ctx, item.ID)
 		return v1.Session{}, err
 	}
 	return b.DomainBackend.GetSession(ctx, item.ID)

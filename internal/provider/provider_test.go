@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -155,6 +156,62 @@ func TestNonSuccessErrorIsStructuredBoundedAndRedacted(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret-token") || len(providerError.Message) > 1024 {
 		t.Fatalf("unsafe error = %v", err)
+	}
+}
+
+func TestStreamEventsAndErrorsRedactCredential(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(response, "data: {\"type\":\"error\",\"error\":{\"type\":\"auth\",\"code\":\"bad\",\"message\":\"echo secret-token\"}}\n\n")
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolResponses, APIKey: "secret-token",
+		AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := value.Stream(context.Background(), protocol.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	event, err := stream.Next(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if event.ProviderError == nil || strings.Contains(event.ProviderError.Message, "secret-token") || !strings.Contains(event.ProviderError.Message, "[REDACTED]") {
+		t.Fatalf("provider error = %#v", event.ProviderError)
+	}
+}
+
+func TestToolInputRedactionPreservesJSONTypes(t *testing.T) {
+	raw, err := redactJSON(json.RawMessage(`{"number":123,"text":"value-123"}`), []string{"123"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !json.Valid(raw) {
+		t.Fatalf("redacted input is invalid JSON: %s", raw)
+	}
+	var value struct {
+		Number int    `json:"number"`
+		Text   string `json:"text"`
+	}
+	if err := json.Unmarshal(raw, &value); err != nil {
+		t.Fatal(err)
+	}
+	if value.Number != 123 || value.Text != "value-[REDACTED]" {
+		t.Fatalf("redacted value = %#v", value)
+	}
+}
+
+func TestBoundedStreamReportsOverflowInsteadOfEOF(t *testing.T) {
+	source := io.NopCloser(strings.NewReader("12345"))
+	reader := &boundedReadCloser{reader: source, closer: source, remaining: 4}
+	data, err := io.ReadAll(reader)
+	if !errors.Is(err, ErrStreamTooLarge) || string(data) != "1234" {
+		t.Fatalf("read = %q, %v", data, err)
 	}
 }
 

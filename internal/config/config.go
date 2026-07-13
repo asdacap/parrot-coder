@@ -14,7 +14,10 @@ import (
 	"github.com/tailscale/hujson"
 )
 
-const FileName = "parrot.jsonc"
+const (
+	FileName       = "parrot.jsonc"
+	maxConfigBytes = 4 << 20
+)
 
 // Config is the typed configuration consumed by later application phases.
 type Config struct {
@@ -195,7 +198,7 @@ func Load(options Options) (Result, error) {
 	merged := make(map[string]any)
 	provenance := make(map[string]string)
 	for _, source := range sources {
-		data, err := os.ReadFile(source.Path)
+		data, err := readBoundedFile(source.Path, maxConfigBytes)
 		if err != nil {
 			return Result{}, fmt.Errorf("read config %q: %w", source.Path, err)
 		}
@@ -211,7 +214,9 @@ func Load(options Options) (Result, error) {
 		return Result{}, fmt.Errorf("encode merged config: %w", err)
 	}
 	var typed Config
-	if err := json.Unmarshal(data, &typed); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&typed); err != nil {
 		return Result{}, fmt.Errorf("decode merged config: %w", err)
 	}
 	if typed.Providers == nil {
@@ -227,6 +232,22 @@ func Load(options Options) (Result, error) {
 		typed.Formatters = make(map[string]Formatter)
 	}
 	return Result{Config: typed, Sources: sources, Provenance: provenance}, nil
+}
+
+func readBoundedFile(path string, max int64) ([]byte, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, max+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > max {
+		return nil, fmt.Errorf("config exceeds %d bytes", max)
+	}
+	return data, nil
 }
 
 // Parse converts one JSONC object into generic JSON values and rejects
