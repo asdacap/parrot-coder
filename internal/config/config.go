@@ -26,16 +26,23 @@ type Config struct {
 // APIKeyEnv names an environment variable; configuration files should not
 // contain credential values.
 type Provider struct {
-	BaseURL   string           `json:"base_url,omitempty"`
-	APIKeyEnv string           `json:"api_key_env,omitempty"`
-	Models    map[string]Model `json:"models,omitempty"`
+	Type                   string            `json:"type,omitempty"`
+	Protocol               string            `json:"protocol,omitempty"`
+	BaseURL                string            `json:"base_url,omitempty"`
+	APIKeyEnv              string            `json:"api_key_env,omitempty"`
+	Headers                map[string]string `json:"headers,omitempty"`
+	AllowInsecureLocalhost bool              `json:"allow_insecure_localhost,omitempty"`
+	Models                 map[string]Model  `json:"models,omitempty"`
 }
 
 // Model contains provider-specific model metadata needed for selection.
 type Model struct {
-	Name      string `json:"name,omitempty"`
-	Context   int    `json:"context,omitempty"`
-	MaxTokens int    `json:"max_tokens,omitempty"`
+	Name      string   `json:"name,omitempty"`
+	Context   int      `json:"context,omitempty"`
+	MaxTokens int      `json:"max_tokens,omitempty"`
+	Tools     bool     `json:"tools,omitempty"`
+	Reasoning bool     `json:"reasoning,omitempty"`
+	Output    []string `json:"output,omitempty"`
 }
 
 // SourceKind identifies a configuration file's scope.

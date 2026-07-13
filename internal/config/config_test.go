@@ -84,9 +84,13 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 	writeFile(t, global, `{
 		"model": "openai/small",
 		"providers": {"openai": {
+			"type": "openai-compatible",
+			"protocol": "responses",
 			"base_url": "https://api.example/v1",
 			"api_key_env": "OPENAI_API_KEY",
-			"models": {"small": {"context": 1000}}
+			"headers": {"X-Tenant": "one"},
+			"allow_insecure_localhost": true,
+			"models": {"small": {"context": 1000, "tools": true, "reasoning": true, "output": ["text"]}}
 		}}
 	}`)
 	writeFile(t, projectFile, `{
@@ -107,6 +111,12 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 	provider := result.Config.Providers["openai"]
 	if provider.BaseURL != "https://api.example/v1" || provider.APIKeyEnv != "OPENAI_API_KEY" {
 		t.Fatalf("provider = %#v", provider)
+	}
+	if provider.Type != "openai-compatible" || provider.Protocol != "responses" || provider.Headers["X-Tenant"] != "one" || !provider.AllowInsecureLocalhost {
+		t.Fatalf("typed provider fields = %#v", provider)
+	}
+	if model := provider.Models["small"]; !model.Tools || !model.Reasoning || !reflect.DeepEqual(model.Output, []string{"text"}) {
+		t.Fatalf("model capabilities = %#v", model)
 	}
 	if provider.Models["small"].Context != 1000 || provider.Models["large"].Context != 2000 || provider.Models["large"].MaxTokens != 500 {
 		t.Fatalf("models = %#v", provider.Models)
