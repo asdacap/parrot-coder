@@ -1,0 +1,437 @@
+package httpapi
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/client"
+	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/transport/inproc"
+)
+
+type stubBackend struct {
+	mu         sync.Mutex
+	order      []string
+	backendErr error
+	stream     *EventStream
+}
+
+func (b *stubBackend) Runtime(context.Context) (v1.Runtime, error) {
+	return v1.Runtime{Version: "test", Active: []v1.RuntimeSession{}}, b.backendErr
+}
+func (b *stubBackend) ListSessions(context.Context) (v1.SessionList, error) {
+	return v1.SessionList{Items: []v1.Session{}}, b.backendErr
+}
+func (b *stubBackend) CreateSession(context.Context, v1.CreateSessionRequest) (v1.Session, error) {
+	return v1.Session{ID: "ses_test"}, b.backendErr
+}
+func (b *stubBackend) GetSession(context.Context, string) (v1.Session, error) {
+	return v1.Session{ID: "ses_test"}, b.backendErr
+}
+func (b *stubBackend) DeleteSession(context.Context, string) error { return b.backendErr }
+func (b *stubBackend) ListMessages(context.Context, string) (v1.MessageList, error) {
+	return v1.MessageList{Items: []v1.Message{}}, b.backendErr
+}
+func (b *stubBackend) AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error) {
+	b.mu.Lock()
+	b.order = append(b.order, "admit")
+	b.mu.Unlock()
+	return v1.PromptAccepted{InputID: "inp_test", MessageID: "msg_test", Delivery: "steer", Status: "pending", Created: true}, b.backendErr
+}
+func (b *stubBackend) Wake(string) {
+	b.mu.Lock()
+	b.order = append(b.order, "wake")
+	b.mu.Unlock()
+}
+func (b *stubBackend) Interrupt(context.Context, string) error { return b.backendErr }
+func (b *stubBackend) OpenEvents(context.Context, string, int64) (*EventStream, error) {
+	if b.backendErr != nil {
+		return nil, b.backendErr
+	}
+	return b.stream, nil
+}
+func (b *stubBackend) ListPermissions(context.Context, string) (v1.PermissionList, error) {
+	return v1.PermissionList{Items: []v1.Permission{}}, b.backendErr
+}
+func (b *stubBackend) ReplyPermission(context.Context, string, string, v1.PermissionReply) error {
+	return b.backendErr
+}
+func (b *stubBackend) ListQuestions(context.Context, string) (v1.QuestionList, error) {
+	return v1.QuestionList{Items: []v1.QuestionRequest{}}, b.backendErr
+}
+func (b *stubBackend) ReplyQuestion(context.Context, string, string, v1.QuestionReply) error {
+	return b.backendErr
+}
+func (b *stubBackend) Undo(context.Context, string) (v1.SnapshotTransaction, error) {
+	return v1.SnapshotTransaction{ID: "snp_test", Paths: []string{}}, b.backendErr
+}
+func (b *stubBackend) Redo(context.Context, string) (v1.SnapshotTransaction, error) {
+	return v1.SnapshotTransaction{ID: "snp_test", Paths: []string{}}, b.backendErr
+}
+func (b *stubBackend) ListModels(context.Context) (v1.ModelList, error) {
+	return v1.ModelList{Items: []v1.Model{}}, b.backendErr
+}
+func (b *stubBackend) ListAgents(context.Context) (v1.AgentList, error) {
+	return v1.AgentList{Items: []v1.Agent{}}, b.backendErr
+}
+
+func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
+	backend := &stubBackend{}
+	server := New(backend, Config{})
+	tests := []struct {
+		method, path, body string
+		status             int
+	}{
+		{"GET", "/api/v1/health", "", 200},
+		{"GET", "/api/v1/runtime", "", 200},
+		{"GET", "/api/v1/sessions", "", 200},
+		{"POST", "/api/v1/sessions", `{}`, 201},
+		{"GET", "/api/v1/sessions/ses_test", "", 200},
+		{"DELETE", "/api/v1/sessions/ses_test", "", 204},
+		{"GET", "/api/v1/sessions/ses_test/messages", "", 200},
+		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello","delivery":"steer"}`, 202},
+		{"POST", "/api/v1/sessions/ses_test/interrupt", "", 204},
+		{"GET", "/api/v1/sessions/ses_test/permissions", "", 200},
+		{"POST", "/api/v1/sessions/ses_test/permissions/per_test/reply", `{"decision":"allow"}`, 204},
+		{"GET", "/api/v1/sessions/ses_test/questions", "", 200},
+		{"POST", "/api/v1/sessions/ses_test/questions/qst_test/reply", `{"reject":true}`, 204},
+		{"POST", "/api/v1/sessions/ses_test/undo", "", 200},
+		{"POST", "/api/v1/sessions/ses_test/redo", "", 200},
+		{"GET", "/api/v1/models", "", 200},
+		{"GET", "/api/v1/agents", "", 200},
+		{"GET", "/openapi.json", "", 200},
+	}
+	for _, test := range tests {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
+			if test.body != "" {
+				request.Header.Set("Content-Type", v1.MediaTypeJSON)
+			}
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			if response.Header().Get("X-Request-ID") == "" {
+				t.Fatal("missing request ID")
+			}
+		})
+	}
+
+	for _, route := range Routes() {
+		path := strings.NewReplacer("{id}", "ses_test", "{request}", "req_test").Replace(route.Path)
+		request := httptest.NewRequest("PATCH", path, nil)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Errorf("PATCH %s status = %d", path, response.Code)
+		}
+		assertProblem(t, response, "method_not_allowed")
+	}
+}
+
+func TestStrictJSONContentTypeAndLimit(t *testing.T) {
+	server := New(&stubBackend{}, Config{MaxBodyBytes: 32})
+	tests := []struct {
+		name, contentType, body, code string
+		status                        int
+	}{
+		{"content type", "text/plain", `{}`, "unsupported_media_type", 415},
+		{"unknown", v1.MediaTypeJSON, `{"unknown":true}`, "invalid_request", 400},
+		{"trailing", v1.MediaTypeJSON, `{} {}`, "invalid_request", 400},
+		{"too large", v1.MediaTypeJSON, `{"title":"` + strings.Repeat("x", 64) + `"}`, "body_too_large", 413},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", strings.NewReader(test.body))
+			request.Header.Set("Content-Type", test.contentType)
+			response := httptest.NewRecorder()
+			server.ServeHTTP(response, request)
+			if response.Code != test.status {
+				t.Fatalf("status = %d, body = %s", response.Code, response.Body.String())
+			}
+			assertProblem(t, response, test.code)
+		})
+	}
+}
+
+func TestPromptAdmissionPrecedesWake(t *testing.T) {
+	backend := &stubBackend{}
+	server := New(backend, Config{})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/ses_test/prompts", strings.NewReader(`{"message_id":"msg_test","content":"hello","delivery":"queue"}`))
+	request.Header.Set("Content-Type", v1.MediaTypeJSON)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d", response.Code)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if strings.Join(backend.order, ",") != "admit,wake" {
+		t.Fatalf("order = %v", backend.order)
+	}
+}
+
+func TestPromptExactRetryThroughHTTP(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "parrot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	repository := event.NewRepository(db)
+	sessions := session.NewService(db, repository)
+	created, err := sessions.Create(ctx, session.CreateParams{Title: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(&DomainBackend{Sessions: sessions, Events: repository}, Config{})
+	body := `{"message_id":"msg_retry","content":"hello","delivery":"steer"}`
+	for attempt := 0; attempt < 2; attempt++ {
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID+"/prompts", strings.NewReader(body))
+		request.Header.Set("Content-Type", v1.MediaTypeJSON)
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("attempt %d status = %d: %s", attempt, response.Code, response.Body.String())
+		}
+		var accepted v1.PromptAccepted
+		if err := json.Unmarshal(response.Body.Bytes(), &accepted); err != nil {
+			t.Fatal(err)
+		}
+		if accepted.Created != (attempt == 0) {
+			t.Fatalf("attempt %d created = %v", attempt, accepted.Created)
+		}
+	}
+	items, err := repository.List(ctx, created.ID, -1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 1 || items[0].Type != "session.input.admitted" {
+		t.Fatalf("events = %#v", items)
+	}
+
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID+"/prompts", strings.NewReader(`{"message_id":"msg_retry","content":"different","delivery":"steer"}`))
+	request.Header.Set("Content-Type", v1.MediaTypeJSON)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusConflict {
+		t.Fatalf("conflict status = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestOpaqueCursorPagination(t *testing.T) {
+	list := v1.SessionList{Items: []v1.Session{{ID: "ses_3"}, {ID: "ses_2"}, {ID: "ses_1"}}}
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?limit=2", nil)
+	first, err := paginateSessions(request, list)
+	if err != nil || len(first.Items) != 2 || first.NextCursor == "" || strings.Contains(first.NextCursor, "ses_2") {
+		t.Fatalf("first page = %#v, %v", first, err)
+	}
+	request = httptest.NewRequest(http.MethodGet, "/api/v1/sessions?cursor="+first.NextCursor+"&limit=2", nil)
+	second, err := paginateSessions(request, list)
+	if err != nil || len(second.Items) != 1 || second.Items[0].ID != "ses_1" {
+		t.Fatalf("second page = %#v, %v", second, err)
+	}
+	bad := httptest.NewRequest(http.MethodGet, "/api/v1/sessions?cursor=not-a-cursor", nil)
+	if _, err := paginateSessions(bad, list); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid cursor error = %v", err)
+	}
+}
+
+func TestProblemDoesNotLeakBackendError(t *testing.T) {
+	secret := "provider credential sk-secret raw body"
+	server := New(&stubBackend{backendErr: errors.New(secret)}, Config{})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/runtime", nil))
+	if response.Code != 500 {
+		t.Fatalf("status = %d", response.Code)
+	}
+	if strings.Contains(response.Body.String(), secret) {
+		t.Fatal("problem leaked backend error")
+	}
+	var item v1.Problem
+	if err := json.Unmarshal(response.Body.Bytes(), &item); err != nil {
+		t.Fatal(err)
+	}
+	if item.ErrorRef == "" || item.Code != "internal_error" {
+		t.Fatalf("problem = %#v", item)
+	}
+}
+
+func TestOpenAPIHasExactlyDeclaredRoutesAndProblems(t *testing.T) {
+	var document struct {
+		OpenAPI string                    `json:"openapi"`
+		Paths   map[string]map[string]any `json:"paths"`
+		Events  []v1.EventDefinition      `json:"x-event-manifest"`
+	}
+	if err := json.Unmarshal(buildOpenAPI(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.OpenAPI != "3.1.0" || len(document.Events) != len(v1.EventManifest) {
+		t.Fatalf("document metadata is incomplete")
+	}
+	seen := 0
+	for _, route := range Routes() {
+		operation, ok := document.Paths[route.Path][strings.ToLower(route.Method)].(map[string]any)
+		if !ok {
+			t.Fatalf("missing %s %s", route.Method, route.Path)
+		}
+		responses := operation["responses"].(map[string]any)
+		if _, ok := responses["500"]; !ok {
+			t.Fatalf("%s has no problem responses", route.OperationID)
+		}
+		seen++
+	}
+	if seen != len(Routes()) {
+		t.Fatalf("route count = %d", seen)
+	}
+}
+
+func TestSSEHeadersFieldsReplayHeartbeatAndCancel(t *testing.T) {
+	durable := make(chan v1.Event)
+	live := make(chan v1.Event)
+	closed := make(chan struct{})
+	sequence := int64(4)
+	backend := &stubBackend{stream: &EventStream{
+		Replay:  []v1.Event{{ID: "evt_replay", Type: "session.input.admitted", SessionID: "ses_test", Sequence: &sequence, Data: json.RawMessage(`{"ok":true}`)}},
+		Durable: durable, Live: live, Close: func() { close(closed) },
+	}}
+	server := httptest.NewServer(New(backend, Config{HeartbeatInterval: 10 * time.Millisecond}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	request, _ := http.NewRequestWithContext(ctx, http.MethodGet, server.URL+"/api/v1/sessions/ses_test/events?after=3", nil)
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Header.Get("Content-Type") != v1.MediaTypeSSE || response.Header.Get("X-Accel-Buffering") != "no" || !strings.Contains(response.Header.Get("Cache-Control"), "no-transform") {
+		t.Fatalf("SSE headers = %#v", response.Header)
+	}
+	reader := bufio.NewReader(response.Body)
+	connected, err := readSSEBlock(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(connected, "event: server.connected\n") || !strings.Contains(connected, "id: evt_") {
+		t.Fatalf("connected block = %q", connected)
+	}
+	replay, err := readSSEBlock(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(replay, "id: evt_replay\n") || !strings.Contains(replay, "event: session.input.admitted\n") || !strings.Contains(replay, `"sequence":4`) {
+		t.Fatalf("replay block = %q", replay)
+	}
+	heartbeat, err := readSSEBlock(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if heartbeat != ": heartbeat\n\n" {
+		t.Fatalf("heartbeat = %q", heartbeat)
+	}
+	cancel()
+	_ = response.Body.Close()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("stream did not close after cancellation")
+	}
+}
+
+func TestSSEValidatesBeforeCommittingHeaders(t *testing.T) {
+	server := New(&stubBackend{backendErr: ErrNotFound}, Config{})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/v1/sessions/missing/events", nil))
+	if response.Code != 404 || response.Header().Get("Content-Type") != v1.MediaTypeProblem {
+		t.Fatalf("response = %d %#v", response.Code, response.Header())
+	}
+}
+
+func TestClientParityNetworkAndInProcess(t *testing.T) {
+	for _, transport := range []string{"network", "inproc"} {
+		t.Run(transport, func(t *testing.T) {
+			backend := &stubBackend{}
+			handler := New(backend, Config{})
+			var apiClient *client.Client
+			if transport == "network" {
+				server := httptest.NewServer(handler)
+				defer server.Close()
+				apiClient, _ = client.New(server.URL, nil)
+			} else {
+				apiClient, _ = client.New("http://inproc", inproc.New(handler))
+			}
+			ctx := context.Background()
+			health, err := apiClient.Health(ctx)
+			if err != nil || health.Status != "ok" {
+				t.Fatalf("Health = %#v, %v", health, err)
+			}
+			created, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{Title: "test"})
+			if err != nil || created.ID != "ses_test" {
+				t.Fatalf("CreateSession = %#v, %v", created, err)
+			}
+			accepted, err := apiClient.Prompt(ctx, "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "steer"})
+			if err != nil || accepted.InputID != "inp_test" {
+				t.Fatalf("Prompt = %#v, %v", accepted, err)
+			}
+			durable := make(chan v1.Event)
+			live := make(chan v1.Event)
+			var closeOnce sync.Once
+			backend.stream = &EventStream{Durable: durable, Live: live, Close: func() {
+				closeOnce.Do(func() { close(durable); close(live) })
+			}}
+			stream, err := apiClient.Events(ctx, "ses_test", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			item, err := stream.Next()
+			if err != nil || item.Type != v1.EventServerConnected {
+				t.Fatalf("connected event = %#v, %v", item, err)
+			}
+			if err := stream.Close(); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
+
+func readSSEBlock(reader *bufio.Reader) (string, error) {
+	var out strings.Builder
+	for {
+		line, err := reader.ReadString('\n')
+		out.WriteString(line)
+		if err != nil {
+			return out.String(), err
+		}
+		if line == "\n" {
+			return out.String(), nil
+		}
+	}
+}
+
+func assertProblem(t *testing.T, response *httptest.ResponseRecorder, code string) {
+	t.Helper()
+	if response.Header().Get("Content-Type") != v1.MediaTypeProblem {
+		t.Errorf("content type = %q", response.Header().Get("Content-Type"))
+	}
+	data, _ := io.ReadAll(response.Result().Body)
+	var item v1.Problem
+	if err := json.Unmarshal(data, &item); err != nil {
+		t.Fatalf("decode problem: %v (%s)", err, data)
+	}
+	if item.Code != code || item.RequestID == "" {
+		t.Errorf("problem = %#v", item)
+	}
+}

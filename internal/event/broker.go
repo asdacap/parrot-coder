@@ -1,0 +1,118 @@
+package event
+
+import (
+	"encoding/json"
+	"sync"
+
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/protocol"
+)
+
+// Broker carries disposable protocol events. Durable state must be committed
+// through Repository before a corresponding live event is published.
+type Broker struct {
+	mu        sync.Mutex
+	next      uint64
+	listeners map[string]map[uint64]chan v1.Event
+}
+
+func NewBroker() *Broker {
+	return &Broker{listeners: make(map[string]map[uint64]chan v1.Event)}
+}
+
+func (b *Broker) Subscribe(sessionID string, capacity int) (<-chan v1.Event, func()) {
+	if capacity < 1 {
+		capacity = 1
+	}
+	ch := make(chan v1.Event, capacity)
+	b.mu.Lock()
+	id := b.next
+	b.next++
+	if b.listeners[sessionID] == nil {
+		b.listeners[sessionID] = make(map[uint64]chan v1.Event)
+	}
+	b.listeners[sessionID][id] = ch
+	b.mu.Unlock()
+	var once sync.Once
+	return ch, func() {
+		once.Do(func() {
+			b.mu.Lock()
+			defer b.mu.Unlock()
+			if current, ok := b.listeners[sessionID][id]; ok {
+				delete(b.listeners[sessionID], id)
+				close(current)
+			}
+			if len(b.listeners[sessionID]) == 0 {
+				delete(b.listeners, sessionID)
+			}
+		})
+	}
+}
+
+// Publish maps canonical runner events into disposable v1 deltas and statuses.
+// It implements agent.LivePublisher without coupling the runner to the API.
+func (b *Broker) Publish(sessionID string, item protocol.Event) {
+	var eventType string
+	var payload any
+	switch item.Type {
+	case protocol.EventTextDelta:
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{Kind: "text", Delta: item.Text}
+	case protocol.EventReasoningDelta:
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{Kind: "reasoning", Delta: item.Text}
+	case protocol.EventToolInputDelta:
+		if item.ToolInput == nil {
+			return
+		}
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{Kind: "tool_input", Delta: item.ToolInput.Delta, ToolCallID: item.ToolInput.ID, ToolName: item.ToolInput.Name}
+	case protocol.EventToolCallComplete:
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{Kind: "tool_call_complete"}
+	case protocol.EventUsage:
+		if item.Usage == nil {
+			return
+		}
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{Kind: "usage", Usage: &v1.Usage{InputTokens: item.Usage.InputTokens, OutputTokens: item.Usage.OutputTokens, TotalTokens: item.Usage.TotalTokens, ReasoningTokens: item.Usage.ReasoningTokens, CachedInputTokens: item.Usage.CachedInputTokens}}
+	case protocol.EventFinish:
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{Kind: "finish", FinishReason: string(item.FinishReason)}
+	case protocol.EventProviderError:
+		status := v1.SessionStatus{Kind: "provider_error"}
+		if item.ProviderError != nil {
+			status.ErrorCode = item.ProviderError.Code
+		}
+		eventType, payload = v1.EventSessionStatus, status
+	default:
+		return
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	b.PublishEvent(v1.Event{Type: eventType, SessionID: sessionID, Data: data})
+}
+
+// PublishEvent never blocks a producer. Overflow closes only the slow
+// subscriber. Callers publish only after the represented state is visible.
+func (b *Broker) PublishEvent(event v1.Event) {
+	if b == nil || event.SessionID == "" || !v1.KnownEvent(event.Type) || len(event.Data) == 0 || !json.Valid(event.Data) {
+		return
+	}
+	if event.ID == "" {
+		event.ID, _ = id.New("evt")
+		if event.ID == "" {
+			return
+		}
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for id, listener := range b.listeners[event.SessionID] {
+		select {
+		case listener <- event:
+		default:
+			close(listener)
+			delete(b.listeners[event.SessionID], id)
+		}
+	}
+	if len(b.listeners[event.SessionID]) == 0 {
+		delete(b.listeners, event.SessionID)
+	}
+}

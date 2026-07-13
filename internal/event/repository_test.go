@@ -120,6 +120,38 @@ func TestConcurrentAppendIsContiguous(t *testing.T) {
 	}
 }
 
+func TestConcurrentAppendPublishesInSequenceOrder(t *testing.T) {
+	ctx := context.Background()
+	_, repository, sessionID := newRepository(t)
+	const count = 64
+	subscription := repository.Subscribe(sessionID, count)
+	defer subscription.Close()
+	var wg sync.WaitGroup
+	for i := 0; i < count; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := repository.Append(ctx, sessionID, []event.NewEvent{{Type: "test.ordered", Data: json.RawMessage(`{}`)}}, nil); err != nil {
+				t.Errorf("Append: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	for want := int64(0); want < count; want++ {
+		select {
+		case item, ok := <-subscription.Events:
+			if !ok {
+				t.Fatalf("subscription closed before sequence %d", want)
+			}
+			if item.Sequence != want {
+				t.Fatalf("sequence = %d, want %d", item.Sequence, want)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for sequence %d", want)
+		}
+	}
+}
+
 func TestSlowSubscriberIsDisconnected(t *testing.T) {
 	ctx := context.Background()
 	_, repository, sessionID := newRepository(t)
@@ -136,6 +168,63 @@ func TestSlowSubscriberIsDisconnected(t *testing.T) {
 	}
 	if _, ok := <-subscription.Events; ok {
 		t.Fatal("slow subscriber remained open")
+	}
+}
+
+func TestReplayAndSubscribeHasNoGapOrDuplicate(t *testing.T) {
+	ctx := context.Background()
+	_, repository, sessionID := newRepository(t)
+	const count = 100
+
+	start := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		<-start
+		for i := 0; i < count; i++ {
+			_, err := repository.Append(ctx, sessionID, []event.NewEvent{{Type: "test.replay", Data: json.RawMessage(`{}`)}}, nil)
+			if err != nil {
+				done <- err
+				return
+			}
+		}
+		done <- nil
+	}()
+	close(start)
+	replay, subscription, err := repository.ReplayAndSubscribe(ctx, sessionID, -1, count+1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer subscription.Close()
+
+	seen := make(map[int64]bool, count)
+	for _, item := range replay {
+		if seen[item.Sequence] {
+			t.Fatalf("duplicate replay sequence %d", item.Sequence)
+		}
+		seen[item.Sequence] = true
+	}
+	deadline := time.After(5 * time.Second)
+	for len(seen) < count {
+		select {
+		case item, ok := <-subscription.Events:
+			if !ok {
+				t.Fatalf("subscription closed after %d events", len(seen))
+			}
+			if seen[item.Sequence] {
+				t.Fatalf("duplicate live sequence %d", item.Sequence)
+			}
+			seen[item.Sequence] = true
+		case <-deadline:
+			t.Fatalf("received %d of %d events", len(seen), count)
+		}
+	}
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	for i := int64(0); i < count; i++ {
+		if !seen[i] {
+			t.Fatalf("missing sequence %d", i)
+		}
 	}
 }
 

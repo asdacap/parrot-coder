@@ -1,0 +1,144 @@
+package v1
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
+	"time"
+)
+
+const (
+	EventServerConnected  = "server.connected"
+	EventMessagePartDelta = "message.part.delta"
+	EventSessionStatus    = "session.status"
+	EventPermission       = "permission.pending"
+	EventPermissionReply  = "permission.resolved"
+	EventQuestion         = "question.pending"
+	EventQuestionReply    = "question.resolved"
+)
+
+// Event is used for both durable and disposable live events. Sequence and
+// CreatedAt are present only for durable session events.
+type Event struct {
+	ID        string          `json:"id"`
+	Type      string          `json:"type"`
+	SessionID string          `json:"session_id,omitempty"`
+	Sequence  *int64          `json:"sequence,omitempty"`
+	Data      json.RawMessage `json:"data"`
+	CreatedAt *time.Time      `json:"created_at,omitempty"`
+}
+
+type MessagePartDelta struct {
+	Kind       string `json:"kind"`
+	Delta      string `json:"delta"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	ToolName   string `json:"tool_name,omitempty"`
+}
+
+type Usage struct {
+	InputTokens       int `json:"input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	TotalTokens       int `json:"total_tokens"`
+	ReasoningTokens   int `json:"reasoning_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+}
+
+type SessionStatus struct {
+	Kind         string `json:"kind"`
+	FinishReason string `json:"finish_reason,omitempty"`
+	ErrorCode    string `json:"error_code,omitempty"`
+	Usage        *Usage `json:"usage,omitempty"`
+}
+
+type PermissionResolved struct {
+	RequestID string `json:"request_id"`
+	Decision  string `json:"decision"`
+}
+
+type QuestionResolved struct {
+	RequestID string `json:"request_id"`
+	Rejected  bool   `json:"rejected"`
+}
+
+type EventDefinition struct {
+	Name    string `json:"name"`
+	Durable bool   `json:"durable"`
+	Payload string `json:"payload"`
+}
+
+// EventManifest is the closed set understood by the v1 API and client. The
+// assistant and tool terminal names are enumerated rather than pattern based.
+var EventManifest = []EventDefinition{
+	{Name: EventServerConnected, Payload: "Empty"},
+	{Name: EventMessagePartDelta, Payload: "MessagePartDelta"},
+	{Name: EventSessionStatus, Payload: "SessionStatus"},
+	{Name: EventPermission, Payload: "Permission"},
+	{Name: EventPermissionReply, Payload: "PermissionResolved"},
+	{Name: EventQuestion, Payload: "QuestionRequest"},
+	{Name: EventQuestionReply, Payload: "QuestionResolved"},
+	{Name: "session.input.admitted", Durable: true, Payload: "object"},
+	{Name: "session.input.promoted", Durable: true, Payload: "object"},
+	{Name: "session.selection.changed", Durable: true, Payload: "object"},
+	{Name: "session.context.initialized", Durable: true, Payload: "object"},
+	{Name: "session.context.observed", Durable: true, Payload: "object"},
+	{Name: "session.context.changed", Durable: true, Payload: "object"},
+	{Name: "session.context.replaced", Durable: true, Payload: "object"},
+	{Name: "session.message.appended", Durable: true, Payload: "object"},
+	{Name: "session.assistant.started", Durable: true, Payload: "object"},
+	{Name: "session.assistant.complete", Durable: true, Payload: "object"},
+	{Name: "session.assistant.error", Durable: true, Payload: "object"},
+	{Name: "session.assistant.interrupted", Durable: true, Payload: "object"},
+	{Name: "session.tool.pending", Durable: true, Payload: "object"},
+	{Name: "session.tool.running", Durable: true, Payload: "object"},
+	{Name: "session.tool.success", Durable: true, Payload: "object"},
+	{Name: "session.tool.failure", Durable: true, Payload: "object"},
+	{Name: "session.tool.interrupted", Durable: true, Payload: "object"},
+	{Name: "session.runtime.repaired", Durable: true, Payload: "object"},
+}
+
+func KnownEvent(name string) bool {
+	for _, item := range EventManifest {
+		if item.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+// DecodeEventData decodes a manifest event into its stable payload DTO.
+// Durable event payloads remain JSON objects because their authoritative state
+// is exposed by resource queries rather than event-specific projections.
+func DecodeEventData(event Event) (any, error) {
+	var target any
+	switch event.Type {
+	case EventServerConnected:
+		target = &Empty{}
+	case EventMessagePartDelta:
+		target = &MessagePartDelta{}
+	case EventSessionStatus:
+		target = &SessionStatus{}
+	case EventPermission:
+		target = &Permission{}
+	case EventPermissionReply:
+		target = &PermissionResolved{}
+	case EventQuestion:
+		target = &QuestionRequest{}
+	case EventQuestionReply:
+		target = &QuestionResolved{}
+	default:
+		if !KnownEvent(event.Type) {
+			return nil, errors.New("v1: unknown event type")
+		}
+		target = &map[string]any{}
+	}
+	decoder := json.NewDecoder(bytes.NewReader(event.Data))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(target); err != nil {
+		return nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		return nil, errors.New("v1: trailing event data")
+	}
+	return target, nil
+}

@@ -41,11 +41,16 @@ type Repository struct {
 
 	mu          sync.Mutex
 	nextSubID   uint64
-	subscribers map[string]map[uint64]chan Event
+	subscribers map[string]map[uint64]*subscriber
+}
+
+type subscriber struct {
+	events chan Event
+	after  int64
 }
 
 func NewRepository(db *store.DB) *Repository {
-	return &Repository{db: db, subscribers: make(map[string]map[uint64]chan Event)}
+	return &Repository{db: db, subscribers: make(map[string]map[uint64]*subscriber)}
 }
 
 func (r *Repository) Append(ctx context.Context, sessionID string, pending []NewEvent, projector Projector) ([]Event, error) {
@@ -60,6 +65,10 @@ func (r *Repository) AppendBuilt(ctx context.Context, sessionID string, build Bu
 	if sessionID == "" || build == nil {
 		return nil, errors.New("event: session ID and builder are required")
 	}
+	// Keep commit and publication in sequence order. SQLite serializes the
+	// commits, but without this lock their goroutines could publish in reverse.
+	r.mu.Lock()
+	defer r.mu.Unlock()
 
 	var committed []Event
 	err := r.db.WithImmediate(ctx, func(tx *sql.Tx) error {
@@ -115,7 +124,7 @@ func (r *Repository) AppendBuilt(ctx context.Context, sessionID string, build Bu
 	if err != nil {
 		return nil, err
 	}
-	r.publish(sessionID, committed)
+	r.publishLocked(sessionID, committed)
 	return committed, nil
 }
 
@@ -200,18 +209,66 @@ func (s *Subscription) Close() {
 // Subscribe registers a bounded process-local queue. A subscriber that cannot
 // keep up is closed instead of delaying event commits or other subscribers.
 func (r *Repository) Subscribe(sessionID string, capacity int) *Subscription {
+	return r.subscribeLocked(sessionID, -1, capacity)
+}
+
+// ReplayAndSubscribe establishes an atomic durable/live handoff. Publication
+// uses the same lock, so every commit after the replay query is either present
+// in replay or delivered through the subscription. Sequence filtering removes
+// the commit-before-publication duplicate case.
+func (r *Repository) ReplayAndSubscribe(ctx context.Context, sessionID string, after int64, capacity int) ([]Event, *Subscription, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	items, err := r.listAll(ctx, sessionID, after)
+	if err != nil {
+		return nil, nil, err
+	}
+	cutoff := after
+	if len(items) > 0 {
+		cutoff = items[len(items)-1].Sequence
+	}
+	return items, r.subscribeLockedHeld(sessionID, cutoff, capacity), nil
+}
+
+func (r *Repository) listAll(ctx context.Context, sessionID string, after int64) ([]Event, error) {
+	rows, err := r.db.SQL().QueryContext(ctx, `
+        SELECT id, session_id, sequence, type, data_json, created_at
+        FROM event WHERE session_id = ? AND sequence > ? ORDER BY sequence`, sessionID, after)
+	if err != nil {
+		return nil, fmt.Errorf("event: replay: %w", err)
+	}
+	defer rows.Close()
+	var result []Event
+	for rows.Next() {
+		item, err := scanEvent(rows)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("event: replay: %w", err)
+	}
+	return result, nil
+}
+
+func (r *Repository) subscribeLocked(sessionID string, after int64, capacity int) *Subscription {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.subscribeLockedHeld(sessionID, after, capacity)
+}
+
+func (r *Repository) subscribeLockedHeld(sessionID string, after int64, capacity int) *Subscription {
 	if capacity < 1 {
 		capacity = 1
 	}
 	ch := make(chan Event, capacity)
-	r.mu.Lock()
 	id := r.nextSubID
 	r.nextSubID++
 	if r.subscribers[sessionID] == nil {
-		r.subscribers[sessionID] = make(map[uint64]chan Event)
+		r.subscribers[sessionID] = make(map[uint64]*subscriber)
 	}
-	r.subscribers[sessionID][id] = ch
-	r.mu.Unlock()
+	r.subscribers[sessionID][id] = &subscriber{events: ch, after: after}
 
 	return &Subscription{Events: ch, close: func() {
 		r.mu.Lock()
@@ -219,7 +276,7 @@ func (r *Repository) Subscribe(sessionID string, capacity int) *Subscription {
 		if subscriptions := r.subscribers[sessionID]; subscriptions != nil {
 			if current, ok := subscriptions[id]; ok {
 				delete(subscriptions, id)
-				close(current)
+				close(current.events)
 			}
 			if len(subscriptions) == 0 {
 				delete(r.subscribers, sessionID)
@@ -228,16 +285,18 @@ func (r *Repository) Subscribe(sessionID string, capacity int) *Subscription {
 	}}
 }
 
-func (r *Repository) publish(sessionID string, events []Event) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
+func (r *Repository) publishLocked(sessionID string, events []Event) {
 	for id, subscriber := range r.subscribers[sessionID] {
 		keep := true
 		for _, item := range events {
+			if item.Sequence <= subscriber.after {
+				continue
+			}
 			select {
-			case subscriber <- item:
+			case subscriber.events <- item:
+				subscriber.after = item.Sequence
 			default:
-				close(subscriber)
+				close(subscriber.events)
 				delete(r.subscribers[sessionID], id)
 				keep = false
 			}
