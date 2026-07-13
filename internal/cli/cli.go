@@ -48,6 +48,8 @@ type App struct {
 	open  func(context.Context, app.Options) (*app.App, error)
 }
 
+var enableRawMode = terminal.EnableRawMode
+
 func New(build BuildInfo) *App { return &App{build: build, open: app.Open} }
 
 func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
@@ -56,6 +58,19 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	defer signal.Stop(interrupts)
 	ctx = context.WithValue(ctx, interruptKey{}, (<-chan os.Signal)(interrupts))
 	args = removeNoColor(args)
+	var controllingTerminal *os.File
+	if len(args) == 0 && !terminal.IsTTY(stdin) {
+		if _, fileInput := stdin.(*os.File); fileInput {
+			if file, err := terminal.OpenInput(); err == nil && terminal.IsTTY(file) {
+				controllingTerminal = file
+				defer controllingTerminal.Close()
+				stdin = controllingTerminal
+				if !terminal.IsTTY(stdout) {
+					stdout = controllingTerminal
+				}
+			}
+		}
+	}
 	out := terminal.Writer{W: stdout}
 	errout := terminal.Writer{W: stderr}
 	if len(args) == 0 {
@@ -75,7 +90,9 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	case "run":
 		return a.runCommand(ctx, args[1:], stdin, out, errout)
 	case "chat":
-		return a.chatCommand(ctx, args[1:], stdin, out, errout)
+		// The enhanced renderer owns its ANSI output, so chat receives the
+		// underlying writer and sanitizes all committed content itself.
+		return a.chatCommand(ctx, args[1:], stdin, stdout, errout)
 	case "models":
 		return a.modelsCommand(ctx, args[1:], out, errout)
 	case "agents":
@@ -196,6 +213,7 @@ func promptInput(stdin io.Reader, arguments []string) (string, error) {
 type apiClient interface {
 	Sessions(context.Context) (v1.SessionList, error)
 	CreateSession(context.Context, v1.CreateSessionRequest) (v1.Session, error)
+	UpdateSessionSelection(context.Context, string, v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error)
 	Session(context.Context, string) (v1.Session, error)
 	DeleteSession(context.Context, string) error
 	Messages(context.Context, string) (v1.MessageList, error)
@@ -221,13 +239,8 @@ func applySelection(ctx context.Context, api apiClient, sessionID, agentID, mode
 	if agentID == "" && model == "" {
 		return nil
 	}
-	selector, ok := api.(interface {
-		SelectSession(context.Context, string, string, string) error
-	})
-	if !ok {
-		return errors.New("connected server does not support session selection")
-	}
-	return selector.SelectSession(ctx, sessionID, agentID, model)
+	_, err := api.UpdateSessionSelection(ctx, sessionID, v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model})
+	return err
 }
 
 func chooseSession(ctx context.Context, api apiClient, projectID string, continued bool, sessionID, title string) (v1.Session, error) {
@@ -261,6 +274,8 @@ type streamOptions struct {
 	thinking    bool
 	chat        bool
 	resume      bool
+	renderer    *terminal.LiveRenderer
+	keyInput    *terminal.KeyDecoder
 }
 
 type streamResult struct {
@@ -331,28 +346,56 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 	interrupted := false
 	interruptCount := 0
 	interrupts, _ := ctx.Value(interruptKey{}).(<-chan os.Signal)
+	requestInterrupt := func() error {
+		interruptCount++
+		if interruptCount > 1 {
+			return errSecondInterrupt
+		}
+		interrupted = true
+		if options.renderer != nil {
+			_ = options.renderer.Commit("status: interrupt requested")
+		} else {
+			fmt.Fprintln(options.stderr, "status: interrupt requested")
+		}
+		go func() {
+			interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = api.Interrupt(interruptCtx, sessionID)
+		}()
+		return nil
+	}
 	for {
 		select {
 		case <-interrupts:
-			interruptCount++
-			if interruptCount > 1 {
-				return streamResult{err: errSecondInterrupt}
+			if err := requestInterrupt(); err != nil {
+				return streamResult{err: err}
 			}
-			interrupted = true
-			fmt.Fprintln(options.stderr, "status: interrupt requested")
-			go func() {
-				interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				_ = api.Interrupt(interruptCtx, sessionID)
-			}()
 		case <-ctx.Done():
 			interruptCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 			_ = api.Interrupt(interruptCtx, sessionID)
 			cancel()
 			return streamResult{err: ctx.Err()}
 		case <-ticker.C:
-			if err := settlePrompts(ctx, api, sessionID, options.promptInput, options.stderr); err != nil {
+			if err := settleStreamPrompts(ctx, api, sessionID, options); err != nil {
+				if errors.Is(err, terminal.ErrInterrupted) {
+					if interruptErr := requestInterrupt(); interruptErr != nil {
+						return streamResult{err: interruptErr}
+					}
+					continue
+				}
 				return streamResult{err: err}
+			}
+			if options.keyInput != nil {
+				pollCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
+				key, keyErr := options.keyInput.ReadKey(pollCtx)
+				cancel()
+				if keyErr == nil && key.Kind == terminal.KeyInterrupt {
+					if err := requestInterrupt(); err != nil {
+						return streamResult{err: err}
+					}
+				} else if keyErr != nil && !errors.Is(keyErr, context.DeadlineExceeded) && !errors.Is(keyErr, context.Canceled) {
+					return streamResult{err: keyErr}
+				}
 			}
 		case result := <-events:
 			if result.err != nil {
@@ -365,7 +408,12 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				}
 			}
 			if options.format != "jsonl" && strings.HasPrefix(item.Type, "session.tool.") {
-				fmt.Fprintln(options.stderr, "tool:", strings.TrimPrefix(item.Type, "session.tool."))
+				line := "tool: " + strings.TrimPrefix(item.Type, "session.tool.")
+				if options.renderer != nil {
+					_ = options.renderer.Update([]string{line})
+				} else {
+					fmt.Fprintln(options.stderr, line)
+				}
 			}
 			payload, decodeErr := v1.DecodeEventData(item)
 			if decodeErr != nil {
@@ -375,17 +423,29 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 			case *v1.MessagePartDelta:
 				if value.Kind == "text" {
 					streamed.WriteString(value.Delta)
-					if options.chat && options.format != "jsonl" {
+					if options.renderer != nil {
+						if err := options.renderer.Update([]string{"assistant> " + streamed.String()}); err != nil {
+							return streamResult{err: err}
+						}
+					} else if options.chat && options.format != "jsonl" {
 						if _, err := io.WriteString(options.stdout, terminal.Sanitize(value.Delta)); err != nil {
 							return streamResult{err: err}
 						}
 					}
 				} else if options.format != "jsonl" && (value.Kind != "reasoning" || options.thinking) {
-					fmt.Fprintf(options.stderr, "status: %s\n", value.Kind)
+					if options.renderer != nil {
+						_ = options.renderer.Update([]string{"status: " + value.Kind})
+					} else {
+						fmt.Fprintf(options.stderr, "status: %s\n", value.Kind)
+					}
 				}
 			case *v1.SessionStatus:
 				if options.format != "jsonl" && value.Kind != "idle" && value.Kind != "finish" && value.Kind != "usage" {
-					fmt.Fprintf(options.stderr, "status: %s\n", value.Kind)
+					if options.renderer != nil {
+						_ = options.renderer.Update([]string{"status: " + value.Kind})
+					} else {
+						fmt.Fprintf(options.stderr, "status: %s\n", value.Kind)
+					}
 				}
 				if value.Kind == "error" || value.Kind == "provider_error" {
 					statusError = true
@@ -407,7 +467,11 @@ type eventResult struct {
 	err   error
 }
 
-func finishStream(api apiClient, sessionID string, before v1.MessageList, streamed string, statusError bool, options streamOptions) streamResult {
+type messageClient interface {
+	Messages(context.Context, string) (v1.MessageList, error)
+}
+
+func finishStream(api messageClient, sessionID string, before v1.MessageList, streamed string, statusError bool, options streamOptions) streamResult {
 	after, err := api.Messages(context.Background(), sessionID)
 	if err != nil {
 		return streamResult{err: err}
@@ -435,15 +499,25 @@ func finishStream(api apiClient, sessionID string, before v1.MessageList, stream
 		}
 	}
 	if options.chat {
-		if streamed == "" && final != "" {
+		if options.renderer != nil {
+			if err := options.renderer.Commit("assistant> " + final); err != nil {
+				return streamResult{err: err}
+			}
+		} else if streamed == "" && final != "" {
 			_, _ = io.WriteString(options.stdout, terminal.Sanitize(final))
 		} else if strings.HasPrefix(final, streamed) && len(final) > len(streamed) {
 			_, _ = io.WriteString(options.stdout, terminal.Sanitize(final[len(streamed):]))
 		}
-		_, _ = io.WriteString(options.stdout, "\n")
+		if options.renderer == nil {
+			_, _ = io.WriteString(options.stdout, "\n")
+		}
 	}
 	if finalError != "" {
-		fmt.Fprintln(options.stderr, "error:", finalError)
+		if options.renderer != nil {
+			_ = options.renderer.Commit("error: " + finalError)
+		} else {
+			fmt.Fprintln(options.stderr, "error:", finalError)
+		}
 	}
 	if statusError || finalError != "" {
 		return streamResult{text: final, err: errors.New("session turn failed")}
@@ -519,6 +593,85 @@ func settlePrompts(ctx context.Context, api apiClient, sessionID string, input i
 	return nil
 }
 
+func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, options streamOptions) error {
+	if options.renderer == nil || options.keyInput == nil {
+		return settlePrompts(ctx, api, sessionID, options.promptInput, options.stderr)
+	}
+	permissions, err := api.Permissions(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	questions, err := api.Questions(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	read := func(prefix string) (string, error) {
+		editor := terminal.NewEditorDecoder(options.keyInput, options.stdout,
+			terminal.WithEditorPrompt(prefix), terminal.WithEditorRenderer(options.renderer))
+		return editor.Read(ctx)
+	}
+	for _, item := range permissions.Items {
+		if err := options.renderer.Commit(fmt.Sprintf("permission: %s (%s)", item.ToolID, item.Reason)); err != nil {
+			return err
+		}
+		line, readErr := read("allow once/session/workspace? [deny]: ")
+		if errors.Is(readErr, terminal.ErrCanceled) || errors.Is(readErr, io.EOF) {
+			line, readErr = "", nil
+		}
+		if readErr != nil {
+			return readErr
+		}
+		answer := strings.ToLower(strings.TrimSpace(line))
+		reply := v1.PermissionReply{Decision: "deny"}
+		switch answer {
+		case "y", "yes", "once":
+			reply.Decision = "allow"
+		case "session":
+			reply.Decision, reply.Scope = "allow", "session"
+		case "workspace":
+			reply.Decision, reply.Scope = "allow", "workspace"
+		}
+		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
+			return err
+		}
+	}
+	for _, request := range questions.Items {
+		answers := make([]v1.Answer, 0, len(request.Questions))
+		reject := false
+		for _, item := range request.Questions {
+			if err := options.renderer.Commit("question: " + item.Prompt); err != nil {
+				return err
+			}
+			line, readErr := read("answer with option ID or text [reject]: ")
+			if errors.Is(readErr, terminal.ErrCanceled) || errors.Is(readErr, io.EOF) {
+				line, readErr = "", nil
+			}
+			if readErr != nil {
+				return readErr
+			}
+			value := strings.TrimSpace(line)
+			if value == "" {
+				reject = true
+				break
+			}
+			answer := v1.Answer{QuestionID: item.ID}
+			for _, option := range item.Options {
+				if value == option.ID {
+					answer.OptionIDs = []string{value}
+				}
+			}
+			if len(answer.OptionIDs) == 0 {
+				answer.Custom = value
+			}
+			answers = append(answers, answer)
+		}
+		if err := api.ReplyQuestion(ctx, sessionID, request.ID, v1.QuestionReply{Answers: answers, Reject: reject}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	fs := newFlagSet("chat", stderr)
 	args = normalizeLeadingPrompt(args)
@@ -531,7 +684,7 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 		fmt.Fprintln(stderr, "invalid chat flags; see parrot chat --help")
 		return exitUsage
 	}
-	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, Model: options.model, Agent: options.agent, Permission: permission.Ask})
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, Model: options.model, Agent: options.agent, Permission: permission.Ask, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitError
@@ -546,219 +699,644 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 			return exitError
 		}
 	}
-	reader := bufio.NewReader(stdin)
+	selection := chatSelection{agent: runtime.DefaultSelection.Agent, provider: runtime.DefaultSelection.Provider, model: runtime.DefaultSelection.Model}
+	if current.ID != "" {
+		selection = selectionFromSession(current, selection.agent)
+	}
+	plainOut := terminal.Writer{W: stdout}
+	shell := &chatShell{
+		ctx: ctx, api: api, current: current, selection: selection, options: options,
+		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, commands: runtime.Commands,
+		stdout: plainOut, stderr: stderr,
+	}
+	if inputFile, ok := stdin.(*os.File); ok && terminal.IsTTY(inputFile) && terminal.IsTTY(stdout) {
+		raw, rawErr := enableRawMode(inputFile)
+		if rawErr != nil {
+			fmt.Fprintln(stderr, "enhanced terminal unavailable; using plain input:", rawErr)
+		} else {
+			defer raw.Close()
+			shell.enhanced = true
+			shell.stdout = stdout
+			shell.renderer = terminal.NewLiveRenderer(stdout, terminal.RendererConfig{TTY: true, MaxRows: 6})
+			defer shell.renderer.Close()
+			shell.decoder = terminal.NewKeyDecoder(inputFile)
+			shell.editor = terminal.NewEditorDecoder(shell.decoder, stdout,
+				terminal.WithCompletions(chatCompletionCandidates(runtime.Commands)),
+				terminal.WithEditorRenderer(shell.renderer))
+		}
+	}
+	if !shell.enhanced {
+		shell.reader = bufio.NewReader(stdin)
+	}
 	first := ""
 	if fs.NArg() == 1 {
 		first = fs.Arg(0)
 	}
+	return shell.run(first)
+}
+
+type chatSelection struct {
+	agent    string
+	provider string
+	model    string
+}
+
+func (s chatSelection) modelName() string {
+	if s.provider == "" || s.model == "" {
+		return ""
+	}
+	return s.provider + "/" + s.model
+}
+
+type chatShell struct {
+	ctx         context.Context
+	api         apiClient
+	current     v1.Session
+	selection   chatSelection
+	options     codingFlags
+	projectID   string
+	projectRoot string
+	commands    *customcommand.Registry
+	stdout      io.Writer
+	stderr      io.Writer
+	reader      *bufio.Reader
+	decoder     *terminal.KeyDecoder
+	editor      *terminal.Editor
+	renderer    *terminal.LiveRenderer
+	enhanced    bool
+}
+
+func (s *chatShell) run(first string) int {
+	draft := first
+	readDraft := draft == ""
 	for {
-		line := first
-		first = ""
-		if line == "" {
-			fmt.Fprint(stdout, "you> ")
-			idleRead := make(chan idleLine, 1)
-			go func() {
-				read, readErr := reader.ReadString('\n')
-				idleRead <- idleLine{read, readErr}
-			}()
-			var read string
-			var readErr error
-			select {
-			case value := <-idleRead:
-				read, readErr = value.line, value.err
-			case <-interruptChannel(ctx):
-				return exitInterrupt
-			case <-ctx.Done():
-				return exitInterrupt
-			}
-			if errors.Is(readErr, io.EOF) && read == "" {
+		if readDraft {
+			line, err := s.readPrompt(draft)
+			if errors.Is(err, io.EOF) {
 				return exitOK
 			}
-			if readErr != nil && !errors.Is(readErr, io.EOF) {
-				fmt.Fprintln(stderr, readErr)
+			if errors.Is(err, terminal.ErrInterrupted) || errors.Is(err, terminal.ErrCanceled) {
+				draft = ""
+				readDraft = true
+				continue
+			}
+			if err != nil {
+				if errors.Is(err, context.Canceled) {
+					return exitInterrupt
+				}
+				s.commitError(err.Error())
 				return exitError
 			}
-			line = strings.TrimSuffix(read, "\n")
+			draft = line
 		}
-		if strings.TrimSpace(line) == "" {
+		readDraft = true
+		if strings.TrimSpace(draft) == "" {
+			draft = ""
 			continue
 		}
+
+		line := draft
 		if strings.HasPrefix(strings.TrimSpace(line), "/") {
 			trimmed := strings.TrimSpace(line)
 			name, arguments := slashParts(trimmed)
 			if isBuiltinSlash(name) {
-				exit, code := chatSlash(ctx, &api, &current, trimmed, stdout, stderr, &options, runtime.Commands)
+				exit, code := s.slash(name, arguments)
+				draft = ""
 				if exit {
 					return code
 				}
 				continue
 			}
-			expansion, expandErr := runtime.Commands.Expand(strings.TrimPrefix(name, "/"), arguments)
-			if expandErr != nil {
-				fmt.Fprintf(stderr, "unknown slash command %q: %v\n", name, expandErr)
+			expansion, err := s.commands.Expand(strings.TrimPrefix(name, "/"), arguments)
+			if err != nil {
+				s.commitError(fmt.Sprintf("unknown slash command %q: %v", name, err))
+				draft = ""
 				continue
 			}
 			if expansion.Subtask {
 				line = subtaskPrompt(expansion)
 			} else {
 				if expansion.Agent != "" {
-					options.agent = expansion.Agent
+					if err := s.selectAgent(expansion.Agent); err != nil {
+						s.commitError(err.Error())
+						draft = ""
+						continue
+					}
 				}
 				if expansion.Model != "" {
-					options.model = expansion.Model
-				}
-				if current.ID != "" {
-					if err := applySelection(ctx, api, current.ID, expansion.Agent, expansion.Model); err != nil {
-						fmt.Fprintln(stderr, err)
+					if err := s.selectModel(expansion.Model); err != nil {
+						s.commitError(err.Error())
+						draft = ""
 						continue
 					}
 				}
 				line = expansion.Prompt
 			}
 		}
-		if current.ID == "" {
-			current, err = chooseSession(ctx, api, runtime.Project.ID, false, "", line)
+
+		if s.selection.modelName() == "" {
+			selected, err := s.pickModel()
 			if err != nil {
-				fmt.Fprintln(stderr, err)
-				return exitError
+				if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
+					s.commitError(err.Error())
+				}
+				// Re-open the editor with the exact draft after cancellation or an
+				// empty catalog. No session has been created at this point.
+				readDraft = true
+				continue
 			}
-			if err := applySelection(ctx, api, current.ID, options.agent, options.model); err != nil {
-				fmt.Fprintln(stderr, err)
-				return exitError
+			if err := s.applyModel(selected); err != nil {
+				s.commitError(err.Error())
+				readDraft = true
+				continue
 			}
 		}
-		fmt.Fprint(stdout, "assistant> ")
-		result := streamTurn(ctx, api, current.ID, line, streamOptions{format: "text", stdout: stdout, stderr: stderr, promptInput: reader, thinking: options.thinking, chat: true})
+
+		if s.current.ID == "" {
+			item, err := createChatSession(s.ctx, s.api, s.projectID, line, s.selection)
+			if err != nil {
+				s.commitError(err.Error())
+				readDraft = true
+				continue
+			}
+			s.current = item
+		}
+		if err := s.commitUser(line); err != nil {
+			s.commitError(err.Error())
+			return exitError
+		}
+		if !s.enhanced {
+			fmt.Fprint(s.stdout, "assistant> ")
+		}
+		result := streamTurn(s.ctx, s.api, s.current.ID, line, s.streamOptions(false))
+		draft = ""
 		if result.err != nil {
-			if errors.Is(result.err, errSecondInterrupt) {
+			if errors.Is(result.err, errSecondInterrupt) || errors.Is(result.err, context.Canceled) {
 				return exitInterrupt
 			}
-			if errors.Is(result.err, context.Canceled) {
-				return exitInterrupt
-			}
-			fmt.Fprintln(stderr, result.err)
+			s.commitError(result.err.Error())
 		}
 	}
 }
 
-type idleLine struct {
-	line string
-	err  error
+func (s *chatShell) commitUser(text string) error {
+	if s.renderer == nil {
+		return nil
+	}
+	return s.renderer.Commit("you> " + text)
 }
 
-func chatSlash(ctx context.Context, api *apiClient, current *v1.Session, line string, stdout, stderr io.Writer, options *codingFlags, commands *customcommand.Registry) (bool, int) {
-	fields := strings.Fields(line)
-	command := fields[0]
-	argument := strings.TrimSpace(strings.TrimPrefix(line, command))
+func (s *chatShell) readPrompt(initial string) (string, error) {
+	if s.enhanced {
+		s.editor.SetPrompt(s.promptLabel())
+		return s.editor.ReadInitial(s.ctx, initial)
+	}
+	fmt.Fprint(s.stdout, "you> ")
+	line, err := s.reader.ReadString('\n')
+	if errors.Is(err, io.EOF) && line != "" {
+		err = nil
+	}
+	return strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r"), err
+}
+
+func (s *chatShell) promptLabel() string {
+	model := s.selection.modelName()
+	if model == "" {
+		model = "no model"
+	}
+	agent := s.selection.agent
+	if agent == "" {
+		agent = "no agent"
+	}
+	return fmt.Sprintf("you [%s · %s]> ", agent, model)
+}
+
+func (s *chatShell) streamOptions(resume bool) streamOptions {
+	return streamOptions{format: "text", stdout: s.stdout, stderr: s.stderr, promptInput: s.reader,
+		thinking: s.options.thinking, chat: true, resume: resume, renderer: s.renderer, keyInput: s.decoder}
+}
+
+func (s *chatShell) commit(text string) {
+	if s.renderer != nil {
+		_ = s.renderer.Commit(text)
+		return
+	}
+	fmt.Fprintln(s.stdout, terminal.Sanitize(text))
+}
+
+func (s *chatShell) commitError(text string) {
+	if s.renderer != nil {
+		_ = s.renderer.Commit("error: " + text)
+		return
+	}
+	fmt.Fprintln(s.stderr, terminal.Sanitize(text))
+}
+
+func (s *chatShell) commitStatus(text string) {
+	if s.renderer != nil {
+		_ = s.renderer.Commit(text)
+		return
+	}
+	fmt.Fprintln(s.stderr, terminal.Sanitize(text))
+}
+
+func selectionFromSession(item v1.Session, fallbackAgent string) chatSelection {
+	agent := item.Agent
+	if agent == "" {
+		agent = fallbackAgent
+	}
+	return chatSelection{agent: agent, provider: item.Provider, model: item.Model}
+}
+
+type sessionCreator interface {
+	CreateSession(context.Context, v1.CreateSessionRequest) (v1.Session, error)
+}
+
+func createChatSession(ctx context.Context, api sessionCreator, projectID, title string, selection chatSelection) (v1.Session, error) {
+	line, _, _ := strings.Cut(strings.TrimSpace(title), "\n")
+	if len(line) > 80 {
+		line = line[:80]
+	}
+	return api.CreateSession(ctx, v1.CreateSessionRequest{
+		ProjectID: projectID, Title: line, Agent: selection.agent, Model: selection.modelName(),
+	})
+}
+
+var builtinChatCommands = []terminal.Candidate{
+	{Value: "/help", Description: "show commands and keybindings"},
+	{Value: "/models", Description: "list available models"},
+	{Value: "/model", Description: "select a model"},
+	{Value: "/agents", Description: "list available agents"},
+	{Value: "/agent", Description: "select an agent"},
+	{Value: "/sessions", Description: "list sessions"},
+	{Value: "/session", Description: "switch sessions"},
+	{Value: "/resume", Description: "resume an interrupted session"},
+	{Value: "/new", Description: "start a new session"},
+	{Value: "/compact", Description: "compact the current conversation"},
+	{Value: "/connect", Description: "connect to an API server"},
+	{Value: "/thinking", Description: "toggle reasoning status"},
+	{Value: "/undo", Description: "undo the last change"},
+	{Value: "/redo", Description: "redo the last undone change"},
+	{Value: "/status", Description: "show chat state"},
+	{Value: "/exit", Description: "exit chat"},
+}
+
+func chatCompletionCandidates(commands *customcommand.Registry) []terminal.Candidate {
+	items := append([]terminal.Candidate(nil), builtinChatCommands...)
+	if commands == nil {
+		return items
+	}
+	for _, item := range commands.List() {
+		items = append(items, terminal.Candidate{Value: "/" + item.Name, Description: item.Description})
+	}
+	return items
+}
+
+func (s *chatShell) slash(command, argument string) (bool, int) {
 	switch command {
 	case "/help":
-		fmt.Fprint(stdout, "/help /model /agent /new /resume /connect /thinking /compact /undo /redo /exit\n")
-		for _, item := range commands.List() {
-			fmt.Fprintf(stdout, "/%s\t%s\n", item.Name, item.Description)
+		var text strings.Builder
+		text.WriteString("Keys: Enter submit; Ctrl-J newline; Ctrl-C clear edit/interrupt turn; Ctrl-D exit; Tab complete; Escape cancel\nCommands:\n")
+		for _, item := range chatCompletionCandidates(s.commands) {
+			fmt.Fprintf(&text, "%s\t%s\n", item.Value, item.Description)
+		}
+		s.commit(strings.TrimSuffix(text.String(), "\n"))
+	case "/models":
+		items, err := s.api.Models(s.ctx)
+		if err != nil {
+			s.commitError(err.Error())
+			break
+		}
+		if len(items.Items) == 0 {
+			s.commit("no models available")
+		}
+		for _, item := range items.Items {
+			s.commit(fmt.Sprintf("%s/%s\t%s", item.Provider, item.ID, item.Name))
 		}
 	case "/model":
 		if argument == "" {
-			fmt.Fprintf(stdout, "model: %s\n", options.model)
-		} else {
-			options.model = argument
-			if current.ID != "" {
-				if err := applySelection(ctx, *api, current.ID, "", argument); err != nil {
-					fmt.Fprintln(stderr, err)
-					break
+			value, err := s.pickModel()
+			if err != nil {
+				if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
+					s.commitError(err.Error())
 				}
+				break
 			}
-			fmt.Fprintln(stderr, "status: model selected", argument)
+			if err := s.applyModel(value); err != nil {
+				s.commitError(err.Error())
+			}
+		} else if err := s.selectModel(argument); err != nil {
+			s.commitError(err.Error())
+		}
+	case "/agents":
+		items, err := s.api.Agents(s.ctx)
+		if err != nil {
+			s.commitError(err.Error())
+			break
+		}
+		if len(items.Items) == 0 {
+			s.commit("no agents available")
+		}
+		for _, item := range items.Items {
+			s.commit(fmt.Sprintf("%s\tread_only=%t\tmax_turns=%d", item.ID, item.ReadOnly, item.MaxTurns))
 		}
 	case "/agent":
 		if argument == "" {
-			fmt.Fprintf(stdout, "agent: %s\n", options.agent)
-		} else {
-			options.agent = argument
-			if current.ID != "" {
-				if err := applySelection(ctx, *api, current.ID, argument, ""); err != nil {
-					fmt.Fprintln(stderr, err)
-					break
-				}
-			}
-			fmt.Fprintln(stderr, "status: agent selected", argument)
-		}
-	case "/new":
-		*current = v1.Session{}
-		fmt.Fprintln(stderr, "status: new session")
-	case "/resume":
-		if argument != "" {
-			item, err := (*api).Session(ctx, argument)
+			items, err := s.api.Agents(s.ctx)
 			if err != nil {
-				fmt.Fprintln(stderr, err)
+				s.commitError(err.Error())
 				break
 			}
-			*current = item
+			candidates := make([]terminal.Candidate, 0, len(items.Items))
+			for _, item := range items.Items {
+				candidates = append(candidates, terminal.Candidate{Value: item.ID, Description: fmt.Sprintf("read_only=%t", item.ReadOnly)})
+			}
+			if len(candidates) == 0 {
+				s.commit("no agents available")
+				break
+			}
+			picked, pickErr := s.pick("agent> ", candidates)
+			if pickErr != nil {
+				break
+			}
+			argument = picked.Value
 		}
-		if current.ID == "" {
-			fmt.Fprintln(stderr, "resume requires a session ID")
+		if err := s.selectAgent(argument); err != nil {
+			s.commitError(err.Error())
+		}
+	case "/sessions":
+		items, err := s.api.Sessions(s.ctx)
+		if err != nil {
+			s.commitError(err.Error())
 			break
 		}
-		fmt.Fprint(stdout, "assistant> ")
-		result := streamTurn(ctx, *api, current.ID, "", streamOptions{format: "text", stdout: stdout, stderr: stderr, chat: true, resume: true})
-		if result.err != nil {
-			fmt.Fprintln(stderr, result.err)
+		if len(items.Items) == 0 {
+			s.commit("no sessions available")
 		}
+		for _, item := range items.Items {
+			model := item.Provider + "/" + item.Model
+			if item.Provider == "" || item.Model == "" {
+				model = "no model"
+			}
+			s.commit(fmt.Sprintf("%s\t%s\t%s\t%s", item.ID, item.Agent, model, item.Title))
+		}
+	case "/session", "/resume":
+		item, err := s.chooseSession(argument)
+		if err != nil {
+			if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
+				s.commitError(err.Error())
+			}
+			break
+		}
+		s.current = item
+		s.selection = selectionFromSession(item, s.selection.agent)
+		s.commitStatus("status: session selected " + item.ID)
+		if command == "/resume" {
+			result := streamTurn(s.ctx, s.api, item.ID, "", s.streamOptions(true))
+			if errors.Is(result.err, errSecondInterrupt) || errors.Is(result.err, context.Canceled) {
+				return true, exitInterrupt
+			}
+			if result.err != nil {
+				s.commitError(result.err.Error())
+			}
+		}
+	case "/new":
+		s.current = v1.Session{}
+		s.commitStatus("status: new session")
 	case "/connect":
 		if argument == "" {
-			fmt.Fprintln(stderr, "connect requires an http:// or https:// API URL")
+			s.commitError("connect requires an http:// or https:// API URL")
 			break
 		}
 		remote, err := client.New(argument, nil)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			s.commitError(err.Error())
 			break
 		}
-		*api = remote
-		*current = v1.Session{}
-		fmt.Fprintln(stderr, "status: connected", argument)
+		if _, err := remote.Models(s.ctx); err != nil {
+			s.commitError(err.Error())
+			break
+		}
+		agents, err := remote.Agents(s.ctx)
+		if err != nil {
+			s.commitError(err.Error())
+			break
+		}
+		agent := s.selection.agent
+		found := false
+		for _, item := range agents.Items {
+			found = found || item.ID == agent
+		}
+		if !found {
+			agent = ""
+			if len(agents.Items) > 0 {
+				agent = agents.Items[0].ID
+			}
+		}
+		s.api = remote
+		s.current = v1.Session{}
+		s.selection = chatSelection{agent: agent}
+		s.commitStatus("status: connected " + argument)
 	case "/thinking":
-		options.thinking = !options.thinking
-		fmt.Fprintf(stderr, "status: thinking %t\n", options.thinking)
+		s.options.thinking = !s.options.thinking
+		s.commitStatus(fmt.Sprintf("status: thinking %t", s.options.thinking))
 	case "/compact":
-		if current.ID == "" {
-			fmt.Fprintln(stderr, "no active session")
+		if s.current.ID == "" {
+			s.commitError("no active session")
 			break
 		}
-		compactor, ok := (*api).(interface {
+		compactor, ok := s.api.(interface {
 			Compact(context.Context, string) (v1.Compaction, error)
 		})
 		if !ok {
-			fmt.Fprintln(stderr, "connected server does not support compaction")
+			s.commitError("connected server does not support compaction")
 			break
 		}
-		result, err := compactor.Compact(ctx, current.ID)
+		result, err := compactor.Compact(s.ctx, s.current.ID)
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			s.commitError(err.Error())
 		} else {
-			fmt.Fprintln(stderr, "status: compaction", result.Status)
+			s.commitStatus("status: compaction " + result.Status)
 		}
 	case "/undo", "/redo":
-		if current.ID == "" {
-			fmt.Fprintln(stderr, "no active session")
+		if s.current.ID == "" {
+			s.commitError("no active session")
 			break
 		}
 		var err error
 		if command == "/undo" {
-			_, err = (*api).Undo(ctx, current.ID)
+			_, err = s.api.Undo(s.ctx, s.current.ID)
 		} else {
-			_, err = (*api).Redo(ctx, current.ID)
+			_, err = s.api.Redo(s.ctx, s.current.ID)
 		}
 		if err != nil {
-			fmt.Fprintln(stderr, err)
+			s.commitError(err.Error())
 		} else {
-			fmt.Fprintln(stderr, "status:", strings.TrimPrefix(command, "/"), "complete")
+			s.commitStatus("status: " + strings.TrimPrefix(command, "/") + " complete")
 		}
+	case "/status":
+		sessionID := s.current.ID
+		if sessionID == "" {
+			sessionID = "none"
+		}
+		model := s.selection.modelName()
+		if model == "" {
+			model = "no model"
+		}
+		s.commit(fmt.Sprintf("project: %s\nsession: %s\nagent: %s\nmodel: %s\nthinking: %t",
+			s.projectRoot, sessionID, s.selection.agent, model, s.options.thinking))
 	case "/exit":
 		return true, exitOK
 	default:
-		fmt.Fprintf(stderr, "unknown slash command %q\n", command)
+		s.commitError(fmt.Sprintf("unknown slash command %q", command))
 	}
 	return false, exitOK
+}
+
+func (s *chatShell) selectModel(argument string) error {
+	items, err := s.api.Models(s.ctx)
+	if err != nil {
+		return err
+	}
+	value, err := matchModel(argument, items.Items)
+	if err != nil {
+		return err
+	}
+	return s.applyModel(value)
+}
+
+func (s *chatShell) pickModel() (string, error) {
+	items, err := s.api.Models(s.ctx)
+	if err != nil {
+		return "", err
+	}
+	candidates := make([]terminal.Candidate, 0, len(items.Items))
+	for _, item := range items.Items {
+		candidates = append(candidates, terminal.Candidate{Value: item.Provider + "/" + item.ID, Description: item.Name})
+	}
+	if len(candidates) == 0 {
+		s.commit("no models available; draft retained")
+		return "", terminal.ErrCanceled
+	}
+	item, err := s.pick("model> ", candidates)
+	return item.Value, err
+}
+
+func (s *chatShell) applyModel(value string) error {
+	provider, model, ok := strings.Cut(value, "/")
+	if !ok || provider == "" || model == "" {
+		return fmt.Errorf("invalid model %q", value)
+	}
+	if s.current.ID != "" {
+		if err := applySelection(s.ctx, s.api, s.current.ID, "", value); err != nil {
+			return err
+		}
+	}
+	s.selection.provider, s.selection.model = provider, model
+	s.current.Provider, s.current.Model = provider, model
+	s.commitStatus("status: model selected " + value)
+	return nil
+}
+
+func (s *chatShell) selectAgent(argument string) error {
+	items, err := s.api.Agents(s.ctx)
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, item := range items.Items {
+		found = found || item.ID == argument
+	}
+	if !found {
+		return fmt.Errorf("unknown agent %q", argument)
+	}
+	if s.current.ID != "" {
+		if err := applySelection(s.ctx, s.api, s.current.ID, argument, ""); err != nil {
+			return err
+		}
+	}
+	s.selection.agent = argument
+	s.current.Agent = argument
+	s.commitStatus("status: agent selected " + argument)
+	return nil
+}
+
+func matchModel(argument string, items []v1.Model) (string, error) {
+	if strings.Contains(argument, "/") {
+		for _, item := range items {
+			value := item.Provider + "/" + item.ID
+			if value == argument {
+				return value, nil
+			}
+		}
+		return "", fmt.Errorf("unknown model %q", argument)
+	}
+	match := ""
+	for _, item := range items {
+		if item.ID != argument {
+			continue
+		}
+		if match != "" {
+			return "", fmt.Errorf("model ID %q is ambiguous; use provider/model", argument)
+		}
+		match = item.Provider + "/" + item.ID
+	}
+	if match == "" {
+		return "", fmt.Errorf("unknown model %q", argument)
+	}
+	return match, nil
+}
+
+func (s *chatShell) chooseSession(argument string) (v1.Session, error) {
+	if argument != "" {
+		return s.api.Session(s.ctx, argument)
+	}
+	items, err := s.api.Sessions(s.ctx)
+	if err != nil {
+		return v1.Session{}, err
+	}
+	candidates := make([]terminal.Candidate, 0, len(items.Items))
+	for _, item := range items.Items {
+		candidates = append(candidates, terminal.Candidate{Value: item.ID, Description: item.Title})
+	}
+	if len(candidates) == 0 {
+		s.commit("no sessions available")
+		return v1.Session{}, terminal.ErrCanceled
+	}
+	picked, err := s.pick("session> ", candidates)
+	if err != nil {
+		return v1.Session{}, err
+	}
+	return s.api.Session(s.ctx, picked.Value)
+}
+
+func (s *chatShell) pick(prompt string, candidates []terminal.Candidate) (terminal.Candidate, error) {
+	if s.enhanced {
+		picker := terminal.NewPickerDecoder(s.decoder, s.stdout, candidates,
+			terminal.WithPickerPrompt(prompt), terminal.WithPickerRenderer(s.renderer))
+		return picker.Pick(s.ctx)
+	}
+	for index, item := range candidates {
+		fmt.Fprintf(s.stdout, "%d\t%s\t%s\n", index+1, item.Value, item.Description)
+	}
+	fmt.Fprint(s.stdout, prompt)
+	line, err := s.reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return terminal.Candidate{}, err
+	}
+	value := strings.TrimSpace(line)
+	if value == "" {
+		return terminal.Candidate{}, terminal.ErrCanceled
+	}
+	if index, convertErr := strconv.Atoi(value); convertErr == nil && index > 0 && index <= len(candidates) {
+		return candidates[index-1], nil
+	}
+	for _, item := range candidates {
+		if item.Value == value {
+			return item, nil
+		}
+	}
+	return terminal.Candidate{}, fmt.Errorf("unknown selection %q", value)
 }
 
 func slashParts(line string) (string, string) {
@@ -771,7 +1349,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/model", "/agent", "/new", "/resume", "/connect", "/thinking", "/compact", "/undo", "/redo", "/exit":
+	case "/help", "/models", "/model", "/agents", "/agent", "/sessions", "/session", "/resume", "/new", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
 		return true
 	default:
 		return false

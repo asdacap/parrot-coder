@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
@@ -33,6 +35,8 @@ type DomainBackend struct {
 	Events             *event.Repository
 	Live               *event.Broker
 	EventQueue         int
+	DefaultSelection   session.Selection
+	ProviderResolver   agent.ProviderResolver
 	CompactSessionFunc func(context.Context, string) (v1.Compaction, error)
 }
 
@@ -69,7 +73,25 @@ func (b *DomainBackend) ListSessions(ctx context.Context) (v1.SessionList, error
 }
 
 func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSessionRequest) (v1.Session, error) {
-	item, err := b.Sessions.Create(ctx, session.CreateParams{ProjectID: request.ProjectID, Title: request.Title})
+	selection := b.DefaultSelection
+	if request.Agent != "" {
+		selection.Agent = request.Agent
+	}
+	if request.Model != "" {
+		providerID, modelID, qualified := strings.Cut(request.Model, "/")
+		if qualified {
+			selection.Provider, selection.Model = providerID, modelID
+		} else {
+			selection.Model = request.Model
+		}
+	}
+	if !completeSelection(selection) {
+		return v1.Session{}, ErrModelRequired
+	}
+	if err := b.validateSelection(selection); err != nil {
+		return v1.Session{}, err
+	}
+	item, err := b.Sessions.CreateSelected(ctx, session.CreateParams{ProjectID: request.ProjectID, Title: request.Title}, selection)
 	return sessionDTO(item), err
 }
 
@@ -79,6 +101,38 @@ func (b *DomainBackend) GetSession(ctx context.Context, id string) (v1.Session, 
 		return v1.Session{}, ErrNotFound
 	}
 	return sessionDTO(item), err
+}
+
+func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
+	if request.Agent == "" && request.Model == "" {
+		return v1.SessionSelection{}, ErrInvalid
+	}
+	if b.Coordinator != nil && b.Coordinator.Status(id) != agent.StatusIdle {
+		return v1.SessionSelection{}, ErrSessionActive
+	}
+	patch := session.SelectionPatch{
+		Agent: request.Agent, FallbackAgent: b.DefaultSelection.Agent,
+		FallbackProvider: b.DefaultSelection.Provider,
+	}
+	if request.Model != "" {
+		providerID, modelID, qualified := strings.Cut(request.Model, "/")
+		if qualified {
+			patch.Provider, patch.Model = providerID, modelID
+		} else {
+			patch.Model = request.Model
+		}
+	}
+	item, err := b.Sessions.UpdateSelection(ctx, id, patch, b.validateSelection)
+	if errors.Is(err, session.ErrNotFound) {
+		return v1.SessionSelection{}, ErrNotFound
+	}
+	if err != nil {
+		if errors.Is(err, session.ErrSelectionRequired) {
+			return v1.SessionSelection{}, ErrModelRequired
+		}
+		return v1.SessionSelection{}, err
+	}
+	return selectionDTO(item), nil
 }
 
 func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
@@ -112,8 +166,12 @@ func (b *DomainBackend) ListMessages(ctx context.Context, id string) (v1.Message
 }
 
 func (b *DomainBackend) AdmitPrompt(ctx context.Context, id string, request v1.PromptRequest) (v1.PromptAccepted, error) {
-	if _, err := b.GetSession(ctx, id); err != nil {
+	selected, err := b.GetSession(ctx, id)
+	if err != nil {
 		return v1.PromptAccepted{}, err
+	}
+	if selected.Agent == "" || selected.Provider == "" || selected.Model == "" {
+		return v1.PromptAccepted{}, ErrModelRequired
 	}
 	admission, err := b.Sessions.Admit(ctx, id, session.AdmitParams{MessageID: request.MessageID, Content: request.Content, Delivery: session.Delivery(request.Delivery)})
 	if errors.Is(err, session.ErrInvalidDelivery) {
@@ -411,6 +469,38 @@ func (b *DomainBackend) ListAgents(context.Context) (v1.AgentList, error) {
 
 func sessionDTO(item session.Session) v1.Session {
 	return v1.Session{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Provider: item.Provider, Model: item.Model, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+}
+
+func selectionDTO(item session.Session) v1.SessionSelection {
+	return v1.SessionSelection{Agent: item.Agent, Provider: item.Provider, Model: item.Model}
+}
+
+func completeSelection(selection session.Selection) bool {
+	return selection.Agent != "" && selection.Provider != "" && selection.Model != ""
+}
+
+func (b *DomainBackend) validateSelection(selection session.Selection) error {
+	if !completeSelection(selection) {
+		return ErrModelRequired
+	}
+	if b.Agents == nil {
+		return errors.New("httpapi: agent registry is unavailable")
+	}
+	if _, err := b.Agents.Get(selection.Agent); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
+	}
+	resolver := b.ProviderResolver
+	if resolver == nil {
+		registry, err := agent.NewProviderRegistry(b.Providers...)
+		if err != nil {
+			return err
+		}
+		resolver = registry
+	}
+	if _, _, err := resolver.Resolve(selection.Provider, selection.Model); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
+	}
+	return nil
 }
 
 func durableEvent(item event.Event) v1.Event {

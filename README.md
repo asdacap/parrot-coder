@@ -134,10 +134,21 @@ stdin is always prompt data. `run` denies mutating tools by default;
 replies. `serve` refuses non-loopback addresses because the HTTP API has no
 authentication layer.
 
-Interactive chat supports `/help`, `/model`, `/agent`, `/new`, `/resume`,
-`/compact`, `/connect`, `/thinking`, `/undo`, `/redo`, custom commands, and
-`/exit`. The first Ctrl-C during a turn requests cancellation; a second exits
-with status 130. Ctrl-D exits at an idle prompt.
+On a real terminal, chat uses a bounded inline editor without an alternate
+screen. The prompt displays the active agent and model, and chat can start
+without a configured model. Submitting a normal prompt with no model opens a
+picker and preserves the draft until a model is selected. Explicit non-TTY
+`parrot chat` retains a deterministic, ANSI-free line REPL.
+
+Interactive chat supports `/help`, `/models`, `/model`, `/agents`, `/agent`,
+`/sessions`, `/session`, `/resume`, `/new`, `/compact`, `/connect`, `/thinking`,
+`/undo`, `/redo`, `/status`, custom commands, and `/exit`.
+
+Keybindings: Enter submits, Ctrl-J inserts a newline, arrows edit/navigate
+history and choices, Tab completes slash commands, Escape cancels a picker,
+idle Ctrl-C clears the current edit, and Ctrl-D on an empty prompt exits. During
+a turn, the first Ctrl-C requests cancellation and a second exits with status
+130.
 
 ## Data Paths
 

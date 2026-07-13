@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,10 +18,12 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
+	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/project"
+	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
@@ -151,6 +154,79 @@ func TestOpenDiscoversSkillsCommandsAndNeedsNoOptionalConfig(t *testing.T) {
 	expansion, err := runtime.Commands.Expand("check", "this")
 	if err != nil || expansion.Prompt != "Check this" {
 		t.Fatalf("command expansion = %#v, %v", expansion, err)
+	}
+}
+
+func TestOpenModelLessCatalogsAndExplicitSessionSelection(t *testing.T) {
+	root := t.TempDir()
+	paths := appdirs.Overrides{
+		Home: root, ConfigHome: filepath.Join(root, "config"), DataHome: filepath.Join(root, "data"),
+		StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache"),
+	}
+	strict, err := Open(context.Background(), Options{CWD: root, Paths: paths, NonInteractive: true})
+	if strict != nil {
+		_ = strict.Close()
+	}
+	if err == nil {
+		t.Fatal("strict Open accepted a missing default model")
+	}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if runtime.Handler == nil || runtime.Client == nil || runtime.Commands == nil {
+		t.Fatal("model-less app did not expose its application surfaces")
+	}
+	if runtime.DefaultSelection.Agent != "build" || runtime.DefaultSelection.Provider != "" || runtime.DefaultSelection.Model != "" {
+		t.Fatalf("default selection = %#v", runtime.DefaultSelection)
+	}
+	models, err := runtime.Client.Models(context.Background())
+	if err != nil || len(models.Items) == 0 {
+		t.Fatalf("Models = %#v, %v", models, err)
+	}
+	agents, err := runtime.Client.Agents(context.Background())
+	if err != nil || len(agents.Items) == 0 {
+		t.Fatalf("Agents = %#v, %v", agents, err)
+	}
+
+	_, err = runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{Title: "missing"})
+	assertAppProblem(t, err, "model_required")
+	listed, err := runtime.Client.Sessions(context.Background())
+	if err != nil || len(listed.Items) != 0 {
+		t.Fatalf("sessions after missing selection = %#v, %v", listed, err)
+	}
+
+	model := models.Items[0]
+	created, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
+		Title: "selected", Agent: agents.Items[0].ID, Model: model.Provider + "/" + model.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Agent != agents.Items[0].ID || created.Provider != model.Provider || created.Model != model.ID {
+		t.Fatalf("created selection = %#v", created)
+	}
+	_, err = runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{Agent: "build", Model: model.Provider + "/missing"})
+	assertAppProblem(t, err, "invalid_selection")
+	listed, err = runtime.Client.Sessions(context.Background())
+	if err != nil || len(listed.Items) != 1 {
+		t.Fatalf("sessions after invalid selection = %#v, %v", listed, err)
+	}
+
+	legacy, err := runtime.Backend.Sessions.Create(context.Background(), session.CreateParams{Title: "legacy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runtime.Client.Prompt(context.Background(), legacy.ID, v1.PromptRequest{MessageID: "msg_legacy", Content: "hello", Delivery: "steer"})
+	assertAppProblem(t, err, "model_required")
+}
+
+func assertAppProblem(t *testing.T, err error, code string) {
+	t.Helper()
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) || apiErr.Problem.Code != code {
+		t.Fatalf("error = %T %v, want problem %q", err, err, code)
 	}
 }
 

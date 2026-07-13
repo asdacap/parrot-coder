@@ -17,6 +17,7 @@ var (
 	ErrNotFound            = errors.New("session: not found")
 	ErrInvalidDelivery     = errors.New("session: delivery must be steer or queue")
 	ErrIdempotencyConflict = errors.New("session: message ID was already admitted with different content or delivery")
+	ErrSelectionRequired   = errors.New("session: agent, provider, and model are required")
 	errAlreadyAdmitted     = errors.New("session: input already admitted")
 )
 
@@ -100,7 +101,7 @@ func (s *Service) Create(ctx context.Context, params CreateParams) (Session, err
 // session.
 func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selection Selection) (Session, error) {
 	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
-		return Session{}, errors.New("session: agent, provider, and model are required")
+		return Session{}, ErrSelectionRequired
 	}
 	return s.create(ctx, params, selection)
 }

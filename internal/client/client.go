@@ -81,6 +81,12 @@ func (c *Client) Session(ctx context.Context, id string) (v1.Session, error) {
 	return out, err
 }
 
+func (c *Client) UpdateSessionSelection(ctx context.Context, id string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
+	var out v1.SessionSelection
+	err := c.do(ctx, http.MethodPut, sessionPath(id)+"/selection", request, http.StatusOK, &out)
+	return out, err
+}
+
 func (c *Client) DeleteSession(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, sessionPath(id), nil, http.StatusNoContent, nil)
 }

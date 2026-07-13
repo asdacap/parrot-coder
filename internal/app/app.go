@@ -81,6 +81,9 @@ type App struct {
 	Backend     *httpapi.DomainBackend
 	Commands    *command.Registry
 	Skills      *skill.Registry
+	// DefaultSelection is incomplete when Open permits model-less startup and
+	// no default model is configured.
+	DefaultSelection v1.SessionSelection
 
 	db          *store.DB
 	coordinator *agent.Coordinator
@@ -100,31 +103,12 @@ type Client struct {
 }
 
 func (c *Client) SelectSession(ctx context.Context, sessionID, agentID, model string) error {
-	body, err := json.Marshal(struct {
-		Agent string `json:"agent,omitempty"`
-		Model string `json:"model,omitempty"`
-	}{agentID, model})
-	if err != nil {
-		return err
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://parrot.local/api/v1/sessions/"+url.PathEscape(sessionID)+"/selection", strings.NewReader(string(body)))
-	if err != nil {
-		return err
-	}
-	request.Header.Set("Content-Type", v1.MediaTypeJSON)
-	response, err := c.http.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("select session model: HTTP %d", response.StatusCode)
-	}
-	return nil
+	_, err := c.UpdateSessionSelection(ctx, sessionID, v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model})
+	return err
 }
 
 func (c *Client) Resume(ctx context.Context, sessionID string) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://parrot.local/api/v1/sessions/"+sessionID+"/resume", nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://parrot.local/api/v1/sessions/"+url.PathEscape(sessionID)+"/resume", nil)
 	if err != nil {
 		return err
 	}
@@ -209,7 +193,11 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: store: %w", err)
 	}
-	result := &App{Paths: paths, Project: info, Config: loaded, Credentials: credentials, db: db}
+	defaultSelection := session.Selection{Agent: agentID, Provider: providerID, Model: modelID}
+	result := &App{
+		Paths: paths, Project: info, Config: loaded, Credentials: credentials, db: db,
+		DefaultSelection: v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID},
+	}
 	defer func() {
 		if err != nil {
 			_ = result.Close()
@@ -300,7 +288,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, err
 	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
-	subagentExecutor := &appSubagentExecutor{sessions: sessions, project: info, providers: providerRegistry, defaultSelection: session.Selection{Agent: agentID, Provider: providerID, Model: modelID}}
+	subagentExecutor := &appSubagentExecutor{sessions: sessions, project: info, providers: providerRegistry, defaultSelection: defaultSelection}
 	subagents := subagent.NewManager(subagentExecutor, subagent.Config{})
 	tools := tool.NewRegistry()
 	for _, builtin := range []tool.Tool{tool.NewReadTool(tool.ReadConfig{}), tool.NewGlobTool(tool.GlobConfig{}), tool.NewGrepTool(tool.GrepConfig{}), tool.NewReadOutputTool(1 << 20)} {
@@ -362,7 +350,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, Sessions: sessions, Coordinator: coordinator, Agents: agents,
 		Providers: providers, Permissions: permissions, Questions: questions, Snapshots: snapshots,
-		Workspace: ws, Events: repository, Live: live,
+		Workspace: ws, Events: repository, Live: live, DefaultSelection: defaultSelection,
+		ProviderResolver: providerRegistry,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
 		for _, active := range coordinator.Active() {
@@ -399,9 +388,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return v1.Compaction{Status: item.Status, AttemptID: item.AttemptID, RecordID: item.RecordID, SourceEpochID: item.SourceEpochID, TargetEpochID: item.TargetEpochID, HistoryCutoff: item.HistoryCutoff, Reason: item.Reason}, err
 	}
 	result.Backend = backend
-	composed := &compositionBackend{DomainBackend: backend, sessions: sessions, selection: session.Selection{Agent: agentID, Provider: providerID, Model: modelID}}
+	composed := &compositionBackend{DomainBackend: backend}
 	apiServer := httpapi.New(composed, httpapi.Config{})
-	handler := resumeHandler{next: apiServer, sessions: sessions, coordinator: coordinator, agents: agents, providers: providerRegistry, live: live}
+	handler := resumeHandler{next: apiServer, sessions: sessions, coordinator: coordinator, live: live}
 	transport := inproc.New(handler)
 	typed, err := client.New("http://parrot.local", transport)
 	if err != nil {
@@ -554,16 +543,6 @@ func (a *App) Close() error {
 
 type compositionBackend struct {
 	*httpapi.DomainBackend
-	sessions  *session.Service
-	selection session.Selection
-}
-
-func (b *compositionBackend) CreateSession(ctx context.Context, request v1.CreateSessionRequest) (v1.Session, error) {
-	item, err := b.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: request.ProjectID, Title: request.Title}, b.selection)
-	if err != nil {
-		return v1.Session{}, err
-	}
-	return b.DomainBackend.GetSession(ctx, item.ID)
 }
 
 func (b *compositionBackend) Wake(sessionID string) {
@@ -599,8 +578,6 @@ type resumeHandler struct {
 	next        http.Handler
 	sessions    *session.Service
 	coordinator *agent.Coordinator
-	agents      *agent.Registry
-	providers   *agent.ProviderRegistry
 	live        *event.Broker
 }
 
@@ -618,53 +595,6 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				r = clone
 			}
 		}
-	}
-	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, prefix) && strings.HasSuffix(r.URL.Path, "/selection") {
-		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), "/selection")
-		if id == "" || strings.Contains(id, "/") {
-			http.NotFound(w, r)
-			return
-		}
-		var request struct {
-			Agent string `json:"agent"`
-			Model string `json:"model"`
-		}
-		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10))
-		decoder.DisallowUnknownFields()
-		if r.Header.Get("Content-Type") != v1.MediaTypeJSON || decoder.Decode(&request) != nil {
-			http.Error(w, "invalid selection", http.StatusBadRequest)
-			return
-		}
-		current, err := h.sessions.Get(r.Context(), id)
-		if err != nil {
-			http.NotFound(w, r)
-			return
-		}
-		selection := session.Selection{Agent: current.Agent, Provider: current.Provider, Model: current.Model}
-		if request.Agent != "" {
-			selection.Agent = request.Agent
-		}
-		if request.Model != "" {
-			if providerID, modelID, ok := strings.Cut(request.Model, "/"); ok {
-				selection.Provider, selection.Model = providerID, modelID
-			} else {
-				selection.Model = request.Model
-			}
-		}
-		if _, err := h.agents.Get(selection.Agent); err != nil {
-			http.Error(w, "unknown agent", http.StatusBadRequest)
-			return
-		}
-		if _, _, err := h.providers.Resolve(selection.Provider, selection.Model); err != nil {
-			http.Error(w, "unknown model", http.StatusBadRequest)
-			return
-		}
-		if err := h.sessions.SetSelection(r.Context(), id, selection); err != nil {
-			http.Error(w, "selection failed", http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusNoContent)
-		return
 	}
 	if r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, prefix) && strings.HasSuffix(r.URL.Path, "/resume") {
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), "/resume")
@@ -957,11 +887,8 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 		return "", fmt.Errorf("app: subagent model: %w", err)
 	}
 	title := "Subtask " + execution.TaskID + " [" + execution.Request.Agent + "]"
-	child, err := e.sessions.Create(ctx, session.CreateParams{ProjectID: parent.ProjectID, Title: title})
+	child, err := e.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: parent.ProjectID, Title: title}, selection)
 	if err != nil {
-		return "", err
-	}
-	if err := e.sessions.SetSelection(ctx, child.ID, selection); err != nil {
 		return "", err
 	}
 	messageID, err := id.New("msg")

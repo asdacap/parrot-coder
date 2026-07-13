@@ -68,6 +68,41 @@ func TestCreateSelectedPersistsCompleteInitialSelection(t *testing.T) {
 	}
 }
 
+func TestConcurrentPartialSelectionCarriesForwardCurrentValues(t *testing.T) {
+	ctx, _, _, service, _ := newService(t)
+	created, err := service.CreateSelected(ctx, session.CreateParams{Title: "selected"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	var wg sync.WaitGroup
+	for _, patch := range []session.SelectionPatch{{Agent: "plan"}, {Model: "reasoning"}} {
+		wg.Add(1)
+		go func(patch session.SelectionPatch) {
+			defer wg.Done()
+			<-start
+			_, err := service.UpdateSelection(ctx, created.ID, patch, nil)
+			errs <- err
+		}(patch)
+	}
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	loaded, err := service.Get(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Agent != "plan" || loaded.Provider != "local" || loaded.Model != "reasoning" {
+		t.Fatalf("selection = %#v", loaded)
+	}
+}
+
 func TestAdmitIsExactlyIdempotent(t *testing.T) {
 	ctx, _, repository, service, sessionID := newService(t)
 	params := session.AdmitParams{MessageID: "msg_1", Content: "first", Delivery: session.DeliverySteer}

@@ -14,9 +14,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amirulashraf/parrot-coder/internal/agent"
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/transport/inproc"
@@ -40,6 +42,9 @@ func (b *stubBackend) CreateSession(context.Context, v1.CreateSessionRequest) (v
 }
 func (b *stubBackend) GetSession(context.Context, string) (v1.Session, error) {
 	return v1.Session{ID: "ses_test"}, b.backendErr
+}
+func (b *stubBackend) UpdateSessionSelection(context.Context, string, v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
+	return v1.SessionSelection{Agent: "plan", Provider: "local", Model: "code"}, b.backendErr
 }
 func (b *stubBackend) DeleteSession(context.Context, string) error { return b.backendErr }
 func (b *stubBackend) ListMessages(context.Context, string) (v1.MessageList, error) {
@@ -101,6 +106,7 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"POST", "/api/v1/sessions", `{}`, 201},
 		{"GET", "/api/v1/sessions/ses_test", "", 200},
 		{"DELETE", "/api/v1/sessions/ses_test", "", 204},
+		{"PUT", "/api/v1/sessions/ses_test/selection", `{"agent":"plan"}`, 200},
 		{"GET", "/api/v1/sessions/ses_test/messages", "", 200},
 		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello","delivery":"steer"}`, 202},
 		{"POST", "/api/v1/sessions/ses_test/interrupt", "", 204},
@@ -143,20 +149,143 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 	}
 }
 
+type selectionResolver struct{}
+
+func (selectionResolver) Resolve(providerID, modelID string) (provider.Provider, provider.Model, error) {
+	if providerID != "local" || modelID != "code" && modelID != "reasoning" {
+		return nil, provider.Model{}, errors.New("unknown model")
+	}
+	return nil, provider.Model{ID: modelID}, nil
+}
+
+func newSelectionBackend(t *testing.T) (*DomainBackend, *session.Service) {
+	t.Helper()
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "selection.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	sessions := session.NewService(db, event.NewRepository(db))
+	agents, err := agent.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &DomainBackend{Sessions: sessions, Agents: agents, ProviderResolver: selectionResolver{}}, sessions
+}
+
+func TestSelectedCreationIsValidatedAndAtomic(t *testing.T) {
+	backend, sessions := newSelectionBackend(t)
+	server := httptest.NewServer(New(backend, Config{}))
+	defer server.Close()
+	apiClient, err := client.New(server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+
+	_, err = apiClient.CreateSession(ctx, v1.CreateSessionRequest{Title: "missing"})
+	assertAPIProblem(t, err, http.StatusConflict, "model_required")
+	items, err := sessions.List(ctx)
+	if err != nil || len(items) != 0 {
+		t.Fatalf("sessions after missing selection = %#v, %v", items, err)
+	}
+
+	created, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{Title: "selected", Agent: "plan", Model: "local/code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Agent != "plan" || created.Provider != "local" || created.Model != "code" {
+		t.Fatalf("created selection = %#v", created)
+	}
+
+	_, err = apiClient.CreateSession(ctx, v1.CreateSessionRequest{Agent: "missing", Model: "local/code"})
+	assertAPIProblem(t, err, http.StatusBadRequest, "invalid_selection")
+	_, err = apiClient.CreateSession(ctx, v1.CreateSessionRequest{Agent: "build", Model: "local/missing"})
+	assertAPIProblem(t, err, http.StatusBadRequest, "invalid_selection")
+	items, err = sessions.List(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("sessions after invalid selections = %#v, %v", items, err)
+	}
+}
+
+func TestDefaultCreationAndTypedPartialSelectionUpdate(t *testing.T) {
+	backend, _ := newSelectionBackend(t)
+	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
+	ctx := context.Background()
+	created, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{Title: "default"})
+	if err != nil || created.Agent != "build" || created.Provider != "local" || created.Model != "code" {
+		t.Fatalf("default CreateSession = %#v, %v", created, err)
+	}
+	selected, err := apiClient.UpdateSessionSelection(ctx, created.ID, v1.UpdateSessionSelectionRequest{Agent: "plan"})
+	if err != nil || selected.Agent != "plan" || selected.Provider != "local" || selected.Model != "code" {
+		t.Fatalf("agent selection = %#v, %v", selected, err)
+	}
+	selected, err = apiClient.UpdateSessionSelection(ctx, created.ID, v1.UpdateSessionSelectionRequest{Model: "reasoning"})
+	if err != nil || selected.Agent != "plan" || selected.Provider != "local" || selected.Model != "reasoning" {
+		t.Fatalf("model selection = %#v, %v", selected, err)
+	}
+}
+
+type blockingDrainer struct {
+	started chan struct{}
+}
+
+func (d blockingDrainer) Drain(ctx context.Context, _ string) error {
+	select {
+	case d.started <- struct{}{}:
+	default:
+	}
+	<-ctx.Done()
+	return ctx.Err()
+}
+
+func TestSelectionRejectsActiveSession(t *testing.T) {
+	backend, sessions := newSelectionBackend(t)
+	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	started := make(chan struct{}, 1)
+	backend.Coordinator = agent.NewCoordinator(blockingDrainer{started: started})
+	created, err := backend.CreateSession(context.Background(), v1.CreateSessionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.Coordinator.Wake(created.ID)
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("session did not become active")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = backend.Coordinator.Interrupt(ctx, created.ID)
+	})
+
+	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
+	_, err = apiClient.UpdateSessionSelection(context.Background(), created.ID, v1.UpdateSessionSelectionRequest{Agent: "plan"})
+	assertAPIProblem(t, err, http.StatusConflict, "session_active")
+	loaded, err := sessions.Get(context.Background(), created.ID)
+	if err != nil || loaded.Agent != "build" {
+		t.Fatalf("selection changed while active = %#v, %v", loaded, err)
+	}
+}
+
 func TestStrictJSONContentTypeAndLimit(t *testing.T) {
 	server := New(&stubBackend{}, Config{MaxBodyBytes: 32})
 	tests := []struct {
-		name, contentType, body, code string
-		status                        int
+		name, method, path, contentType, body, code string
+		status                                      int
 	}{
-		{"content type", "text/plain", `{}`, "unsupported_media_type", 415},
-		{"unknown", v1.MediaTypeJSON, `{"unknown":true}`, "invalid_request", 400},
-		{"trailing", v1.MediaTypeJSON, `{} {}`, "invalid_request", 400},
-		{"too large", v1.MediaTypeJSON, `{"title":"` + strings.Repeat("x", 64) + `"}`, "body_too_large", 413},
+		{"content type", http.MethodPost, "/api/v1/sessions", "text/plain", `{}`, "unsupported_media_type", 415},
+		{"unknown create field", http.MethodPost, "/api/v1/sessions", v1.MediaTypeJSON, `{"unknown":true}`, "invalid_request", 400},
+		{"unknown selection field", http.MethodPut, "/api/v1/sessions/ses_test/selection", v1.MediaTypeJSON, `{"unknown":true}`, "invalid_request", 400},
+		{"trailing", http.MethodPost, "/api/v1/sessions", v1.MediaTypeJSON, `{} {}`, "invalid_request", 400},
+		{"too large", http.MethodPost, "/api/v1/sessions", v1.MediaTypeJSON, `{"title":"` + strings.Repeat("x", 64) + `"}`, "body_too_large", 413},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions", strings.NewReader(test.body))
+			request := httptest.NewRequest(test.method, test.path, strings.NewReader(test.body))
 			request.Header.Set("Content-Type", test.contentType)
 			response := httptest.NewRecorder()
 			server.ServeHTTP(response, request)
@@ -194,7 +323,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	defer db.Close()
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
-	created, err := sessions.Create(ctx, session.CreateParams{Title: "test"})
+	created, err := sessions.CreateSelected(ctx, session.CreateParams{Title: "test"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -283,6 +412,19 @@ func TestOpenAPIHasExactlyDeclaredRoutesAndProblems(t *testing.T) {
 	if document.OpenAPI != "3.1.0" || len(document.Events) != len(v1.EventManifest) {
 		t.Fatalf("document metadata is incomplete")
 	}
+	if len(operationSchemas) != len(Routes()) {
+		t.Fatalf("operation schema count = %d, route count = %d", len(operationSchemas), len(Routes()))
+	}
+	expected := make(map[string]map[string]bool)
+	for _, route := range Routes() {
+		if expected[route.Path] == nil {
+			expected[route.Path] = make(map[string]bool)
+		}
+		expected[route.Path][strings.ToLower(route.Method)] = true
+	}
+	if len(document.Paths) != len(expected) {
+		t.Fatalf("OpenAPI path count = %d, route path count = %d", len(document.Paths), len(expected))
+	}
 	seen := 0
 	for _, route := range Routes() {
 		operation, ok := document.Paths[route.Path][strings.ToLower(route.Method)].(map[string]any)
@@ -297,6 +439,16 @@ func TestOpenAPIHasExactlyDeclaredRoutesAndProblems(t *testing.T) {
 	}
 	if seen != len(Routes()) {
 		t.Fatalf("route count = %d", seen)
+	}
+	for path, methods := range document.Paths {
+		if len(methods) != len(expected[path]) {
+			t.Fatalf("OpenAPI methods for %s = %#v, routes = %#v", path, methods, expected[path])
+		}
+		for method := range methods {
+			if !expected[path][method] {
+				t.Fatalf("unexpected OpenAPI operation %s %s", method, path)
+			}
+		}
 	}
 }
 
@@ -382,6 +534,10 @@ func TestClientParityNetworkAndInProcess(t *testing.T) {
 			if err != nil || created.ID != "ses_test" {
 				t.Fatalf("CreateSession = %#v, %v", created, err)
 			}
+			selected, err := apiClient.UpdateSessionSelection(ctx, "ses_test", v1.UpdateSessionSelectionRequest{Agent: "plan"})
+			if err != nil || selected.Agent != "plan" || selected.Model != "code" {
+				t.Fatalf("UpdateSessionSelection = %#v, %v", selected, err)
+			}
 			accepted, err := apiClient.Prompt(ctx, "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "steer"})
 			if err != nil || accepted.InputID != "inp_test" {
 				t.Fatalf("Prompt = %#v, %v", accepted, err)
@@ -433,5 +589,16 @@ func assertProblem(t *testing.T, response *httptest.ResponseRecorder, code strin
 	}
 	if item.Code != code || item.RequestID == "" {
 		t.Errorf("problem = %#v", item)
+	}
+}
+
+func assertAPIProblem(t *testing.T, err error, status int, code string) {
+	t.Helper()
+	var apiErr *client.APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("error = %T %v, want API problem", err, err)
+	}
+	if apiErr.Problem.Status != status || apiErr.Problem.Code != code {
+		t.Fatalf("problem = %#v, want status %d code %q", apiErr.Problem, status, code)
 	}
 }

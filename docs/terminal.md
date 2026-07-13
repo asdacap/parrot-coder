@@ -7,33 +7,44 @@ Parrot uses the terminal's normal scrollback. It is not a screen application.
 Interactive commands must not emit:
 
 - alternate-screen enter or leave sequences;
-- cursor positioning;
-- clear-screen or erase-line sequences;
-- carriage-return spinners;
+- absolute cursor positioning;
+- clear-screen sequences;
 - mouse tracking;
 - terminal-title changes;
 - resize-triggered transcript replay;
-- mutable footer or status regions.
+- mutable regions outside the renderer-owned bottom region.
+
+The terminal renderer may own a bounded region of at most six rows at the
+bottom of the terminal. Only that region may use carriage return, relative
+cursor up/down, erase-line, and temporary cursor hide/show sequences. Clearing
+or redrawing it must never alter committed transcript above it. Alternate
+screens, full-screen clears, mouse tracking, title changes, and replaying the
+committed transcript remain forbidden.
 
 Color is optional on terminal stderr and is disabled by `NO_COLOR`,
 `--no-color`, or `TERM=dumb`.
 
 ## Chat Loop
 
-The first implementation reads ordinary user input only while the session is
-idle:
+Enhanced chat reads ordinary user input only while the session is idle:
 
 ```text
 read line -> submit -> stream until idle -> read next line
 ```
 
-This avoids redrawing a partially edited prompt while asynchronous output is
-arriving. Assistant deltas append immediately. Tool, permission, question, and
-status changes are immutable lines.
+The editor supports rune-aware movement, history, slash completion, bracketed
+paste, and Ctrl-J multiline input. Assistant text and transient tool/status
+activity may redraw only in the bounded renderer region. Once a turn is idle,
+the complete assistant response is committed exactly once. Permission and
+question prompts temporarily take ownership of the same renderer; decisions
+and the surrounding transcript remain immutable.
 
 During a turn, the first `Ctrl-C` requests cancellation and remains in the
 session. A second interrupt before cancellation completes exits with status
 130. `Ctrl-D` on an empty idle prompt exits cleanly.
+
+If raw mode cannot be enabled, or input/output are not real terminals, explicit
+`parrot chat` uses a deterministic line REPL with no terminal escape sequences.
 
 ## Output Channels
 

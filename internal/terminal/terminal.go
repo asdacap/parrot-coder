@@ -10,14 +10,15 @@ import (
 	"unicode"
 )
 
-// IsTTY reports whether value is an OS character device.
+// IsTTY reports whether value is an actual terminal. Character devices such as
+// /dev/null are not terminals even though their file mode has ModeCharDevice.
 func IsTTY(value any) bool {
 	file, ok := value.(*os.File)
-	if !ok {
+	if !ok || file == nil {
 		return false
 	}
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	_, err := getTerminalState(file.Fd())
+	return err == nil
 }
 
 // OpenInput opens the controlling terminal. Piped stdin is never reused for

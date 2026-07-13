@@ -14,28 +14,89 @@ import (
 )
 
 type Selection struct {
-	Agent    string
-	Provider string
-	Model    string
+	Agent    string `json:"agent"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
 }
+
+type SelectionPatch struct {
+	Agent            string
+	Provider         string
+	Model            string
+	FallbackAgent    string
+	FallbackProvider string
+}
+
+type SelectionValidator func(Selection) error
 
 func (s *Service) SetSelection(ctx context.Context, sessionID string, selection Selection) error {
 	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
-		return errors.New("session: agent, provider, and model are required")
+		return ErrSelectionRequired
 	}
-	data, _ := json.Marshal(selection)
-	_, err := s.events.Append(ctx, sessionID, []event.NewEvent{{Type: "session.selection.changed", Data: data}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-		result, err := tx.ExecContext(ctx, `UPDATE session SET selected_agent=?, selected_provider=?, selected_model=?, updated_at=? WHERE id=?`, selection.Agent, selection.Provider, selection.Model, formatTime(events[0].CreatedAt), sessionID)
-		if err != nil {
-			return err
-		}
-		n, _ := result.RowsAffected()
-		if n != 1 {
-			return ErrNotFound
-		}
-		return nil
-	})
+	_, err := s.UpdateSelection(ctx, sessionID, SelectionPatch{Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model}, nil)
 	return err
+}
+
+// UpdateSelection carries omitted values forward and persists the resulting
+// complete selection in the same aggregate transaction. The validator runs
+// after the current values are read and before an event or projection is made.
+func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch SelectionPatch, validate SelectionValidator) (Session, error) {
+	var updated Session
+	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
+		current, err := scanSession(tx.QueryRowContext(ctx, `
+			SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, created_at, updated_at
+			FROM session WHERE id = ?`, sessionID))
+		if err != nil {
+			return nil, nil, err
+		}
+		selection := Selection{Agent: current.Agent, Provider: current.Provider, Model: current.Model}
+		if patch.Agent != "" {
+			selection.Agent = patch.Agent
+		}
+		if patch.Provider != "" {
+			selection.Provider = patch.Provider
+		}
+		if patch.Model != "" {
+			selection.Model = patch.Model
+		}
+		if selection.Agent == "" {
+			selection.Agent = patch.FallbackAgent
+		}
+		if selection.Provider == "" {
+			selection.Provider = patch.FallbackProvider
+		}
+		if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
+			return nil, nil, ErrSelectionRequired
+		}
+		if validate != nil {
+			if err := validate(selection); err != nil {
+				return nil, nil, err
+			}
+		}
+		data, err := json.Marshal(selection)
+		if err != nil {
+			return nil, nil, err
+		}
+		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+			result, err := tx.ExecContext(ctx, `UPDATE session SET selected_agent=?, selected_provider=?, selected_model=?, updated_at=? WHERE id=?`, selection.Agent, selection.Provider, selection.Model, formatTime(events[0].CreatedAt), sessionID)
+			if err != nil {
+				return err
+			}
+			n, err := result.RowsAffected()
+			if err != nil {
+				return err
+			}
+			if n != 1 {
+				return ErrNotFound
+			}
+			updated = current
+			updated.Agent, updated.Provider, updated.Model = selection.Agent, selection.Provider, selection.Model
+			updated.UpdatedAt = events[0].CreatedAt
+			return nil
+		}
+		return []event.NewEvent{{Type: "session.selection.changed", Data: data}}, project, nil
+	})
+	return updated, err
 }
 
 func (s *Service) LatestSequence(ctx context.Context, sessionID string) (int64, error) {

@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"bytes"
+	"os"
 	"strings"
 	"testing"
 )
@@ -22,5 +23,16 @@ func TestSanitizeRemovesTerminalControls(t *testing.T) {
 	}
 	if output.String() != got {
 		t.Fatalf("Writer output = %q", output.String())
+	}
+}
+
+func TestCharacterDeviceIsNotAssumedToBeTTY(t *testing.T) {
+	file, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if IsTTY(file) {
+		t.Fatal("null device reported as a terminal")
 	}
 }

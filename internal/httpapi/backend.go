@@ -16,6 +16,9 @@ var (
 	ErrIdempotencyConflict = errors.New("httpapi: idempotency conflict")
 	ErrPermissionNotFound  = errors.New("httpapi: permission request not found")
 	ErrQuestionNotFound    = errors.New("httpapi: question request not found")
+	ErrModelRequired       = errors.New("httpapi: model selection required")
+	ErrInvalidSelection    = errors.New("httpapi: invalid selection")
+	ErrSessionActive       = errors.New("httpapi: session is active")
 )
 
 type EventStream struct {
@@ -32,6 +35,7 @@ type Backend interface {
 	ListSessions(context.Context) (v1.SessionList, error)
 	CreateSession(context.Context, v1.CreateSessionRequest) (v1.Session, error)
 	GetSession(context.Context, string) (v1.Session, error)
+	UpdateSessionSelection(context.Context, string, v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error)
 	DeleteSession(context.Context, string) error
 	ListMessages(context.Context, string) (v1.MessageList, error)
 	AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error)

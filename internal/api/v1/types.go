@@ -55,6 +55,22 @@ type SessionList struct {
 type CreateSessionRequest struct {
 	ProjectID string `json:"project_id,omitempty"`
 	Title     string `json:"title,omitempty"`
+	Agent     string `json:"agent,omitempty"`
+	Model     string `json:"model,omitempty"`
+}
+
+// SessionSelection is the resolved execution selection persisted on a session.
+type SessionSelection struct {
+	Agent    string `json:"agent"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+}
+
+// UpdateSessionSelectionRequest changes either or both selection dimensions.
+// Model accepts provider/model or a model ID under the current provider.
+type UpdateSessionSelectionRequest struct {
+	Agent string `json:"agent,omitempty"`
+	Model string `json:"model,omitempty"`
 }
 
 type Message struct {

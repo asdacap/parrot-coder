@@ -64,6 +64,7 @@ var routes = []Route{
 	{"POST", "/api/v1/sessions", "createSession"},
 	{"GET", "/api/v1/sessions/{id}", "getSession"},
 	{"DELETE", "/api/v1/sessions/{id}", "deleteSession"},
+	{"PUT", "/api/v1/sessions/{id}/selection", "updateSessionSelection"},
 	{"GET", "/api/v1/sessions/{id}/messages", "listMessages"},
 	{"POST", "/api/v1/sessions/{id}/prompts", "createPrompt"},
 	{"POST", "/api/v1/sessions/{id}/compact", "compactSession"},
@@ -95,6 +96,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/runtime", s.runtime)
 	s.mux.HandleFunc("/api/v1/sessions", s.sessions)
 	s.mux.HandleFunc("/api/v1/sessions/{id}", s.session)
+	s.mux.HandleFunc("/api/v1/sessions/{id}/selection", s.selection)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/messages", s.messages)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/prompts", s.prompts)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/compact", s.compact)
@@ -185,6 +187,22 @@ func (s *Server) session(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.methodProblem(w, r, http.MethodGet+", "+http.MethodDelete)
 	}
+}
+
+func (s *Server) selection(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPut) {
+		return
+	}
+	var request v1.UpdateSessionSelectionRequest
+	if !s.decode(w, r, &request) {
+		return
+	}
+	if request.Agent == "" && request.Model == "" {
+		s.writeProblem(w, r, invalidProblem(requestID(r), "agent or model is required."))
+		return
+	}
+	item, err := s.backend.UpdateSessionSelection(r.Context(), r.PathValue("id"), request)
+	s.respond(w, r, http.StatusOK, item, err)
 }
 
 func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
@@ -560,6 +578,12 @@ func (s *Server) writeBackendError(w http.ResponseWriter, r *http.Request, err e
 		s.writeProblem(w, r, invalidProblem(id, "The request is not valid for this operation."))
 	case errors.Is(err, ErrConflict):
 		s.writeProblem(w, r, problem(id, http.StatusConflict, "conflict", "Conflict", "The request conflicts with current state."))
+	case errors.Is(err, ErrModelRequired):
+		s.writeProblem(w, r, problem(id, http.StatusConflict, "model_required", "Model required", "Select an agent and model before creating or prompting a coding session."))
+	case errors.Is(err, ErrSessionActive):
+		s.writeProblem(w, r, problem(id, http.StatusConflict, "session_active", "Session active", "Selection cannot change while the session is running."))
+	case errors.Is(err, ErrInvalidSelection):
+		s.writeProblem(w, r, problem(id, http.StatusBadRequest, "invalid_selection", "Invalid selection", "The requested agent or model is not available."))
 	case errors.Is(err, ErrIdempotencyConflict):
 		s.writeProblem(w, r, problem(id, http.StatusConflict, "idempotency_conflict", "Idempotency conflict", "The message ID was already used for a different prompt."))
 	case errors.Is(err, ErrPermissionNotFound):
