@@ -652,7 +652,7 @@ func chatSlash(ctx context.Context, api *apiClient, current *v1.Session, line st
 	argument := strings.TrimSpace(strings.TrimPrefix(line, command))
 	switch command {
 	case "/help":
-		fmt.Fprint(stdout, "/help /model /agent /new /resume /connect /thinking /undo /redo /exit\n")
+		fmt.Fprint(stdout, "/help /model /agent /new /resume /connect /thinking /compact /undo /redo /exit\n")
 		for _, item := range commands.List() {
 			fmt.Fprintf(stdout, "/%s\t%s\n", item.Name, item.Description)
 		}
@@ -719,6 +719,24 @@ func chatSlash(ctx context.Context, api *apiClient, current *v1.Session, line st
 	case "/thinking":
 		options.thinking = !options.thinking
 		fmt.Fprintf(stderr, "status: thinking %t\n", options.thinking)
+	case "/compact":
+		if current.ID == "" {
+			fmt.Fprintln(stderr, "no active session")
+			break
+		}
+		compactor, ok := (*api).(interface {
+			Compact(context.Context, string) (v1.Compaction, error)
+		})
+		if !ok {
+			fmt.Fprintln(stderr, "connected server does not support compaction")
+			break
+		}
+		result, err := compactor.Compact(ctx, current.ID)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+		} else {
+			fmt.Fprintln(stderr, "status: compaction", result.Status)
+		}
 	case "/undo", "/redo":
 		if current.ID == "" {
 			fmt.Fprintln(stderr, "no active session")
@@ -753,7 +771,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/model", "/agent", "/new", "/resume", "/connect", "/thinking", "/undo", "/redo", "/exit":
+	case "/help", "/model", "/agent", "/new", "/resume", "/connect", "/thinking", "/compact", "/undo", "/redo", "/exit":
 		return true
 	default:
 		return false
@@ -830,7 +848,7 @@ func (a *App) agentsCommand(ctx context.Context, args []string, stdout, stderr i
 
 func (a *App) sessionCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] == "help" || args[0] == "--help" {
-		fmt.Fprint(stdout, "Usage: parrot session list|show <id>|delete <id>\n")
+		fmt.Fprint(stdout, "Usage: parrot session list|show <id>|compact <id>|delete <id>\n")
 		return exitOK
 	}
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
@@ -878,6 +896,16 @@ func (a *App) sessionCommand(ctx context.Context, args []string, stdout, stderr 
 			fmt.Fprintln(stderr, err)
 			return exitError
 		}
+	case "compact":
+		if len(args) != 2 {
+			return usageError(stderr, "session compact requires one ID")
+		}
+		result, err := runtime.Client.Compact(ctx, args[1])
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitError
+		}
+		fmt.Fprintln(stdout, "compaction", result.Status)
 	default:
 		return usageError(stderr, "unknown session command")
 	}

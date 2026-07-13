@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -42,6 +43,10 @@ type LivePublisher interface {
 	Publish(string, protocol.Event)
 }
 
+type Compactor interface {
+	Compact(context.Context, compaction.Request) (compaction.Result, error)
+}
+
 type RunnerConfig struct {
 	Sessions           SessionRuntime
 	Contexts           ContextRuntime
@@ -52,6 +57,7 @@ type RunnerConfig struct {
 	Workspace          *workspace.Workspace
 	Outputs            *tool.OutputStore
 	Live               LivePublisher
+	Compactor          Compactor
 	MaxConcurrentTools int
 	CleanupTimeout     time.Duration
 }
@@ -147,22 +153,70 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) error {
 		snapshot := r.config.ToolSnapshot()
 		definitions := toolDefinitions(snapshot, profile)
 		turn++
-		instructions := epoch.Baseline
-		if instructions != "" {
-			instructions += "\n\n"
-		}
-		instructions += profile.Prompt
-		if len(profile.HardRules) > 0 {
-			instructions += "\n\nHard rules:\n- " + strings.Join(profile.HardRules, "\n- ")
-		}
+		instructions := runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
 		if turn >= profile.MaxTurns {
 			definitions = nil
-			instructions += "\n\nThis is the final turn. Do not call tools; provide the best final answer now."
+		}
+		if r.config.Compactor != nil {
+			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
+				SessionID: sessionID, ProviderID: selected.Provider, Model: model,
+				Instructions: profileInstructions(profile, turn >= profile.MaxTurns), Tools: definitions,
+			})
+			if compactErr != nil {
+				return compactErr
+			}
+			if result.Status == "complete" {
+				epoch, err = r.config.Sessions.CurrentContextEpoch(ctx, sessionID)
+				if err != nil {
+					return err
+				}
+				history, err = r.config.Sessions.ListModelHistory(ctx, sessionID, epoch.HistoryCutoff)
+				if err != nil {
+					return err
+				}
+				instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
+			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
 		calls, finish, err := r.providerTurn(ctx, sessionID, providerClient, request)
 		if err != nil {
-			return err
+			var failure *providerTurnFailure
+			if !errors.As(err, &failure) || !failure.overflow || !failure.retrySafe || r.config.Compactor == nil {
+				return err
+			}
+			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
+				SessionID: sessionID, ProviderID: selected.Provider, Model: model,
+				Instructions: profileInstructions(profile, turn >= profile.MaxTurns), Tools: definitions, Force: true,
+			})
+			if compactErr != nil || result.Status != "complete" {
+				if compactErr != nil {
+					return errors.Join(err, compactErr)
+				}
+				return err
+			}
+			recorder, ok := r.config.Sessions.(interface {
+				RecordCompactionRetry(context.Context, string, string, string) error
+			})
+			if !ok {
+				return errors.New("agent: session runtime cannot record compaction retry")
+			}
+			if recordErr := recorder.RecordCompactionRetry(ctx, sessionID, failure.code, result.RecordID); recordErr != nil {
+				return recordErr
+			}
+			epoch, err = r.config.Sessions.CurrentContextEpoch(ctx, sessionID)
+			if err != nil {
+				return err
+			}
+			history, err = r.config.Sessions.ListModelHistory(ctx, sessionID, epoch.HistoryCutoff)
+			if err != nil {
+				return err
+			}
+			request.Instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
+			request.Messages = history
+			calls, finish, err = r.providerTurn(ctx, sessionID, providerClient, request)
+			if err != nil {
+				return err
+			}
 		}
 		if len(calls) > 0 {
 			if turn >= profile.MaxTurns {
@@ -192,6 +246,16 @@ type completedCall struct {
 	call      protocol.ToolCall
 }
 
+type providerTurnFailure struct {
+	err       error
+	code      string
+	overflow  bool
+	retrySafe bool
+}
+
+func (e *providerTurnFailure) Error() string { return e.err.Error() }
+func (e *providerTurnFailure) Unwrap() error { return e.err }
+
 func (r *Runner) providerTurn(ctx context.Context, sessionID string, client provider.Provider, request protocol.Request) ([]completedCall, protocol.FinishReason, error) {
 	assistant, err := r.config.Sessions.StartAssistant(ctx, sessionID)
 	if err != nil {
@@ -199,8 +263,9 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 	}
 	stream, err := client.Stream(ctx, request)
 	if err != nil {
-		_ = r.finishOnCleanup(sessionID, assistant.ID, nil, protocol.FinishError, err.Error(), "error")
-		return nil, "", err
+		finishErr := r.finishOnCleanup(sessionID, assistant.ID, nil, protocol.FinishError, err.Error(), "error")
+		code, overflow := contextOverflowError(err)
+		return nil, "", &providerTurnFailure{err: errors.Join(err, finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil}
 	}
 	defer stream.Close()
 	var text, reasoning strings.Builder
@@ -242,12 +307,15 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			finish = item.FinishReason
 		case protocol.EventProviderError:
 			message := "provider error"
+			code := ""
 			if item.ProviderError != nil {
 				message = item.ProviderError.Message
+				code = item.ProviderError.Code
 			}
 			parts := finalParts(text.String(), reasoning.String(), calls)
-			_ = r.finishAssistantOnCleanup(sessionID, assistant.ID, session.AssistantFinal{Parts: parts, Usage: usage, FinishReason: protocol.FinishError, Error: message, Status: "error"})
-			return nil, protocol.FinishError, errors.New(message)
+			finishErr := r.finishAssistantOnCleanup(sessionID, assistant.ID, session.AssistantFinal{Parts: parts, Usage: usage, FinishReason: protocol.FinishError, Error: message, Status: "error"})
+			overflow := item.ProviderError != nil && canonicalOverflow(item.ProviderError.Type, item.ProviderError.Code)
+			return nil, protocol.FinishError, &providerTurnFailure{err: errors.Join(errors.New(message), finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil && text.Len() == 0 && reasoning.Len() == 0 && len(calls) == 0}
 		}
 	}
 	parts := finalParts(text.String(), reasoning.String(), calls)
@@ -269,6 +337,44 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 		}
 	}
 	return calls, finish, nil
+}
+
+func contextOverflowError(err error) (string, bool) {
+	var httpErr *provider.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != 400 && httpErr.StatusCode != 413 {
+		return "", false
+	}
+	return httpErr.Code, canonicalOverflow(httpErr.Type, httpErr.Code)
+}
+
+func canonicalOverflow(kind, code string) bool {
+	for _, value := range []string{strings.ToLower(kind), strings.ToLower(code)} {
+		switch value {
+		case "context_length_exceeded", "context_window_exceeded", "prompt_too_long", "input_too_long", "max_context_length_exceeded":
+			return true
+		}
+	}
+	return false
+}
+
+func runnerInstructions(baseline string, profile Profile, final bool) string {
+	instructions := baseline
+	if instructions != "" {
+		instructions += "\n\n"
+	}
+	instructions += profileInstructions(profile, final)
+	return instructions
+}
+
+func profileInstructions(profile Profile, final bool) string {
+	instructions := profile.Prompt
+	if len(profile.HardRules) > 0 {
+		instructions += "\n\nHard rules:\n- " + strings.Join(profile.HardRules, "\n- ")
+	}
+	if final {
+		instructions += "\n\nThis is the final turn. Do not call tools; provide the best final answer now."
+	}
+	return instructions
 }
 
 func finalParts(text, reasoning string, calls []completedCall) []protocol.ContentPart {

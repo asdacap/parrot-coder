@@ -91,6 +91,16 @@ type PromptAccepted struct {
 	Created   bool   `json:"created"`
 }
 
+type Compaction struct {
+	Status        string `json:"status"`
+	AttemptID     string `json:"attempt_id,omitempty"`
+	RecordID      string `json:"record_id,omitempty"`
+	SourceEpochID string `json:"source_epoch_id,omitempty"`
+	TargetEpochID string `json:"target_epoch_id,omitempty"`
+	HistoryCutoff int64  `json:"history_cutoff,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+}
+
 type PermissionResource struct {
 	Kind       string            `json:"kind"`
 	Identifier string            `json:"identifier"`

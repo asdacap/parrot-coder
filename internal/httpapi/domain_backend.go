@@ -21,18 +21,29 @@ import (
 // DomainBackend maps the existing application services to the stable API.
 // All fields are long-lived dependencies owned by the application.
 type DomainBackend struct {
-	Version     string
-	Sessions    *session.Service
-	Coordinator *agent.Coordinator
-	Agents      *agent.Registry
-	Providers   []provider.Provider
-	Permissions *permission.Broker
-	Questions   *question.Broker
-	Snapshots   *snapshot.Service
-	Workspace   *workspace.Workspace
-	Events      *event.Repository
-	Live        *event.Broker
-	EventQueue  int
+	Version            string
+	Sessions           *session.Service
+	Coordinator        *agent.Coordinator
+	Agents             *agent.Registry
+	Providers          []provider.Provider
+	Permissions        *permission.Broker
+	Questions          *question.Broker
+	Snapshots          *snapshot.Service
+	Workspace          *workspace.Workspace
+	Events             *event.Repository
+	Live               *event.Broker
+	EventQueue         int
+	CompactSessionFunc func(context.Context, string) (v1.Compaction, error)
+}
+
+func (b *DomainBackend) CompactSession(ctx context.Context, id string) (v1.Compaction, error) {
+	if _, err := b.GetSession(ctx, id); err != nil {
+		return v1.Compaction{}, err
+	}
+	if b.CompactSessionFunc == nil {
+		return v1.Compaction{}, errors.New("httpapi: compaction is unavailable")
+	}
+	return b.CompactSessionFunc(ctx, id)
 }
 
 func (b *DomainBackend) Runtime(context.Context) (v1.Runtime, error) {

@@ -106,6 +106,12 @@ func (c *Client) Interrupt(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, sessionPath(id)+"/interrupt", nil, http.StatusNoContent, nil)
 }
 
+func (c *Client) Compact(ctx context.Context, id string) (v1.Compaction, error) {
+	var out v1.Compaction
+	err := c.do(ctx, http.MethodPost, sessionPath(id)+"/compact", nil, http.StatusAccepted, &out)
+	return out, err
+}
+
 func (c *Client) Permissions(ctx context.Context, id string) (v1.PermissionList, error) {
 	var out v1.PermissionList
 	err := c.do(ctx, http.MethodGet, sessionPath(id)+"/permissions", nil, http.StatusOK, &out)

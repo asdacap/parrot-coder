@@ -66,6 +66,7 @@ var routes = []Route{
 	{"DELETE", "/api/v1/sessions/{id}", "deleteSession"},
 	{"GET", "/api/v1/sessions/{id}/messages", "listMessages"},
 	{"POST", "/api/v1/sessions/{id}/prompts", "createPrompt"},
+	{"POST", "/api/v1/sessions/{id}/compact", "compactSession"},
 	{"POST", "/api/v1/sessions/{id}/interrupt", "interruptSession"},
 	{"GET", "/api/v1/sessions/{id}/events", "streamSessionEvents"},
 	{"GET", "/api/v1/sessions/{id}/permissions", "listPermissions"},
@@ -96,6 +97,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/sessions/{id}", s.session)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/messages", s.messages)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/prompts", s.prompts)
+	s.mux.HandleFunc("/api/v1/sessions/{id}/compact", s.compact)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/interrupt", s.interrupt)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/events", s.events)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/permissions", s.permissions)
@@ -215,6 +217,23 @@ func (s *Server) prompts(w http.ResponseWriter, r *http.Request) {
 	}
 	s.backend.Wake(r.PathValue("id"))
 	s.writeJSON(w, http.StatusAccepted, item)
+}
+
+type compactionBackend interface {
+	CompactSession(context.Context, string) (v1.Compaction, error)
+}
+
+func (s *Server) compact(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPost) || !s.requireEmptyBody(w, r) {
+		return
+	}
+	backend, ok := s.backend.(compactionBackend)
+	if !ok {
+		s.writeBackendError(w, r, errors.New("httpapi: compaction is unavailable"))
+		return
+	}
+	item, err := backend.CompactSession(r.Context(), r.PathValue("id"))
+	s.respond(w, r, http.StatusAccepted, item, err)
 }
 
 func (s *Server) interrupt(w http.ResponseWriter, r *http.Request) {

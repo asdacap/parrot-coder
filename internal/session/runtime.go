@@ -306,8 +306,14 @@ func (s *Service) RepairActive(ctx context.Context, sessionID string) error {
 	return err
 }
 
+func (s *Service) RecordCompactionRetry(ctx context.Context, sessionID, providerCode, recordID string) error {
+	data, _ := json.Marshal(map[string]string{"provider_code": providerCode, "compaction_record_id": recordID})
+	_, err := s.events.Append(ctx, sessionID, []event.NewEvent{{Type: "session.compaction.retry", Data: data}}, nil)
+	return err
+}
+
 func (s *Service) ListModelHistory(ctx context.Context, sessionID string, cutoff int64) ([]protocol.Message, error) {
-	rows, err := s.db.SQL().QueryContext(ctx, `SELECT role,content,parts_json FROM session_message WHERE session_id=? AND sequence>=? AND status IN ('complete','error','interrupted') ORDER BY sequence`, sessionID, cutoff)
+	rows, err := s.db.SQL().QueryContext(ctx, `SELECT role,content,parts_json FROM session_message WHERE session_id=? AND sequence>=? AND status IN ('complete','error','interrupted') AND NOT (status='error' AND content='' AND parts_json='[]') ORDER BY sequence`, sessionID, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -325,6 +331,11 @@ func (s *Service) ListModelHistory(ctx context.Context, sessionID string, cutoff
 		}
 		if len(parts) == 0 && content != "" {
 			parts = []protocol.ContentPart{{Type: protocol.ContentText, Text: content}}
+		}
+		// Terminal error and interruption rows remain durable audit records, but
+		// a contentless assistant projection is not a valid model-history turn.
+		if len(parts) == 0 {
+			continue
 		}
 		result = append(result, protocol.Message{Role: protocol.Role(role), Content: parts})
 	}

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/change"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/command"
+	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/formatter"
@@ -33,6 +35,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/project"
+	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -81,6 +84,8 @@ type App struct {
 
 	db          *store.DB
 	coordinator *agent.Coordinator
+	compactions *compaction.Repository
+	outputs     *tool.OutputStore
 	mcp         *mcp.Manager
 	lsp         *lsp.Manager
 	closeOnce   sync.Once
@@ -232,6 +237,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: outputs: %w", err)
 	}
+	result.outputs = outputs
 	changes := change.NewService(change.Config{})
 	snapshots := snapshot.NewService(db, snapshot.Config{})
 	processes, err := process.NewRunner(process.Config{Workspace: ws, OutputStore: tool.NewProcessOutputStore(outputs)})
@@ -328,13 +334,21 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: context registry: %w", err)
 	}
 	contexts := systemcontext.Manager{Registry: contextRegistry, Store: sessions}
+	compactionRepository := compaction.NewRepository(db, repository)
+	compactionService, err := compaction.NewService(compactionRepository,
+		compaction.ProviderSummarizer{Providers: providerRegistry},
+		compactionContextObserver{manager: contexts}, compaction.Config{})
+	if err != nil {
+		return nil, fmt.Errorf("app: compaction: %w", err)
+	}
+	result.compactions = compactionRepository
 	runner, err := agent.NewRunner(agent.RunnerConfig{
 		Sessions: sessions, Contexts: contexts, Agents: agents, Providers: providerRegistry,
 		ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
 		},
-		Workspace: ws, Outputs: outputs, Live: live,
+		Workspace: ws, Outputs: outputs, Live: live, Compactor: compactionService,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: runner: %w", err)
@@ -347,6 +361,40 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		Providers: providers, Permissions: permissions, Questions: questions, Snapshots: snapshots,
 		Workspace: ws, Events: repository, Live: live,
 	}
+	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
+		for _, active := range coordinator.Active() {
+			if active.SessionID == sessionID {
+				return v1.Compaction{}, httpapi.ErrConflict
+			}
+		}
+		selected, err := sessions.Get(ctx, sessionID)
+		if err != nil {
+			if errors.Is(err, session.ErrNotFound) {
+				return v1.Compaction{}, httpapi.ErrNotFound
+			}
+			return v1.Compaction{}, err
+		}
+		_, model, err := providerRegistry.Resolve(selected.Provider, selected.Model)
+		if err != nil {
+			return v1.Compaction{}, err
+		}
+		profile, err := agents.Get(selected.Agent)
+		if err != nil {
+			return v1.Compaction{}, err
+		}
+		definitions := make([]protocol.ToolDefinition, 0)
+		for _, definition := range toolSnapshot.Definitions() {
+			if profile.AllowsTool(definition.ID) {
+				definitions = append(definitions, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
+			}
+		}
+		instructions := profile.Prompt
+		if len(profile.HardRules) > 0 {
+			instructions += "\n\nHard rules:\n- " + strings.Join(profile.HardRules, "\n- ")
+		}
+		item, err := compactionService.Compact(ctx, compaction.Request{SessionID: sessionID, ProviderID: selected.Provider, Model: model, Instructions: instructions, Tools: definitions, Force: true})
+		return v1.Compaction{Status: item.Status, AttemptID: item.AttemptID, RecordID: item.RecordID, SourceEpochID: item.SourceEpochID, TargetEpochID: item.TargetEpochID, HistoryCutoff: item.HistoryCutoff, Reason: item.Reason}, err
+	}
 	result.Backend = backend
 	composed := &compositionBackend{DomainBackend: backend, sessions: sessions, selection: session.Selection{Agent: agentID, Provider: providerID, Model: modelID}}
 	apiServer := httpapi.New(composed, httpapi.Config{})
@@ -358,7 +406,95 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.Handler = handler
 	result.Client = &Client{Client: typed, http: &http.Client{Transport: transport}}
+	if _, err := result.Maintain(ctx); err != nil {
+		return nil, fmt.Errorf("app: startup maintenance: %w", err)
+	}
 	return result, nil
+}
+
+type compactionContextObserver struct{ manager systemcontext.Manager }
+
+func (o compactionContextObserver) ObserveFull(ctx context.Context) (compaction.FullContext, error) {
+	observed, err := o.manager.ObserveFull(ctx)
+	return compaction.FullContext{Baseline: observed.Baseline, Sources: observed.Sources}, err
+}
+
+type MaintenanceReport struct {
+	OutputsRemoved             int
+	TemporaryFilesRemoved      int
+	SnapshotBlobsPruned        int64
+	CompactionAttemptsRepaired int64
+}
+
+// Maintain performs bounded, idempotent cleanup. Durable events, messages,
+// context epochs, and compaction records are never deleted.
+func (a *App) Maintain(ctx context.Context) (MaintenanceReport, error) {
+	var report MaintenanceReport
+	var maintenanceErr error
+	if a.outputs != nil {
+		removed, err := a.outputs.Maintain(time.Now(), 24*time.Hour, 2000)
+		report.OutputsRemoved = removed
+		maintenanceErr = errors.Join(maintenanceErr, err)
+	}
+	if a.Project.Root != "" {
+		removed, err := cleanupSnapshotTemps(ctx, a.Project.Root, time.Now(), 24*time.Hour, 10000, 1000)
+		report.TemporaryFilesRemoved = removed
+		maintenanceErr = errors.Join(maintenanceErr, err)
+	}
+	if a.db != nil {
+		result, err := a.db.SQL().ExecContext(ctx, `DELETE FROM snapshot_blob WHERE hash IN (
+			SELECT b.hash FROM snapshot_blob b
+			WHERE NOT EXISTS (SELECT 1 FROM snapshot_file f WHERE f.before_blob_hash=b.hash OR f.after_blob_hash=b.hash)
+			ORDER BY b.hash LIMIT 1000
+		)`)
+		if err == nil {
+			report.SnapshotBlobsPruned, err = result.RowsAffected()
+		}
+		maintenanceErr = errors.Join(maintenanceErr, err)
+	}
+	if a.compactions != nil {
+		repaired, err := a.compactions.InterruptAbandoned(ctx, 1000, "process restarted")
+		report.CompactionAttemptsRepaired = repaired
+		maintenanceErr = errors.Join(maintenanceErr, err)
+	}
+	return report, maintenanceErr
+}
+
+var errMaintenanceBound = errors.New("app: maintenance traversal bound reached")
+
+func cleanupSnapshotTemps(ctx context.Context, root string, now time.Time, staleAfter time.Duration, visitLimit, removeLimit int) (int, error) {
+	visited, removed := 0, 0
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		visited++
+		if visited > visitLimit {
+			return errMaintenanceBound
+		}
+		if entry.IsDir() || removed >= removeLimit || !strings.HasPrefix(entry.Name(), ".parrot-snapshot-") {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() || now.Sub(info.ModTime()) <= staleAfter {
+			return nil
+		}
+		if err := os.Remove(path); err != nil {
+			return err
+		}
+		removed++
+		return nil
+	})
+	if errors.Is(err, errMaintenanceBound) {
+		return removed, nil
+	}
+	return removed, err
 }
 
 func (a *App) Close() error {

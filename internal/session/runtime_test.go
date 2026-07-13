@@ -32,6 +32,24 @@ func TestModelHistoryCutoffIsInclusive(t *testing.T) {
 	}
 }
 
+func TestModelHistoryOmitsContentlessTerminalAssistant(t *testing.T) {
+	ctx, _, _, service, sessionID := newService(t)
+	assistant, err := service.StartAssistant(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.FinishAssistant(ctx, sessionID, assistant.ID, session.AssistantFinal{Status: "error", FinishReason: protocol.FinishError, Error: "context overflow"}); err != nil {
+		t.Fatal(err)
+	}
+	history, err := service.ListModelHistory(ctx, sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 0 {
+		t.Fatalf("history = %#v, want no contentless error turn", history)
+	}
+}
+
 func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "repair.db")

@@ -95,6 +95,8 @@ var EventManifest = []EventDefinition{
 	{Name: "session.tool.failure", Durable: true, Payload: "object"},
 	{Name: "session.tool.interrupted", Durable: true, Payload: "object"},
 	{Name: "session.runtime.repaired", Durable: true, Payload: "object"},
+	{Name: "session.compaction.completed", Durable: true, Payload: "object"},
+	{Name: "session.compaction.retry", Durable: true, Payload: "object"},
 }
 
 func KnownEvent(name string) bool {

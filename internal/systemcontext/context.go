@@ -122,17 +122,35 @@ type Manager struct {
 	Store    EpochStore
 }
 
-func (m Manager) Initialize(ctx context.Context, sessionID string, cutoff int64) (session.ContextEpoch, error) {
+// FullContext is a freshly observed, complete typed context snapshot. It is
+// suitable for a new epoch baseline; unlike reconciliation it never carries
+// unavailable values forward from an older observation.
+type FullContext struct {
+	Baseline string
+	Sources  json.RawMessage
+}
+
+func (m Manager) ObserveFull(ctx context.Context) (FullContext, error) {
+	if m.Registry == nil {
+		return FullContext{}, errors.New("systemcontext: registry is unavailable")
+	}
 	snapshot, observeErr := m.Registry.Observe(ctx)
 	if err := completeSnapshot(snapshot, observeErr); err != nil {
-		return session.ContextEpoch{}, err
+		return FullContext{}, err
 	}
-	baseline := renderBaseline(snapshot)
 	raw, err := encodeSnapshot(snapshot)
+	if err != nil {
+		return FullContext{}, err
+	}
+	return FullContext{Baseline: renderBaseline(snapshot), Sources: raw}, nil
+}
+
+func (m Manager) Initialize(ctx context.Context, sessionID string, cutoff int64) (session.ContextEpoch, error) {
+	full, err := m.ObserveFull(ctx)
 	if err != nil {
 		return session.ContextEpoch{}, err
 	}
-	return m.Store.InitializeContext(ctx, sessionID, baseline, raw, cutoff)
+	return m.Store.InitializeContext(ctx, sessionID, full.Baseline, full.Sources, cutoff)
 }
 
 func (m Manager) Reconcile(ctx context.Context, sessionID string) (session.ContextEpoch, error) {
@@ -199,15 +217,11 @@ func (m Manager) Reconcile(ctx context.Context, sessionID string) (session.Conte
 }
 
 func (m Manager) Replace(ctx context.Context, sessionID, baseline string, cutoff int64) (session.ContextEpoch, error) {
-	snapshot, observeErr := m.Registry.Observe(ctx)
-	if err := completeSnapshot(snapshot, observeErr); err != nil {
-		return session.ContextEpoch{}, err
-	}
-	raw, err := encodeSnapshot(snapshot)
+	full, err := m.ObserveFull(ctx)
 	if err != nil {
 		return session.ContextEpoch{}, err
 	}
-	return m.Store.ReplaceContext(ctx, sessionID, baseline, raw, cutoff)
+	return m.Store.ReplaceContext(ctx, sessionID, baseline, full.Sources, cutoff)
 }
 
 func completeSnapshot(snapshot Snapshot, observeErr error) error {

@@ -24,6 +24,7 @@ var operationSchemas = map[string]operationSchema{
 	"deleteSession":       {status: "204"},
 	"listMessages":        {response: v1.MessageList{}, status: "200"},
 	"createPrompt":        {request: v1.PromptRequest{}, response: v1.PromptAccepted{}, status: "202"},
+	"compactSession":      {response: v1.Compaction{}, status: "202"},
 	"interruptSession":    {status: "204"},
 	"streamSessionEvents": {response: v1.Event{}, status: "200"},
 	"listPermissions":     {response: v1.PermissionList{}, status: "200"},

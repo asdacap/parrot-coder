@@ -157,6 +157,62 @@ func (s *OutputStore) Cleanup(now time.Time) error {
 	return s.cleanupLocked(now)
 }
 
+// Maintain removes a bounded number of expired managed outputs and stale
+// output temporary files. Unknown files and directories are left untouched.
+func (s *OutputStore) Maintain(now time.Time, staleAfter time.Duration, limit int) (int, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	directory, err := os.Open(s.config.Directory)
+	if err != nil {
+		return 0, err
+	}
+	defer directory.Close()
+	removed, inspected := 0, 0
+	for inspected < limit {
+		entries, readErr := directory.ReadDir(min(128, limit-inspected))
+		for _, entry := range entries {
+			inspected++
+			if entry.IsDir() {
+				continue
+			}
+			managed := validOutputID(entry.Name())
+			temporary := strings.HasPrefix(entry.Name(), ".parrot-output-")
+			if !managed && !temporary {
+				continue
+			}
+			info, infoErr := entry.Info()
+			if infoErr != nil {
+				return removed, infoErr
+			}
+			expired := managed && s.config.Retention > 0 && now.Sub(info.ModTime()) > s.config.Retention
+			stale := temporary && staleAfter > 0 && now.Sub(info.ModTime()) > staleAfter
+			if !expired && !stale {
+				continue
+			}
+			if err := os.Remove(filepath.Join(s.config.Directory, entry.Name())); err != nil {
+				return removed, err
+			}
+			if managed {
+				s.total -= info.Size()
+				if s.total < 0 {
+					s.total = 0
+				}
+			}
+			removed++
+		}
+		if readErr == io.EOF {
+			break
+		}
+		if readErr != nil {
+			return removed, readErr
+		}
+	}
+	return removed, nil
+}
+
 func (s *OutputStore) cleanupLocked(now time.Time) error {
 	entries, err := os.ReadDir(s.config.Directory)
 	if err != nil {

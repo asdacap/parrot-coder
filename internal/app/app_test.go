@@ -17,7 +17,12 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
+	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/config"
+	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/project"
+	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 func TestCompositionEndToEndInProcess(t *testing.T) {
@@ -315,4 +320,87 @@ func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
 	messages, _ := runtime.Client.Messages(context.Background(), parent.ID)
 	sessions, _ := runtime.Client.Sessions(context.Background())
 	t.Fatalf("task tool did not return child output; messages=%#v sessions=%#v", messages.Items, sessions.Items)
+}
+
+func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
+	ctx := context.Background()
+	root := t.TempDir()
+	db, err := store.Open(ctx, filepath.Join(root, "maintenance.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	now := time.Now().UTC()
+	stamp := now.Format(time.RFC3339Nano)
+	statements := []struct {
+		query string
+		args  []any
+	}{
+		{`INSERT INTO project(id,root_path,created_at) VALUES('prj',?,?)`, []any{root, stamp}},
+		{`INSERT INTO session(id,project_id,title,created_at,updated_at) VALUES('ses','prj','test',?,?)`, []any{stamp, stamp}},
+		{`INSERT INTO session_context_epoch(id,session_id,ordinal,baseline,sources_json,history_cutoff,created_at) VALUES('ctx','ses',0,'','{}',0,?)`, []any{stamp}},
+		{`INSERT INTO compaction_attempt(id,session_id,source_epoch_id,covered_from_sequence,covered_to_sequence,history_cutoff,provider_id,model_id,forced,status,created_at) VALUES('cmpa','ses','ctx',0,0,1,'p','m',0,'active',?)`, []any{stamp}},
+		{`INSERT INTO snapshot_blob(hash,data,size) VALUES('referenced',X'01',1),('orphan',X'02',1)`, nil},
+		{`INSERT INTO snapshot_transaction(id,workspace,session_id,position,created_at) VALUES('txn',?,'ses',1,?)`, []any{root, stamp}},
+		{`INSERT INTO snapshot_file(transaction_id,ordinal,path,before_exists,before_mode,before_hash,before_blob_hash,after_exists,after_mode) VALUES('txn',0,?,1,420,'referenced','referenced',0,0)`, []any{filepath.Join(root, "file")}},
+	}
+	for _, statement := range statements {
+		if _, err := db.SQL().ExecContext(ctx, statement.query, statement.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	outputDir := filepath.Join(root, "outputs")
+	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: outputDir, PreviewBytes: 16, PreviewLines: 4, PerOutput: 1024, Total: 4096, Retention: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-48 * time.Hour)
+	files := map[string]time.Time{
+		"0123456789abcdef0123456789abcdef": old,
+		".parrot-output-stale":             old,
+		".parrot-output-fresh":             now,
+		"unmanaged":                        old,
+	}
+	for name, modified := range files {
+		path := filepath.Join(outputDir, name)
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modified, modified); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleTemp := filepath.Join(root, ".parrot-snapshot-stale")
+	freshTemp := filepath.Join(root, ".parrot-snapshot-fresh")
+	for path, modified := range map[string]time.Time{staleTemp: old, freshTemp: now} {
+		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(path, modified, modified); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	application := &App{Project: project.Info{ID: "prj", Root: root}, db: db, outputs: outputs, compactions: compaction.NewRepository(db, event.NewRepository(db))}
+	report, err := application.Maintain(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.OutputsRemoved != 2 || report.TemporaryFilesRemoved != 1 || report.SnapshotBlobsPruned != 1 || report.CompactionAttemptsRepaired != 1 {
+		t.Fatalf("report = %#v", report)
+	}
+	for _, path := range []string{filepath.Join(outputDir, ".parrot-output-fresh"), filepath.Join(outputDir, "unmanaged"), freshTemp} {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("preserved file %s: %v", path, err)
+		}
+	}
+	var blobs int
+	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM snapshot_blob WHERE hash='referenced'`).Scan(&blobs); err != nil || blobs != 1 {
+		t.Fatalf("referenced blobs = %d, %v", blobs, err)
+	}
+	var attemptStatus string
+	if err := db.SQL().QueryRowContext(ctx, `SELECT status FROM compaction_attempt WHERE id='cmpa'`).Scan(&attemptStatus); err != nil || attemptStatus != "interrupted" {
+		t.Fatalf("attempt status = %q, %v", attemptStatus, err)
+	}
 }
