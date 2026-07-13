@@ -1,0 +1,164 @@
+// Package workspace resolves untrusted paths beneath canonical filesystem roots.
+package workspace
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+var (
+	ErrInvalidPath = errors.New("invalid path")
+	ErrOutsideRoot = errors.New("path is outside permitted roots")
+)
+
+// ExternalRoot is an explicit capability to access a canonical root outside the workspace.
+// Values can only be constructed by NewExternalRoot.
+type ExternalRoot struct{ path string }
+
+func NewExternalRoot(path string) (ExternalRoot, error) {
+	p, err := canonicalExistingDirectory(path)
+	if err != nil {
+		return ExternalRoot{}, err
+	}
+	return ExternalRoot{path: p}, nil
+}
+
+func (r ExternalRoot) Path() string { return r.path }
+
+// Workspace is immutable after construction and safe for concurrent use.
+type Workspace struct {
+	root     string
+	external []string
+}
+
+func New(root string, external ...ExternalRoot) (*Workspace, error) {
+	p, err := canonicalExistingDirectory(root)
+	if err != nil {
+		return nil, fmt.Errorf("workspace root: %w", err)
+	}
+	ext := make([]string, 0, len(external))
+	for _, capability := range external {
+		if capability.path == "" {
+			return nil, fmt.Errorf("external root: %w", ErrInvalidPath)
+		}
+		ext = append(ext, capability.path)
+	}
+	return &Workspace{root: p, external: ext}, nil
+}
+
+func (w *Workspace) Root() string { return w.root }
+
+// ResolveRead resolves all symlinks and requires the target to exist.
+func (w *Workspace) ResolveRead(path string) (string, error) {
+	candidate, root, err := w.lexical(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(candidate)
+	if err != nil {
+		return "", err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !contains(root, resolved) {
+		return "", ErrOutsideRoot
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// ResolveCreate validates the nearest existing parent and returns a canonical
+// path suitable for creation. Callers performing mutations must resolve again
+// immediately before changing the filesystem.
+func (w *Workspace) ResolveCreate(path string) (string, error) {
+	candidate, root, err := w.lexical(path)
+	if err != nil {
+		return "", err
+	}
+	parent := candidate
+	var suffix []string
+	for {
+		_, statErr := os.Lstat(parent)
+		if statErr == nil {
+			break
+		}
+		if !errors.Is(statErr, os.ErrNotExist) {
+			return "", statErr
+		}
+		next := filepath.Dir(parent)
+		if next == parent {
+			return "", statErr
+		}
+		suffix = append(suffix, filepath.Base(parent))
+		parent = next
+	}
+	resolved, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
+	if !contains(root, resolved) {
+		return "", ErrOutsideRoot
+	}
+	for i := len(suffix) - 1; i >= 0; i-- {
+		resolved = filepath.Join(resolved, suffix[i])
+	}
+	if !contains(root, resolved) {
+		return "", ErrOutsideRoot
+	}
+	return filepath.Clean(resolved), nil
+}
+
+func (w *Workspace) lexical(path string) (candidate, root string, err error) {
+	if path == "" || strings.IndexByte(path, 0) >= 0 {
+		return "", "", ErrInvalidPath
+	}
+	if filepath.IsAbs(path) {
+		candidate = filepath.Clean(path)
+		for _, allowed := range append([]string{w.root}, w.external...) {
+			if contains(allowed, candidate) {
+				return candidate, allowed, nil
+			}
+		}
+		return "", "", ErrOutsideRoot
+	}
+	clean := filepath.Clean(path)
+	if clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+		return "", "", ErrOutsideRoot
+	}
+	candidate = filepath.Join(w.root, clean)
+	if !contains(w.root, candidate) {
+		return "", "", ErrOutsideRoot
+	}
+	return candidate, w.root, nil
+}
+
+func contains(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
+}
+
+func canonicalExistingDirectory(path string) (string, error) {
+	if path == "" || strings.IndexByte(path, 0) >= 0 {
+		return "", ErrInvalidPath
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", fmt.Errorf("%s is not a directory", path)
+	}
+	return filepath.Clean(resolved), nil
+}

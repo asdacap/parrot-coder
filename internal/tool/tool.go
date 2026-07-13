@@ -1,0 +1,378 @@
+// Package tool plans, authorizes, and executes bounded tools.
+package tool
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"sort"
+	"strings"
+	"sync"
+	"unicode/utf8"
+
+	"github.com/amirulashraf/parrot-coder/internal/permission"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
+)
+
+type CallContext struct {
+	Workspace *workspace.Workspace
+	Outputs   *OutputStore
+	SessionID string
+}
+
+type Plan struct {
+	ToolID         string
+	CanonicalInput json.RawMessage
+	OperationHash  string
+	Permissions    []permission.Request
+	Review         json.RawMessage
+	Data           any
+}
+
+type Result struct {
+	Text     string         `json:"text"`
+	Metadata map[string]any `json:"metadata,omitempty"`
+}
+
+type Tool interface {
+	ID() string
+	Description() string
+	JSONSchema() json.RawMessage
+	Plan(context.Context, json.RawMessage, CallContext) (Plan, error)
+	Execute(context.Context, Plan, CallContext) (Result, error)
+}
+
+func NewPlan(toolID string, input json.RawMessage, requests []permission.Request, review json.RawMessage, data any) (Plan, error) {
+	canonical, err := permission.CanonicalJSON(input)
+	if err != nil {
+		return Plan{}, err
+	}
+	p := Plan{ToolID: toolID, CanonicalInput: canonical, Permissions: requests, Review: review, Data: data}
+	p.OperationHash, err = planHash(p)
+	return p, err
+}
+
+func planHash(p Plan) (string, error) {
+	resources := make([]permission.Resource, 0, len(p.Permissions))
+	for _, request := range p.Permissions {
+		resources = append(resources, permission.Resource{Kind: "permission", Identifier: request.OperationHash, Operation: "authorize"})
+	}
+	r, err := permission.NewRequest(p.ToolID, p.CanonicalInput, resources, p.Review)
+	if err != nil {
+		return "", err
+	}
+	return r.OperationHash, nil
+}
+
+type Definition struct {
+	ID          string          `json:"id"`
+	Description string          `json:"description"`
+	Schema      json.RawMessage `json:"schema"`
+}
+
+type Registry struct {
+	mu           sync.Mutex
+	tools        map[string]Tool
+	materialized bool
+}
+
+func NewRegistry() *Registry { return &Registry{tools: make(map[string]Tool)} }
+
+func (r *Registry) Register(t Tool) error {
+	if t == nil || t.ID() == "" {
+		return errors.New("tool and tool ID are required")
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.materialized {
+		return errors.New("registry already materialized")
+	}
+	if _, exists := r.tools[t.ID()]; exists {
+		return fmt.Errorf("duplicate tool ID %q", t.ID())
+	}
+	if _, err := parseSchema(t.JSONSchema()); err != nil {
+		return fmt.Errorf("tool %s schema: %w", t.ID(), err)
+	}
+	r.tools[t.ID()] = t
+	return nil
+}
+
+func (r *Registry) Definitions() []Definition {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return definitions(r.tools)
+}
+
+type Snapshot struct {
+	tools       map[string]Tool
+	definitions []Definition
+}
+
+func (r *Registry) Materialize() Snapshot {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.materialized = true
+	tools := make(map[string]Tool, len(r.tools))
+	for id, t := range r.tools {
+		tools[id] = t
+	}
+	return Snapshot{tools: tools, definitions: definitions(tools)}
+}
+
+func (s Snapshot) Definitions() []Definition {
+	out := make([]Definition, len(s.definitions))
+	for i, definition := range s.definitions {
+		out[i] = definition
+		out[i].Schema = append(json.RawMessage(nil), definition.Schema...)
+	}
+	return out
+}
+
+func definitions(tools map[string]Tool) []Definition {
+	out := make([]Definition, 0, len(tools))
+	for _, t := range tools {
+		out = append(out, Definition{t.ID(), t.Description(), append(json.RawMessage(nil), t.JSONSchema()...)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+type Authorizer interface {
+	Authorize(context.Context, permission.Request) (permission.Decision, error)
+}
+
+type Executor struct {
+	Snapshot       Snapshot
+	Permissions    Authorizer
+	MaxInputBytes  int
+	MaxOutputBytes int
+}
+
+func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, call CallContext) (Result, error) {
+	t, ok := e.Snapshot.tools[id]
+	if !ok {
+		return Result{}, fmt.Errorf("unknown tool %q", id)
+	}
+	maxInput := e.MaxInputBytes
+	if maxInput <= 0 {
+		maxInput = 1 << 20
+	}
+	if len(raw) > maxInput {
+		return Result{}, errors.New("tool input byte limit exceeded")
+	}
+	if err := checkJSONDepth(raw, 64); err != nil {
+		return Result{}, err
+	}
+	if err := validateJSON(t.JSONSchema(), raw); err != nil {
+		return Result{}, fmt.Errorf("invalid tool input: %w", err)
+	}
+	p, err := t.Plan(ctx, raw, call)
+	if err != nil {
+		return Result{}, err
+	}
+	if p.ToolID != id {
+		return Result{}, errors.New("plan tool ID mismatch")
+	}
+	hash, err := planHash(p)
+	if err != nil || hash != p.OperationHash {
+		return Result{}, errors.New("stale plan operation hash")
+	}
+	for _, request := range p.Permissions {
+		if err := request.Verify(); err != nil {
+			return Result{}, err
+		}
+		request.SessionID = call.SessionID
+		if call.Workspace != nil {
+			request.Workspace = call.Workspace.Root()
+		}
+		if e.Permissions == nil {
+			return Result{}, errors.New("permission broker is required")
+		}
+		decision, err := e.Permissions.Authorize(ctx, request)
+		if err != nil {
+			return Result{}, err
+		}
+		if decision != permission.Allow {
+			return Result{}, errors.New("tool permission denied")
+		}
+	}
+	result, err := t.Execute(ctx, p, call)
+	if err != nil {
+		return Result{}, err
+	}
+	max := e.MaxOutputBytes
+	if max <= 0 {
+		max = 64 << 10
+	}
+	if len(result.Text) > max {
+		if call.Outputs != nil {
+			stored, storeErr := call.Outputs.Store(ctx, strings.NewReader(result.Text))
+			if storeErr != nil {
+				if result.Metadata == nil {
+					result.Metadata = make(map[string]any)
+				}
+				result.Metadata["output_lossy"] = true
+				result.Text = boundedText(result.Text, max)
+				return result, nil
+			}
+			if result.Metadata == nil {
+				result.Metadata = make(map[string]any)
+			}
+			result.Metadata["output_id"] = stored.ID
+			result.Metadata["output_bytes"] = stored.Size
+			result.Text = boundedText(stored.Preview, max)
+		} else {
+			result.Text = boundedText(result.Text, max)
+		}
+	}
+	return result, nil
+}
+
+func boundedText(text string, max int) string {
+	if len(text) <= max {
+		return text
+	}
+	suffix := "\n... truncated ..."
+	if len(suffix) >= max {
+		suffix = ""
+	}
+	cut := max - len(suffix)
+	for cut > 0 && !utf8.ValidString(text[:cut]) {
+		cut--
+	}
+	return text[:cut] + suffix
+}
+
+func checkJSONDepth(raw []byte, max int) error {
+	depth := 0
+	inString, escaped := false, false
+	for _, c := range raw {
+		if inString {
+			if escaped {
+				escaped = false
+			} else if c == '\\' {
+				escaped = true
+			} else if c == '"' {
+				inString = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+			if depth > max {
+				return errors.New("tool input JSON depth limit exceeded")
+			}
+		case '}', ']':
+			depth--
+		}
+	}
+	return nil
+}
+
+type schema struct {
+	Type                 string            `json:"type"`
+	Properties           map[string]schema `json:"properties"`
+	Required             []string          `json:"required"`
+	AdditionalProperties *bool             `json:"additionalProperties"`
+	Items                *schema           `json:"items"`
+}
+
+func parseSchema(raw []byte) (schema, error) {
+	var s schema
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.DisallowUnknownFields()
+	if err := d.Decode(&s); err != nil {
+		return s, err
+	}
+	if err := d.Decode(&struct{}{}); err != io.EOF {
+		return s, errors.New("trailing schema data")
+	}
+	if _, err := permission.CanonicalJSON(raw); err != nil {
+		return s, err
+	}
+	if s.Type == "" {
+		return s, errors.New("schema type is required")
+	}
+	return s, nil
+}
+
+func validateJSON(rawSchema, raw []byte) error {
+	s, err := parseSchema(rawSchema)
+	if err != nil {
+		return err
+	}
+	d := json.NewDecoder(bytes.NewReader(raw))
+	d.UseNumber()
+	var value any
+	if err := d.Decode(&value); err != nil {
+		return err
+	}
+	if err := d.Decode(&struct{}{}); err != io.EOF {
+		return errors.New("trailing JSON data")
+	}
+	return validateValue(s, value, "input")
+}
+
+func validateValue(s schema, value any, path string) error {
+	switch s.Type {
+	case "object":
+		object, ok := value.(map[string]any)
+		if !ok {
+			return fmt.Errorf("%s must be object", path)
+		}
+		for _, key := range s.Required {
+			if _, ok := object[key]; !ok {
+				return fmt.Errorf("%s.%s is required", path, key)
+			}
+		}
+		for key, child := range object {
+			property, known := s.Properties[key]
+			if !known {
+				if s.AdditionalProperties == nil || !*s.AdditionalProperties {
+					return fmt.Errorf("unknown field %q", key)
+				}
+				continue
+			}
+			if err := validateValue(property, child, path+"."+key); err != nil {
+				return err
+			}
+		}
+	case "string":
+		if _, ok := value.(string); !ok {
+			return fmt.Errorf("%s must be string", path)
+		}
+	case "integer":
+		n, ok := value.(json.Number)
+		if !ok {
+			return fmt.Errorf("%s must be integer", path)
+		}
+		if _, err := n.Int64(); err != nil {
+			return fmt.Errorf("%s must be integer", path)
+		}
+	case "boolean":
+		if _, ok := value.(bool); !ok {
+			return fmt.Errorf("%s must be boolean", path)
+		}
+	case "array":
+		items, ok := value.([]any)
+		if !ok {
+			return fmt.Errorf("%s must be array", path)
+		}
+		if s.Items != nil {
+			for i, item := range items {
+				if err := validateValue(*s.Items, item, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+					return err
+				}
+			}
+		}
+	default:
+		return fmt.Errorf("unsupported schema type %q", s.Type)
+	}
+	return nil
+}
