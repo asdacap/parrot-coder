@@ -22,20 +22,28 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/auth"
 	"github.com/amirulashraf/parrot-coder/internal/change"
 	"github.com/amirulashraf/parrot-coder/internal/client"
+	"github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/formatter"
 	"github.com/amirulashraf/parrot-coder/internal/httpapi"
+	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/lsp"
+	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/project"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/skill"
 	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 	"github.com/amirulashraf/parrot-coder/internal/transport/inproc"
+	"github.com/amirulashraf/parrot-coder/internal/webfetch"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -68,9 +76,13 @@ type App struct {
 	Client      *Client
 	Handler     http.Handler
 	Backend     *httpapi.DomainBackend
+	Commands    *command.Registry
+	Skills      *skill.Registry
 
 	db          *store.DB
 	coordinator *agent.Coordinator
+	mcp         *mcp.Manager
+	lsp         *lsp.Manager
 	closeOnce   sync.Once
 	closeErr    error
 }
@@ -207,6 +219,15 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: workspace: %w", err)
 	}
+	skills, err := skill.Discover(skill.Options{GlobalConfig: paths.Config, ProjectRoot: info.Root, CWD: cwd})
+	if err != nil {
+		return nil, fmt.Errorf("app: skills: %w", err)
+	}
+	commands, err := command.Discover(command.Options{GlobalConfig: paths.Config, ProjectRoot: info.Root, CWD: cwd, Workspace: info.Root})
+	if err != nil {
+		return nil, fmt.Errorf("app: commands: %w", err)
+	}
+	result.Skills, result.Commands = skills, commands
 	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: filepath.Join(paths.Cache, "outputs"), PreviewBytes: 32 << 10, PreviewLines: 400, PerOutput: 64 << 20, Total: 256 << 20, Retention: 7 * 24 * time.Hour})
 	if err != nil {
 		return nil, fmt.Errorf("app: outputs: %w", err)
@@ -227,6 +248,51 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		policy.Default = options.Permission
 	}
 	permissions := permission.NewBroker(policy, options.NonInteractive, nil)
+	mcpConfigs, err := buildMCPConfigs(loaded.Config.MCP)
+	if err != nil {
+		return nil, err
+	}
+	var mcpManager *mcp.Manager
+	var mcpDefinitions []mcp.ToolDefinition
+	if len(mcpConfigs) != 0 {
+		mcpManager, err = mcp.NewManager(mcpConfigs)
+		if err != nil {
+			return nil, fmt.Errorf("app: MCP config: %w", err)
+		}
+		result.mcp = mcpManager
+		for _, item := range mcpConfigs {
+			if item.Enabled {
+				if err := mcpManager.Start(ctx, item.Name); err != nil {
+					return nil, fmt.Errorf("app: MCP server %q startup: %w", item.Name, err)
+				}
+			}
+		}
+		mcpDefinitions, err = mcpManager.DiscoverTools(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("app: MCP tool discovery: %w", err)
+		}
+	}
+	lspConfigs, lspLanguages, err := buildLSPConfigs(loaded.Config.LSP, info.Root)
+	if err != nil {
+		return nil, err
+	}
+	var lspManager *lsp.Manager
+	var lspClient tool.LSPClientFunc
+	if len(lspConfigs) != 0 {
+		lspManager, err = lsp.NewManager(lspConfigs)
+		if err != nil {
+			return nil, fmt.Errorf("app: LSP config: %w", err)
+		}
+		result.lsp = lspManager
+		lspClient = func(ctx context.Context, name string) (tool.LSPClient, error) { return lspManager.Client(ctx, name) }
+	}
+	formatterRegistry, err := buildFormatters(loaded.Config.Formatters, info.Root)
+	if err != nil {
+		return nil, err
+	}
+	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
+	subagentExecutor := &appSubagentExecutor{sessions: sessions, project: info, providers: providerRegistry, defaultSelection: session.Selection{Agent: agentID, Provider: providerID, Model: modelID}}
+	subagents := subagent.NewManager(subagentExecutor, subagent.Config{})
 	tools := tool.NewRegistry()
 	for _, builtin := range []tool.Tool{tool.NewReadTool(tool.ReadConfig{}), tool.NewGlobTool(tool.GlobConfig{}), tool.NewGrepTool(tool.GrepConfig{}), tool.NewReadOutputTool(1 << 20)} {
 		if err := tools.Register(builtin); err != nil {
@@ -236,10 +302,22 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err := tool.RegisterPhase6(tools, tool.Phase6Services{Changes: changes, Snapshots: snapshots, Processes: processes, Todos: todos, Questions: questions}); err != nil {
 		return nil, fmt.Errorf("app: register tools: %w", err)
 	}
+	agentLookup := func(id string) (bool, error) {
+		profile, err := agents.Get(id)
+		return profile.ReadOnly, err
+	}
+	if err := tool.RegisterPhase9(tools, tool.Phase9Services{
+		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
+		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages}, Formatters: formatterRegistry,
+		Changes: changes, Snapshots: snapshots, Subagents: subagents, Agents: agentLookup,
+	}); err != nil {
+		return nil, fmt.Errorf("app: register phase 9 tools: %w", err)
+	}
 	toolSnapshot := tools.Materialize()
 	guidance, _ := json.Marshal(toolSnapshot.Definitions())
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
 		AgentPrompt: "You are Parrot Coder, a local coding agent.", ToolGuidance: string(guidance),
+		Skills:    skillMetadata(skills),
 		ConfigDir: paths.Config, ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
 	})
 	if err != nil {
@@ -262,6 +340,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: runner: %w", err)
 	}
 	coordinator := agent.NewCoordinator(statusDrainer{runner: runner, live: live})
+	subagentExecutor.coordinator = coordinator
 	result.coordinator = coordinator
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, Sessions: sessions, Coordinator: coordinator, Agents: agents,
@@ -293,6 +372,12 @@ func (a *App) Close() error {
 				a.closeErr = errors.Join(a.closeErr, a.coordinator.Interrupt(ctx, active.SessionID))
 				cancel()
 			}
+		}
+		if a.mcp != nil {
+			a.closeErr = errors.Join(a.closeErr, a.mcp.Close())
+		}
+		if a.lsp != nil {
+			a.closeErr = errors.Join(a.closeErr, a.lsp.Close())
 		}
 		if a.db != nil {
 			a.closeErr = errors.Join(a.closeErr, a.db.Close())
@@ -530,4 +615,220 @@ func selectModel(configured, override string, providers []provider.Provider) (st
 		return "", "", err
 	}
 	return providerID, modelID, nil
+}
+
+func buildMCPConfigs(configs map[string]config.MCP) ([]mcp.Config, error) {
+	names := sortedKeys(configs)
+	result := make([]mcp.Config, 0, len(names))
+	for _, name := range names {
+		item := configs[name]
+		if item.StartupTimeoutMS < 0 || item.CallTimeoutMS < 0 {
+			return nil, fmt.Errorf("app: MCP server %q timeout integers cannot be negative", name)
+		}
+		if item.Transport == string(mcp.TransportStdio) {
+			if err := requireExecutable("MCP server "+strconv.Quote(name)+" command", item.Command); err != nil {
+				return nil, err
+			}
+		}
+		mapped := mcp.Config{
+			Name: name, Transport: mcp.Transport(item.Transport), Enabled: item.Enabled,
+			Command: item.Command, Args: append([]string(nil), item.Args...), Env: cloneMap(item.Env), Cwd: item.CWD,
+			URL: item.URL, Headers: cloneMap(item.Headers), AllowInsecureLocalhost: item.AllowInsecureLocalhost,
+			StartupTimeout: time.Duration(item.StartupTimeoutMS) * time.Millisecond,
+			CallTimeout:    time.Duration(item.CallTimeoutMS) * time.Millisecond,
+		}
+		if err := mapped.Validate(); err != nil {
+			return nil, fmt.Errorf("app: MCP server %q config: %w", name, err)
+		}
+		result = append(result, mapped)
+	}
+	return result, nil
+}
+
+func buildLSPConfigs(configs map[string]config.LSP, root string) ([]lsp.Config, map[string]map[string]string, error) {
+	names := sortedKeys(configs)
+	result := make([]lsp.Config, 0, len(names))
+	languages := make(map[string]map[string]string, len(names))
+	for _, name := range names {
+		item := configs[name]
+		if item.TimeoutMS < 0 {
+			return nil, nil, fmt.Errorf("app: LSP server %q timeout integer cannot be negative", name)
+		}
+		if err := requireExecutable("LSP server "+strconv.Quote(name)+" command", item.Command); err != nil {
+			return nil, nil, err
+		}
+		mapping := make(map[string]string)
+		for extension, language := range item.Languages {
+			extension = normalizeExtension(extension)
+			if extension == "" || language == "" {
+				return nil, nil, fmt.Errorf("app: LSP server %q has an empty extension or language", name)
+			}
+			mapping[extension] = language
+		}
+		for _, extension := range item.Extensions {
+			extension = normalizeExtension(extension)
+			if extension == "" {
+				return nil, nil, fmt.Errorf("app: LSP server %q has an empty extension", name)
+			}
+			if mapping[extension] == "" {
+				mapping[extension] = strings.TrimPrefix(extension, ".")
+			}
+		}
+		languages[name] = mapping
+		result = append(result, lsp.Config{Name: name, Command: item.Command, Args: append([]string(nil), item.Args...), Workspace: root, Environment: cloneMap(item.Env), Timeout: time.Duration(item.TimeoutMS) * time.Millisecond})
+	}
+	return result, languages, nil
+}
+
+func buildFormatters(configs map[string]config.Formatter, root string) (*formatter.Registry, error) {
+	if len(configs) == 0 {
+		return nil, nil
+	}
+	items := make([]formatter.Formatter, 0, len(configs))
+	for _, name := range sortedKeys(configs) {
+		item := configs[name]
+		if len(item.Command) == 0 {
+			return nil, fmt.Errorf("app: formatter %q command argv is required", name)
+		}
+		if err := requireExecutable("formatter "+strconv.Quote(name)+" command", item.Command[0]); err != nil {
+			return nil, err
+		}
+		items = append(items, formatter.Formatter{Name: name, Extensions: append([]string(nil), item.Extensions...), Command: append([]string(nil), item.Command...), Mode: formatter.Mode(item.Mode)})
+	}
+	registry, err := formatter.NewRegistry(formatter.Config{Workspace: root}, items...)
+	if err != nil {
+		return nil, fmt.Errorf("app: formatter config: %w", err)
+	}
+	return registry, nil
+}
+
+func requireExecutable(label, path string) error {
+	if path == "" || !filepath.IsAbs(path) {
+		return fmt.Errorf("app: %s must be an absolute executable path", label)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("app: %s: %w", label, err)
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return fmt.Errorf("app: %s is not an executable regular file", label)
+	}
+	return nil
+}
+
+func sortedKeys[T any](values map[string]T) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func cloneMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func normalizeExtension(extension string) string {
+	extension = strings.ToLower(strings.TrimSpace(extension))
+	if extension != "" && !strings.HasPrefix(extension, ".") {
+		extension = "." + extension
+	}
+	return extension
+}
+
+func skillMetadata(registry *skill.Registry) string {
+	items := registry.List()
+	if len(items) == 0 {
+		return ""
+	}
+	var output strings.Builder
+	output.WriteString("Available skills (load one with the skill tool):")
+	for _, item := range items {
+		fmt.Fprintf(&output, "\n- %s: %s", item.Name, item.Description)
+	}
+	return output.String()
+}
+
+type appSubagentExecutor struct {
+	sessions         *session.Service
+	coordinator      *agent.Coordinator
+	project          project.Info
+	providers        *agent.ProviderRegistry
+	defaultSelection session.Selection
+}
+
+func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
+	if e.coordinator == nil {
+		return "", errors.New("app: subagent coordinator is unavailable")
+	}
+	parent, err := e.sessions.Get(ctx, execution.ParentSession)
+	if err != nil {
+		return "", fmt.Errorf("app: subagent parent session: %w", err)
+	}
+	if parent.ProjectID != e.project.ID {
+		return "", errors.New("app: subagent parent belongs to another project")
+	}
+	selection := e.defaultSelection
+	if parent.Provider != "" && parent.Model != "" {
+		selection.Provider, selection.Model = parent.Provider, parent.Model
+	}
+	selection.Agent = execution.Request.Agent
+	if execution.Request.Model != "" {
+		if providerID, modelID, found := strings.Cut(execution.Request.Model, "/"); found {
+			selection.Provider, selection.Model = providerID, modelID
+		} else {
+			selection.Model = execution.Request.Model
+		}
+	}
+	if selection.Provider == "" || selection.Model == "" {
+		return "", errors.New("app: subagent has no default model")
+	}
+	if _, _, err := e.providers.Resolve(selection.Provider, selection.Model); err != nil {
+		return "", fmt.Errorf("app: subagent model: %w", err)
+	}
+	title := "Subtask " + execution.TaskID + " [" + execution.Request.Agent + "]"
+	child, err := e.sessions.Create(ctx, session.CreateParams{ProjectID: parent.ProjectID, Title: title})
+	if err != nil {
+		return "", err
+	}
+	if err := e.sessions.SetSelection(ctx, child.ID, selection); err != nil {
+		return "", err
+	}
+	messageID, err := id.New("msg")
+	if err != nil {
+		return "", err
+	}
+	if _, err := e.sessions.Admit(ctx, child.ID, session.AdmitParams{MessageID: messageID, Content: execution.Request.Prompt, Delivery: session.DeliverySteer}); err != nil {
+		return "", err
+	}
+	if err := e.coordinator.Resume(ctx, child.ID); err != nil {
+		if ctx.Err() != nil {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = e.coordinator.Interrupt(cleanup, child.ID)
+			cancel()
+		}
+		return "", err
+	}
+	messages, err := e.sessions.ListMessages(ctx, child.ID)
+	if err != nil {
+		return "", err
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "assistant" {
+			continue
+		}
+		if messages[i].Error != "" {
+			return messages[i].Content, errors.New(messages[i].Error)
+		}
+		return messages[i].Content, nil
+	}
+	return "", errors.New("app: subagent produced no assistant output")
 }

@@ -31,6 +31,7 @@ type CallContext struct {
 	Processes *process.Runner
 	Todos     *session.TodoService
 	Questions *question.Broker
+	Agent     string
 }
 
 type Plan struct {
@@ -289,14 +290,13 @@ type schema struct {
 	Type                 string            `json:"type"`
 	Properties           map[string]schema `json:"properties"`
 	Required             []string          `json:"required"`
-	AdditionalProperties *bool             `json:"additionalProperties"`
+	AdditionalProperties json.RawMessage   `json:"additionalProperties"`
 	Items                *schema           `json:"items"`
 }
 
 func parseSchema(raw []byte) (schema, error) {
 	var s schema
 	d := json.NewDecoder(bytes.NewReader(raw))
-	d.DisallowUnknownFields()
 	if err := d.Decode(&s); err != nil {
 		return s, err
 	}
@@ -344,8 +344,17 @@ func validateValue(s schema, value any, path string) error {
 		for key, child := range object {
 			property, known := s.Properties[key]
 			if !known {
-				if s.AdditionalProperties == nil || !*s.AdditionalProperties {
+				additional, allowed, err := additionalSchema(s.AdditionalProperties)
+				if err != nil {
+					return err
+				}
+				if !allowed {
 					return fmt.Errorf("unknown field %q", key)
+				}
+				if additional != nil {
+					if err := validateValue(*additional, child, path+"."+key); err != nil {
+						return err
+					}
 				}
 				continue
 			}
@@ -385,4 +394,19 @@ func validateValue(s schema, value any, path string) error {
 		return fmt.Errorf("unsupported schema type %q", s.Type)
 	}
 	return nil
+}
+
+func additionalSchema(raw json.RawMessage) (*schema, bool, error) {
+	if len(raw) == 0 {
+		return nil, false, nil
+	}
+	var allowed bool
+	if err := json.Unmarshal(raw, &allowed); err == nil {
+		return nil, allowed, nil
+	}
+	var value schema
+	if err := json.Unmarshal(raw, &value); err != nil || value.Type == "" {
+		return nil, false, errors.New("invalid additionalProperties schema")
+	}
+	return &value, true, nil
 }

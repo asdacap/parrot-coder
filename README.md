@@ -37,6 +37,46 @@ variable first, then from Parrot's private credential store.
 }
 ```
 
+Optional local services are configured by name. Executable paths must be
+absolute; MCP HTTP endpoints require HTTPS unless loopback HTTP is explicitly
+enabled.
+
+```jsonc
+{
+  "mcp": {
+    "docs": {
+      "transport": "http",
+      "url": "http://127.0.0.1:9000/mcp",
+      "enabled": true,
+      "allow_insecure_localhost": true,
+      "startup_timeout_ms": 15000,
+      "call_timeout_ms": 30000
+    }
+  },
+  "lsp": {
+    "go": {
+      "command": "/absolute/path/to/gopls",
+      "extensions": [".go"],
+      "languages": {".go": "go"}
+    }
+  },
+  "formatters": {
+    "gofmt": {
+      "extensions": [".go"],
+      "command": ["/absolute/path/to/gofmt"],
+      "mode": "stdin"
+    }
+  },
+  "web_fetch": {"allow_private": false}
+}
+```
+
+Skills are discovered from `skills/**/SKILL.md` under the global config
+directory and `.parrot/skills/**/SKILL.md` in project scopes. Custom commands
+are discovered similarly from `commands/**/*.md` and
+`.parrot/commands/**/*.md`; they appear in chat `/help` and run as ordinary
+typed prompts.
+
 For a compatible provider, store a key without placing it in shell history:
 
 ```sh

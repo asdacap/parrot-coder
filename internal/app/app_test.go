@@ -1,18 +1,23 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
+	"github.com/amirulashraf/parrot-coder/internal/config"
 )
 
 func TestCompositionEndToEndInProcess(t *testing.T) {
@@ -112,4 +117,202 @@ func TestCompositionEndToEndInProcess(t *testing.T) {
 	if got := messages.Items[len(messages.Items)-1]; got.Role != "assistant" || got.Content != "hello from provider" || got.Status != "complete" {
 		t.Fatalf("last message = %#v", got)
 	}
+}
+
+func TestOpenDiscoversSkillsCommandsAndNeedsNoOptionalConfig(t *testing.T) {
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	paths := appdirs.Overrides{Home: root, ConfigHome: configHome, DataHome: filepath.Join(root, "data"), StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache")}
+	if err := os.MkdirAll(filepath.Join(root, ".parrot", "skills", "review"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".parrot", "skills", "review", "SKILL.md"), []byte("---\nname: review\ndescription: Review code\n---\nExact instructions\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".parrot", "commands"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".parrot", "commands", "check.md"), []byte("---\ndescription: Check code\n---\nCheck $ARGUMENTS"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if got := runtime.Skills.List(); len(got) != 1 || got[0].Name != "review" {
+		t.Fatalf("skills = %#v", got)
+	}
+	expansion, err := runtime.Commands.Expand("check", "this")
+	if err != nil || expansion.Prompt != "Check this" {
+		t.Fatalf("command expansion = %#v, %v", expansion, err)
+	}
+}
+
+func TestOpenStartsEnabledMCPAndDiscoversBeforeCompletion(t *testing.T) {
+	var lists atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Error(err)
+			return
+		}
+		if request.Method == "notifications/initialized" {
+			w.WriteHeader(http.StatusAccepted)
+			return
+		}
+		var result any
+		switch request.Method {
+		case "initialize":
+			result = map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "app-fixture", "version": "1"}}
+		case "tools/list":
+			lists.Add(1)
+			result = map[string]any{"tools": []any{map[string]any{"name": "echo", "description": "Echo", "inputSchema": map[string]any{"type": "object", "properties": map[string]any{"value": map[string]any{"type": "string"}}}}}}
+		default:
+			t.Errorf("unexpected MCP method %q", request.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"jsonrpc": "2.0", "id": request.ID, "result": result})
+	}))
+	defer server.Close()
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	configDir := filepath.Join(configHome, "parrot")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configuration := fmt.Sprintf(`{"mcp":{"fixture":{"transport":"http","url":%q,"enabled":true,"allow_insecure_localhost":true}}}`, server.URL)
+	if err := os.WriteFile(filepath.Join(configDir, "parrot.jsonc"), []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	paths := appdirs.Overrides{Home: root, ConfigHome: configHome, DataHome: filepath.Join(root, "data"), StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache")}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if lists.Load() == 0 {
+		t.Fatal("MCP tools were not discovered during Open")
+	}
+}
+
+func TestOpenDoesNotStartDisabledMCPAndNamesStartupFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		http.Error(w, "failed", http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	open := func(enabled bool) error {
+		root := t.TempDir()
+		configHome := filepath.Join(root, "config")
+		configDir := filepath.Join(configHome, "parrot")
+		if err := os.MkdirAll(configDir, 0o700); err != nil {
+			return err
+		}
+		configuration := fmt.Sprintf(`{"mcp":{"broken":{"transport":"http","url":%q,"enabled":%t,"allow_insecure_localhost":true}}}`, server.URL, enabled)
+		if err := os.WriteFile(filepath.Join(configDir, "parrot.jsonc"), []byte(configuration), 0o600); err != nil {
+			return err
+		}
+		paths := appdirs.Overrides{Home: root, ConfigHome: configHome, DataHome: filepath.Join(root, "data"), StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache")}
+		runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+		if runtime != nil {
+			_ = runtime.Close()
+		}
+		return err
+	}
+	if err := open(false); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("disabled MCP server received %d calls", calls.Load())
+	}
+	err := open(true)
+	if err == nil || !strings.Contains(err.Error(), `MCP server "broken" startup`) {
+		t.Fatalf("startup error = %v", err)
+	}
+}
+
+func TestConfigExecutableErrorNamesEntry(t *testing.T) {
+	_, _, err := buildLSPConfigs(map[string]config.LSP{"go": {Command: "gopls"}}, t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), `LSP server "go" command must be an absolute executable path`) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch {
+		case bytes.Contains(body, []byte("function_call_output")):
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent received child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		case bytes.Contains(body, []byte("child prompt")):
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		default:
+			arguments := `{"prompt":"child prompt","agent":"explore"}`
+			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_task\",\"type\":\"function_call\",\"call_id\":\"call_task\",\"name\":\"task\",\"arguments\":%q}}\n\n", arguments)
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		}
+	}))
+	defer provider.Close()
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	configDir := filepath.Join(configHome, "parrot")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configuration := fmt.Sprintf(`{"model":"local/model","providers":{"local":{"type":"compatible","protocol":"responses","base_url":%q,"api_key_env":"PARROT_TASK_KEY","allow_insecure_localhost":true,"models":{"model":{"tools":true}}}}}`, provider.URL+"/v1")
+	if err := os.WriteFile(filepath.Join(configDir, "parrot.jsonc"), []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PARROT_TASK_KEY", "secret")
+	paths := appdirs.Overrides{Home: root, ConfigHome: configHome, DataHome: filepath.Join(root, "data"), StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache")}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	parent, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{ProjectID: runtime.Project.ID, Title: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Client.Prompt(context.Background(), parent.ID, v1.PromptRequest{MessageID: "msg_parent", Content: "delegate", Delivery: "steer"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messages, err := runtime.Client.Messages(context.Background(), parent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range messages.Items {
+			if message.Role == "assistant" && message.Content == "parent received child output" {
+				sessions, err := runtime.Client.Sessions(context.Background())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(sessions.Items) != 2 {
+					t.Fatalf("sessions = %#v", sessions.Items)
+				}
+				for _, item := range sessions.Items {
+					if item.ID != parent.ID && (!strings.HasPrefix(item.Title, "Subtask ") || item.ProjectID != parent.ProjectID || item.Agent != "explore") {
+						t.Fatalf("child session = %#v", item)
+					}
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	messages, _ := runtime.Client.Messages(context.Background(), parent.ID)
+	sessions, _ := runtime.Client.Sessions(context.Background())
+	t.Fatalf("task tool did not return child output; messages=%#v sessions=%#v", messages.Items, sessions.Items)
 }

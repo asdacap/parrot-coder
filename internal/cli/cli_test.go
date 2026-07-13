@@ -13,6 +13,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 )
 
 func TestHelp(t *testing.T) {
@@ -57,6 +60,32 @@ func TestUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `unknown command "missing"`) {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestChatHelpListsCustomCommandsAndSubtaskUsesNormalPrompt(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, ".parrot", "commands", "review.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("---\ndescription: Review changes\n---\nReview"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	commands, err := customcommand.Discover(customcommand.Options{ProjectRoot: root, CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var api apiClient
+	var current v1.Session
+	var stdout, stderr bytes.Buffer
+	exit, code := chatSlash(context.Background(), &api, &current, "/help", &stdout, &stderr, &codingFlags{}, commands)
+	if exit || code != exitOK || !strings.Contains(stdout.String(), "/review\tReview changes") {
+		t.Fatalf("help = %q, exit=%t, code=%d", stdout.String(), exit, code)
+	}
+	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explore", Model: "local/model", Subtask: true})
+	if !strings.Contains(prompt, "using the task tool") || !strings.Contains(prompt, `agent "explore"`) || !strings.HasSuffix(prompt, "Inspect this") {
+		t.Fatalf("subtask prompt = %q", prompt)
 	}
 }
 

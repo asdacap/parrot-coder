@@ -129,6 +129,37 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 	}
 }
 
+func TestLoadPhase9MapsMergeAndDecode(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	project := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(configDir, FileName), `{
+		"mcp": {"docs": {"transport":"http","url":"https://example.test/mcp","enabled":true,"headers":{"X-One":"1"},"startup_timeout_ms":1000,"call_timeout_ms":2000}},
+		"lsp": {"go": {"command":"/usr/bin/false","args":["serve"],"env":{"A":"B"},"extensions":[".go"],"languages":{".go":"go"}}},
+		"formatters": {"gofmt": {"extensions":["go"],"command":["/usr/bin/gofmt"],"mode":"stdin"}},
+		"web_fetch": {"allow_private": true}
+	}`)
+	writeFile(t, filepath.Join(project, FileName), `{"mcp":{"docs":{"headers":{"X-Two":"2"}}},"lsp":{"go":{"timeout_ms":3000}}}`)
+	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := result.Config.MCP["docs"]
+	if server.Transport != "http" || !server.Enabled || server.StartupTimeoutMS != 1000 || server.CallTimeoutMS != 2000 || server.Headers["X-One"] != "1" || server.Headers["X-Two"] != "2" {
+		t.Fatalf("MCP = %#v", server)
+	}
+	language := result.Config.LSP["go"]
+	if language.Command != "/usr/bin/false" || language.TimeoutMS != 3000 || language.Languages[".go"] != "go" {
+		t.Fatalf("LSP = %#v", language)
+	}
+	if formatter := result.Config.Formatters["gofmt"]; formatter.Mode != "stdin" || !reflect.DeepEqual(formatter.Extensions, []string{"go"}) {
+		t.Fatalf("formatter = %#v", formatter)
+	}
+	if !result.Config.WebFetch.AllowPrivate {
+		t.Fatal("web_fetch.allow_private was not decoded")
+	}
+}
+
 func writeFile(t *testing.T, path, contents string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

@@ -18,8 +18,45 @@ const FileName = "parrot.jsonc"
 
 // Config is the typed configuration consumed by later application phases.
 type Config struct {
-	DefaultModel string              `json:"model,omitempty"`
-	Providers    map[string]Provider `json:"providers,omitempty"`
+	DefaultModel string               `json:"model,omitempty"`
+	Providers    map[string]Provider  `json:"providers,omitempty"`
+	MCP          map[string]MCP       `json:"mcp,omitempty"`
+	LSP          map[string]LSP       `json:"lsp,omitempty"`
+	Formatters   map[string]Formatter `json:"formatters,omitempty"`
+	WebFetch     WebFetch             `json:"web_fetch,omitempty"`
+}
+
+type MCP struct {
+	Transport              string            `json:"transport"`
+	Command                string            `json:"command,omitempty"`
+	Args                   []string          `json:"args,omitempty"`
+	Env                    map[string]string `json:"env,omitempty"`
+	CWD                    string            `json:"cwd,omitempty"`
+	URL                    string            `json:"url,omitempty"`
+	Headers                map[string]string `json:"headers,omitempty"`
+	Enabled                bool              `json:"enabled"`
+	AllowInsecureLocalhost bool              `json:"allow_insecure_localhost,omitempty"`
+	StartupTimeoutMS       int               `json:"startup_timeout_ms,omitempty"`
+	CallTimeoutMS          int               `json:"call_timeout_ms,omitempty"`
+}
+
+type LSP struct {
+	Command    string            `json:"command"`
+	Args       []string          `json:"args,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Extensions []string          `json:"extensions,omitempty"`
+	Languages  map[string]string `json:"languages,omitempty"`
+	TimeoutMS  int               `json:"timeout_ms,omitempty"`
+}
+
+type Formatter struct {
+	Extensions []string `json:"extensions"`
+	Command    []string `json:"command"`
+	Mode       string   `json:"mode,omitempty"`
+}
+
+type WebFetch struct {
+	AllowPrivate bool `json:"allow_private,omitempty"`
 }
 
 // Provider describes an OpenAI-compatible provider and its known models.
@@ -179,6 +216,15 @@ func Load(options Options) (Result, error) {
 	}
 	if typed.Providers == nil {
 		typed.Providers = make(map[string]Provider)
+	}
+	if typed.MCP == nil {
+		typed.MCP = make(map[string]MCP)
+	}
+	if typed.LSP == nil {
+		typed.LSP = make(map[string]LSP)
+	}
+	if typed.Formatters == nil {
+		typed.Formatters = make(map[string]Formatter)
 	}
 	return Result{Config: typed, Sources: sources, Provenance: provenance}, nil
 }

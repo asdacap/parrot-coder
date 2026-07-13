@@ -25,6 +25,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
 	"github.com/amirulashraf/parrot-coder/internal/auth"
 	"github.com/amirulashraf/parrot-coder/internal/client"
+	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
@@ -583,11 +584,37 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 			continue
 		}
 		if strings.HasPrefix(strings.TrimSpace(line), "/") {
-			exit, code := chatSlash(ctx, &api, &current, strings.TrimSpace(line), stdout, stderr, &options)
-			if exit {
-				return code
+			trimmed := strings.TrimSpace(line)
+			name, arguments := slashParts(trimmed)
+			if isBuiltinSlash(name) {
+				exit, code := chatSlash(ctx, &api, &current, trimmed, stdout, stderr, &options, runtime.Commands)
+				if exit {
+					return code
+				}
+				continue
 			}
-			continue
+			expansion, expandErr := runtime.Commands.Expand(strings.TrimPrefix(name, "/"), arguments)
+			if expandErr != nil {
+				fmt.Fprintf(stderr, "unknown slash command %q: %v\n", name, expandErr)
+				continue
+			}
+			if expansion.Subtask {
+				line = subtaskPrompt(expansion)
+			} else {
+				if expansion.Agent != "" {
+					options.agent = expansion.Agent
+				}
+				if expansion.Model != "" {
+					options.model = expansion.Model
+				}
+				if current.ID != "" {
+					if err := applySelection(ctx, api, current.ID, expansion.Agent, expansion.Model); err != nil {
+						fmt.Fprintln(stderr, err)
+						continue
+					}
+				}
+				line = expansion.Prompt
+			}
 		}
 		if current.ID == "" {
 			current, err = chooseSession(ctx, api, runtime.Project.ID, false, "", line)
@@ -619,13 +646,16 @@ type idleLine struct {
 	err  error
 }
 
-func chatSlash(ctx context.Context, api *apiClient, current *v1.Session, line string, stdout, stderr io.Writer, options *codingFlags) (bool, int) {
+func chatSlash(ctx context.Context, api *apiClient, current *v1.Session, line string, stdout, stderr io.Writer, options *codingFlags, commands *customcommand.Registry) (bool, int) {
 	fields := strings.Fields(line)
 	command := fields[0]
 	argument := strings.TrimSpace(strings.TrimPrefix(line, command))
 	switch command {
 	case "/help":
 		fmt.Fprint(stdout, "/help /model /agent /new /resume /connect /thinking /undo /redo /exit\n")
+		for _, item := range commands.List() {
+			fmt.Fprintf(stdout, "/%s\t%s\n", item.Name, item.Description)
+		}
 	case "/model":
 		if argument == "" {
 			fmt.Fprintf(stdout, "model: %s\n", options.model)
@@ -711,6 +741,37 @@ func chatSlash(ctx context.Context, api *apiClient, current *v1.Session, line st
 		fmt.Fprintf(stderr, "unknown slash command %q\n", command)
 	}
 	return false, exitOK
+}
+
+func slashParts(line string) (string, string) {
+	name, arguments, found := strings.Cut(line, " ")
+	if !found {
+		return line, ""
+	}
+	return name, strings.TrimSpace(arguments)
+}
+
+func isBuiltinSlash(name string) bool {
+	switch name {
+	case "/help", "/model", "/agent", "/new", "/resume", "/connect", "/thinking", "/undo", "/redo", "/exit":
+		return true
+	default:
+		return false
+	}
+}
+
+func subtaskPrompt(expansion customcommand.Expansion) string {
+	var request strings.Builder
+	request.WriteString("Delegate the following task using the task tool")
+	if expansion.Agent != "" {
+		fmt.Fprintf(&request, " with agent %q", expansion.Agent)
+	}
+	if expansion.Model != "" {
+		fmt.Fprintf(&request, " and model %q", expansion.Model)
+	}
+	request.WriteString(". Return the child task's result.\n\n")
+	request.WriteString(expansion.Prompt)
+	return request.String()
 }
 
 func (a *App) modelsCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
