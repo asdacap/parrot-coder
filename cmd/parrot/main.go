@@ -3,8 +3,6 @@ package main
 import (
 	"context"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/amirulashraf/parrot-coder/internal/cli"
 )
@@ -16,7 +14,7 @@ var (
 )
 
 func main() {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, stop := cli.SignalContext(context.Background())
 	defer stop()
 
 	app := cli.New(cli.BuildInfo{
