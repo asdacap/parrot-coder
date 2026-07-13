@@ -1,0 +1,94 @@
+# Architecture
+
+Parrot Coder is a local-first coding agent implemented as a single Go binary.
+It follows OpenCode's service boundaries without preserving OpenCode's wire or
+configuration formats.
+
+## Principles
+
+1. A prompt is durable before execution is requested.
+2. At most one foreground drain owns a session in one process.
+3. A provider turn is an explicit, cancellable boundary.
+4. System context is immutable within a context epoch.
+5. A tool call is durable before its side effects begin.
+6. Every local tool call settles before the next provider turn.
+7. Permissions authorize a canonical operation, not only a tool name.
+8. Authorization and operating-system containment are separate concerns.
+9. Durable events and their query projections commit atomically.
+10. Live token deltas are disposable; final message state is durable.
+11. The local CLI and remote clients use the same HTTP contract.
+12. Local mode invokes the HTTP handler through an in-process streaming
+    transport and does not bind a port.
+
+## Components
+
+```text
+CLI / API client
+       |
+       v
+HTTP and SSE contract
+       |
+       v
+Application services
+  |       |       |
+sessions tools providers
+  |       |       |
+  +-------+-------+
+          |
+      SQLite/events
+```
+
+The application owns storage, providers, the event broker, tool registrations,
+and session execution. The HTTP listener is optional and has a separate
+lifecycle. Request handlers must not construct long-lived dependencies.
+
+## Session Runtime
+
+Input has two delivery modes:
+
+- `steer`: promote at the next safe provider-turn boundary.
+- `queue`: promote one item when the current continuation would otherwise stop.
+
+A session drain is process-local coordination, not a durable entity. Recovery
+uses admitted prompts, projected messages, context epochs, and terminal tool
+states. The runtime must not claim exactly-once provider execution after an
+uncertain process failure.
+
+A safe provider-turn boundary performs these operations in order:
+
+1. Initialize or reconcile the context epoch.
+2. Promote eligible input.
+3. Resolve the selected agent and model.
+4. Load active history.
+5. Materialize an immutable tool registry snapshot.
+6. Compact history if required.
+7. Invoke the provider.
+
+Tool calls are recorded before execution. Tools may execute concurrently, but
+event publication is serialized and all tools settle before continuation.
+
+## Context Epochs
+
+A context epoch stores the exact baseline text sent to the provider, typed
+source snapshots, and a history cutoff. Context sources are sampled only at a
+safe provider-turn boundary. Changes become durable chronological system
+messages. Completed compaction starts a new epoch.
+
+Initial context sources are the agent prompt, date, platform, working directory,
+project metadata, `AGENTS.md` files, available skills, and tool guidance.
+
+## Extension Boundaries
+
+Provider protocols, secret storage, tools, MCP transports, LSP processes, and
+formatters are replaceable I/O boundaries. Internal domain behavior should use
+concrete types until an interface is required by one of those boundaries.
+
+Parrot does not execute JavaScript or TypeScript plugins. External extension is
+provided by MCP, configured processes, skills, commands, and compile-time Go
+tool registration.
+
+## Initial Platform Scope
+
+The first stable release supports macOS and Linux. Windows-specific paths,
+credential storage, process trees, and terminal behavior remain explicit future
+work rather than partially supported behavior.
