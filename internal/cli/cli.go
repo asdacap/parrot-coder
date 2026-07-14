@@ -103,6 +103,8 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return a.usageCommand(ctx, args[1:], out, errout)
 	case "agents":
 		return a.agentsCommand(ctx, args[1:], out, errout)
+	case "modes":
+		return a.modesCommand(ctx, args[1:], out, errout)
 	case "session":
 		return a.sessionCommand(ctx, args[1:], out, errout)
 	case "auth":
@@ -129,7 +131,8 @@ func addCodingFlags(fs *flag.FlagSet, options *codingFlags) {
 	fs.BoolVar(&options.continued, "continue", false, "continue the most recent session")
 	fs.StringVar(&options.session, "session", "", "continue a session ID")
 	fs.StringVar(&options.model, "model", "", "select provider/model")
-	fs.StringVar(&options.agent, "agent", "", "select an agent profile")
+	fs.StringVar(&options.agent, "mode", "", "select a foreground mode")
+	fs.StringVar(&options.agent, "agent", "", "deprecated alias for --mode")
 	fs.StringVar(&options.variant, "variant", "", "select a model reasoning variant")
 	fs.BoolVar(&options.thinking, "thinking", false, "show reasoning status")
 }
@@ -1148,8 +1151,10 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/models", Description: "list available models"},
 	{Value: "/usage", Description: "show ChatGPT subscription usage"},
 	{Value: "/model", Description: "select a model"},
-	{Value: "/agents", Description: "list available agents"},
-	{Value: "/agent", Description: "select an agent"},
+	{Value: "/modes", Description: "list available modes"},
+	{Value: "/mode", Description: "select a mode"},
+	{Value: "/agents", Description: "deprecated alias for /modes"},
+	{Value: "/agent", Description: "deprecated alias for /mode"},
 	{Value: "/sessions", Description: "list sessions"},
 	{Value: "/session", Description: "switch sessions"},
 	{Value: "/resume", Description: "resume an interrupted session"},
@@ -1218,8 +1223,8 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		} else if err := s.selectModel(argument); err != nil {
 			s.commitError(err.Error())
 		}
-	case "/agents":
-		items, err := s.api.Agents(s.ctx)
+	case "/agents", "/modes":
+		items, err := s.modes()
 		if err != nil {
 			s.commitError(err.Error())
 			break
@@ -1230,9 +1235,9 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		for _, item := range items.Items {
 			s.commit(fmt.Sprintf("%s\tread_only=%t\tmax_turns=%d", item.ID, item.ReadOnly, item.MaxTurns))
 		}
-	case "/agent":
+	case "/agent", "/mode":
 		if argument == "" {
-			items, err := s.api.Agents(s.ctx)
+			items, err := s.modes()
 			if err != nil {
 				s.commitError(err.Error())
 				break
@@ -1245,7 +1250,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 				s.commit("no agents available")
 				break
 			}
-			picked, pickErr := s.pick("agent> ", candidates)
+			picked, pickErr := s.pick("mode> ", candidates)
 			if pickErr != nil {
 				break
 			}
@@ -1441,8 +1446,22 @@ func (s *chatShell) selectAgent(argument string) error {
 	return s.applyAgent(argument, true)
 }
 
+func (s *chatShell) modes() (v1.AgentList, error) {
+	if api, ok := s.api.(interface {
+		Modes(context.Context) (v1.ModeList, error)
+	}); ok {
+		items, err := api.Modes(s.ctx)
+		out := v1.AgentList{Items: make([]v1.Agent, len(items.Items))}
+		for i, item := range items.Items {
+			out.Items[i] = v1.Agent{ID: item.ID, ReadOnly: item.ReadOnly, MaxTurns: item.MaxTurns}
+		}
+		return out, err
+	}
+	return s.api.Agents(s.ctx)
+}
+
 func (s *chatShell) applyAgent(argument string, announce bool) error {
-	items, err := s.api.Agents(s.ctx)
+	items, err := s.modes()
 	if err != nil {
 		return err
 	}
@@ -1451,7 +1470,7 @@ func (s *chatShell) applyAgent(argument string, announce bool) error {
 		found = found || item.ID == argument
 	}
 	if !found {
-		return fmt.Errorf("unknown agent %q", argument)
+		return fmt.Errorf("unknown mode %q", argument)
 	}
 	if s.current.ID != "" {
 		if err := applySelection(s.ctx, s.api, s.current.ID, argument, "", ""); err != nil {
@@ -1461,13 +1480,13 @@ func (s *chatShell) applyAgent(argument string, announce bool) error {
 	s.selection.agent = argument
 	s.current.Agent = argument
 	if announce {
-		s.commitStatus("✓ Agent selected: " + argument)
+		s.commitStatus("✓ Mode selected: " + argument)
 	}
 	return nil
 }
 
 func (s *chatShell) nextAgent(current string) (string, error) {
-	items, err := s.api.Agents(s.ctx)
+	items, err := s.modes()
 	if err != nil {
 		return "", err
 	}
@@ -1702,6 +1721,31 @@ func (a *App) agentsCommand(ctx context.Context, args []string, stdout, stderr i
 	}
 	defer runtime.Close()
 	items, err := runtime.Client.Agents(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitError
+	}
+	for _, item := range items.Items {
+		fmt.Fprintf(stdout, "%s\tread_only=%t\tmax_turns=%d\n", item.ID, item.ReadOnly, item.MaxTurns)
+	}
+	return exitOK
+}
+
+func (a *App) modesCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("modes", stderr)
+	if err := fs.Parse(args); err != nil {
+		return flagCode(err)
+	}
+	if fs.NArg() != 0 {
+		return usageError(stderr, "modes takes no arguments")
+	}
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitError
+	}
+	defer runtime.Close()
+	items, err := runtime.Client.Modes(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitError
@@ -2035,7 +2079,8 @@ Commands:
   auth       manage provider credentials
   models     list configured models
   usage      show ChatGPT subscription usage
-  agents     list available agents
+  modes      list foreground modes
+  agents     list task subagents
   session    manage sessions
   serve      start the HTTP API server
   version    print build information

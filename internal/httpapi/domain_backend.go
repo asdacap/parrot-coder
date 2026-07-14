@@ -12,6 +12,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/agent"
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/question"
@@ -27,6 +28,7 @@ type DomainBackend struct {
 	Sessions           *session.Service
 	Coordinator        *agent.Coordinator
 	Agents             *agent.Registry
+	Modes              *mode.Registry
 	Providers          []provider.Provider
 	Permissions        *permission.Broker
 	Questions          *question.Broker
@@ -75,6 +77,9 @@ func (b *DomainBackend) ListSessions(ctx context.Context) (v1.SessionList, error
 
 func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSessionRequest) (v1.Session, error) {
 	selection := b.DefaultSelection
+	if request.Mode != "" {
+		request.Agent = request.Mode
+	}
 	if request.Variant != nil {
 		selection.Variant = *request.Variant
 	}
@@ -108,6 +113,9 @@ func (b *DomainBackend) GetSession(ctx context.Context, id string) (v1.Session, 
 }
 
 func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
+	if request.Mode != "" {
+		request.Agent = request.Mode
+	}
 	if request.Agent == "" && request.Model == "" && request.Variant == nil {
 		return v1.SessionSelection{}, ErrInvalid
 	}
@@ -532,12 +540,24 @@ func (b *DomainBackend) ListAgents(context.Context) (v1.AgentList, error) {
 	return out, nil
 }
 
+func (b *DomainBackend) ListModes(context.Context) (v1.ModeList, error) {
+	out := v1.ModeList{Items: []v1.Mode{}}
+	if b.Modes == nil {
+		return out, nil
+	}
+	for _, item := range b.Modes.List() {
+		profile := item.Profile()
+		out.Items = append(out.Items, v1.Mode{ID: item.ID(), ReadOnly: profile.ReadOnly, MaxTurns: profile.MaxTurns, ReviewPlan: item.ReviewPlan()})
+	}
+	return out, nil
+}
+
 func sessionDTO(item session.Session) v1.Session {
-	return v1.Session{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	return v1.Session{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 }
 
 func selectionDTO(item session.Session) v1.SessionSelection {
-	return v1.SessionSelection{Agent: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant}
+	return v1.SessionSelection{Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant}
 }
 
 func completeSelection(selection session.Selection) bool {
@@ -548,11 +568,23 @@ func (b *DomainBackend) validateSelection(selection session.Selection) error {
 	if !completeSelection(selection) {
 		return ErrModelRequired
 	}
-	if b.Agents == nil {
-		return errors.New("httpapi: agent registry is unavailable")
-	}
-	if _, err := b.Agents.Get(selection.Agent); err != nil {
-		return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
+	if b.Modes != nil {
+		if _, err := b.Modes.Get(selection.Agent); err != nil {
+			// Agent remains a compatibility input and is used by task sessions.
+			if b.Agents == nil {
+				return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
+			}
+			if _, agentErr := b.Agents.Get(selection.Agent); agentErr != nil {
+				return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
+			}
+		}
+	} else {
+		if b.Agents == nil {
+			return errors.New("httpapi: mode registry is unavailable")
+		}
+		if _, err := b.Agents.Get(selection.Agent); err != nil {
+			return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
+		}
 	}
 	resolver := b.ProviderResolver
 	if resolver == nil {

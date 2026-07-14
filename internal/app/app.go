@@ -32,6 +32,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/lsp"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
+	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/project"
@@ -63,6 +64,7 @@ type Options struct {
 	Version        string
 	Model          string
 	Agent          string
+	Mode           string
 	Permission     permission.Decision
 	NonInteractive bool
 	AllowNoModel   bool
@@ -102,8 +104,8 @@ type Client struct {
 	http *http.Client
 }
 
-func (c *Client) SelectSession(ctx context.Context, sessionID, agentID, model string) error {
-	_, err := c.UpdateSessionSelection(ctx, sessionID, v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model})
+func (c *Client) SelectSession(ctx context.Context, sessionID, modeID, model string) error {
+	_, err := c.UpdateSessionSelection(ctx, sessionID, v1.UpdateSessionSelectionRequest{Mode: modeID, Model: model})
 	return err
 }
 
@@ -167,16 +169,23 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return nil, err
 		}
 	}
-	agents, err := agent.NewRegistry()
+	modes, err := mode.NewRegistry()
 	if err != nil {
 		return nil, fmt.Errorf("app: agents: %w", err)
 	}
-	agentID := options.Agent
+	agentID := options.Mode
 	if agentID == "" {
-		agentID = agent.BuildID
+		agentID = options.Agent
 	}
-	if _, err := agents.Get(agentID); err != nil {
+	if agentID == "" {
+		agentID = mode.BuildID
+	}
+	if _, err := modes.Get(agentID); err != nil {
 		return nil, fmt.Errorf("app: %w", err)
+	}
+	taskAgents, err := agent.NewRegistry(agent.Subagents()...)
+	if err != nil {
+		return nil, fmt.Errorf("app: subagents: %w", err)
 	}
 	providerRegistry, err := agent.NewProviderRegistry(providers...)
 	if err != nil {
@@ -316,7 +325,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: register tools: %w", err)
 	}
 	agentLookup := func(id string) (bool, error) {
-		profile, err := agents.Get(id)
+		profile, err := combinedProfileResolver{modes: modes, agents: taskAgents}.GetProfile(id)
 		return profile.ReadOnly, err
 	}
 	if err := tool.RegisterPhase9(tools, tool.Phase9Services{
@@ -350,7 +359,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.compactions = compactionRepository
 	runner, err := agent.NewRunner(agent.RunnerConfig{
-		Sessions: sessions, Contexts: contexts, Agents: agents, Providers: providerRegistry,
+		Sessions: sessions, Contexts: contexts, Profiles: combinedProfileResolver{modes: modes, agents: taskAgents}, Providers: providerRegistry,
 		ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
@@ -365,7 +374,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	subagentExecutor.coordinator = coordinator
 	result.coordinator = coordinator
 	backend := &httpapi.DomainBackend{
-		Version: options.Version, Sessions: sessions, Coordinator: coordinator, Agents: agents,
+		Version: options.Version, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Snapshots: snapshots,
 		Workspace: ws, Events: repository, Live: live, DefaultSelection: defaultSelection,
 		ProviderResolver: providerRegistry,
@@ -387,7 +396,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		if err != nil {
 			return v1.Compaction{}, err
 		}
-		profile, err := agents.Get(selected.Agent)
+		profile, err := modes.GetProfile(selected.Agent)
 		if err != nil {
 			return v1.Compaction{}, err
 		}
@@ -990,4 +999,16 @@ func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {
 			report(subagent.Progress{Usage: subagent.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, TotalTokens: status.Usage.TotalTokens, ReasoningTokens: status.Usage.ReasoningTokens, CachedInputTokens: status.Usage.CachedInputTokens}})
 		}
 	}
+}
+
+type combinedProfileResolver struct {
+	modes  *mode.Registry
+	agents *agent.Registry
+}
+
+func (r combinedProfileResolver) GetProfile(id string) (agent.Profile, error) {
+	if profile, err := r.modes.GetProfile(id); err == nil {
+		return profile, nil
+	}
+	return r.agents.Get(id)
 }

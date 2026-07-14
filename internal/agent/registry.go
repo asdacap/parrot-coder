@@ -54,6 +54,14 @@ func Builtins() []Profile {
 	}
 }
 
+// Subagents returns task-only profiles, not foreground modes.
+func Subagents() []Profile {
+	readTools := []string{"glob", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread"}
+	return []Profile{{ID: ExploreID, Prompt: "You are Parrot's exploration agent. Investigate the project and report evidence.", AllowedToolIDs: readTools, HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 32, ReadOnly: true}}
+}
+
+func (r *Registry) GetProfile(id string) (Profile, error) { return r.Get(id) }
+
 func (r *Registry) Register(profile Profile) error {
 	if profile.ID == "" || profile.Prompt == "" || profile.MaxTurns <= 0 {
 		return errors.New("agent: ID, prompt, and positive max turns are required")
