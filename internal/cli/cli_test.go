@@ -765,6 +765,74 @@ func TestEnhancedFailedToolCommitsInputAsIndentedYAML(t *testing.T) {
 	}
 }
 
+func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{
+		shell:           &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 100})},
+		streamMessageID: "assistant",
+	}
+	pending, _ := json.Marshal(map[string]any{
+		"call_id": "todo_call", "name": "todowrite",
+		"input": map[string]any{"todos": []any{map[string]any{"content": "old input", "status": "pending", "priority": "low"}}},
+	})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	result, _ := json.Marshal([]map[string]any{
+		{"id": "todo_1", "content": "Plan work", "status": "pending", "priority": "high", "position": 0},
+		{"id": "todo_2", "content": "Implement UI", "status": "in_progress", "priority": "medium", "position": 1},
+		{"id": "todo_3", "content": "Run tests", "status": "completed", "priority": "low", "position": 2},
+		{"id": "todo_4", "content": "Discard old approach", "status": "cancelled", "priority": "low", "position": 3},
+	})
+	success, _ := json.Marshal(map[string]string{"call_id": "todo_call", "status": "success", "result": string(result)})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+
+	if output.Len() != 0 {
+		t.Fatalf("todowrite split the active assistant message: %q", output.String())
+	}
+	runtime.streamMessageID = ""
+	if err := runtime.flushCompletedTools(); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{
+		"✓ todowrite · 4 items ·",
+		"○ pending · high · Plan work",
+		"◐ in progress · medium · Implement UI",
+		"✓ completed · low · Run tests",
+		"■ cancelled · low · Discard old approach",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("todowrite block = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "todo_1") || strings.Contains(got, "old input") {
+		t.Fatalf("todowrite block exposed IDs or ignored authoritative result: %q", got)
+	}
+}
+
+func TestTodoWriteBlockFallsBackToInputAndHandlesEmptyList(t *testing.T) {
+	input := map[string]any{"todos": []any{
+		map[string]any{"content": "Safe\ncontent", "status": "pending", "priority": "high"},
+	}}
+	block, count, ok := formatTodoWriteBlock("", input)
+	if !ok || count != 1 || !strings.Contains(block, "○ pending · high · Safe content") || strings.Contains(block, "\ncontent") {
+		t.Fatalf("fallback block = %q, ok = %v", block, ok)
+	}
+	empty, count, ok := formatTodoWriteBlock("[]", input)
+	if !ok || count != 0 || empty != "  No todos" {
+		t.Fatalf("empty block = %q, ok = %v", empty, ok)
+	}
+	if _, _, ok := formatTodoWriteBlock("bad", input); ok {
+		t.Fatal("malformed authoritative result fell back to input")
+	}
+	if _, _, ok := formatTodoWriteBlock("", map[string]any{"todos": "bad"}); ok {
+		t.Fatal("malformed input produced a todo block")
+	}
+	invalid := `[{"content":"bad","status":"done","priority":"urgent"}]`
+	if _, _, ok := formatTodoWriteBlock(invalid, nil); ok {
+		t.Fatal("invalid todo enums produced a todo block")
+	}
+}
+
 func TestToolActivityLabelDescribesInputs(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -777,6 +845,9 @@ func TestToolActivityLabelDescribesInputs(t *testing.T) {
 		{name: "grep", input: map[string]any{"pattern": "TODO"}, want: `grep · "TODO" · .`},
 		{name: "skill", input: map[string]any{"name": "review"}, want: "skill · review"},
 		{name: "web_fetch", input: map[string]any{"url": "https://example.com/docs"}, want: "web_fetch · https://example.com/docs"},
+		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}, map[string]any{}}}, want: "todowrite · 2 items"},
+		{name: "todo_write", input: map[string]any{"todos": []any{}}, want: "todo_write · 0 items"},
+		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}}}, want: "todowrite · 1 item"},
 		{name: "custom", input: map[string]any{"token": "hidden", "path": "src/main.go"}, want: "custom · path=src/main.go"},
 	}
 	for _, test := range tests {

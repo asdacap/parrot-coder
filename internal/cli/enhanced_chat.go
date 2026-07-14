@@ -1564,6 +1564,24 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
+	if terminal && status == "success" {
+		for i := range r.activity {
+			if r.activity[i].id != callID {
+				continue
+			}
+			todoName := name
+			if todoName == "" {
+				todoName = todoWriteNameFromLabel(r.activity[i].label)
+			}
+			if todoName == "todowrite" || todoName == "todo_write" {
+				if block, count, ok := formatTodoWriteBlock(result, r.activity[i].input); ok {
+					r.activity[i].block = block
+					r.activity[i].label = todoWriteActivityLabel(todoName, count)
+				}
+			}
+			break
+		}
+	}
 	if errorText != "" {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
@@ -1600,6 +1618,108 @@ func formatFailedToolInput(input map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
+type todoActivityItem struct {
+	content  string
+	status   string
+	priority string
+}
+
+// formatTodoWriteBlock prefers the normalized tool result, but falls back to
+// the submitted replacement when older servers omit result data.
+func formatTodoWriteBlock(result string, input map[string]any) (string, int, bool) {
+	if strings.TrimSpace(result) != "" {
+		var raw any
+		if json.Unmarshal([]byte(result), &raw) != nil {
+			return "", 0, false
+		}
+		items, ok := parseTodoActivityItems(raw)
+		if !ok {
+			return "", 0, false
+		}
+		return renderTodoActivityItems(items), len(items), true
+	}
+	if input == nil {
+		return "", 0, false
+	}
+	items, ok := parseTodoActivityItems(input["todos"])
+	if !ok {
+		return "", 0, false
+	}
+	return renderTodoActivityItems(items), len(items), true
+}
+
+func parseTodoActivityItems(raw any) ([]todoActivityItem, bool) {
+	values, ok := raw.([]any)
+	if !ok {
+		return nil, false
+	}
+	items := make([]todoActivityItem, 0, len(values))
+	for _, value := range values {
+		entry, ok := value.(map[string]any)
+		if !ok {
+			return nil, false
+		}
+		content := cleanActivityDetail(firstString(entry, "content"))
+		status := firstString(entry, "status")
+		priority := firstString(entry, "priority")
+		if content == "" || !validTodoActivityStatus(status) || !validTodoActivityPriority(priority) {
+			return nil, false
+		}
+		items = append(items, todoActivityItem{content: content, status: status, priority: priority})
+	}
+	return items, true
+}
+
+func validTodoActivityStatus(status string) bool {
+	switch status {
+	case "pending", "in_progress", "completed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
+func validTodoActivityPriority(priority string) bool {
+	switch priority {
+	case "high", "medium", "low":
+		return true
+	default:
+		return false
+	}
+}
+
+func renderTodoActivityItems(items []todoActivityItem) string {
+	if len(items) == 0 {
+		return "  No todos"
+	}
+	lines := make([]string, 0, len(items))
+	for _, item := range items {
+		marker, status := todoActivityStatus(item.status)
+		priority := cleanActivityDetail(strings.ReplaceAll(item.priority, "_", " "))
+		lines = append(lines, fmt.Sprintf("  %s %s · %s · %s", marker, status, priority, item.content))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func todoActivityStatus(status string) (string, string) {
+	switch status {
+	case "pending":
+		return "○", "pending"
+	case "in_progress":
+		return "◐", "in progress"
+	case "completed":
+		return "✓", "completed"
+	case "cancelled":
+		return "■", "cancelled"
+	default:
+		label := cleanActivityDetail(strings.ReplaceAll(status, "_", " "))
+		if label == "" {
+			label = "unknown"
+		}
+		return "•", label
+	}
+}
+
 func toolActivityError(data json.RawMessage) string {
 	var raw map[string]any
 	if len(data) == 0 || json.Unmarshal(data, &raw) != nil {
@@ -1632,6 +1752,23 @@ func toolActivityPayload(data json.RawMessage) (string, string, map[string]any, 
 		}
 	}
 	return callID, name, input, result
+}
+
+func todoWriteNameFromLabel(label string) string {
+	for _, name := range []string{"todowrite", "todo_write"} {
+		if label == name || strings.HasPrefix(label, name+" · ") {
+			return name
+		}
+	}
+	return ""
+}
+
+func todoWriteActivityLabel(name string, count int) string {
+	noun := "items"
+	if count == 1 {
+		noun = "item"
+	}
+	return fmt.Sprintf("%s · %d %s", name, count, noun)
 }
 
 func toolActivityLabel(name string, input map[string]any) string {
@@ -1667,7 +1804,7 @@ func toolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "command"))
 	case "todowrite", "todo_write":
 		if todos, ok := input["todos"].([]any); ok {
-			details = append(details, fmt.Sprintf("%d items", len(todos)))
+			return todoWriteActivityLabel(name, len(todos))
 		}
 	case "question":
 		if questions, ok := input["questions"].([]any); ok && len(questions) > 0 {
