@@ -146,6 +146,9 @@ func (d *KeyDecoder) readEscape(ctx context.Context) (Key, error) {
 		return Key{Kind: KeyHome}, nil
 	case 'F':
 		return Key{Kind: KeyEnd}, nil
+	case 'Z':
+		// Terminals encode Shift-Tab as CSI Z (also known as back-tab).
+		return Key{Kind: KeyModeSwitch}, nil
 	case '1', '3', '4', '2':
 		next, readErr := d.readByte(ctx)
 		if readErr != nil {

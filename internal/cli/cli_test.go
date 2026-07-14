@@ -472,6 +472,17 @@ func TestEnhancedCycleModeAppliesNextAgentAndUpdatesLabels(t *testing.T) {
 	}
 }
 
+func TestExecutionHaltKeys(t *testing.T) {
+	for _, kind := range []terminal.KeyKind{terminal.KeyEscape, terminal.KeyInterrupt} {
+		if !isExecutionHaltKey(terminal.Key{Kind: kind}) {
+			t.Fatalf("key %v did not halt execution", kind)
+		}
+	}
+	if isExecutionHaltKey(terminal.Key{Kind: terminal.KeyTab}) {
+		t.Fatal("Tab halted execution")
+	}
+}
+
 func TestEnhancedErrorStopsSpinnerAndLateDeltaIsIgnored(t *testing.T) {
 	api := &enhancedQueueAPI{}
 	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")

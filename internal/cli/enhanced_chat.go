@@ -19,6 +19,10 @@ import (
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 var errInvalidModalAnswer = errors.New("invalid modal answer")
 
+func isExecutionHaltKey(key terminal.Key) bool {
+	return key.Kind == terminal.KeyEscape || key.Kind == terminal.KeyInterrupt
+}
+
 type enhancedKeyResult struct {
 	key   terminal.Key
 	err   error
@@ -225,6 +229,17 @@ func (s *chatShell) runEnhanced(first string) int {
 				close(result.ack)
 				if err := runtime.cycleMode(); err != nil {
 					runtime.status = err.Error()
+				}
+				if err := runtime.render(); err != nil {
+					return exitError
+				}
+				continue
+			}
+			if runtime.busy && isExecutionHaltKey(result.key) {
+				close(result.ack)
+				runtime.cancelModal()
+				if err := runtime.requestInterrupt(); errors.Is(err, errSecondInterrupt) {
+					return exitInterrupt
 				}
 				if err := runtime.render(); err != nil {
 					return exitError
