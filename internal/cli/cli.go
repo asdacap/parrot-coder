@@ -16,6 +16,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -1151,6 +1152,7 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/models", Description: "list available models"},
 	{Value: "/usage", Description: "show ChatGPT subscription usage"},
 	{Value: "/model", Description: "select a model"},
+	{Value: "/effort", Description: "select model reasoning effort"},
 	{Value: "/modes", Description: "list available modes"},
 	{Value: "/mode", Description: "select a mode"},
 	{Value: "/agents", Description: "deprecated alias for /modes"},
@@ -1221,6 +1223,20 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 				s.commitError(err.Error())
 			}
 		} else if err := s.selectModel(argument); err != nil {
+			s.commitError(err.Error())
+		}
+	case "/effort":
+		if argument == "" {
+			value, err := s.pickEffort()
+			if err != nil {
+				if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
+					s.commitError(err.Error())
+				}
+				break
+			}
+			argument = value
+		}
+		if err := s.selectEffort(argument); err != nil {
 			s.commitError(err.Error())
 		}
 	case "/agents", "/modes":
@@ -1385,8 +1401,12 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		if model == "" {
 			model = "no model"
 		}
-		s.commit(fmt.Sprintf("project: %s\nsession: %s\nagent: %s\nmodel: %s\nthinking: %t",
-			s.projectRoot, sessionID, s.selection.agent, model, s.options.thinking))
+		effort := s.selection.variant
+		if effort == "" {
+			effort = "default"
+		}
+		s.commit(fmt.Sprintf("project: %s\nsession: %s\nagent: %s\nmodel: %s\neffort: %s\nthinking: %t",
+			s.projectRoot, sessionID, s.selection.agent, model, effort, s.options.thinking))
 	case "/exit":
 		return true, exitOK
 	default:
@@ -1439,6 +1459,68 @@ func (s *chatShell) applyModel(value string) error {
 	s.selection.provider, s.selection.model = provider, model
 	s.current.Provider, s.current.Model = provider, model
 	s.commitStatus("✓ Model selected: " + value)
+	return nil
+}
+
+func (s *chatShell) modelEfforts() ([]string, error) {
+	if s.selection.provider == "" || s.selection.model == "" {
+		return nil, errors.New("select a model before setting effort")
+	}
+	items, err := s.api.Models(s.ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.models = items.Items
+	for _, item := range items.Items {
+		if item.Provider != s.selection.provider || item.ID != s.selection.model {
+			continue
+		}
+		efforts := make([]string, 0, len(item.Variants))
+		for name := range item.Variants {
+			efforts = append(efforts, name)
+		}
+		sort.Strings(efforts)
+		if len(efforts) == 0 {
+			return nil, fmt.Errorf("model %s does not expose reasoning efforts", s.selection.modelName())
+		}
+		return efforts, nil
+	}
+	return nil, fmt.Errorf("unknown model %q", s.selection.modelName())
+}
+
+func (s *chatShell) pickEffort() (string, error) {
+	efforts, err := s.modelEfforts()
+	if err != nil {
+		return "", err
+	}
+	candidates := make([]terminal.Candidate, 0, len(efforts))
+	for _, effort := range efforts {
+		candidates = append(candidates, terminal.Candidate{Value: effort})
+	}
+	item, err := s.pick("effort> ", candidates)
+	return item.Value, err
+}
+
+func (s *chatShell) selectEffort(value string) error {
+	efforts, err := s.modelEfforts()
+	if err != nil {
+		return err
+	}
+	found := false
+	for _, effort := range efforts {
+		found = found || effort == value
+	}
+	if !found {
+		return fmt.Errorf("unknown effort %q for model %s (available: %s)", value, s.selection.modelName(), strings.Join(efforts, ", "))
+	}
+	if s.current.ID != "" {
+		if err := applySelection(s.ctx, s.api, s.current.ID, "", "", value); err != nil {
+			return err
+		}
+	}
+	s.selection.variant = value
+	s.current.Variant = value
+	s.commitStatus("✓ Model effort selected: " + value)
 	return nil
 }
 
@@ -1589,7 +1671,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/models", "/usage", "/model", "/agents", "/agent", "/sessions", "/session", "/resume", "/new", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
+	case "/help", "/models", "/usage", "/model", "/effort", "/agents", "/agent", "/sessions", "/session", "/resume", "/new", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
 		return true
 	default:
 		return false
