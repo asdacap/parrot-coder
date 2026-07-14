@@ -90,6 +90,7 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 			"api_key_env": "OPENAI_API_KEY",
 			"headers": {"X-Tenant": "one"},
 			"allow_insecure_localhost": true,
+			"header_timeout_ms": 10000,
 			"models": {"small": {"context": 1000, "tools": true, "reasoning": true, "output": ["text"]}}
 		}}
 	}`)
@@ -112,7 +113,7 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 	if provider.BaseURL != "https://api.example/v1" || provider.APIKeyEnv != "OPENAI_API_KEY" {
 		t.Fatalf("provider = %#v", provider)
 	}
-	if provider.Type != "openai-compatible" || provider.Protocol != "responses" || provider.Headers["X-Tenant"] != "one" || !provider.AllowInsecureLocalhost {
+	if provider.Type != "openai-compatible" || provider.Protocol != "responses" || provider.Headers["X-Tenant"] != "one" || !provider.AllowInsecureLocalhost || provider.HeaderTimeoutMS == nil || *provider.HeaderTimeoutMS != 10000 {
 		t.Fatalf("typed provider fields = %#v", provider)
 	}
 	if model := provider.Models["small"]; !model.Tools || !model.Reasoning || !reflect.DeepEqual(model.Output, []string{"text"}) {

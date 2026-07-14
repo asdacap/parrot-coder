@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -107,6 +108,163 @@ func TestOpenAICompatibleURLAndHeaderPolicy(t *testing.T) {
 		if _, err := NewOpenAICompatible(options); err == nil {
 			t.Errorf("accepted header %q", name)
 		}
+	}
+}
+
+func TestOpenAICompatibleHeaderTimeout(t *testing.T) {
+	startedRequest := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		close(startedRequest)
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolResponses, APIKey: "key",
+		AllowInsecureLocalhost: true, HTTPClient: server.Client(), HeaderTimeout: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	done := make(chan error, 1)
+	go func() {
+		_, streamErr := value.Stream(context.Background(), protocol.Request{Model: "m"})
+		done <- streamErr
+	}()
+	<-startedRequest
+	requestStarted := time.Now()
+	err = <-done
+	var timeoutErr *HeaderTimeoutError
+	if !errors.As(err, &timeoutErr) || timeoutErr.Timeout != 25*time.Millisecond {
+		t.Fatalf("error = %#v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("header timeout took %s", elapsed)
+	}
+	if elapsed := time.Since(requestStarted); elapsed < 15*time.Millisecond {
+		t.Fatalf("header timeout fired too early after %s", elapsed)
+	}
+}
+
+type retryProvider struct {
+	calls atomic.Int32
+	fn    func(int) (Stream, error)
+}
+
+func (*retryProvider) ID() string      { return "retry" }
+func (*retryProvider) Models() []Model { return nil }
+func (p *retryProvider) Stream(context.Context, protocol.Request) (Stream, error) {
+	call := int(p.calls.Add(1))
+	return p.fn(call)
+}
+
+type testStream struct{}
+
+func (*testStream) Next(context.Context) (protocol.Event, error) { return protocol.Event{}, io.EOF }
+func (*testStream) Close() error                                 { return nil }
+
+func TestStreamWithHeaderRetryRetriesTimeoutThenSucceeds(t *testing.T) {
+	want := &testStream{}
+	client := &retryProvider{fn: func(call int) (Stream, error) {
+		if call == 1 {
+			return nil, &HeaderTimeoutError{Timeout: time.Second}
+		}
+		return want, nil
+	}}
+	got, err := streamWithHeaderRetry(context.Background(), client, protocol.Request{}, time.Millisecond, 2*time.Millisecond)
+	if err != nil || got != want || client.calls.Load() != 2 {
+		t.Fatalf("stream = %v, calls = %d, err = %v", got, client.calls.Load(), err)
+	}
+}
+
+func TestStreamWithHeaderRetryStopsOnCancellation(t *testing.T) {
+	called := make(chan struct{})
+	client := &retryProvider{fn: func(int) (Stream, error) {
+		select {
+		case <-called:
+		default:
+			close(called)
+		}
+		return nil, &HeaderTimeoutError{Timeout: time.Second}
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := streamWithHeaderRetry(ctx, client, protocol.Request{}, time.Hour, time.Hour)
+		done <- err
+	}()
+	<-called
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) || client.calls.Load() != 1 {
+		t.Fatalf("calls = %d, err = %v", client.calls.Load(), err)
+	}
+}
+
+func TestOpenAICompatibleHeaderTimeoutStopsAfterHeaders(t *testing.T) {
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	defer unblock()
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "text/event-stream")
+		response.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(response, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolResponses, APIKey: "key",
+		AllowInsecureLocalhost: true, HTTPClient: server.Client(), HeaderTimeout: 25 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := value.Stream(context.Background(), protocol.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	unblock()
+	defer stream.Close()
+	if _, err := stream.Next(context.Background()); err != nil {
+		t.Fatalf("stream after delayed body = %v", err)
+	}
+}
+
+func TestOpenAICompatibleCallerCancellationWins(t *testing.T) {
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		close(started)
+		<-request.Context().Done()
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolResponses, APIKey: "key",
+		AllowInsecureLocalhost: true, HTTPClient: server.Client(), HeaderTimeout: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, streamErr := value.Stream(ctx, protocol.Request{Model: "m"})
+		done <- streamErr
+	}()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestOpenAICompatibleRejectsNegativeHeaderTimeout(t *testing.T) {
+	_, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: "http://localhost:1234/v1", Protocol: ProtocolResponses, APIKey: "key",
+		AllowInsecureLocalhost: true, HeaderTimeout: -time.Millisecond,
+	})
+	if err == nil || !strings.Contains(err.Error(), "header timeout") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

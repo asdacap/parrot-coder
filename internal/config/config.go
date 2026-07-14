@@ -72,6 +72,7 @@ type Provider struct {
 	APIKeyEnv              string            `json:"api_key_env,omitempty"`
 	Headers                map[string]string `json:"headers,omitempty"`
 	AllowInsecureLocalhost bool              `json:"allow_insecure_localhost,omitempty"`
+	HeaderTimeoutMS        *int              `json:"header_timeout_ms,omitempty"`
 	Models                 map[string]Model  `json:"models,omitempty"`
 }
 

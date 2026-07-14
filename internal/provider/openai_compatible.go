@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/auth"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
@@ -32,17 +33,19 @@ type OpenAICompatibleOptions struct {
 	AllowInsecureLocalhost bool
 	Models                 []Model
 	HTTPClient             *http.Client
+	HeaderTimeout          time.Duration
 }
 
 // OpenAICompatible is an explicitly configured compatible provider.
 type OpenAICompatible struct {
-	id       string
-	endpoint *url.URL
-	protocol CompatibleProtocol
-	apiKey   auth.Secret
-	headers  http.Header
-	models   []Model
-	client   *http.Client
+	id            string
+	endpoint      *url.URL
+	protocol      CompatibleProtocol
+	apiKey        auth.Secret
+	headers       http.Header
+	models        []Model
+	client        *http.Client
+	headerTimeout time.Duration
 }
 
 // NewOpenAICompatible validates options before retaining any credentials.
@@ -52,6 +55,9 @@ func NewOpenAICompatible(options OpenAICompatibleOptions) (*OpenAICompatible, er
 	}
 	if options.APIKey.Value() == "" {
 		return nil, errors.New("provider: compatible provider API key is required")
+	}
+	if options.HeaderTimeout < 0 {
+		return nil, errors.New("provider: header timeout cannot be negative")
 	}
 	endpointName := ""
 	switch options.Protocol {
@@ -73,6 +79,7 @@ func NewOpenAICompatible(options OpenAICompatibleOptions) (*OpenAICompatible, er
 	return &OpenAICompatible{
 		id: options.ID, endpoint: endpoint, protocol: options.Protocol, apiKey: options.APIKey,
 		headers: headers, models: cloneModels(options.Models), client: secureClient(options.HTTPClient, endpoint),
+		headerTimeout: options.HeaderTimeout,
 	}, nil
 }
 
@@ -96,5 +103,5 @@ func (p *OpenAICompatible) Stream(ctx context.Context, request protocol.Request)
 	}
 	headers := p.headers.Clone()
 	headers.Set("Authorization", "Bearer "+p.apiKey.Value())
-	return startStream(ctx, p.client, p.endpoint, body, headers, []string{p.apiKey.Value()}, parser)
+	return startStream(ctx, p.client, p.endpoint, body, headers, []string{p.apiKey.Value()}, p.headerTimeout, parser)
 }

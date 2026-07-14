@@ -34,6 +34,17 @@ var forbiddenHeaders = map[string]struct{}{
 
 var ErrStreamTooLarge = errors.New("provider: response stream exceeds byte limit")
 
+// HeaderTimeoutError reports that a provider did not return response headers
+// within the configured deadline. The response body is not covered by this
+// timeout.
+type HeaderTimeoutError struct {
+	Timeout time.Duration
+}
+
+func (e *HeaderTimeoutError) Error() string {
+	return fmt.Sprintf("provider: response headers timed out after %s", e.Timeout)
+}
+
 // HTTPError is a bounded, safe representation of a non-success response.
 type HTTPError struct {
 	StatusCode int
@@ -147,7 +158,7 @@ func sameOrigin(left, right *url.URL) bool {
 	return strings.EqualFold(left.Scheme, right.Scheme) && strings.EqualFold(left.Host, right.Host)
 }
 
-func startStream(ctx context.Context, client *http.Client, endpoint *url.URL, body []byte, headers http.Header, secrets []string, parser streamParser) (Stream, error) {
+func startStream(ctx context.Context, client *http.Client, endpoint *url.URL, body []byte, headers http.Header, secrets []string, headerTimeout time.Duration, parser streamParser) (Stream, error) {
 	if len(body) > maxRequestBytes {
 		return nil, fmt.Errorf("provider: request exceeds %d bytes", maxRequestBytes)
 	}
@@ -158,21 +169,59 @@ func startStream(ctx context.Context, client *http.Client, endpoint *url.URL, bo
 	request.Header = headers.Clone()
 	request.Header.Set("Content-Type", "application/json")
 	request.Header.Set("Accept", "text/event-stream")
+	stopHeaderTimer := func() {}
+	cancelHeaderContext := func() {}
+	if headerTimeout > 0 {
+		requestCtx, cancel := context.WithCancelCause(ctx)
+		timeoutErr := &HeaderTimeoutError{Timeout: headerTimeout}
+		fired := make(chan struct{})
+		timer := time.AfterFunc(headerTimeout, func() {
+			cancel(timeoutErr)
+			close(fired)
+		})
+		stopHeaderTimer = func() {
+			if !timer.Stop() {
+				<-fired
+			}
+		}
+		cancelHeaderContext = func() { cancel(nil) }
+		request = request.WithContext(requestCtx)
+	}
 	response, err := client.Do(request)
+	stopHeaderTimer()
+	cause := context.Cause(request.Context())
 	if err != nil {
+		cancelHeaderContext()
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+		var timeoutErr *HeaderTimeoutError
+		if errors.As(cause, &timeoutErr) {
+			return nil, timeoutErr
+		}
 		return nil, errors.New("provider: send request: " + redact(err.Error(), secrets))
 	}
+	if ctx.Err() != nil {
+		response.Body.Close()
+		cancelHeaderContext()
+		return nil, ctx.Err()
+	}
+	var timeoutErr *HeaderTimeoutError
+	if errors.As(cause, &timeoutErr) {
+		response.Body.Close()
+		cancelHeaderContext()
+		return nil, timeoutErr
+	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		defer cancelHeaderContext()
 		defer response.Body.Close()
 		return nil, parseHTTPError(response, secrets)
 	}
 	if response.Body == nil {
+		cancelHeaderContext()
 		return nil, errors.New("provider: response has no body")
 	}
-	bounded := &boundedReadCloser{reader: response.Body, closer: response.Body, remaining: maxStreamBytes}
+	bounded := &boundedReadCloser{reader: response.Body, closer: response.Body, remaining: maxStreamBytes, onClose: cancelHeaderContext}
 	return &redactingStream{Stream: parser(bounded, maxEventBytes), secrets: append([]string(nil), secrets...)}, nil
 }
 
@@ -180,6 +229,7 @@ type boundedReadCloser struct {
 	reader    io.Reader
 	closer    io.Closer
 	remaining int64
+	onClose   func()
 }
 
 func (r *boundedReadCloser) Read(p []byte) (int, error) {
@@ -204,7 +254,13 @@ func (r *boundedReadCloser) Read(p []byte) (int, error) {
 	return n, err
 }
 
-func (r *boundedReadCloser) Close() error { return r.closer.Close() }
+func (r *boundedReadCloser) Close() error {
+	err := r.closer.Close()
+	if r.onClose != nil {
+		r.onClose()
+	}
+	return err
+}
 
 func parseHTTPError(response *http.Response, secrets []string) error {
 	limited := io.LimitReader(response.Body, maxErrorBytes+1)
