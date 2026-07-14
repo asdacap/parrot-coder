@@ -480,6 +480,47 @@ func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {
 	return out, nil
 }
 
+func (b *DomainBackend) SubscriptionUsage(ctx context.Context) (v1.SubscriptionUsage, error) {
+	for _, item := range b.Providers {
+		usageProvider, ok := item.(interface {
+			Usage(context.Context) (provider.SubscriptionUsage, error)
+		})
+		if !ok || item.ID() != "chatgpt" {
+			continue
+		}
+		usage, err := usageProvider.Usage(ctx)
+		if err != nil {
+			return v1.SubscriptionUsage{}, err
+		}
+		return v1.SubscriptionUsage{
+			Provider: "chatgpt", PlanType: usage.PlanType,
+			PrimaryWindow: mapSubscriptionWindow(usage.PrimaryWindow), SecondaryWindow: mapSubscriptionWindow(usage.SecondaryWindow),
+			Credits: mapSubscriptionCredits(usage.Credits),
+		}, nil
+	}
+	return v1.SubscriptionUsage{}, errors.New("httpapi: ChatGPT subscription usage is unavailable")
+}
+
+func mapSubscriptionWindow(window *provider.UsageWindow) *v1.UsageWindow {
+	if window == nil {
+		return nil
+	}
+	remaining := 100 - window.UsedPercent
+	if remaining < 0 {
+		remaining = 0
+	} else if remaining > 100 {
+		remaining = 100
+	}
+	return &v1.UsageWindow{UsedPercent: window.UsedPercent, RemainingPercent: remaining, ResetAt: window.ResetAt, LimitWindowSeconds: window.LimitWindowSeconds}
+}
+
+func mapSubscriptionCredits(credits *provider.UsageCredits) *v1.UsageCredits {
+	if credits == nil {
+		return nil
+	}
+	return &v1.UsageCredits{HasCredits: credits.HasCredits, Balance: credits.Balance}
+}
+
 func (b *DomainBackend) ListAgents(context.Context) (v1.AgentList, error) {
 	out := v1.AgentList{Items: []v1.Agent{}}
 	if b.Agents == nil {

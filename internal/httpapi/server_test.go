@@ -92,6 +92,9 @@ func (b *stubBackend) Redo(context.Context, string) (v1.SnapshotTransaction, err
 func (b *stubBackend) ListModels(context.Context) (v1.ModelList, error) {
 	return v1.ModelList{Items: []v1.Model{}}, b.backendErr
 }
+func (b *stubBackend) SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error) {
+	return v1.SubscriptionUsage{Provider: "chatgpt"}, b.backendErr
+}
 func (b *stubBackend) ListAgents(context.Context) (v1.AgentList, error) {
 	return v1.AgentList{Items: []v1.Agent{}}, b.backendErr
 }
@@ -122,6 +125,7 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"POST", "/api/v1/sessions/ses_test/undo", "", 200},
 		{"POST", "/api/v1/sessions/ses_test/redo", "", 200},
 		{"GET", "/api/v1/models", "", 200},
+		{"GET", "/api/v1/usage", "", 200},
 		{"GET", "/api/v1/agents", "", 200},
 		{"GET", "/openapi.json", "", 200},
 	}

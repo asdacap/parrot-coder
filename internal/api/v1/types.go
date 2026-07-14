@@ -54,10 +54,10 @@ type SessionList struct {
 }
 
 type CreateSessionRequest struct {
-	ProjectID string `json:"project_id,omitempty"`
-	Title     string `json:"title,omitempty"`
-	Agent     string `json:"agent,omitempty"`
-	Model     string `json:"model,omitempty"`
+	ProjectID string  `json:"project_id,omitempty"`
+	Title     string  `json:"title,omitempty"`
+	Agent     string  `json:"agent,omitempty"`
+	Model     string  `json:"model,omitempty"`
 	Variant   *string `json:"variant,omitempty"`
 }
 
@@ -72,8 +72,8 @@ type SessionSelection struct {
 // UpdateSessionSelectionRequest changes either or both selection dimensions.
 // Model accepts provider/model or a model ID under the current provider.
 type UpdateSessionSelectionRequest struct {
-	Agent string `json:"agent,omitempty"`
-	Model string `json:"model,omitempty"`
+	Agent   string  `json:"agent,omitempty"`
+	Model   string  `json:"model,omitempty"`
 	Variant *string `json:"variant,omitempty"`
 }
 
@@ -203,14 +203,14 @@ type SnapshotTransaction struct {
 }
 
 type Model struct {
-	Provider        string   `json:"provider"`
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	ContextWindow   int      `json:"context_window"`
-	MaxOutputTokens int      `json:"max_output_tokens"`
-	Tools           bool     `json:"tools"`
-	Reasoning       bool     `json:"reasoning"`
-	Output          []string `json:"output"`
+	Provider        string                  `json:"provider"`
+	ID              string                  `json:"id"`
+	Name            string                  `json:"name"`
+	ContextWindow   int                     `json:"context_window"`
+	MaxOutputTokens int                     `json:"max_output_tokens"`
+	Tools           bool                    `json:"tools"`
+	Reasoning       bool                    `json:"reasoning"`
+	Output          []string                `json:"output"`
 	Variants        map[string]ModelVariant `json:"variants"`
 }
 
@@ -220,6 +220,28 @@ type ModelVariant struct {
 
 type ModelList struct {
 	Items []Model `json:"items"`
+}
+
+// SubscriptionUsage reports ChatGPT subscription limits. RemainingPercent is
+// derived from upstream's used percentage and clamped to 0 through 100.
+type SubscriptionUsage struct {
+	Provider        string        `json:"provider"`
+	PlanType        string        `json:"plan_type,omitempty"`
+	PrimaryWindow   *UsageWindow  `json:"primary_window,omitempty"`
+	SecondaryWindow *UsageWindow  `json:"secondary_window,omitempty"`
+	Credits         *UsageCredits `json:"credits,omitempty"`
+}
+
+type UsageWindow struct {
+	UsedPercent        float64   `json:"used_percent"`
+	RemainingPercent   float64   `json:"remaining_percent"`
+	ResetAt            time.Time `json:"reset_at"`
+	LimitWindowSeconds int64     `json:"limit_window_seconds"`
+}
+
+type UsageCredits struct {
+	HasCredits bool   `json:"has_credits"`
+	Balance    string `json:"balance,omitempty"`
 }
 
 type Agent struct {

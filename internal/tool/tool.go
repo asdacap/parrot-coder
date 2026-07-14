@@ -23,15 +23,16 @@ import (
 )
 
 type CallContext struct {
-	Workspace *workspace.Workspace
-	Outputs   *OutputStore
-	SessionID string
-	Changes   *change.Service
-	Snapshots *snapshot.Service
-	Processes *process.Runner
-	Todos     *session.TodoService
-	Questions *question.Broker
-	Agent     string
+	Workspace  *workspace.Workspace
+	Outputs    *OutputStore
+	SessionID  string
+	Changes    *change.Service
+	Snapshots  *snapshot.Service
+	Processes  *process.Runner
+	Todos      *session.TodoService
+	Questions  *question.Broker
+	Agent      string
+	ToolCallID string
 }
 
 type Plan struct {

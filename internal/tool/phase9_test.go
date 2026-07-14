@@ -215,6 +215,9 @@ func TestTaskToolOutputReadOnlyBoundaryAndParentCancellation(t *testing.T) {
 	if err != nil || result.Text != "child output" || result.Metadata["task_id"] == "" {
 		t.Fatalf("result = %#v, %v", result, err)
 	}
+	if result.Metadata["usage"] == nil || result.Metadata["tool_uses"] != 0 {
+		t.Fatalf("task accounting metadata = %#v", result.Metadata)
+	}
 	waitPlan, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":"wait","agent":"explore"}`), call)
 	if err != nil {
 		t.Fatal(err)

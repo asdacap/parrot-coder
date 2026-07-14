@@ -121,9 +121,11 @@ type queuedChatInput struct {
 type enhancedActivityItem struct {
 	id        string
 	label     string
+	error     string
 	status    string
 	tokens    int
 	hasUsage  bool
+	toolUses  int
 	started   time.Time
 	ended     time.Time
 	terminal  bool
@@ -501,18 +503,37 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	return fmt.Sprintf("%s: %s%s · %.1fs", activityTitle(item.status, elapsed), item.label, formatActivityUsage(item), elapsed.Seconds())
+	detail := ""
+	if item.status == "failure" && strings.TrimSpace(item.error) != "" {
+		detail = " · " + strings.TrimSpace(item.error)
+	}
+	separator := ": "
+	if item.status == "success" || item.status == "failure" {
+		separator = " "
+	}
+	return fmt.Sprintf("%s%s%s%s%s · %.1fs", activityTitle(item.status, elapsed), separator, item.label, detail, formatActivityUsage(item), elapsed.Seconds())
 }
 
 func formatActivityUsage(item enhancedActivityItem) string {
+	var parts []string
 	if item.hasUsage {
 		unit := "tokens"
 		if item.tokens == 1 {
 			unit = "token"
 		}
-		return fmt.Sprintf(" · %d %s", item.tokens, unit)
+		parts = append(parts, fmt.Sprintf("%d %s", item.tokens, unit))
 	}
-	return ""
+	if item.toolUses > 0 {
+		unit := "tools"
+		if item.toolUses == 1 {
+			unit = "tool"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", item.toolUses, unit))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " · " + strings.Join(parts, " · ")
 }
 
 func activityTitle(status string, elapsed time.Duration) string {
@@ -525,9 +546,9 @@ func activityTitle(status string, elapsed time.Duration) string {
 		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
 		return spinnerFrames[frame] + " Working"
 	case "success":
-		return "✓ Done"
+		return "✓"
 	case "failure":
-		return "✗ Failed"
+		return "✗"
 	case "interrupted":
 		return "■ Interrupted"
 	default:
@@ -900,11 +921,7 @@ func (r *enhancedChatRuntime) showPermissionContext(permission v1.Permission) {
 	if r.modal == nil {
 		return
 	}
-	context := []string{"permission: " + permission.ToolID, "reason: " + permission.Reason}
-	for _, resource := range permission.Resources {
-		context = append(context, fmt.Sprintf("resource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier))
-	}
-	r.modal.context = context
+	r.modal.context = permissionContextLines(permission)
 }
 
 func (r *enhancedChatRuntime) showQuestionContext(question v1.Question) {
@@ -1103,7 +1120,7 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 
 func safeBusySlash(name string) bool {
 	switch name {
-	case "/help", "/models", "/agents", "/sessions", "/status", "/thinking", "/exit":
+	case "/help", "/models", "/usage", "/agents", "/sessions", "/status", "/thinking", "/exit":
 		return true
 	default:
 		return false
@@ -1392,6 +1409,12 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			return err
 		}
 		r.status = "working"
+	case v1.EventTaskProgress:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		r.updateTaskProgress(payload.(*v1.TaskProgress))
 	case "session.assistant.started":
 		var payload struct {
 			MessageID string `json:"message_id"`
@@ -1432,8 +1455,33 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 	return r.settleIdle()
 }
 
+func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
+	if progress == nil {
+		return
+	}
+	id := progress.ToolCallID
+	if id == "" {
+		id = progress.TaskID
+	}
+	for i := range r.activity {
+		if r.activity[i].id != id {
+			continue
+		}
+		r.activity[i].tokens = progress.Usage.TotalTokens
+		if r.activity[i].tokens == 0 {
+			r.activity[i].tokens = progress.Usage.InputTokens + progress.Usage.OutputTokens
+		}
+		r.activity[i].hasUsage = r.activity[i].tokens > 0
+		r.activity[i].toolUses = progress.ToolUses
+		return
+	}
+	r.upsertActivity(id, "task · "+progress.Agent, "running", false, false)
+	r.updateTaskProgress(progress)
+}
+
 func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	callID, name, input, result := toolActivityPayload(item.Data)
+	errorText := toolActivityError(item.Data)
 	if callID == "" {
 		callID = fmt.Sprintf("tool-%d", time.Now().UnixNano())
 	}
@@ -1459,12 +1507,28 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
+	if errorText != "" {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				r.activity[i].error = errorText
+				break
+			}
+		}
+	}
 	if terminal {
 		r.queueCompletedTool(callID)
 		if err := r.flushCompletedTools(); err != nil {
 			r.status = "tool activity flush failed"
 		}
 	}
+}
+
+func toolActivityError(data json.RawMessage) string {
+	var raw map[string]any
+	if len(data) == 0 || json.Unmarshal(data, &raw) != nil {
+		return ""
+	}
+	return firstString(raw, "error", "error_message", "message")
 }
 
 func toolActivityPayload(data json.RawMessage) (string, string, map[string]any, string) {

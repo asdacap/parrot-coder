@@ -35,6 +35,11 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			event: v1.Event{Type: v1.EventTodoUpdated, Data: json.RawMessage(`{"todos":[{"id":"todo_1","content":"test","status":"pending","priority":"high","position":0}]}`)},
 			want:  &v1.TodoUpdated{Todos: []v1.Todo{{ID: "todo_1", Content: "test", Status: "pending", Priority: "high", Position: 0}}},
 		},
+		{
+			name:  "task progress",
+			event: v1.Event{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","tool_call_id":"call_1","agent":"explore","status":"running","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"reasoning_tokens":1,"cached_input_tokens":3},"tool_uses":4}`)},
+			want:  &v1.TaskProgress{TaskID: "task_1", ToolCallID: "call_1", Agent: "explore", Status: "running", Usage: v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}, ToolUses: 4},
+		},
 	}
 
 	for _, test := range tests {
@@ -54,6 +59,7 @@ func TestDecodeSessionInputEventDataRejectsUnknownFields(t *testing.T) {
 	for _, event := range []v1.Event{
 		{Type: v1.EventSessionInputAdmitted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","content":"hello","delivery":"steer","extra":true}`)},
 		{Type: v1.EventSessionInputPromoted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","extra":true}`)},
+		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","agent":"explore","status":"running","usage":{},"tool_uses":0,"extra":true}`)},
 	} {
 		if _, err := v1.DecodeEventData(event); err == nil {
 			t.Fatalf("DecodeEventData(%q) accepted an unknown field", event.Type)

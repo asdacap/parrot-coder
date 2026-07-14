@@ -453,6 +453,22 @@ func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	}
 }
 
+func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
+	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
+	runtime.upsertActivity("call-task", "task · explore", "running", false, false)
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-task", Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 {
+		t.Fatalf("activity = %#v", runtime.activity)
+	}
+	line := formatActivity(runtime.activity[0], runtime.activity[0].started)
+	if !strings.Contains(line, "35 tokens · 3 tools") {
+		t.Fatalf("line = %q", line)
+	}
+}
+
 func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 	for _, test := range []struct {
 		name        string
@@ -479,7 +495,7 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			if len(runtime.activity) != 0 {
 				t.Fatalf("completed activity remains live: %#v", runtime.activity)
 			}
-			flushed := strings.Contains(output.String(), "✓ Done: Checking · 12 tokens")
+			flushed := strings.Contains(output.String(), "✓ Checking · 12 tokens")
 			if flushed != test.wantFlushed {
 				t.Fatalf("flushed activity = %t, want %t; output=%q", flushed, test.wantFlushed, output.String())
 			}
@@ -494,8 +510,8 @@ func TestActivityStatusUsesAccessibleIcons(t *testing.T) {
 	}{
 		{status: "pending", want: "○ Queued tool: task · 1.2s"},
 		{status: "running", want: "⠹ Working: task · 1.2s"},
-		{status: "success", want: "✓ Done: task · 1.2s"},
-		{status: "failure", want: "✗ Failed: task · 1.2s"},
+		{status: "success", want: "✓ task · 1.2s"},
+		{status: "failure", want: "✗ task · 1.2s"},
 		{status: "interrupted", want: "■ Interrupted: task · 1.2s"},
 		{status: "unknown", want: "Status: task · 1.2s"},
 	}
@@ -512,15 +528,18 @@ func TestStreamToolStatusUsesAccessibleIcons(t *testing.T) {
 	tests := map[string]string{
 		"pending":     "○ Queued tool",
 		"running":     "◌ Working: tool",
-		"success":     "✓ Done: tool",
-		"failure":     "✗ Failed: tool",
+		"success":     "✓ tool",
+		"failure":     "✗ tool",
 		"interrupted": "■ Interrupted: tool",
 		"custom":      "Status: tool custom",
 	}
 	for status, want := range tests {
-		if got := streamToolStatus(status); got != want {
+		if got := streamToolStatus(status, ""); got != want {
 			t.Errorf("streamToolStatus(%q) = %q, want %q", status, got, want)
 		}
+	}
+	if got := streamToolStatus("failure", "permission denied"); got != "✗ tool: permission denied" {
+		t.Errorf("failure detail = %q", got)
 	}
 }
 
@@ -633,7 +652,7 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	if err := runtime.flushCompletedTools(); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "✓ Done: read · internal/cli/enhanced_chat.go ·") || strings.Contains(got, "call_opaque") {
+	if got := output.String(); !strings.Contains(got, "✓ read · internal/cli/enhanced_chat.go ·") || strings.Contains(got, "call_opaque") {
 		t.Fatalf("committed tool activity = %q", got)
 	}
 }
@@ -696,7 +715,8 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
 		ID: "permission", ToolID: "shell", Reason: "default policy",
-		Resources: []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
+		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build"}`),
+		Resources:      []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
 	}}}}
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 	state, err := editor.Start("draft")
@@ -727,6 +747,7 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
 	if !strings.Contains(frame, "permission: shell") || !strings.Contains(frame, "reason: default policy") ||
+		!strings.Contains(frame, "tool request:") || !strings.Contains(frame, `"command": "rm -rf build"`) ||
 		!strings.Contains(frame, "resource: process execute /bin/bash") ||
 		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
 		!strings.Contains(frame, "enable yolo") {
@@ -985,6 +1006,21 @@ func TestModelsDoesNotRequireDefaultModel(t *testing.T) {
 	}
 }
 
+func TestFormatSubscriptionUsageShowsRemainingAndReset(t *testing.T) {
+	now := time.Date(2030, time.January, 1, 12, 0, 0, 0, time.UTC)
+	usage := v1.SubscriptionUsage{
+		PlanType:        "plus",
+		PrimaryWindow:   &v1.UsageWindow{UsedPercent: 27.5, RemainingPercent: 72.5, ResetAt: now.Add(2*time.Hour + 15*time.Minute)},
+		SecondaryWindow: &v1.UsageWindow{UsedPercent: 4, RemainingPercent: 96, ResetAt: now.Add(48 * time.Hour)},
+	}
+	output := formatSubscriptionUsage(usage, now)
+	for _, want := range []string{"ChatGPT subscription (plus)", "primary: 72.5% remaining", "in 2h 15m", "secondary: 96.0% remaining", "in 2d 0h"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output %q does not contain %q", output, want)
+		}
+	}
+}
+
 func TestRunCancellationInterruptsActiveSession(t *testing.T) {
 	started := make(chan struct{})
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1072,7 +1108,7 @@ func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {
 	success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "tool_name": "edit", "status": "success", "result": diff})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
 	got := output.String()
-	if !strings.Contains(got, "README.md\n\n✓ Done: edit · file.go ·") {
+	if !strings.Contains(got, "README.md\n\n✓ edit · file.go ·") {
 		t.Fatalf("edit block was not separated from compact output: %q", got)
 	}
 	if !strings.Contains(got, "\n--- a/file.go\n+++ b/file.go\n") || !strings.Contains(got, "\n-before\n+after\n") {
