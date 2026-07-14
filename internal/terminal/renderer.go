@@ -184,7 +184,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		dividerRows = 1
 	}
 	barRows := 0
-	if frame.InputLeft != "" || frame.InputRight != "" {
+	if !frame.ShowDivider && (frame.InputLeft != "" || frame.InputRight != "") {
 		barRows = 1
 	}
 	available := max(0, r.maxRows-dividerRows-barRows-len(promptRows))
@@ -202,7 +202,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 
 	inputRows := make([]string, 0, dividerRows+barRows+len(pendingRows)+len(promptRows))
 	if frame.ShowDivider {
-		inputRows = append(inputRows, strings.Repeat("─", max(3, r.columns-1)))
+		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.InputRight, r.columns))
 	}
 	if barRows > 0 {
 		inputRows = append(inputRows, statusBar(frame.InputLeft, frame.InputRight, r.columns))
@@ -305,6 +305,29 @@ func statusBar(left, right string, columns int) string {
 		return truncateWidth(right, width)
 	}
 	return left + " " + right
+}
+
+func dividerStatusBar(left, right string, columns int) string {
+	width := max(3, columns-1)
+	left = Sanitize(left)
+	right = Sanitize(right)
+	if left == "" && right == "" {
+		return strings.Repeat("─", width)
+	}
+	if right == "" {
+		value := truncateWidth(left, max(1, width-2))
+		return "─" + value + strings.Repeat("─", max(1, width-displayWidth(value)-1))
+	}
+	if left == "" {
+		value := truncateWidth(right, max(1, width-2))
+		return strings.Repeat("─", max(1, width-displayWidth(value)-1)) + value + "─"
+	}
+	leftWidth := max(1, (width-3)/2)
+	rightWidth := max(1, width-displayWidth(truncateWidth(left, leftWidth))-3)
+	left = truncateWidth(left, leftWidth)
+	right = truncateWidth(right, rightWidth)
+	middle := max(1, width-displayWidth(left)-displayWidth(right)-2)
+	return "─" + left + strings.Repeat("─", middle) + right + "─"
 }
 
 func queuedPreview(value string, columns int) string {
