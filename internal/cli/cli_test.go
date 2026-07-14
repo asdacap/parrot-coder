@@ -476,12 +476,12 @@ func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
 func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")
-	runtime.startReasoningActivity("assistant", "", "Checking the implementation")
+	runtime.startReasoningActivity("assistant", "", "Checking the implementation", true)
 
 	usage, _ := json.Marshal(v1.SessionStatus{
 		MessageID: "assistant",
 		Kind:      "usage",
-		Usage:     &v1.Usage{OutputTokens: 123, TotalTokens: 456},
+		Usage:     &v1.Usage{OutputTokens: 200, TotalTokens: 456, ReasoningTokens: 123},
 	})
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: usage}); err != nil {
 		t.Fatal(err)
@@ -499,9 +499,25 @@ func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	}
 }
 
+func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
+	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30})
+	runtime.startReasoningActivity("assistant", "", "Checking", true)
+	if runtime.activity[0].hasUsage {
+		t.Fatalf("reasoning activity used output tokens: %#v", runtime.activity[0])
+	}
+
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30, ReasoningTokens: 12})
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 40})
+	if runtime.activity[0].tokens != 12 || !runtime.activity[0].hasUsage {
+		t.Fatalf("reasoning usage was not retained: %#v", runtime.activity[0])
+	}
+}
+
 func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
 	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
-	runtime.upsertActivity("call-task", "task · explore", "running", false, false)
+	runtime.upsertActivity("call-task", "task · explore", "running", false, false, false)
 	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-task", Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
 		t.Fatal(err)
@@ -664,8 +680,8 @@ func TestEnhancedReasoningSummaryPartsFlushInProviderOrder(t *testing.T) {
 	shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
 	runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
 
-	runtime.startReasoningActivity("assistant", "reasoning:0", "First item")
-	runtime.startReasoningActivity("assistant", "reasoning:1", "Second item")
+	runtime.startReasoningActivity("assistant", "reasoning:0", "First item", true)
+	runtime.startReasoningActivity("assistant", "reasoning:1", "Second item", true)
 	runtime.completeAssistantActivity("assistant", "success")
 	if err := runtime.commitCompletedAssistants("assistant"); err != nil {
 		t.Fatal(err)
@@ -687,7 +703,7 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 		content     string
 		wantFlushed bool
 	}{
-		{name: "message replaces activity", content: "answer"},
+		{name: "message retains summary", content: "answer", wantFlushed: true},
 		{name: "no message flushes activity", wantFlushed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -697,8 +713,8 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
 			runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
 			runtime.startAssistantActivity("assistant")
-			runtime.startReasoningActivity("assistant", "", "Checking")
-			runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 12})
+			runtime.startReasoningActivity("assistant", "", "Checking", true)
+			runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30, ReasoningTokens: 12})
 			runtime.completeAssistantActivity("assistant", "success")
 
 			if err := runtime.commitCompletedAssistants("assistant"); err != nil {
@@ -710,6 +726,65 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			flushed := strings.Contains(output.String(), "✓ Checking · 12 tokens")
 			if flushed != test.wantFlushed {
 				t.Fatalf("flushed activity = %t, want %t; output=%q", flushed, test.wantFlushed, output.String())
+			}
+		})
+	}
+}
+
+func TestEnhancedReasoningSummaryIsPlainSingleLineAndRetainedBeforeAnswer(t *testing.T) {
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Content: "final answer", Status: "complete"}}}}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})
+	shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
+	runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+	runtime.startReasoningActivity("assistant", "", "- **Verifying\ncomplete suite**", true)
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30, ReasoningTokens: 12})
+	runtime.completeAssistantActivity("assistant", "success")
+
+	if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	summary := strings.Index(got, "✓ Verifying complete suite · 12 tokens")
+	answer := strings.Index(got, "final answer")
+	if summary < 0 || answer < summary || strings.Contains(got, "**") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestSingleLineReasoningSummaryRemovesMarkdownWithoutCorruptingText(t *testing.T) {
+	tests := map[string]string{
+		"**one** **two**":        "one two",
+		"- **one** two":          "one two",
+		"*one* and **two**":      "one and two",
+		"# heading\n- next item": "heading next item",
+		"check `file_name.go`":   "check file_name.go",
+	}
+	for input, want := range tests {
+		if got := singleLineReasoningSummary(input); got != want {
+			t.Errorf("singleLineReasoningSummary(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestEnhancedRawReasoningIsNeverRetained(t *testing.T) {
+	for _, content := range []string{"", "final answer"} {
+		t.Run(fmt.Sprintf("content=%q", content), func(t *testing.T) {
+			api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Content: content, Status: "complete"}}}}
+			var output bytes.Buffer
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})
+			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
+			runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+			runtime.startAssistantActivity("assistant")
+			runtime.startReasoningActivity("assistant", "", "private chain of thought", false)
+			runtime.completeAssistantActivity("assistant", "success")
+
+			if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output.String(), "private chain of thought") || len(runtime.activity) != 0 {
+				t.Fatalf("raw reasoning was retained: output=%q activity=%#v", output.String(), runtime.activity)
 			}
 		})
 	}
