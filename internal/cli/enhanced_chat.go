@@ -124,6 +124,8 @@ type enhancedActivityItem struct {
 	id               string
 	messageID        string
 	label            string
+	toolName         string
+	style            terminal.TextStyle
 	input            map[string]any
 	error            string
 	status           string
@@ -456,7 +458,7 @@ func (r *enhancedChatRuntime) render() error {
 		busy = false
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
-		Stream: stream, PromptContext: r.modalContext(), Activity: r.activityRows(time.Now(), r.shell.renderer.Columns()), Status: r.status, Pending: pending,
+		Stream: stream, PromptContext: r.modalContext(), StyledActivity: r.styledActivityRows(time.Now(), r.shell.renderer.Columns()), Status: r.status, Pending: pending,
 		InputLeft: r.inputModeLabel(), InputRight: r.shell.modelineModelLabel(r.contextTokens),
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
@@ -471,20 +473,29 @@ func (r *enhancedChatRuntime) modalContext() []string {
 }
 
 func (r *enhancedChatRuntime) activityRows(now time.Time, columns int) []string {
+	styled := r.styledActivityRows(now, columns)
+	rows := make([]string, len(styled))
+	for i := range styled {
+		rows[i] = styled[i].Text
+	}
+	return rows
+}
+
+func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []terminal.StyledText {
 	if len(r.activity) == 0 {
 		return nil
 	}
-	rows := make([]string, 0, len(r.activity))
+	rows := make([]terminal.StyledText, 0, len(r.activity))
 	start := 0
 	if len(r.activity) > 4 {
 		start = len(r.activity) - 4
 	}
 	for _, item := range r.activity[start:] {
+		line := formatActivity(item, now)
 		if item.reasoning && item.status == "thinking" {
-			rows = append(rows, formatReasoningActivity(item, now, columns))
-		} else {
-			rows = append(rows, formatActivity(item, now))
+			line = formatReasoningActivity(item, now, columns)
 		}
+		rows = append(rows, terminal.StyledText{Text: line, Style: item.style})
 	}
 	return rows
 }
@@ -863,10 +874,12 @@ func (r *enhancedChatRuntime) flushCompletedTools() error {
 		item := r.completedTools[0]
 		line := formatActivity(item, time.Now())
 		var err error
+		styled := terminal.StyledText{Text: line, Style: item.style}
 		if item.block != "" {
-			err = r.shell.renderer.CommitBlock(line + "\n" + item.block)
+			styled.Text += "\n" + item.block
+			err = r.shell.renderer.CommitStyledBlock(styled)
 		} else {
-			err = r.shell.renderer.Commit(line)
+			err = r.shell.renderer.CommitStyled(styled)
 		}
 		if err != nil {
 			return err
@@ -1719,8 +1732,24 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		}
 	}
 	status := strings.TrimPrefix(item.Type, "session.tool.")
-	terminal := status == "success" || status == "failure" || status == "interrupted"
-	r.upsertActivity(callID, label, status, terminal, false, false)
+	terminalEvent := status == "success" || status == "failure" || status == "interrupted"
+	r.upsertActivity(callID, label, status, terminalEvent, false, false)
+	for i := range r.activity {
+		if r.activity[i].id != callID {
+			continue
+		}
+		if name != "" {
+			r.activity[i].toolName = name
+		}
+		if status == "failure" || status == "interrupted" {
+			r.activity[i].style = terminal.TextStyleDefault
+		} else if r.activity[i].toolName == "read" || r.activity[i].toolName == "grep" {
+			r.activity[i].style = terminal.TextStyleMuted
+		} else {
+			r.activity[i].style = terminal.TextStyleDefault
+		}
+		break
+	}
 	if input != nil {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
@@ -1729,7 +1758,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
-	if terminal && status == "success" && name == "edit" && strings.TrimSpace(result) != "" {
+	if terminalEvent && status == "success" && name == "edit" && strings.TrimSpace(result) != "" {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
 				r.activity[i].block = truncateToolBlock(result, maxToolBlockLines)
@@ -1737,7 +1766,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
-	if terminal && status == "success" {
+	if terminalEvent && status == "success" {
 		for i := range r.activity {
 			if r.activity[i].id != callID {
 				continue
@@ -1763,7 +1792,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
-	if terminal && status == "failure" {
+	if terminalEvent && status == "failure" {
 		for i := range r.activity {
 			if r.activity[i].id == callID && r.activity[i].input != nil {
 				r.activity[i].block = truncateToolBlock(formatFailedToolRequest(r.activity[i].input), maxToolBlockLines)
@@ -1771,7 +1800,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
-	if terminal {
+	if terminalEvent {
 		r.queueCompletedTool(callID)
 		if err := r.flushCompletedTools(); err != nil {
 			r.status = "tool activity flush failed"

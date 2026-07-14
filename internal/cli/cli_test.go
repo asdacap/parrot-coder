@@ -140,7 +140,7 @@ func TestChatTranscriptAndSlashCommands(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, value := range []string{"$ hello", "- answer", "━━━", "/model", "/undo"} {
+	for _, value := range []string{"$ hello", "- answer", "───", "/model", "/undo"} {
 		if !strings.Contains(stdout.String(), value) {
 			t.Errorf("transcript missing %q: %q", value, stdout.String())
 		}
@@ -325,12 +325,12 @@ func TestEnhancedSubmissionCommitsUserMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	committed := output.String()[before:]
-	if strings.Count(committed, "$ keep this") != 1 || !strings.Contains(committed, "━━━") {
+	if strings.Count(committed, "$ keep this") != 1 || !strings.Contains(committed, "───") {
 		t.Fatalf("submitted user message was not committed once: %q", output.String())
 	}
 	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(committed, "")
-	if !strings.Contains(plain, "━━━\n$ keep this") {
-		t.Fatalf("heavy rule is not immediately before user message: %q", plain)
+	if !strings.Contains(plain, "───\n$ keep this") {
+		t.Fatalf("thin rule is not immediately before user message: %q", plain)
 	}
 }
 

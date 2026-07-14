@@ -113,8 +113,56 @@ func TestLiveRendererKeepsUserStartRuleAtNormalBrightness(t *testing.T) {
 	if err := renderer.CommitUserMessage("$ ", "request"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := output.String(), "━━━━━━━\n\x1b[36m$\x1b[0m reques\n  t\n"; got != want {
+	if got, want := output.String(), "\x1b[37m───────\x1b[0m\n\x1b[36m$\x1b[0m reques\n  t\n"; got != want {
 		t.Fatalf("colored user message = %q; want %q", got, want)
+	}
+}
+
+func TestLiveRendererInputBoundaryIsWhiteAndOrdinaryDividerIsDim(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 8})
+	if err := renderer.CommitDivider(); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.CommitMessage("- ", "answer", true); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "\x1b[37m───────\x1b[0m") {
+		t.Fatalf("input boundary was not white: %q", got)
+	}
+	if !strings.Contains(got, "\x1b[2;90m───────\x1b[0m") {
+		t.Fatalf("ordinary divider was not dim grey: %q", got)
+	}
+}
+
+func TestLiveRendererMutedReportStylesEveryWrappedRowAfterSanitization(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 8})
+	if err := renderer.CommitStyled(MutedText("✓ read unsafe\x1b[31m text")); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{
+		"\x1b[90m✓ read u\x1b[0m",
+		"\x1b[90mnsafe[31\x1b[0m",
+		"\x1b[90mm text\x1b[0m",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("muted wrapped report = %q, want %q", got, want)
+		}
+	}
+	if strings.Contains(got, "\x1b[31m") || strings.Contains(got, "\x1b[32m") || strings.Contains(got, "\x1b[36m") {
+		t.Fatalf("muted report retained embedded or icon color: %q", got)
+	}
+
+	output.Reset()
+	renderer = NewLiveRenderer(&output, RendererConfig{TTY: true, Color: false, Columns: 8})
+	if err := renderer.CommitStyled(MutedText("✓ read report")); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsRune(output.String(), '\x1b') {
+		t.Fatalf("no-color muted report emitted ANSI: %q", output.String())
 	}
 }
 
@@ -199,7 +247,7 @@ func TestLiveRendererCompositeFrameKeepsBusyEditorVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(renderer.rows, "\n")
-	for _, want := range []string{"- working response", "━", "$ next task  (○ queued)", "⠋ $ editable"} {
+	for _, want := range []string{"- working response", "─", "$ next task  (○ queued)", "⠋ $ editable"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("frame missing %q: %#v", want, renderer.rows)
 		}
@@ -230,12 +278,12 @@ func TestLiveRendererCompositeFrameShowsInputStatusBar(t *testing.T) {
 	if renderer.cursorRow != len(renderer.rows)-1 {
 		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
 	}
-	if got := renderer.rows[1]; !strings.Contains(got, "━ mode: build ") || !strings.HasSuffix(got, " local/test ") {
+	if got := renderer.rows[1]; !strings.Contains(got, "─ mode: build ") || !strings.HasSuffix(got, " local/test ") {
 		t.Fatalf("modeline labels are not padded: %q", got)
 	}
 }
 
-func TestLiveRendererKeepsModelineHeavyAfterTranscriptBoundaryWasCommitted(t *testing.T) {
+func TestLiveRendererKeepsModelineThinAfterTranscriptBoundaryWasCommitted(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 40, MaxRows: 6})
 	if err := renderer.Frame(LiveFrame{
@@ -244,8 +292,8 @@ func TestLiveRendererKeepsModelineHeavyAfterTranscriptBoundaryWasCommitted(t *te
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if got := renderer.rows[0]; !strings.HasPrefix(got, "━ mode: build ") || !strings.Contains(got, "━") || !strings.HasSuffix(got, " local/test ") {
-		t.Fatalf("settled modeline lost its heavy rule: %q", got)
+	if got := renderer.rows[0]; !strings.HasPrefix(got, "─ mode: build ") || !strings.Contains(got, "─") || !strings.HasSuffix(got, " local/test ") {
+		t.Fatalf("settled modeline lost its thin rule: %q", got)
 	}
 }
 
@@ -264,7 +312,7 @@ func TestLiveRendererSpacesSettledResponseFromModelineImmediately(t *testing.T) 
 	if len(renderer.rows) < 3 || renderer.rows[0] != "" {
 		t.Fatalf("settled response is not spaced from modeline: %#v", renderer.rows)
 	}
-	if got := renderer.rows[1]; !strings.HasPrefix(got, "━ mode: build ") {
+	if got := renderer.rows[1]; !strings.HasPrefix(got, "─ mode: build ") {
 		t.Fatalf("modeline = %q", got)
 	}
 	if renderer.cursorRow != 2 {
@@ -304,7 +352,7 @@ func TestLiveRendererCompositeFrameShowsStatusInModeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(renderer.rows, "\n")
-	if got := renderer.rows[0]; !strings.HasPrefix(got, "━ mode: build ━ status: tool running ") || !strings.HasSuffix(got, " local/test ") {
+	if got := renderer.rows[0]; !strings.HasPrefix(got, "─ mode: build ─ status: tool running ") || !strings.HasSuffix(got, " local/test ") {
 		t.Fatalf("status is not in modeline: %#v", renderer.rows)
 	}
 	if strings.Contains(joined, "\nstatus: tool running\n") {

@@ -40,6 +40,28 @@ type PromptState struct {
 	MaxRows int
 }
 
+// TextStyle selects renderer-owned presentation for sanitized terminal text.
+// Callers provide plain text only; the renderer applies styling after layout.
+type TextStyle uint8
+
+const (
+	TextStyleDefault TextStyle = iota
+	// TextStyleMuted renders an informational row in ANSI bright black (grey).
+	TextStyleMuted
+	textStyleWhite
+)
+
+// StyledText is plain terminal text with a semantic renderer-owned style.
+type StyledText struct {
+	Text  string
+	Style TextStyle
+}
+
+// MutedText marks a report for muted grey presentation when color is enabled.
+func MutedText(text string) StyledText {
+	return StyledText{Text: text, Style: TextStyleMuted}
+}
+
 // LiveFrame combines an active response with the always-visible input area.
 // Pending entries are displayed inside the input area below its top divider.
 type LiveFrame struct {
@@ -49,17 +71,18 @@ type LiveFrame struct {
 	// PromptContext is rendered in full immediately before Prompt. Unlike
 	// Context, it is not part of the bounded upper live arena. This is for
 	// decision-critical context that must remain visible beside its selector.
-	PromptContext []string
-	Activity      []string
-	Status        string
-	InputLeft     string
-	InputRight    string
-	Pending       []string
-	Prompt        PromptState
-	Busy          bool
-	Spinner       string
-	ShowDivider   bool
-	Stream        *StreamMessage
+	PromptContext  []string
+	Activity       []string
+	StyledActivity []StyledText
+	Status         string
+	InputLeft      string
+	InputRight     string
+	Pending        []string
+	Prompt         PromptState
+	Busy           bool
+	Spinner        string
+	ShowDivider    bool
+	Stream         *StreamMessage
 }
 
 // StreamMessage is the cumulative text of one in-progress assistant message.
@@ -202,6 +225,22 @@ func (r *LiveRenderer) Update(lines []string) error {
 	return r.redraw(rows, row, col)
 }
 
+// UpdateStyled replaces the live region with styled, sanitized, wrapped text.
+func (r *LiveRenderer) UpdateStyled(lines []StyledText) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	rows, styles := r.layoutStyledLines(lines)
+	if !r.tty {
+		return r.writePlain(rows)
+	}
+	row, col := lastPosition(rows)
+	return r.redrawStyled(rows, styles, row, col)
+}
+
 // Prompt redraws the independent input region and any completion choices.
 func (r *LiveRenderer) Prompt(state PromptState) error {
 	r.mu.Lock()
@@ -282,7 +321,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
 	}
 	if barRows > 0 {
-		// The labels are the modeline, not a separate status row. Keep its heavy
+		// The labels are the modeline, not a separate status row. Keep its thin
 		// rule even when the transcript boundary was already committed (notably
 		// immediately after an assistant response).
 		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
@@ -311,26 +350,46 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	remaining -= len(contextRows)
 
 	var activity []string
+	var activityStyles []TextStyle
 	for _, item := range frame.Activity {
-		activity = append(activity, r.layoutLines([]string{item})...)
+		itemRows := r.layoutLines([]string{item})
+		activity = append(activity, itemRows...)
+		activityStyles = append(activityStyles, make([]TextStyle, len(itemRows))...)
+	}
+	for _, item := range frame.StyledActivity {
+		itemRows, itemStyles := r.layoutStyledLines([]StyledText{item})
+		activity = append(activity, itemRows...)
+		activityStyles = append(activityStyles, itemStyles...)
 	}
 	if frame.Message != "" || frame.MessagePrefix != "" {
-		activity = append(activity, r.messageRows(frame.MessagePrefix, frame.Message)...)
+		messageRows := r.messageRows(frame.MessagePrefix, frame.Message)
+		activity = append(activity, messageRows...)
+		activityStyles = append(activityStyles, make([]TextStyle, len(messageRows))...)
 	}
 	if len(activity) > remaining {
-		activity = activity[len(activity)-remaining:]
+		start := len(activity) - remaining
+		activity = activity[start:]
+		activityStyles = activityStyles[start:]
 	}
 	rows := append(streamRows, contextRows...)
 	rows = append(rows, activity...)
+	styles := make([]TextStyle, len(streamRows)+len(contextRows))
+	styles = append(styles, activityStyles...)
 	// Permanent transcript blocks and transient output are separate visual
 	// regions. Keep their separator in the live region so it appears immediately
 	// both after a submitted user message and after a response settles.
 	blockGap := 0
 	if r.committed && r.lastCommit == commitBlock && !r.streamBlock && len(promoted) == 0 {
 		rows = append([]string{""}, rows...)
+		styles = append([]TextStyle{TextStyleDefault}, styles...)
 		blockGap = 1
 	}
 	rows = append(rows, inputRows...)
+	inputStyles := make([]TextStyle, len(inputRows))
+	for i := 0; i < dividerRows+barRows; i++ {
+		inputStyles[i] = textStyleWhite
+	}
+	styles = append(styles, inputStyles...)
 	cursorRow := len(streamRows) + len(contextRows) + len(activity) + blockGap + dividerRows + barRows + len(pendingRows) + len(promptContextRows) + promptCursorRow
 	if !r.tty {
 		if err := r.writePlain(append(promoted, rows...)); err != nil {
@@ -340,13 +399,13 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		return nil
 	}
 	if len(promoted) > 0 {
-		if err := r.promoteAndRedraw(promoted, rows, cursorRow, promptCursorCol); err != nil {
+		if err := r.promoteAndRedraw(promoted, rows, styles, cursorRow, promptCursorCol); err != nil {
 			r.stream = streamBefore
 			return err
 		}
 		return nil
 	}
-	if err := r.redraw(rows, cursorRow, promptCursorCol); err != nil {
+	if err := r.redrawStyled(rows, styles, cursorRow, promptCursorCol); err != nil {
 		r.stream = streamBefore
 		return err
 	}
@@ -492,7 +551,7 @@ func statusBar(left, right string, columns int) string {
 func dividerStatusBar(left, status, right string, columns int) string {
 	width := max(1, columns-1)
 	if width < 3 {
-		return strings.Repeat("━", width)
+		return strings.Repeat("─", width)
 	}
 	values := make([]string, 0, 2)
 	if left = Sanitize(left); left != "" {
@@ -503,29 +562,29 @@ func dividerStatusBar(left, status, right string, columns int) string {
 	}
 	right = Sanitize(right)
 	if len(values) == 0 && right == "" {
-		return strings.Repeat("━", width)
+		return strings.Repeat("─", width)
 	}
 
 	leftPart := ""
 	if len(values) > 0 {
-		leftPart = "━ " + strings.Join(values, " ━ ") + " "
+		leftPart = "─ " + strings.Join(values, " ─ ") + " "
 	}
 	if right == "" {
 		if displayWidth(leftPart) >= width {
-			return truncateWidth(leftPart, width-1) + "━"
+			return truncateWidth(leftPart, width-1) + "─"
 		}
-		return leftPart + strings.Repeat("━", width-displayWidth(leftPart))
+		return leftPart + strings.Repeat("─", width-displayWidth(leftPart))
 	}
 
 	// The model label belongs to the right edge of the modeline, independently
 	// of the mode and status labels grouped at the left edge.
 	rightPart := " " + right + " "
 	if displayWidth(rightPart) >= width {
-		return "━" + truncateWidth(rightPart, width-1)
+		return "─" + truncateWidth(rightPart, width-1)
 	}
 	leftWidth := min(displayWidth(leftPart), width-displayWidth(rightPart))
 	leftPart = truncateWidth(leftPart, leftWidth)
-	return leftPart + strings.Repeat("━", width-leftWidth-displayWidth(rightPart)) + rightPart
+	return leftPart + strings.Repeat("─", width-leftWidth-displayWidth(rightPart)) + rightPart
 }
 
 func queuedPreview(value string, columns int) string {
@@ -590,7 +649,7 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	return r.commitRowsAs(rows, commitBlock)
 }
 
-// CommitUserMessage appends a permanent user message with the same heavy rule
+// CommitUserMessage appends a permanent user message with the same thin rule
 // used by the modeline immediately above it.
 func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
 	r.mu.Lock()
@@ -599,9 +658,11 @@ func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
 		return errors.New("terminal: renderer is closed")
 	}
 	r.syncColumns()
-	rows := []string{strings.Repeat("━", max(1, r.columns-1))}
+	rows := []string{strings.Repeat("─", max(1, r.columns-1))}
 	rows = append(rows, r.messageRows(prefix, text)...)
-	return r.commitRowsAs(rows, commitBlock)
+	styles := make([]TextStyle, len(rows))
+	styles[0] = textStyleWhite
+	return r.commitRowsAsStyled(rows, styles, commitBlock)
 }
 
 // CommitBlock appends permanent multiline output as one spaced transcript block.
@@ -620,6 +681,30 @@ func (r *LiveRenderer) CommitBlock(text string) error {
 	return r.commitRowsAs(rows, commitBlock)
 }
 
+// CommitStyled appends one compact styled report after sanitizing and wrapping.
+func (r *LiveRenderer) CommitStyled(text StyledText) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	rows, styles := r.layoutStyledContent([]StyledText{text})
+	return r.commitRowsAsStyled(rows, styles, commitCompact)
+}
+
+// CommitStyledBlock appends one spaced styled multiline report.
+func (r *LiveRenderer) CommitStyledBlock(text StyledText) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	rows, styles := r.layoutStyledContent([]StyledText{text})
+	return r.commitRowsAsStyled(rows, styles, commitBlock)
+}
+
 // CommitDivider appends one permanent input-boundary rule.
 func (r *LiveRenderer) CommitDivider() error {
 	r.mu.Lock()
@@ -628,7 +713,7 @@ func (r *LiveRenderer) CommitDivider() error {
 		return errors.New("terminal: renderer is closed")
 	}
 	r.syncColumns()
-	return r.commitRows([]string{strings.Repeat("─", max(1, r.columns-1))})
+	return r.commitRowsStyled([]string{strings.Repeat("─", max(1, r.columns-1))}, []TextStyle{textStyleWhite})
 }
 
 // Clear erases only the renderer-owned live region.
@@ -699,8 +784,12 @@ func (r *LiveRenderer) Close() error {
 }
 
 func (r *LiveRenderer) redraw(rows []string, cursorRow, cursorCol int) error {
+	return r.redrawStyled(rows, nil, cursorRow, cursorCol)
+}
+
+func (r *LiveRenderer) redrawStyled(rows []string, styles []TextStyle, cursorRow, cursorCol int) error {
 	var output strings.Builder
-	r.buildRedraw(&output, rows, cursorRow, cursorCol)
+	r.buildRedrawStyled(&output, rows, styles, cursorRow, cursorCol)
 	if err := writeAtomic(r.w, output.String()); err != nil {
 		return err
 	}
@@ -711,6 +800,10 @@ func (r *LiveRenderer) redraw(rows []string, cursorRow, cursorCol int) error {
 }
 
 func (r *LiveRenderer) buildRedraw(output *strings.Builder, rows []string, cursorRow, cursorCol int) {
+	r.buildRedrawStyled(output, rows, nil, cursorRow, cursorCol)
+}
+
+func (r *LiveRenderer) buildRedrawStyled(output *strings.Builder, rows []string, styles []TextStyle, cursorRow, cursorCol int) {
 	// Cursor visibility changes surround one buffered write, not persistent UI.
 	output.WriteString("\x1b[?25l")
 	if len(r.rows) > 0 {
@@ -721,7 +814,7 @@ func (r *LiveRenderer) buildRedraw(output *strings.Builder, rows []string, curso
 	for i := 0; i < count; i++ {
 		output.WriteString("\x1b[2K")
 		if i < len(rows) {
-			output.WriteString(r.decorate(rows[i]))
+			output.WriteString(r.decorateStyled(rows[i], styleAt(styles, i)))
 		}
 		if i+1 < count {
 			output.WriteString("\r\n")
@@ -734,19 +827,23 @@ func (r *LiveRenderer) buildRedraw(output *strings.Builder, rows []string, curso
 		} else if cursorRow != count-1 || cursorCol != displayWidth(rows[cursorRow]) {
 			output.WriteByte('\r')
 			moveUp(output, count-1-cursorRow)
-			output.WriteString(r.decorate(prefixWidth(rows[cursorRow], cursorCol)))
+			output.WriteString(r.decorateStyled(prefixWidth(rows[cursorRow], cursorCol), styleAt(styles, cursorRow)))
 		}
 	}
 	output.WriteString("\x1b[?25h")
 }
 
 func (r *LiveRenderer) commitRows(rows []string) error {
+	return r.commitRowsStyled(rows, nil)
+}
+
+func (r *LiveRenderer) commitRowsStyled(rows []string, styles []TextStyle) error {
 	var output strings.Builder
 	if r.tty && len(r.rows) > 0 {
 		r.buildRedraw(&output, nil, 0, 0)
 	}
-	for _, row := range rows {
-		output.WriteString(r.decorate(row))
+	for i, row := range rows {
+		output.WriteString(r.decorateStyled(row, styleAt(styles, i)))
 		output.WriteByte('\n')
 	}
 	if err := writeAtomic(r.w, output.String()); err != nil {
@@ -759,8 +856,15 @@ func (r *LiveRenderer) commitRows(rows []string) error {
 }
 
 func (r *LiveRenderer) commitRowsAs(rows []string, kind commitKind) error {
-	rows = r.spaceRows(rows, kind)
-	if err := r.commitRows(rows); err != nil {
+	return r.commitRowsAsStyled(rows, nil, kind)
+}
+
+func (r *LiveRenderer) commitRowsAsStyled(rows []string, styles []TextStyle, kind commitKind) error {
+	if r.committed && (r.lastCommit == commitBlock || kind == commitBlock) {
+		rows = append([]string{""}, rows...)
+		styles = append([]TextStyle{TextStyleDefault}, styles...)
+	}
+	if err := r.commitRowsStyled(rows, styles); err != nil {
 		return err
 	}
 	r.committed = true
@@ -866,7 +970,7 @@ func layoutStreamingRows(prefix string, source []rune, columns int) ([]string, [
 	return rows, boundaries
 }
 
-func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, cursorRow, cursorCol int) error {
+func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, styles []TextStyle, cursorRow, cursorCol int) error {
 	var output strings.Builder
 	r.buildRedraw(&output, nil, 0, 0)
 	if !r.streamBlock {
@@ -878,7 +982,7 @@ func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, cursorRow, curs
 	}
 	oldRows, oldCursorRow, oldCursorCol := r.rows, r.cursorRow, r.cursorCol
 	r.rows, r.cursorRow, r.cursorCol = nil, 0, 0
-	r.buildRedraw(&output, rows, cursorRow, cursorCol)
+	r.buildRedrawStyled(&output, rows, styles, cursorRow, cursorCol)
 	r.rows, r.cursorRow, r.cursorCol = oldRows, oldCursorRow, oldCursorCol
 	if err := writeAtomic(r.w, output.String()); err != nil {
 		return err
@@ -907,10 +1011,20 @@ func (r *LiveRenderer) syncColumns() {
 }
 
 func (r *LiveRenderer) decorate(row string) string {
+	return r.decorateStyled(row, TextStyleDefault)
+}
+
+func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 	if !r.color || row == "" {
 		return row
 	}
 	color := func(code, value string) string { return "\x1b[" + code + "m" + value + "\x1b[0m" }
+	switch style {
+	case TextStyleMuted:
+		return color("90", row)
+	case textStyleWhite:
+		return color("37", row)
+	}
 	switch {
 	case hasSpinnerPrefix(row):
 		spinner, rest := firstRune(row)
@@ -983,16 +1097,44 @@ func (r *LiveRenderer) writePlain(rows []string) error {
 }
 
 func (r *LiveRenderer) layoutLines(lines []string) []string {
+	styled := make([]StyledText, len(lines))
+	for i, line := range lines {
+		styled[i].Text = line
+	}
+	rows, _ := r.layoutStyledLines(styled)
+	return rows
+}
+
+func (r *LiveRenderer) layoutStyledLines(lines []StyledText) ([]string, []TextStyle) {
+	rows, styles := r.layoutStyledContent(lines)
+	if len(rows) > r.maxRows {
+		start := len(rows) - r.maxRows
+		rows = rows[start:]
+		styles = styles[start:]
+	}
+	return rows, styles
+}
+
+func (r *LiveRenderer) layoutStyledContent(lines []StyledText) ([]string, []TextStyle) {
 	rows := make([]string, 0, len(lines))
+	styles := make([]TextStyle, 0, len(lines))
 	for _, line := range lines {
-		for _, part := range strings.Split(Sanitize(line), "\n") {
-			rows = append(rows, wrapLine(part, r.columns)...)
+		for _, part := range strings.Split(Sanitize(line.Text), "\n") {
+			wrapped := wrapLine(part, r.columns)
+			rows = append(rows, wrapped...)
+			for range wrapped {
+				styles = append(styles, line.Style)
+			}
 		}
 	}
-	if len(rows) > r.maxRows {
-		rows = rows[len(rows)-r.maxRows:]
+	return rows, styles
+}
+
+func styleAt(styles []TextStyle, index int) TextStyle {
+	if index < 0 || index >= len(styles) {
+		return TextStyleDefault
 	}
-	return rows
+	return styles[index]
 }
 
 func layoutText(text string, cursor, columns int) ([]string, int, int) {

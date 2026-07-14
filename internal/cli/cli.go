@@ -305,16 +305,29 @@ type streamResult struct {
 type streamToolCall struct {
 	name  string
 	input map[string]any
+	style terminal.TextStyle
 }
 
 type streamToolTracker struct {
 	calls map[string]streamToolCall
 }
 
+type streamToolReport struct {
+	line     string
+	block    string
+	terminal bool
+	style    terminal.TextStyle
+}
+
 // describe returns the human-facing status and any permanent detail block for
 // a tool event. Pending input is retained until the terminal event because
 // failure and some success payloads contain only the call ID.
 func (t *streamToolTracker) describe(item v1.Event) (string, string, bool) {
+	report := t.describeReport(item)
+	return report.line, report.block, report.terminal
+}
+
+func (t *streamToolTracker) describeReport(item v1.Event) streamToolReport {
 	callID, name, input, result := toolActivityPayload(item.Data)
 	if t.calls == nil {
 		t.calls = make(map[string]streamToolCall)
@@ -322,6 +335,11 @@ func (t *streamToolTracker) describe(item v1.Event) (string, string, bool) {
 	call := t.calls[callID]
 	if name != "" {
 		call.name = name
+		if name == "read" || name == "grep" {
+			call.style = terminal.TextStyleMuted
+		} else {
+			call.style = terminal.TextStyleDefault
+		}
 	}
 	if input != nil {
 		call.input = input
@@ -341,26 +359,35 @@ func (t *streamToolTracker) describe(item v1.Event) (string, string, bool) {
 	} else if status == "failure" && call.input != nil {
 		block = truncateToolBlock(formatFailedToolRequest(call.input), maxToolBlockLines)
 	}
+	style := call.style
+	if status == "failure" || status == "interrupted" {
+		style = terminal.TextStyleDefault
+	}
 	if terminalEvent && callID != "" {
 		delete(t.calls, callID)
 	}
-	return streamToolStatus(status, toolActivityError(item.Data)), block, terminalEvent
+	return streamToolReport{
+		line: streamToolStatus(status, toolActivityError(item.Data)), block: block,
+		terminal: terminalEvent, style: style,
+	}
 }
 
 func writeStreamToolEvent(options streamOptions, tracker *streamToolTracker, item v1.Event) error {
-	line, block, terminalEvent := tracker.describe(item)
+	report := tracker.describeReport(item)
 	if options.renderer != nil {
-		if !terminalEvent {
-			return options.renderer.Update([]string{line})
+		styled := terminal.StyledText{Text: report.line, Style: report.style}
+		if !report.terminal {
+			return options.renderer.UpdateStyled([]terminal.StyledText{styled})
 		}
-		if block != "" {
-			return options.renderer.CommitBlock(line + "\n" + block)
+		if report.block != "" {
+			styled.Text += "\n" + report.block
+			return options.renderer.CommitStyledBlock(styled)
 		}
-		return options.renderer.Commit(line)
+		return options.renderer.CommitStyled(styled)
 	}
-	text := line
-	if block != "" {
-		text += "\n" + block
+	text := report.line
+	if report.block != "" {
+		text += "\n" + report.block
 	}
 	_, err := fmt.Fprintln(options.stderr, terminal.Sanitize(text))
 	return err
@@ -1158,7 +1185,7 @@ func (s *chatShell) commitUser(text string) error {
 	if columns <= 0 {
 		columns = 80
 	}
-	fmt.Fprintln(s.stdout, strings.Repeat("━", max(3, columns-1)))
+	fmt.Fprintln(s.stdout, strings.Repeat("─", max(3, columns-1)))
 	if !s.inputEchoed || !s.outputTTY {
 		fmt.Fprintln(s.stdout, "$ "+strings.ReplaceAll(text, "\n", "\n  "))
 	}
