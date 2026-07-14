@@ -70,3 +70,19 @@ func TestColorDisabledForNonTTYAndDumbTerminal(t *testing.T) {
 		t.Fatal("color enabled when explicitly disabled")
 	}
 }
+
+func TestSetBracketedPaste(t *testing.T) {
+	var output bytes.Buffer
+	if err := SetBracketedPaste(&output, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetBracketedPaste(&output, false); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), bracketedPasteEnable+bracketedPasteDisable; got != want {
+		t.Fatalf("output = %q, want %q", got, want)
+	}
+	if err := SetBracketedPaste(nil, true); err != nil {
+		t.Fatalf("nil writer error = %v", err)
+	}
+}
