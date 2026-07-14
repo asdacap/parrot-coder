@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -65,6 +66,11 @@ type RunnerConfig struct {
 	Compactor          Compactor
 	MaxConcurrentTools int
 	CleanupTimeout     time.Duration
+	// ToolPanicLogger, when set, receives diagnostics for a tool call whose
+	// Plan or Execute panicked and was recovered into a failure. It is purely
+	// an observability seam: the panic is always reported to the model as a
+	// tool failure whether or not a logger is configured.
+	ToolPanicLogger func(ctx context.Context, sessionID, toolName string, recovered any, stack []byte)
 }
 
 type Runner struct{ config RunnerConfig }
@@ -426,6 +432,25 @@ type toolOutcome struct {
 	persistErr  error
 }
 
+// executeToolCall runs one tool and converts any panic in its Plan or Execute
+// into a normal error. A tool call executes in its own goroutine, so without
+// this recovery a single panicking tool would terminate the entire process
+// rather than failing just that call. The recovered stack is captured in the
+// error so the underlying defect remains diagnosable.
+func executeToolCall(ctx context.Context, executor tool.Executor, call completedCall, callContext tool.CallContext, onPanic func(recovered any, stack []byte)) (result tool.Result, err error) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			stack := debug.Stack()
+			if onPanic != nil {
+				onPanic(recovered, stack)
+			}
+			result = tool.Result{}
+			err = fmt.Errorf("tool %q panicked: %v\n%s", call.call.Name, recovered, stack)
+		}
+	}()
+	return executor.Execute(ctx, call.call.Name, json.RawMessage(call.call.Input), callContext)
+}
+
 func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Profile, snapshot tool.Snapshot, calls []completedCall) error {
 	executor := r.config.ToolExecutor(snapshot)
 	sem := make(chan struct{}, r.config.MaxConcurrentTools)
@@ -452,7 +477,13 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 				outcomes[i] = toolOutcome{call: call, persistErr: err}
 				return
 			}
-			result, err := executor.Execute(ctx, call.call.Name, json.RawMessage(call.call.Input), tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Agent: profile.ID, ToolCallID: call.call.ID})
+			var onPanic func(recovered any, stack []byte)
+			if logger := r.config.ToolPanicLogger; logger != nil {
+				onPanic = func(recovered any, stack []byte) {
+					logger(ctx, sessionID, call.call.Name, recovered, stack)
+				}
+			}
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Agent: profile.ID, ToolCallID: call.call.ID}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {
