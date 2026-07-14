@@ -24,6 +24,7 @@ var operationSchemas = map[string]operationSchema{
 	"deleteSession":          {status: "204"},
 	"updateSessionSelection": {request: v1.UpdateSessionSelectionRequest{}, response: v1.SessionSelection{}, status: "200"},
 	"listMessages":           {response: v1.MessageList{}, status: "200"},
+	"listTodos":              {response: v1.TodoList{}, status: "200"},
 	"createPrompt":           {request: v1.PromptRequest{}, response: v1.PromptAccepted{}, status: "202"},
 	"compactSession":         {response: v1.Compaction{}, status: "202"},
 	"interruptSession":       {status: "204"},
@@ -92,7 +93,7 @@ func buildOpenAPI() []byte {
 		path[strings.ToLower(route.Method)] = operation
 	}
 	schemaFor(reflect.TypeOf(v1.Problem{}), definitions)
-	for _, payload := range []any{v1.Empty{}, v1.MessagePartDelta{}, v1.SessionStatus{}, v1.PermissionResolved{}, v1.QuestionResolved{}} {
+	for _, payload := range []any{v1.Empty{}, v1.MessagePartDelta{}, v1.SessionStatus{}, v1.PermissionResolved{}, v1.QuestionResolved{}, v1.TodoUpdated{}} {
 		schemaFor(reflect.TypeOf(payload), definitions)
 	}
 	document := map[string]any{

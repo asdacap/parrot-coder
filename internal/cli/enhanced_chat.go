@@ -1503,7 +1503,7 @@ func toolActivityLabel(name string, input map[string]any) string {
 		details = append(details, patchActivityTargets(firstString(input, "patch"))...)
 	case "shell":
 		add(firstString(input, "command"))
-	case "todo_write":
+	case "todowrite", "todo_write":
 		if todos, ok := input["todos"].([]any); ok {
 			details = append(details, fmt.Sprintf("%d items", len(todos)))
 		}

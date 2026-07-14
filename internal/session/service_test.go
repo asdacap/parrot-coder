@@ -306,8 +306,8 @@ func TestPromotionCutoffQueueAndMessageProjection(t *testing.T) {
 }
 
 func TestTodosOrderedReplacementValidationAndConcurrency(t *testing.T) {
-	ctx, db, _, _, sessionID := newService(t)
-	service := session.NewTodoService(db)
+	ctx, db, repository, _, sessionID := newService(t)
+	service := session.NewTodoService(db, repository)
 	items, err := service.Replace(ctx, sessionID, []session.Todo{
 		{Content: "second", Status: session.TodoInProgress, Priority: session.TodoHigh},
 		{Content: "first", Status: session.TodoPending, Priority: session.TodoLow},
@@ -318,6 +318,10 @@ func TestTodosOrderedReplacementValidationAndConcurrency(t *testing.T) {
 	listed, err := service.List(ctx, sessionID)
 	if err != nil || listed[0].Content != "second" || listed[1].Content != "first" {
 		t.Fatalf("list = %#v, %v", listed, err)
+	}
+	events, err := repository.List(ctx, sessionID, -1, 20)
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != session.EventTodoUpdated {
+		t.Fatalf("todo event = %#v, %v", events, err)
 	}
 	if _, err := service.Replace(ctx, sessionID, []session.Todo{{Content: "bad", Status: "unknown", Priority: session.TodoLow}}); err == nil {
 		t.Fatal("invalid status accepted")
@@ -347,6 +351,18 @@ func TestTodosOrderedReplacementValidationAndConcurrency(t *testing.T) {
 	listed, err = service.List(ctx, sessionID)
 	if err != nil || len(listed) != 1 || listed[0].Position != 0 {
 		t.Fatalf("concurrent list = %#v, %v", listed, err)
+	}
+}
+
+func TestTodoListIsEmptyArrayAndWhitespaceContentIsRejected(t *testing.T) {
+	ctx, db, _, _, sessionID := newService(t)
+	service := session.NewTodoService(db)
+	items, err := service.List(ctx, sessionID)
+	if err != nil || items == nil || len(items) != 0 {
+		t.Fatalf("empty list = %#v, %v", items, err)
+	}
+	if _, err := service.Replace(ctx, sessionID, []session.Todo{{Content: "  ", Status: session.TodoPending, Priority: session.TodoLow}}); err == nil {
+		t.Fatal("whitespace-only content accepted")
 	}
 }
 

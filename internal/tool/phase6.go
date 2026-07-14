@@ -275,7 +275,7 @@ type TodoReadTool struct{ Service *session.TodoService }
 func NewTodoReadTool(service *session.TodoService) *TodoReadTool {
 	return &TodoReadTool{Service: service}
 }
-func (*TodoReadTool) ID() string          { return "todo_read" }
+func (*TodoReadTool) ID() string          { return "todoread" }
 func (*TodoReadTool) Description() string { return "Read the current session's ordered todo list." }
 func (*TodoReadTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":false}`)
@@ -289,7 +289,7 @@ func (t *TodoReadTool) Execute(ctx context.Context, _ Plan, call CallContext) (R
 		service = call.Todos
 	}
 	if service == nil || call.SessionID == "" {
-		return Result{}, errors.New("todo_read: service and session are required")
+		return Result{}, errors.New("todoread: service and session are required")
 	}
 	items, err := service.List(ctx, call.SessionID)
 	if err != nil {
@@ -304,12 +304,12 @@ type TodoWriteTool struct{ Service *session.TodoService }
 func NewTodoWriteTool(service *session.TodoService) *TodoWriteTool {
 	return &TodoWriteTool{Service: service}
 }
-func (*TodoWriteTool) ID() string { return "todo_write" }
+func (*TodoWriteTool) ID() string { return "todowrite" }
 func (*TodoWriteTool) Description() string {
 	return "Transactionally replace the current session's ordered todo list."
 }
 func (*TodoWriteTool) JSONSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string"},"priority":{"type":"string"}},"required":["content","status","priority"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","completed","cancelled"]},"priority":{"type":"string","enum":["high","medium","low"]}},"required":["content","status","priority"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}`)
 }
 
 type todoWriteInput struct {
@@ -329,7 +329,7 @@ func (t *TodoWriteTool) Execute(ctx context.Context, plan Plan, call CallContext
 		service = call.Todos
 	}
 	if service == nil || call.SessionID == "" {
-		return Result{}, errors.New("todo_write: service and session are required")
+		return Result{}, errors.New("todowrite: service and session are required")
 	}
 	items, err := service.Replace(ctx, call.SessionID, plan.Data.(todoWriteInput).Todos)
 	if err != nil {

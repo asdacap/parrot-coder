@@ -175,13 +175,22 @@ func TestRegisterPhase6Definitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	definitions := registry.Definitions()
-	want := []string{"apply_patch", "edit", "question", "shell", "todo_read", "todo_write"}
+	want := []string{"apply_patch", "edit", "question", "shell", "todoread", "todowrite"}
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions = %#v", definitions)
 	}
 	for i := range want {
 		if definitions[i].ID != want[i] {
 			t.Fatalf("definition[%d] = %q", i, definitions[i].ID)
+		}
+	}
+}
+
+func TestTodoToolSchemaUsesOpenCodeEnums(t *testing.T) {
+	schema := string(NewTodoWriteTool(nil).JSONSchema())
+	for _, expected := range []string{`"enum":["pending","in_progress","completed","cancelled"]`, `"enum":["high","medium","low"]`} {
+		if !strings.Contains(schema, expected) {
+			t.Fatalf("todo schema missing %s: %s", expected, schema)
 		}
 	}
 }

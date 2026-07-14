@@ -46,7 +46,7 @@ func NewRegistry(profiles ...Profile) (*Registry, error) {
 }
 
 func Builtins() []Profile {
-	readTools := []string{"glob", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel"}
+	readTools := []string{"glob", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread"}
 	return []Profile{
 		{ID: BuildID, Prompt: "You are Parrot's build agent. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64},
 		{ID: PlanID, Prompt: "You are Parrot's planning agent. Inspect the project and produce an implementation plan.", AllowedToolIDs: readTools, HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, ReadOnly: true},
@@ -108,7 +108,7 @@ func (p Profile) AllowsTool(id string) bool {
 
 func readOnlyTool(id string) bool {
 	switch id {
-	case "read", "glob", "grep", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel":
+	case "read", "glob", "grep", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread":
 		return true
 	default:
 		return false
