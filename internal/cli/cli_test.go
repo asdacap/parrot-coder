@@ -795,10 +795,10 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 	got := output.String()
 	for _, want := range []string{
 		"✓ todowrite · 4 items ·",
-		"○ pending · high · Plan work",
-		"◐ in progress · medium · Implement UI",
-		"✓ completed · low · Run tests",
-		"■ cancelled · low · Discard old approach",
+		"○ high · Plan work",
+		"◐ medium · Implement UI",
+		"✓ low · Run tests",
+		"■ low · Discard old approach",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("todowrite block = %q, want %q", got, want)
@@ -814,7 +814,7 @@ func TestTodoWriteBlockFallsBackToInputAndHandlesEmptyList(t *testing.T) {
 		map[string]any{"content": "Safe\ncontent", "status": "pending", "priority": "high"},
 	}}
 	block, count, ok := formatTodoWriteBlock("", input)
-	if !ok || count != 1 || !strings.Contains(block, "○ pending · high · Safe content") || strings.Contains(block, "\ncontent") {
+	if !ok || count != 1 || !strings.Contains(block, "○ high · Safe content") || strings.Contains(block, "\ncontent") {
 		t.Fatalf("fallback block = %q, ok = %v", block, ok)
 	}
 	empty, count, ok := formatTodoWriteBlock("[]", input)

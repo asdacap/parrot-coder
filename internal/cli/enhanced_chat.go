@@ -1694,29 +1694,25 @@ func renderTodoActivityItems(items []todoActivityItem) string {
 	}
 	lines := make([]string, 0, len(items))
 	for _, item := range items {
-		marker, status := todoActivityStatus(item.status)
+		marker := todoActivityMarker(item.status)
 		priority := cleanActivityDetail(strings.ReplaceAll(item.priority, "_", " "))
-		lines = append(lines, fmt.Sprintf("  %s %s · %s · %s", marker, status, priority, item.content))
+		lines = append(lines, fmt.Sprintf("  %s %s · %s", marker, priority, item.content))
 	}
 	return strings.Join(lines, "\n")
 }
 
-func todoActivityStatus(status string) (string, string) {
+func todoActivityMarker(status string) string {
 	switch status {
 	case "pending":
-		return "○", "pending"
+		return "○"
 	case "in_progress":
-		return "◐", "in progress"
+		return "◐"
 	case "completed":
-		return "✓", "completed"
+		return "✓"
 	case "cancelled":
-		return "■", "cancelled"
+		return "■"
 	default:
-		label := cleanActivityDetail(strings.ReplaceAll(status, "_", " "))
-		if label == "" {
-			label = "unknown"
-		}
-		return "•", label
+		return "•"
 	}
 }
 
