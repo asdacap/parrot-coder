@@ -168,6 +168,7 @@ type enhancedChatRuntime struct {
 	activity        []enhancedActivityItem
 	completedTools  []enhancedActivityItem
 	borderCommitted bool
+	contextTokens   int
 
 	stream           *client.EventStream
 	streamSessionID  string
@@ -442,7 +443,7 @@ func (r *enhancedChatRuntime) render() error {
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
 		Stream: stream, Context: r.modalContext(), Activity: r.activityRows(time.Now(), r.shell.renderer.Columns()), Status: r.status, Pending: pending,
-		InputLeft: r.inputModeLabel(), InputRight: r.shell.modelineModelLabel(),
+		InputLeft: r.inputModeLabel(), InputRight: r.shell.modelineModelLabel(r.contextTokens),
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})
@@ -550,6 +551,12 @@ func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.U
 	if usage == nil {
 		return
 	}
+	// Total tokens are the best provider-supplied measurement of the context
+	// that will be carried into the next turn. Some providers only report input
+	// tokens, so retain that as a useful fallback.
+	if tokens := contextTokenCount(*usage); tokens > 0 {
+		r.contextTokens = tokens
+	}
 	if messageID == "" {
 		messageID = r.streamMessageID
 	}
@@ -590,6 +597,13 @@ func (r *enhancedChatRuntime) finishAssistantActivity(id string, flush bool) err
 		return nil
 	}
 	return nil
+}
+
+func contextTokenCount(usage v1.Usage) int {
+	if usage.TotalTokens > 0 {
+		return usage.TotalTokens
+	}
+	return usage.InputTokens
 }
 
 func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal, reasoning bool) {
@@ -1190,6 +1204,7 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 	if newSession {
 		r.eventSessionID = sessionID
 		r.eventAfter = -1
+		r.contextTokens = 0
 		r.knownMessages = make(map[string]bool, len(messages.Items))
 		for _, item := range messages.Items {
 			if item.Sequence > r.eventAfter {
@@ -1197,6 +1212,14 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 			}
 			if item.Status != "active" {
 				r.knownMessages[item.ID] = true
+			}
+			if item.Role == "assistant" && item.Status != "active" {
+				var usage v1.Usage
+				if json.Unmarshal(item.Usage, &usage) == nil {
+					if tokens := contextTokenCount(usage); tokens > 0 {
+						r.contextTokens = tokens
+					}
+				}
 			}
 		}
 	}

@@ -804,11 +804,11 @@ func (s chatSelection) modelLabel() string {
 	return "no model"
 }
 
-func (s *chatShell) modelineModelLabel() string {
+func (s *chatShell) modelineModelLabel(currentTokens int) string {
 	label := s.selection.modelLabel()
 	for _, item := range s.models {
 		if item.Provider == s.selection.provider && item.ID == s.selection.model && item.ContextWindow > 0 {
-			return fmt.Sprintf("%s (%s context)", label, compactTokenCount(item.ContextWindow))
+			return fmt.Sprintf("%s (%s/%s)", label, compactTokenCount(currentTokens), compactTokenCount(item.ContextWindow))
 		}
 	}
 	return label

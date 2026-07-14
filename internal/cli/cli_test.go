@@ -443,6 +443,9 @@ func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	if got := formatReasoningActivity(runtime.activity[0], runtime.activity[0].started, 100); !strings.Contains(got, "Checking the implementation · 123 tokens · 0.0s") {
 		t.Fatalf("activity after usage = %q", got)
 	}
+	if runtime.contextTokens != 456 {
+		t.Fatalf("context tokens = %d, want 456", runtime.contextTokens)
+	}
 
 	runtime.completeAssistantActivity("assistant", "success")
 	if !runtime.activity[0].terminal || !runtime.activity[0].reasoning || runtime.activity[0].tokens != 123 || !runtime.activity[0].hasUsage {
@@ -516,7 +519,7 @@ func TestEnhancedCycleModeAppliesNextAgentAndUpdatesLabels(t *testing.T) {
 	if got := shell.selection.modelLabel(); got != "local/test" {
 		t.Fatalf("modelLabel() = %q", got)
 	}
-	if got := shell.modelineModelLabel(); got != "local/test (128k context)" {
+	if got := shell.modelineModelLabel(1200); got != "local/test (1.2k/128k)" {
 		t.Fatalf("modelineModelLabel() = %q", got)
 	}
 	if err := runtime.cycleMode(); err != nil {
