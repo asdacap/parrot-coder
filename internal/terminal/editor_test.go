@@ -109,13 +109,35 @@ func TestEditorBoundsAndInvalidInput(t *testing.T) {
 	if !errors.Is(err, ErrInputLimit) {
 		t.Fatalf("byte bound error = %v", err)
 	}
-	_, err = readEditor(t, "\xff")
-	if err == nil {
-		t.Fatal("invalid UTF-8 was accepted")
+	value, err := readEditor(t, "\xffok\r")
+	if err != nil || value != "ok" {
+		t.Fatalf("invalid UTF-8 terminated editor: value=%q err=%v", value, err)
 	}
-	_, err = readEditor(t, "\x1b[200~bad\tdata\x1b[201~")
-	if err == nil {
-		t.Fatal("pasted control was accepted")
+	value, err = readEditor(t, "\x1b[200~bad\tdata\x1b[201~ok\r")
+	if err != nil || value != "ok" {
+		t.Fatalf("invalid paste terminated editor: value=%q err=%v", value, err)
+	}
+}
+
+func TestKeyDecoderIgnoresUnboundControls(t *testing.T) {
+	bound := map[byte]bool{0x03: true, 0x04: true, 0x08: true, 0x09: true, 0x0a: true, 0x0d: true, 0x18: true, 0x1b: true, 0x1e: true}
+	for b := byte(0); b < 0x20; b++ {
+		if bound[b] {
+			continue
+		}
+		key, err := NewKeyDecoder(bytes.NewReader([]byte{b})).ReadKey(context.Background())
+		if err != nil || key.Kind != KeyIgnored {
+			t.Fatalf("control byte 0x%02x: key=%#v err=%v", b, key, err)
+		}
+	}
+}
+
+func TestEditorIgnoresUnknownFunctionAndEscapeSequences(t *testing.T) {
+	for _, input := range []string{"before\x1bOPafter\r", "before\x1b[5~after\r", "before\x1bxafter\r"} {
+		value, err := readEditor(t, input)
+		if err != nil || value != "beforeafter" {
+			t.Fatalf("input %q: value=%q err=%v", input, value, err)
+		}
 	}
 }
 
@@ -142,7 +164,7 @@ func TestKeyDecoderIgnoresTimedTTYEOF(t *testing.T) {
 }
 
 func TestKeyDecoderModeSwitch(t *testing.T) {
-	for _, input := range []string{"\x1e", "\x1b[Z"} {
+	for _, input := range []string{"\x18", "\x1e", "\x1b[Z"} {
 		decoder := NewKeyDecoder(bytes.NewBufferString(input))
 		key, err := decoder.ReadKey(context.Background())
 		if err != nil {
