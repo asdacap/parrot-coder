@@ -736,9 +736,6 @@ func (r *enhancedChatRuntime) ensureInputBorder() error {
 }
 
 func (r *enhancedChatRuntime) commitUser(content string) error {
-	if err := r.ensureInputBorder(); err != nil {
-		return err
-	}
 	if err := r.shell.commitUser(content); err != nil {
 		return err
 	}
@@ -1773,13 +1770,16 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		}
 		if item.Content != "" {
 			if item.ID == r.streamMessageID {
-				if err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "- ", Text: item.Content}, true); err != nil {
+				if err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "- ", Text: item.Content}, false); err != nil {
 					return err
 				}
-			} else if err := r.shell.renderer.CommitMessage("- ", item.Content, true); err != nil {
+			} else if err := r.shell.renderer.CommitMessage("- ", item.Content, false); err != nil {
 				return err
 			}
-			r.borderCommitted = true
+			// The live labeled modeline owns the response/input boundary. Leaving
+			// it uncommitted keeps that boundary heavy and avoids a thin rule above
+			// the modeline once the response settles.
+			r.borderCommitted = false
 		}
 		if item.Error != "" {
 			r.commitError(item.Error)

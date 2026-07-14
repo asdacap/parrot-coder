@@ -282,7 +282,10 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
 	}
 	if barRows > 0 {
-		inputRows = append(inputRows, statusBar(frame.InputLeft, frame.InputRight, r.columns))
+		// The labels are the modeline, not a separate status row. Keep its heavy
+		// rule even when the transcript boundary was already committed (notably
+		// immediately after an assistant response).
+		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
 	}
 	inputRows = append(inputRows, pendingRows...)
 	inputRows = append(inputRows, promptContextRows...)
@@ -481,29 +484,40 @@ func statusBar(left, right string, columns int) string {
 func dividerStatusBar(left, status, right string, columns int) string {
 	width := max(1, columns-1)
 	if width < 3 {
-		return strings.Repeat("─", width)
+		return strings.Repeat("━", width)
 	}
-	values := make([]string, 0, 3)
+	values := make([]string, 0, 2)
 	if left = Sanitize(left); left != "" {
 		values = append(values, left)
 	}
 	if status = Sanitize(status); status != "" {
 		values = append(values, "status: "+status)
 	}
-	if right = Sanitize(right); right != "" {
-		values = append(values, right)
-	}
-	if len(values) == 0 {
-		return strings.Repeat("─", width)
+	right = Sanitize(right)
+	if len(values) == 0 && right == "" {
+		return strings.Repeat("━", width)
 	}
 
-	// Keep whitespace between the rule and every label. Besides being easier
-	// to scan, this prevents output such as "─mode: build─model─".
-	line := "─ " + strings.Join(values, " ─ ") + " "
-	if displayWidth(line) >= width {
-		return truncateWidth(line, width-1) + "─"
+	leftPart := ""
+	if len(values) > 0 {
+		leftPart = "━ " + strings.Join(values, " ━ ") + " "
 	}
-	return line + strings.Repeat("─", width-displayWidth(line))
+	if right == "" {
+		if displayWidth(leftPart) >= width {
+			return truncateWidth(leftPart, width-1) + "━"
+		}
+		return leftPart + strings.Repeat("━", width-displayWidth(leftPart))
+	}
+
+	// The model label belongs to the right edge of the modeline, independently
+	// of the mode and status labels grouped at the left edge.
+	rightPart := " " + right + " "
+	if displayWidth(rightPart) >= width {
+		return "━" + truncateWidth(rightPart, width-1)
+	}
+	leftWidth := min(displayWidth(leftPart), width-displayWidth(rightPart))
+	leftPart = truncateWidth(leftPart, leftWidth)
+	return leftPart + strings.Repeat("━", width-leftWidth-displayWidth(rightPart)) + rightPart
 }
 
 func queuedPreview(value string, columns int) string {
@@ -565,6 +579,20 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	if divider {
 		rows = append(rows, strings.Repeat("─", max(1, r.columns-1)))
 	}
+	return r.commitRowsAs(rows, commitBlock)
+}
+
+// CommitUserMessage appends a permanent user message with the same heavy rule
+// used by the modeline immediately above it.
+func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	rows := []string{strings.Repeat("━", max(1, r.columns-1))}
+	rows = append(rows, r.messageRows(prefix, text)...)
 	return r.commitRowsAs(rows, commitBlock)
 }
 
