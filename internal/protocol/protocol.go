@@ -124,6 +124,7 @@ type ProviderError struct {
 type Event struct {
 	Type          EventType
 	MessageID     string
+	PartID        string
 	Text          string
 	ToolInput     *ToolInputDelta
 	ToolCall      *ToolCall

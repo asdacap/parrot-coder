@@ -466,7 +466,7 @@ func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
 func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")
-	runtime.startReasoningActivity("assistant", "Checking the implementation")
+	runtime.startReasoningActivity("assistant", "", "Checking the implementation")
 
 	usage, _ := json.Marshal(v1.SessionStatus{
 		MessageID: "assistant",
@@ -551,6 +551,41 @@ func TestEnhancedReasoningSummaryReplacesRawReasoningActivity(t *testing.T) {
 	}
 }
 
+func TestEnhancedReasoningSummaryPartsShowAsSeparateActivityRows(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "**Inspecting"},
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: " the implementation**"},
+		{MessageID: "assistant", PartID: "reasoning:1", Kind: "reasoning_summary", Delta: "**Running tests**"},
+	} {
+		data, _ := json.Marshal(delta)
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(runtime.activity) != 2 {
+		t.Fatalf("activity = %#v", runtime.activity)
+	}
+	rows := runtime.activityRows(runtime.activity[0].started, 100)
+	if len(rows) != 2 || !strings.Contains(rows[0], "Thought: Inspecting the implementation") || !strings.Contains(rows[1], "Thought: Running tests") {
+		t.Fatalf("activity rows = %#v", rows)
+	}
+
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 42})
+	if !runtime.activity[1].hasUsage || runtime.activity[1].tokens != 42 || runtime.activity[0].hasUsage {
+		t.Fatalf("newest activity did not exclusively receive usage: %#v", runtime.activity)
+	}
+	runtime.completeAssistantActivity("assistant", "success")
+	for _, item := range runtime.activity {
+		if !item.terminal || item.status != "success" {
+			t.Fatalf("activity did not complete: %#v", runtime.activity)
+		}
+	}
+}
+
 func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 	for _, test := range []struct {
 		name        string
@@ -567,7 +602,7 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
 			runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
 			runtime.startAssistantActivity("assistant")
-			runtime.startReasoningActivity("assistant", "Checking")
+			runtime.startReasoningActivity("assistant", "", "Checking")
 			runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 12})
 			runtime.completeAssistantActivity("assistant", "success")
 

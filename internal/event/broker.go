@@ -57,16 +57,16 @@ func (b *Broker) Publish(sessionID string, item protocol.Event) {
 	var payload any
 	switch item.Type {
 	case protocol.EventTextDelta:
-		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "text", Delta: item.Text}
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, PartID: item.PartID, Kind: "text", Delta: item.Text}
 	case protocol.EventReasoningDelta:
-		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "reasoning", Delta: item.Text}
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, PartID: item.PartID, Kind: "reasoning", Delta: item.Text}
 	case protocol.EventReasoningSummaryDelta:
-		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "reasoning_summary", Delta: item.Text}
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, PartID: item.PartID, Kind: "reasoning_summary", Delta: item.Text}
 	case protocol.EventToolInputDelta:
 		if item.ToolInput == nil {
 			return
 		}
-		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "tool_input", Delta: item.ToolInput.Delta, ToolCallID: item.ToolInput.ID, ToolName: item.ToolInput.Name}
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, PartID: item.PartID, Kind: "tool_input", Delta: item.ToolInput.Delta, ToolCallID: item.ToolInput.ID, ToolName: item.ToolInput.Name}
 	case protocol.EventToolCallComplete:
 		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "tool_call_complete"}
 	case protocol.EventUsage:

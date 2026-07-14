@@ -120,6 +120,7 @@ type queuedChatInput struct {
 
 type enhancedActivityItem struct {
 	id        string
+	messageID string
 	label     string
 	input     map[string]any
 	error     string
@@ -165,6 +166,7 @@ type enhancedChatRuntime struct {
 	streamed         strings.Builder
 	reasoningText    strings.Builder
 	reasoningSummary bool
+	reasoningParts   map[string]string
 	streamMessageID  string
 	pending          []queuedChatInput
 	modal            *enhancedModal
@@ -574,14 +576,67 @@ func (r *enhancedChatRuntime) startAssistantActivity(messageID string) {
 	if messageID == "" {
 		messageID = "assistant"
 	}
+	// Live deltas and durable assistant lifecycle events are delivered on
+	// separate channels. If a delta arrived first, it already created the
+	// message's activity row and the delayed started event must not add another.
+	for i := range r.activity {
+		if r.activity[i].id == messageID || r.activity[i].messageID == messageID {
+			return
+		}
+	}
 	r.upsertActivity(messageID, "Thinking…", "thinking", false, false)
+	r.markActivityMessage(messageID, messageID)
 }
 
-func (r *enhancedChatRuntime) startReasoningActivity(messageID, label string) {
+func (r *enhancedChatRuntime) startReasoningActivity(messageID, partID, label string) {
 	if messageID == "" {
 		messageID = "assistant"
 	}
-	r.upsertActivity(messageID, label, "thinking", false, true)
+	activityID := messageID
+	if partID != "" {
+		activityID = messageID + "\x00" + partID
+		// Reuse the initial assistant/raw-reasoning row for the first summary
+		// part. Later summary parts receive their own rows.
+		found := false
+		for i := range r.activity {
+			if r.activity[i].id == activityID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			for i := range r.activity {
+				if r.activity[i].id == messageID && (r.activity[i].messageID == "" || r.activity[i].messageID == messageID) {
+					r.activity[i].id = activityID
+					break
+				}
+			}
+		}
+	}
+	r.upsertActivity(activityID, cleanReasoningActivityLabel(label), "thinking", false, true)
+	r.markActivityMessage(activityID, messageID)
+}
+
+func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) {
+	for i := range r.activity {
+		if r.activity[i].id == activityID {
+			r.activity[i].messageID = messageID
+			return
+		}
+	}
+}
+
+func cleanReasoningActivityLabel(label string) string {
+	label = strings.TrimSpace(label)
+	label = strings.TrimPrefix(label, "**")
+	label = strings.TrimSuffix(label, "**")
+	return strings.TrimSpace(label)
+}
+
+func (r *enhancedChatRuntime) resetReasoning() {
+	r.reasoningText.Reset()
+	r.reasoningSummary = false
+	r.reasoningParts = nil
 }
 
 func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.Usage) {
@@ -597,31 +652,36 @@ func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.U
 	if messageID == "" {
 		messageID = r.streamMessageID
 	}
+	activityIndex := -1
 	for i := range r.activity {
-		if r.activity[i].id == messageID {
-			r.activity[i].tokens = usage.OutputTokens
-			r.activity[i].hasUsage = true
-			return
+		if r.activity[i].id == messageID || r.activity[i].messageID == messageID {
+			activityIndex = i
 		}
+	}
+	// Aggregate usage belongs on the newest row, which remains visible when the
+	// live UI limits a long sequence of reasoning summaries to its last rows.
+	if activityIndex >= 0 {
+		r.activity[activityIndex].tokens = usage.OutputTokens
+		r.activity[activityIndex].hasUsage = true
 	}
 }
 
 func (r *enhancedChatRuntime) completeAssistantActivity(id, status string) {
 	now := time.Now()
 	for i := range r.activity {
-		if r.activity[i].id != id {
+		if r.activity[i].id != id && r.activity[i].messageID != id {
 			continue
 		}
 		r.activity[i].status = status
 		r.activity[i].terminal = true
 		r.activity[i].ended = now
-		return
 	}
 }
 
 func (r *enhancedChatRuntime) finishAssistantActivity(id string, flush bool) error {
-	for i := range r.activity {
-		if r.activity[i].id != id {
+	for i := 0; i < len(r.activity); {
+		if r.activity[i].id != id && r.activity[i].messageID != id {
+			i++
 			continue
 		}
 		if flush && r.shell != nil && r.shell.renderer != nil {
@@ -631,7 +691,6 @@ func (r *enhancedChatRuntime) finishAssistantActivity(id string, flush bool) err
 			r.borderCommitted = false
 		}
 		r.activity = append(r.activity[:i], r.activity[i+1:]...)
-		return nil
 	}
 	return nil
 }
@@ -1377,8 +1436,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		}
 		if delta.MessageID != "" && delta.MessageID != r.streamMessageID {
 			r.streamed.Reset()
-			r.reasoningText.Reset()
-			r.reasoningSummary = false
+			r.resetReasoning()
 			r.streamMessageID = delta.MessageID
 		}
 		if delta.Kind == "text" {
@@ -1389,15 +1447,23 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 				r.reasoningText.Reset()
 				r.reasoningSummary = true
 			}
-			r.reasoningText.WriteString(delta.Delta)
-			r.startReasoningActivity(delta.MessageID, r.reasoningText.String())
+			if delta.PartID == "" {
+				r.reasoningText.WriteString(delta.Delta)
+				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String())
+			} else {
+				if r.reasoningParts == nil {
+					r.reasoningParts = make(map[string]string)
+				}
+				r.reasoningParts[delta.PartID] += delta.Delta
+				r.startReasoningActivity(delta.MessageID, delta.PartID, r.reasoningParts[delta.PartID])
+			}
 			if r.shell.options.thinking {
 				r.status = "reasoning"
 			}
 		} else if delta.Kind == "reasoning" {
 			if !r.reasoningSummary {
 				r.reasoningText.WriteString(delta.Delta)
-				r.startReasoningActivity(delta.MessageID, r.reasoningText.String())
+				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String())
 			}
 			if r.shell.options.thinking {
 				r.status = delta.Kind
@@ -1472,8 +1538,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		}
 		if payload.MessageID != "" && payload.MessageID != r.streamMessageID {
 			r.streamed.Reset()
-			r.reasoningText.Reset()
-			r.reasoningSummary = false
+			r.resetReasoning()
 			r.streamMessageID = payload.MessageID
 		}
 		r.startAssistantActivity(payload.MessageID)
@@ -1970,8 +2035,7 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 	}
 	if messageID == "" || messageID == r.streamMessageID {
 		r.streamed.Reset()
-		r.reasoningText.Reset()
-		r.reasoningSummary = false
+		r.resetReasoning()
 		r.streamMessageID = ""
 	}
 	if err := r.flushCompletedTools(); err != nil {
