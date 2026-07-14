@@ -417,7 +417,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				}
 			}
 			if options.format != "jsonl" && strings.HasPrefix(item.Type, "session.tool.") {
-				line := streamToolStatus(strings.TrimPrefix(item.Type, "session.tool."))
+				line := streamToolStatus(strings.TrimPrefix(item.Type, "session.tool."), toolActivityError(item.Data))
 				if options.renderer != nil {
 					_ = options.renderer.Update([]string{line})
 				} else {
@@ -532,16 +532,19 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 	return streamResult{text: final}
 }
 
-func streamToolStatus(status string) string {
+func streamToolStatus(status, errorText string) string {
 	switch status {
 	case "pending":
 		return "○ Queued tool"
 	case "running":
 		return "◌ Working: tool"
 	case "success":
-		return "✓ Done: tool"
+		return "✓ tool"
 	case "failure":
-		return "✗ Failed: tool"
+		if errorText != "" {
+			return "✗ tool: " + errorText
+		}
+		return "✗ tool"
 	case "interrupted":
 		return "■ Interrupted: tool"
 	default:
