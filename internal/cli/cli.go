@@ -587,6 +587,13 @@ func settlePrompts(ctx context.Context, api apiClient, sessionID string, input i
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
 		}
+		// Enabling YOLO settles every permission already pending for this
+		// session. The remaining entries came from the now-stale list snapshot;
+		// replying to them would fail with permission-not-found and make the
+		// successful YOLO choice appear to have failed.
+		if reply.Scope == "yolo" {
+			break
+		}
 	}
 	for _, request := range questions.Items {
 		answers := make([]v1.Answer, 0, len(request.Questions))
@@ -653,6 +660,9 @@ func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, o
 		reply := permissionReplyFromAnswer(choice.Value)
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
+		}
+		if reply.Scope == "yolo" {
+			break
 		}
 	}
 	for _, request := range questions.Items {

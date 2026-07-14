@@ -701,6 +701,45 @@ func TestPermissionReplyEnableYolo(t *testing.T) {
 	}
 }
 
+func TestSettlePromptsStopsReplyingAfterEnableYolo(t *testing.T) {
+	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{
+		{ID: "first", ToolID: "shell", Reason: "test"},
+		{ID: "second", ToolID: "edit", Reason: "test"},
+	}}}
+	if err := settlePrompts(context.Background(), api, "session", strings.NewReader("enable yolo\n"), io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.permissionReplies) != 1 {
+		t.Fatalf("replies = %#v, want only the YOLO reply", api.permissionReplies)
+	}
+	if reply := api.permissionReplies[0]; reply.Decision != "allow" || reply.Scope != "yolo" {
+		t.Fatalf("reply = %#v", reply)
+	}
+}
+
+func TestSettleStreamPromptsStopsReplyingAfterEnableYolo(t *testing.T) {
+	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{
+		{ID: "first", ToolID: "shell", Reason: "test"},
+		{ID: "second", ToolID: "edit", Reason: "test"},
+	}}}
+	// Move from the initially selected "yes" choice to "enable yolo".
+	decoder := terminal.NewKeyDecoder(strings.NewReader("\t\t\t\t\t\r"))
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+	err := settleStreamPrompts(context.Background(), api, "session", streamOptions{
+		stdout: &output, stderr: io.Discard, renderer: renderer, keyInput: decoder,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(api.permissionReplies) != 1 {
+		t.Fatalf("replies = %#v, want only the YOLO reply", api.permissionReplies)
+	}
+	if reply := api.permissionReplies[0]; reply.Decision != "allow" || reply.Scope != "yolo" {
+		t.Fatalf("reply = %#v", reply)
+	}
+}
+
 func TestEnhancedQuestionOptionsUseInputMenuAndCollapseToSelection(t *testing.T) {
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 	state, err := editor.Start("")

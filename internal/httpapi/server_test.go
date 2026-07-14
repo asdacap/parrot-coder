@@ -112,6 +112,7 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"POST", "/api/v1/sessions/ses_test/interrupt", "", 204},
 		{"GET", "/api/v1/sessions/ses_test/permissions", "", 200},
 		{"POST", "/api/v1/sessions/ses_test/permissions/per_test/reply", `{"decision":"allow"}`, 204},
+		{"POST", "/api/v1/sessions/ses_test/permissions/per_test/reply", `{"decision":"allow","scope":"yolo"}`, 204},
 		{"GET", "/api/v1/sessions/ses_test/questions", "", 200},
 		{"POST", "/api/v1/sessions/ses_test/questions/qst_test/reply", `{"reject":true}`, 204},
 		{"POST", "/api/v1/sessions/ses_test/undo", "", 200},
