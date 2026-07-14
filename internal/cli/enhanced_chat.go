@@ -124,6 +124,7 @@ type enhancedActivityItem struct {
 	status    string
 	tokens    int
 	hasUsage  bool
+	toolUses  int
 	started   time.Time
 	ended     time.Time
 	terminal  bool
@@ -504,14 +505,25 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 }
 
 func formatActivityUsage(item enhancedActivityItem) string {
+	var parts []string
 	if item.hasUsage {
 		unit := "tokens"
 		if item.tokens == 1 {
 			unit = "token"
 		}
-		return fmt.Sprintf(" · %d %s", item.tokens, unit)
+		parts = append(parts, fmt.Sprintf("%d %s", item.tokens, unit))
 	}
-	return ""
+	if item.toolUses > 0 {
+		unit := "tools"
+		if item.toolUses == 1 {
+			unit = "tool"
+		}
+		parts = append(parts, fmt.Sprintf("%d %s", item.toolUses, unit))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return " · " + strings.Join(parts, " · ")
 }
 
 func activityTitle(status string) string {
@@ -1383,6 +1395,12 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			return err
 		}
 		r.status = "working"
+	case v1.EventTaskProgress:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		r.updateTaskProgress(payload.(*v1.TaskProgress))
 	case "session.assistant.started":
 		var payload struct {
 			MessageID string `json:"message_id"`
@@ -1421,6 +1439,30 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		r.status = "tool " + strings.TrimPrefix(item.Type, "session.tool.")
 	}
 	return r.settleIdle()
+}
+
+func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
+	if progress == nil {
+		return
+	}
+	id := progress.ToolCallID
+	if id == "" {
+		id = progress.TaskID
+	}
+	for i := range r.activity {
+		if r.activity[i].id != id {
+			continue
+		}
+		r.activity[i].tokens = progress.Usage.TotalTokens
+		if r.activity[i].tokens == 0 {
+			r.activity[i].tokens = progress.Usage.InputTokens + progress.Usage.OutputTokens
+		}
+		r.activity[i].hasUsage = r.activity[i].tokens > 0
+		r.activity[i].toolUses = progress.ToolUses
+		return
+	}
+	r.upsertActivity(id, "task · "+progress.Agent, "running", false, false)
+	r.updateTaskProgress(progress)
 }
 
 func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {

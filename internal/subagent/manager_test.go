@@ -139,3 +139,26 @@ func TestTimeout(t *testing.T) {
 		t.Fatalf("task = %#v, error = %v", task, err)
 	}
 }
+
+func TestProgressAccumulatesAndReportsSnapshots(t *testing.T) {
+	var snapshots []Task
+	manager := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {
+		execution.ReportProgress(Progress{Usage: Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}, ToolUses: 1})
+		execution.ReportProgress(Progress{Usage: Usage{InputTokens: 20, OutputTokens: 3, TotalTokens: 23}, ToolUses: 2})
+		return "done", nil
+	}), Config{OnProgress: func(task Task) { snapshots = append(snapshots, task) }})
+	id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore", ToolCallID: "call"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, err := manager.Await(context.Background(), "parent", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Usage.TotalTokens != 35 || task.Usage.InputTokens != 30 || task.Usage.OutputTokens != 5 || task.ToolUses != 3 || task.ToolCallID != "call" {
+		t.Fatalf("task progress = %#v", task)
+	}
+	if len(snapshots) != 2 || snapshots[0].Usage.TotalTokens != 12 || snapshots[1].ToolUses != 3 {
+		t.Fatalf("snapshots = %#v", snapshots)
+	}
+}

@@ -453,6 +453,22 @@ func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	}
 }
 
+func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
+	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
+	runtime.upsertActivity("call-task", "task · explore", "running", false, false)
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-task", Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 {
+		t.Fatalf("activity = %#v", runtime.activity)
+	}
+	line := formatActivity(runtime.activity[0], runtime.activity[0].started)
+	if !strings.Contains(line, "35 tokens · 3 tools") {
+		t.Fatalf("line = %q", line)
+	}
+}
+
 func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 	for _, test := range []struct {
 		name        string

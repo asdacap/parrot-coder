@@ -28,18 +28,35 @@ var (
 // Request intentionally contains no parent permission grants. Every executor
 // invocation must establish its own authorization context.
 type Request struct {
-	Prompt string
-	Agent  string
-	Model  string
+	Prompt     string
+	Agent      string
+	Model      string
+	ToolCallID string
+}
+
+// Usage is cumulative provider-reported token accounting for a task.
+type Usage struct {
+	InputTokens       int `json:"input_tokens"`
+	OutputTokens      int `json:"output_tokens"`
+	TotalTokens       int `json:"total_tokens"`
+	ReasoningTokens   int `json:"reasoning_tokens"`
+	CachedInputTokens int `json:"cached_input_tokens"`
+}
+
+// Progress is a delta reported by an executor while a task is running.
+type Progress struct {
+	Usage    Usage
+	ToolUses int
 }
 
 // Execution is the complete executor contract. Lineage contains ancestor agent
 // names, from the root toward the immediate parent.
 type Execution struct {
-	TaskID        string
-	ParentSession string
-	Lineage       []string
-	Request       Request
+	TaskID         string
+	ParentSession  string
+	Lineage        []string
+	Request        Request
+	ReportProgress func(Progress)
 }
 
 type Executor interface {
@@ -54,6 +71,7 @@ type Config struct {
 	MaxPromptBytes         int
 	MaxResultBytes         int
 	Timeout                time.Duration
+	OnProgress             func(Task)
 }
 
 type Status string
@@ -78,6 +96,9 @@ type Task struct {
 	Output        string
 	Error         string
 	Truncated     bool
+	ToolCallID    string
+	Usage         Usage
+	ToolUses      int
 }
 
 type taskState struct {
@@ -156,7 +177,7 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 		return "", ErrConcurrency
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.config.Timeout)
-	state := &taskState{task: Task{ID: id, ParentSession: parentSession, Agent: request.Agent, Model: request.Model, Depth: len(lineage) + 1, Status: StatusRunning, StartedAt: now}, done: make(chan struct{}), cancel: cancel}
+	state := &taskState{task: Task{ID: id, ParentSession: parentSession, Agent: request.Agent, Model: request.Model, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Status: StatusRunning, StartedAt: now}, done: make(chan struct{}), cancel: cancel}
 	m.tasks[id] = state
 	m.running++
 	m.byParent[parentSession]++
@@ -166,7 +187,8 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 }
 
 func (m *Manager) run(ctx context.Context, state *taskState, lineage []string, request Request) {
-	output, executeErr := m.executor.Execute(ctx, Execution{TaskID: state.task.ID, ParentSession: state.task.ParentSession, Lineage: lineage, Request: request})
+	report := func(progress Progress) { m.reportProgress(state, progress) }
+	output, executeErr := m.executor.Execute(ctx, Execution{TaskID: state.task.ID, ParentSession: state.task.ParentSession, Lineage: lineage, Request: request, ReportProgress: report})
 	status := StatusSucceeded
 	errText := ""
 	if executeErr != nil {
@@ -201,6 +223,29 @@ func (m *Manager) run(ctx context.Context, state *taskState, lineage []string, r
 	state.cancel()
 	close(state.done)
 	m.mu.Unlock()
+}
+
+func (m *Manager) reportProgress(state *taskState, progress Progress) {
+	if progress.ToolUses < 0 || progress.Usage.InputTokens < 0 || progress.Usage.OutputTokens < 0 || progress.Usage.TotalTokens < 0 || progress.Usage.ReasoningTokens < 0 || progress.Usage.CachedInputTokens < 0 {
+		return
+	}
+	m.mu.Lock()
+	if state.task.Status != StatusRunning {
+		m.mu.Unlock()
+		return
+	}
+	state.task.Usage.InputTokens += progress.Usage.InputTokens
+	state.task.Usage.OutputTokens += progress.Usage.OutputTokens
+	state.task.Usage.TotalTokens += progress.Usage.TotalTokens
+	state.task.Usage.ReasoningTokens += progress.Usage.ReasoningTokens
+	state.task.Usage.CachedInputTokens += progress.Usage.CachedInputTokens
+	state.task.ToolUses += progress.ToolUses
+	snapshot := state.task
+	callback := m.config.OnProgress
+	m.mu.Unlock()
+	if callback != nil {
+		callback(snapshot)
+	}
 }
 
 // Await observes a task. Cancellation of ctx only stops waiting and does not
