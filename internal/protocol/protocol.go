@@ -10,6 +10,12 @@ type Request struct {
 	Instructions string
 	Messages     []Message
 	Tools        []ToolDefinition
+	Reasoning    *ReasoningOptions
+}
+
+// ReasoningOptions controls optional provider reasoning behavior.
+type ReasoningOptions struct {
+	Effort string
 }
 
 // Message is a conversation item. Content parts retain tool calls and results

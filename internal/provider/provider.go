@@ -110,6 +110,12 @@ type Capabilities struct {
 	Tools     bool
 	Reasoning bool
 	Output    []string
+	Variants  map[string]Variant
+}
+
+// Variant contains the request options selected by a named model variant.
+type Variant struct {
+	ReasoningEffort string
 }
 
 // Model is provider model metadata used for selection and request planning.
@@ -126,6 +132,12 @@ func cloneModels(models []Model) []Model {
 	copy(result, models)
 	for i := range result {
 		result[i].Capabilities.Output = append([]string(nil), result[i].Capabilities.Output...)
+		if variants := result[i].Capabilities.Variants; variants != nil {
+			result[i].Capabilities.Variants = make(map[string]Variant, len(variants))
+			for name, variant := range variants {
+				result[i].Capabilities.Variants[name] = variant
+			}
+		}
 	}
 	return result
 }

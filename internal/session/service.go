@@ -36,6 +36,7 @@ type Session struct {
 	Agent     string
 	Provider  string
 	Model     string
+	Variant   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -118,24 +119,24 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 		projectID = params.ProjectID
 	}
 	_, err = s.db.SQL().ExecContext(ctx, `
-		INSERT INTO session(id, project_id, title, selected_agent, selected_provider, selected_model, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, projectID, params.Title, selection.Agent, selection.Provider, selection.Model, formatTime(now), formatTime(now))
+		INSERT INTO session(id, project_id, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sessionID, projectID, params.Title, selection.Agent, selection.Provider, selection.Model, selection.Variant, formatTime(now), formatTime(now))
 	if err != nil {
 		return Session{}, fmt.Errorf("session: create: %w", err)
 	}
-	return Session{ID: sessionID, ProjectID: params.ProjectID, Title: params.Title, Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, CreatedAt: now, UpdatedAt: now}, nil
+	return Session{ID: sessionID, ProjectID: params.ProjectID, Title: params.Title, Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: selection.Variant, CreatedAt: now, UpdatedAt: now}, nil
 }
 
 func (s *Service) Get(ctx context.Context, sessionID string) (Session, error) {
 	return scanSession(s.db.SQL().QueryRowContext(ctx, `
-		SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, created_at, updated_at
+		SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
         FROM session WHERE id = ?`, sessionID))
 }
 
 func (s *Service) List(ctx context.Context) ([]Session, error) {
 	rows, err := s.db.SQL().QueryContext(ctx, `
-		SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, created_at, updated_at
+		SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
         FROM session ORDER BY created_at DESC, id DESC`)
 	if err != nil {
 		return nil, fmt.Errorf("session: list: %w", err)
@@ -161,11 +162,11 @@ func (s *Service) List(ctx context.Context) ([]Session, error) {
 func (s *Service) LatestSelection(ctx context.Context, projectID string) (Selection, error) {
 	var selection Selection
 	err := s.db.SQL().QueryRowContext(ctx, `
-		SELECT selected_agent, selected_provider, selected_model
+		SELECT selected_agent, selected_provider, selected_model, selected_variant
 		FROM session
 		WHERE project_id = ? AND selected_agent <> '' AND selected_provider <> '' AND selected_model <> ''
 		ORDER BY updated_at DESC, id DESC
-		LIMIT 1`, projectID).Scan(&selection.Agent, &selection.Provider, &selection.Model)
+		LIMIT 1`, projectID).Scan(&selection.Agent, &selection.Provider, &selection.Model, &selection.Variant)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Selection{}, ErrNotFound
 	}
@@ -418,7 +419,7 @@ type rowScanner interface {
 func scanSession(row rowScanner) (Session, error) {
 	var item Session
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.ProjectID, &item.Title, &item.Agent, &item.Provider, &item.Model, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.ProjectID, &item.Title, &item.Agent, &item.Provider, &item.Model, &item.Variant, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}

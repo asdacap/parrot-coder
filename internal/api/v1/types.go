@@ -43,6 +43,7 @@ type Session struct {
 	Agent     string    `json:"agent,omitempty"`
 	Provider  string    `json:"provider,omitempty"`
 	Model     string    `json:"model,omitempty"`
+	Variant   string    `json:"variant,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -57,6 +58,7 @@ type CreateSessionRequest struct {
 	Title     string `json:"title,omitempty"`
 	Agent     string `json:"agent,omitempty"`
 	Model     string `json:"model,omitempty"`
+	Variant   *string `json:"variant,omitempty"`
 }
 
 // SessionSelection is the resolved execution selection persisted on a session.
@@ -64,6 +66,7 @@ type SessionSelection struct {
 	Agent    string `json:"agent"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	Variant  string `json:"variant,omitempty"`
 }
 
 // UpdateSessionSelectionRequest changes either or both selection dimensions.
@@ -71,6 +74,7 @@ type SessionSelection struct {
 type UpdateSessionSelectionRequest struct {
 	Agent string `json:"agent,omitempty"`
 	Model string `json:"model,omitempty"`
+	Variant *string `json:"variant,omitempty"`
 }
 
 type Message struct {
@@ -207,6 +211,11 @@ type Model struct {
 	Tools           bool     `json:"tools"`
 	Reasoning       bool     `json:"reasoning"`
 	Output          []string `json:"output"`
+	Variants        map[string]ModelVariant `json:"variants"`
+}
+
+type ModelVariant struct {
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 type ModelList struct {

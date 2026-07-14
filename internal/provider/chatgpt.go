@@ -98,3 +98,13 @@ var chatGPTModels = []Model{
 		Capabilities: Capabilities{Tools: true, Reasoning: true, Output: []string{"text"}},
 	},
 }
+
+func init() {
+	variants := map[string]Variant{
+		"low": {ReasoningEffort: "low"}, "medium": {ReasoningEffort: "medium"},
+		"high": {ReasoningEffort: "high"}, "xhigh": {ReasoningEffort: "xhigh"},
+	}
+	for i := range chatGPTModels {
+		chatGPTModels[i].Capabilities.Variants = variants
+	}
+}
