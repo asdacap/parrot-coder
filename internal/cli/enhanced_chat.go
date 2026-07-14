@@ -121,6 +121,7 @@ type queuedChatInput struct {
 type enhancedActivityItem struct {
 	id        string
 	label     string
+	error     string
 	status    string
 	tokens    int
 	hasUsage  bool
@@ -500,7 +501,15 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	return fmt.Sprintf("%s: %s%s · %.1fs", activityTitle(item.status, elapsed), item.label, formatActivityUsage(item), elapsed.Seconds())
+	detail := ""
+	if item.status == "failure" && strings.TrimSpace(item.error) != "" {
+		detail = " · " + strings.TrimSpace(item.error)
+	}
+	separator := ": "
+	if item.status == "success" || item.status == "failure" {
+		separator = " "
+	}
+	return fmt.Sprintf("%s%s%s%s%s · %.1fs", activityTitle(item.status, elapsed), separator, item.label, detail, formatActivityUsage(item), elapsed.Seconds())
 }
 
 func formatActivityUsage(item enhancedActivityItem) string {
@@ -524,9 +533,9 @@ func activityTitle(status string, elapsed time.Duration) string {
 		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
 		return spinnerFrames[frame] + " Working"
 	case "success":
-		return "✓ Done"
+		return "✓"
 	case "failure":
-		return "✗ Failed"
+		return "✗"
 	case "interrupted":
 		return "■ Interrupted"
 	default:
@@ -1422,6 +1431,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 
 func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	callID, name, input := toolActivityPayload(item.Data)
+	errorText := toolActivityError(item.Data)
 	if callID == "" {
 		callID = fmt.Sprintf("tool-%d", time.Now().UnixNano())
 	}
@@ -1439,12 +1449,28 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminal := status == "success" || status == "failure" || status == "interrupted"
 	r.upsertActivity(callID, label, status, terminal, false)
+	if errorText != "" {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				r.activity[i].error = errorText
+				break
+			}
+		}
+	}
 	if terminal {
 		r.queueCompletedTool(callID)
 		if err := r.flushCompletedTools(); err != nil {
 			r.status = "tool activity flush failed"
 		}
 	}
+}
+
+func toolActivityError(data json.RawMessage) string {
+	var raw map[string]any
+	if len(data) == 0 || json.Unmarshal(data, &raw) != nil {
+		return ""
+	}
+	return firstString(raw, "error", "error_message", "message")
 }
 
 func toolActivityPayload(data json.RawMessage) (string, string, map[string]any) {

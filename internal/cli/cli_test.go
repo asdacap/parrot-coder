@@ -479,7 +479,7 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			if len(runtime.activity) != 0 {
 				t.Fatalf("completed activity remains live: %#v", runtime.activity)
 			}
-			flushed := strings.Contains(output.String(), "✓ Done: Checking · 12 tokens")
+			flushed := strings.Contains(output.String(), "✓ Checking · 12 tokens")
 			if flushed != test.wantFlushed {
 				t.Fatalf("flushed activity = %t, want %t; output=%q", flushed, test.wantFlushed, output.String())
 			}
@@ -494,8 +494,8 @@ func TestActivityStatusUsesAccessibleIcons(t *testing.T) {
 	}{
 		{status: "pending", want: "○ Queued tool: task · 1.2s"},
 		{status: "running", want: "⠹ Working: task · 1.2s"},
-		{status: "success", want: "✓ Done: task · 1.2s"},
-		{status: "failure", want: "✗ Failed: task · 1.2s"},
+		{status: "success", want: "✓ task · 1.2s"},
+		{status: "failure", want: "✗ task · 1.2s"},
 		{status: "interrupted", want: "■ Interrupted: task · 1.2s"},
 		{status: "unknown", want: "Status: task · 1.2s"},
 	}
@@ -512,15 +512,18 @@ func TestStreamToolStatusUsesAccessibleIcons(t *testing.T) {
 	tests := map[string]string{
 		"pending":     "○ Queued tool",
 		"running":     "◌ Working: tool",
-		"success":     "✓ Done: tool",
-		"failure":     "✗ Failed: tool",
+		"success":     "✓ tool",
+		"failure":     "✗ tool",
 		"interrupted": "■ Interrupted: tool",
 		"custom":      "Status: tool custom",
 	}
 	for status, want := range tests {
-		if got := streamToolStatus(status); got != want {
+		if got := streamToolStatus(status, ""); got != want {
 			t.Errorf("streamToolStatus(%q) = %q, want %q", status, got, want)
 		}
+	}
+	if got := streamToolStatus("failure", "permission denied"); got != "✗ tool: permission denied" {
+		t.Errorf("failure detail = %q", got)
 	}
 }
 
@@ -633,7 +636,7 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	if err := runtime.flushCompletedTools(); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "✓ Done: read · internal/cli/enhanced_chat.go ·") || strings.Contains(got, "call_opaque") {
+	if got := output.String(); !strings.Contains(got, "✓ read · internal/cli/enhanced_chat.go ·") || strings.Contains(got, "call_opaque") {
 		t.Fatalf("committed tool activity = %q", got)
 	}
 }
