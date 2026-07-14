@@ -15,7 +15,8 @@ type Request struct {
 
 // ReasoningOptions controls optional provider reasoning behavior.
 type ReasoningOptions struct {
-	Effort string
+	Effort  string
+	Summary string
 }
 
 // Message is a conversation item. Content parts retain tool calls and results
@@ -94,13 +95,14 @@ const (
 type EventType string
 
 const (
-	EventTextDelta        EventType = "text_delta"
-	EventReasoningDelta   EventType = "reasoning_delta"
-	EventToolInputDelta   EventType = "tool_input_delta"
-	EventToolCallComplete EventType = "tool_call_complete"
-	EventUsage            EventType = "usage"
-	EventFinish           EventType = "finish"
-	EventProviderError    EventType = "provider_error"
+	EventTextDelta             EventType = "text_delta"
+	EventReasoningDelta        EventType = "reasoning_delta"
+	EventReasoningSummaryDelta EventType = "reasoning_summary_delta"
+	EventToolInputDelta        EventType = "tool_input_delta"
+	EventToolCallComplete      EventType = "tool_call_complete"
+	EventUsage                 EventType = "usage"
+	EventFinish                EventType = "finish"
+	EventProviderError         EventType = "provider_error"
 )
 
 // ToolInputDelta is an incremental fragment of a function's JSON arguments.

@@ -60,6 +60,8 @@ func (b *Broker) Publish(sessionID string, item protocol.Event) {
 		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "text", Delta: item.Text}
 	case protocol.EventReasoningDelta:
 		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "reasoning", Delta: item.Text}
+	case protocol.EventReasoningSummaryDelta:
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "reasoning_summary", Delta: item.Text}
 	case protocol.EventToolInputDelta:
 		if item.ToolInput == nil {
 			return

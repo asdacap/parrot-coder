@@ -444,7 +444,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 							return streamResult{err: err}
 						}
 					}
-				} else if options.format != "jsonl" && (value.Kind != "reasoning" || options.thinking) {
+				} else if options.format != "jsonl" && (value.Kind != "reasoning" && value.Kind != "reasoning_summary" || options.thinking) {
 					if options.renderer != nil {
 						_ = options.renderer.Update([]string{"status: " + value.Kind})
 					} else {

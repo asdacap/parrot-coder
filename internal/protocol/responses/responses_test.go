@@ -14,8 +14,9 @@ import (
 func TestEncodeRequest(t *testing.T) {
 	encoded, err := EncodeRequest(protocol.Request{
 		Model: "model", Instructions: "instructions",
-		Messages: []protocol.Message{{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "hello"}}}},
-		Tools:    []protocol.ToolDefinition{{Name: "shell", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "hello"}}}},
+		Tools:     []protocol.ToolDefinition{{Name: "shell", InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		Reasoning: &protocol.ReasoningOptions{Effort: "high", Summary: "auto"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -26,6 +27,10 @@ func TestEncodeRequest(t *testing.T) {
 	}
 	if body["instructions"] != "instructions" || body["store"] != false || body["stream"] != true {
 		t.Fatalf("unexpected body: %s", encoded)
+	}
+	reasoning := body["reasoning"].(map[string]any)
+	if reasoning["effort"] != "high" || reasoning["summary"] != "auto" {
+		t.Fatalf("reasoning = %#v", reasoning)
 	}
 	tool := body["tools"].([]any)[0].(map[string]any)
 	if tool["type"] != "function" || tool["strict"] != false {
@@ -48,7 +53,7 @@ func TestParserInterleavedFunctionsTextReasoningUsageAndCompletion(t *testing.T)
 	parser := NewParser(strings.NewReader(fixture), 4096)
 	events := collect(t, parser)
 	wantTypes := []protocol.EventType{
-		protocol.EventReasoningDelta, protocol.EventTextDelta,
+		protocol.EventReasoningSummaryDelta, protocol.EventTextDelta,
 		protocol.EventToolInputDelta, protocol.EventToolInputDelta,
 		protocol.EventToolInputDelta, protocol.EventToolInputDelta,
 		protocol.EventToolCallComplete, protocol.EventToolCallComplete,

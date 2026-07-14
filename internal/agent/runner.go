@@ -191,7 +191,7 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) error {
 			if !ok {
 				return fmt.Errorf("agent: unknown model variant %q", selected.Variant)
 			}
-			request.Reasoning = &protocol.ReasoningOptions{Effort: variant.ReasoningEffort}
+			request.Reasoning = &protocol.ReasoningOptions{Effort: variant.ReasoningEffort, Summary: "auto"}
 		}
 		calls, finish, err := r.providerTurn(ctx, sessionID, providerClient, request)
 		if err != nil {
@@ -283,7 +283,7 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 		return nil, "", &providerTurnFailure{err: errors.Join(err, finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil}
 	}
 	defer stream.Close()
-	var text, reasoning strings.Builder
+	var text, reasoning, reasoningSummary strings.Builder
 	var usage protocol.Usage
 	var calls []completedCall
 	finish := protocol.FinishIncomplete
@@ -297,7 +297,7 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			if ctx.Err() != nil {
 				status = "interrupted"
 			}
-			parts := finalParts(text.String(), reasoning.String(), calls)
+			parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), calls)
 			_ = r.finishOnCleanup(sessionID, assistant.ID, parts, protocol.FinishError, nextErr.Error(), status)
 			return nil, "", nextErr
 		}
@@ -310,6 +310,8 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			text.WriteString(item.Text)
 		case protocol.EventReasoningDelta:
 			reasoning.WriteString(item.Text)
+		case protocol.EventReasoningSummaryDelta:
+			reasoningSummary.WriteString(item.Text)
 		case protocol.EventToolCallComplete:
 			if item.ToolCall == nil {
 				continue
@@ -328,13 +330,13 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 				message = item.ProviderError.Message
 				code = item.ProviderError.Code
 			}
-			parts := finalParts(text.String(), reasoning.String(), calls)
+			parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), calls)
 			finishErr := r.finishAssistantOnCleanup(sessionID, assistant.ID, session.AssistantFinal{Parts: parts, Usage: usage, FinishReason: protocol.FinishError, Error: message, Status: "error"})
 			overflow := item.ProviderError != nil && canonicalOverflow(item.ProviderError.Type, item.ProviderError.Code)
-			return nil, protocol.FinishError, &providerTurnFailure{err: errors.Join(errors.New(message), finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil && text.Len() == 0 && reasoning.Len() == 0 && len(calls) == 0}
+			return nil, protocol.FinishError, &providerTurnFailure{err: errors.Join(errors.New(message), finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil && text.Len() == 0 && reasoning.Len() == 0 && reasoningSummary.Len() == 0 && len(calls) == 0}
 		}
 	}
-	parts := finalParts(text.String(), reasoning.String(), calls)
+	parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), calls)
 	final := session.AssistantFinal{Parts: parts, Usage: usage, FinishReason: finish, Status: "complete"}
 	if err := r.config.Sessions.FinishAssistant(ctx, sessionID, assistant.ID, final); err != nil {
 		if ctx.Err() != nil {
@@ -406,6 +408,13 @@ func finalParts(text, reasoning string, calls []completedCall) []protocol.Conten
 		parts = append(parts, protocol.ContentPart{Type: protocol.ContentToolCall, ToolCall: &copy})
 	}
 	return parts
+}
+
+func preferredReasoning(reasoning, summary string) string {
+	if summary != "" {
+		return summary
+	}
+	return reasoning
 }
 
 type toolOutcome struct {

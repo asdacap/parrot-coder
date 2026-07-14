@@ -66,16 +66,16 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 		}{"function", definition.Name, definition.Description, schema, false})
 	}
 	body := struct {
-		Model        string `json:"model"`
-		Instructions string `json:"instructions,omitempty"`
-		Input        []any  `json:"input"`
-		Tools        []any  `json:"tools,omitempty"`
-		Stream       bool   `json:"stream"`
-		Store        bool   `json:"store"`
+		Model        string            `json:"model"`
+		Instructions string            `json:"instructions,omitempty"`
+		Input        []any             `json:"input"`
+		Tools        []any             `json:"tools,omitempty"`
+		Stream       bool              `json:"stream"`
+		Store        bool              `json:"store"`
 		Reasoning    *reasoningOptions `json:"reasoning,omitempty"`
 	}{Model: request.Model, Instructions: request.Instructions, Input: input, Tools: tools, Stream: true, Store: false}
-	if request.Reasoning != nil && request.Reasoning.Effort != "" {
-		body.Reasoning = &reasoningOptions{Effort: request.Reasoning.Effort}
+	if request.Reasoning != nil && (request.Reasoning.Effort != "" || request.Reasoning.Summary != "") {
+		body.Reasoning = &reasoningOptions{Effort: request.Reasoning.Effort, Summary: request.Reasoning.Summary}
 	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -85,7 +85,8 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 }
 
 type reasoningOptions struct {
-	Effort string `json:"effort"`
+	Effort  string `json:"effort,omitempty"`
+	Summary string `json:"summary,omitempty"`
 }
 
 type toolAccumulator struct {
@@ -174,7 +175,11 @@ func (p *Parser) consume(data []byte) error {
 		if event.Delta != "" {
 			p.pending = append(p.pending, protocol.Event{Type: protocol.EventTextDelta, Text: event.Delta})
 		}
-	case "response.reasoning_text.delta", "response.reasoning_summary_text.delta", "response.output_text.annotation.added":
+	case "response.reasoning_summary_text.delta":
+		if event.Delta != "" {
+			p.pending = append(p.pending, protocol.Event{Type: protocol.EventReasoningSummaryDelta, Text: event.Delta})
+		}
+	case "response.reasoning_text.delta", "response.output_text.annotation.added":
 		if event.Delta != "" {
 			p.pending = append(p.pending, protocol.Event{Type: protocol.EventReasoningDelta, Text: event.Delta})
 		}

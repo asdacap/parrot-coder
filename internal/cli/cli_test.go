@@ -469,6 +469,27 @@ func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
 	}
 }
 
+func TestEnhancedReasoningSummaryReplacesRawReasoningActivity(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "assistant", Kind: "reasoning", Delta: "private reasoning"},
+		{MessageID: "assistant", Kind: "reasoning_summary", Delta: "Inspecting the implementation"},
+		{MessageID: "assistant", Kind: "reasoning", Delta: " ignored"},
+		{MessageID: "assistant", Kind: "reasoning_summary", Delta: " and tests"},
+	} {
+		data, _ := json.Marshal(delta)
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if got := runtime.activity[0].label; got != "Inspecting the implementation and tests" {
+		t.Fatalf("activity label = %q", got)
+	}
+}
+
 func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 	for _, test := range []struct {
 		name        string

@@ -156,24 +156,25 @@ type enhancedChatRuntime struct {
 	shell *chatShell
 	state *terminal.EditorState
 
-	busy            bool
-	idleSeen        bool
-	status          string
-	spinner         int
-	interruptCount  int
-	streamed        strings.Builder
-	reasoningText   strings.Builder
-	streamMessageID string
-	pending         []queuedChatInput
-	modal           *enhancedModal
-	inputMode       enhancedInputMode
-	knownMessages   map[string]bool
-	activity        []enhancedActivityItem
-	completedTools  []enhancedActivityItem
-	planReviewID    string
-	lastCompleteID  string
-	borderCommitted bool
-	contextTokens   int
+	busy             bool
+	idleSeen         bool
+	status           string
+	spinner          int
+	interruptCount   int
+	streamed         strings.Builder
+	reasoningText    strings.Builder
+	reasoningSummary bool
+	streamMessageID  string
+	pending          []queuedChatInput
+	modal            *enhancedModal
+	inputMode        enhancedInputMode
+	knownMessages    map[string]bool
+	activity         []enhancedActivityItem
+	completedTools   []enhancedActivityItem
+	planReviewID     string
+	lastCompleteID   string
+	borderCommitted  bool
+	contextTokens    int
 
 	stream           *client.EventStream
 	streamSessionID  string
@@ -562,7 +563,7 @@ func (r *enhancedChatRuntime) startAssistantActivity(messageID string) {
 	if messageID == "" {
 		messageID = "assistant"
 	}
-	r.upsertActivity(messageID, "Verifying status and context", "thinking", false, false)
+	r.upsertActivity(messageID, "Thinking…", "thinking", false, false)
 }
 
 func (r *enhancedChatRuntime) startReasoningActivity(messageID, label string) {
@@ -1366,18 +1367,31 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		if delta.MessageID != "" && delta.MessageID != r.streamMessageID {
 			r.streamed.Reset()
 			r.reasoningText.Reset()
+			r.reasoningSummary = false
 			r.streamMessageID = delta.MessageID
 		}
 		if delta.Kind == "text" {
 			r.streamed.WriteString(delta.Delta)
 			r.status = ""
-		} else if delta.Kind == "reasoning" {
+		} else if delta.Kind == "reasoning_summary" {
+			if !r.reasoningSummary {
+				r.reasoningText.Reset()
+				r.reasoningSummary = true
+			}
 			r.reasoningText.WriteString(delta.Delta)
 			r.startReasoningActivity(delta.MessageID, r.reasoningText.String())
 			if r.shell.options.thinking {
+				r.status = "reasoning"
+			}
+		} else if delta.Kind == "reasoning" {
+			if !r.reasoningSummary {
+				r.reasoningText.WriteString(delta.Delta)
+				r.startReasoningActivity(delta.MessageID, r.reasoningText.String())
+			}
+			if r.shell.options.thinking {
 				r.status = delta.Kind
 			}
-		} else if delta.Kind != "reasoning" || r.shell.options.thinking {
+		} else if delta.Kind != "reasoning" && delta.Kind != "reasoning_summary" || r.shell.options.thinking {
 			r.status = delta.Kind
 		}
 	case v1.EventSessionStatus:
@@ -1448,6 +1462,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		if payload.MessageID != "" && payload.MessageID != r.streamMessageID {
 			r.streamed.Reset()
 			r.reasoningText.Reset()
+			r.reasoningSummary = false
 			r.streamMessageID = payload.MessageID
 		}
 		r.startAssistantActivity(payload.MessageID)
@@ -1777,6 +1792,7 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 	if messageID == "" || messageID == r.streamMessageID {
 		r.streamed.Reset()
 		r.reasoningText.Reset()
+		r.reasoningSummary = false
 		r.streamMessageID = ""
 	}
 	if err := r.flushCompletedTools(); err != nil {
