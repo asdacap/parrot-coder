@@ -1931,6 +1931,9 @@ func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
 }
 
 func todoWriteNameFromLabel(label string) string {
+	if label == "TODO" || strings.HasPrefix(label, "TODO · ") {
+		return "todowrite"
+	}
 	for _, name := range []string{"todowrite", "todo_write"} {
 		if label == name || strings.HasPrefix(label, name+" · ") {
 			return name
@@ -1939,12 +1942,12 @@ func todoWriteNameFromLabel(label string) string {
 	return ""
 }
 
-func todoWriteActivityLabel(name string, count int) string {
+func todoWriteActivityLabel(_ string, count int) string {
 	noun := "items"
 	if count == 1 {
 		noun = "item"
 	}
-	return fmt.Sprintf("%s · %d %s", name, count, noun)
+	return fmt.Sprintf("TODO · %d %s", count, noun)
 }
 
 func toolActivityLabel(name string, input map[string]any) string {
