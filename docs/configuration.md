@@ -42,6 +42,7 @@ selected model. Durations are integer milliseconds.
       "api_key_env": "PROVIDER_API_KEY",
       "headers": {"X-Tenant": "non-secret-value"},
       "allow_insecure_localhost": false,
+      "header_timeout_ms": 10000,
       "models": {
         "model": {
           "name": "Display Name",
@@ -108,6 +109,18 @@ on the exact scheme and authority.
 `Proxy-Authorization`. Header values are literal and are stored in plaintext in
 the config file; do not use this field for credentials. `context` and
 `max_tokens` are token counts used for selection and compaction budgeting.
+
+`header_timeout_ms` limits how long Parrot waits for HTTP response headers.
+For configured providers, zero disables this provider-specific deadline and
+negative values are invalid. The provider ID `openai` defaults to 10 seconds
+when the field is omitted; explicitly setting zero disables that default.
+The timer stops as soon as headers arrive and does not limit streaming the
+response body. A timeout is retried with exponential backoff (2 seconds,
+doubling to a maximum of 30 seconds) until the turn is interrupted. The
+built-in `chatgpt` provider uses a fixed 10-second header timeout. Because the
+provider may process a request even when its response headers never reach
+Parrot, retries can repeat provider-side work or billing.
+
 Provider connection and credential fields must originate in global config;
 project scopes may add or override entries below `providers.ID.models` only.
 

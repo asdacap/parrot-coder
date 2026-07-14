@@ -35,7 +35,7 @@ func (s ProviderSummarizer) Summarize(ctx context.Context, request SummaryReques
 	if maxBytes <= 0 {
 		maxBytes = 1 << 20
 	}
-	stream, err := client.Stream(ctx, protocol.Request{Model: model.ID, Instructions: request.Prompt, Messages: request.Messages, Tools: nil})
+	stream, err := provider.StreamWithHeaderRetry(ctx, client, protocol.Request{Model: model.ID, Instructions: request.Prompt, Messages: request.Messages, Tools: nil})
 	if err != nil {
 		return SummaryResult{}, err
 	}

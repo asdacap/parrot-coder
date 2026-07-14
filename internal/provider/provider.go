@@ -5,9 +5,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
+)
+
+const (
+	headerRetryInitialDelay = 2 * time.Second
+	headerRetryMaximumDelay = 30 * time.Second
 )
 
 // Stream is a provider response consumed one canonical event at a time.
@@ -103,6 +110,37 @@ type Provider interface {
 	ID() string
 	Models() []Model
 	Stream(context.Context, protocol.Request) (Stream, error)
+}
+
+// StreamWithHeaderRetry starts a provider stream and retries response-header
+// timeouts until the caller cancels the operation. A retry cannot duplicate
+// client-visible partial output, although the provider may have processed an
+// earlier request whose response headers never reached the client.
+func StreamWithHeaderRetry(ctx context.Context, client Provider, request protocol.Request) (Stream, error) {
+	return streamWithHeaderRetry(ctx, client, request, headerRetryInitialDelay, headerRetryMaximumDelay)
+}
+
+func streamWithHeaderRetry(ctx context.Context, client Provider, request protocol.Request, initialDelay, maximumDelay time.Duration) (Stream, error) {
+	for attempt := 0; ; attempt++ {
+		stream, err := client.Stream(ctx, request)
+		var timeoutErr *HeaderTimeoutError
+		if err == nil || !errors.As(err, &timeoutErr) {
+			return stream, err
+		}
+		delay := initialDelay << min(attempt, 4)
+		if delay > maximumDelay {
+			delay = maximumDelay
+		}
+		timer := time.NewTimer(delay)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 // Capabilities describes optional model behavior callers may rely on.

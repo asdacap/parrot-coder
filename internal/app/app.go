@@ -668,6 +668,19 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 	sort.Strings(ids)
 	for _, id := range ids {
 		item := cfg.Providers[id]
+		if item.HeaderTimeoutMS != nil && *item.HeaderTimeoutMS < 0 {
+			return nil, fmt.Errorf("app: provider %q header timeout cannot be negative", id)
+		}
+		const maxDurationMilliseconds = int64(^uint64(0)>>1) / int64(time.Millisecond)
+		if item.HeaderTimeoutMS != nil && int64(*item.HeaderTimeoutMS) > maxDurationMilliseconds {
+			return nil, fmt.Errorf("app: provider %q header timeout is too large", id)
+		}
+		headerTimeout := time.Duration(0)
+		if item.HeaderTimeoutMS != nil {
+			headerTimeout = time.Duration(*item.HeaderTimeoutMS) * time.Millisecond
+		} else if id == "openai" {
+			headerTimeout = 10 * time.Second
+		}
 		if item.Type != "" && item.Type != "compatible" && item.Type != "openai-compatible" {
 			return nil, fmt.Errorf("app: provider %q has unsupported type %q", id, item.Type)
 		}
@@ -711,6 +724,7 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 		compatible, createErr := provider.NewOpenAICompatible(provider.OpenAICompatibleOptions{
 			ID: id, BaseURL: item.BaseURL, Protocol: provider.CompatibleProtocol(item.Protocol), APIKey: auth.Secret(key),
 			Headers: item.Headers, AllowInsecureLocalhost: item.AllowInsecureLocalhost, Models: models, HTTPClient: httpClient,
+			HeaderTimeout: headerTimeout,
 		})
 		if createErr != nil {
 			return nil, fmt.Errorf("app: provider %q: %w", id, createErr)

@@ -20,6 +20,7 @@ import (
 
 const chatGPTEndpoint = "https://chatgpt.com/backend-api/codex/responses"
 const chatGPTUsageEndpoint = "https://chatgpt.com/backend-api/wham/usage"
+const chatGPTHeaderTimeout = 10 * time.Second
 
 // OAuthTokenSource is implemented by auth.TokenSource.
 type OAuthTokenSource interface {
@@ -176,7 +177,7 @@ func (p *ChatGPT) Stream(ctx context.Context, request protocol.Request) (Stream,
 	headers.Set("User-Agent", "parrot")
 	headers.Set("session-id", p.sessionID)
 	parser := func(reader io.Reader, limit int) Stream { return responses.NewParser(reader, limit) }
-	return startStream(ctx, p.client, p.endpoint, body, headers, []string{credential.AccessToken.Value()}, parser)
+	return startStream(ctx, p.client, p.endpoint, body, headers, []string{credential.AccessToken.Value()}, chatGPTHeaderTimeout, parser)
 }
 
 var chatGPTModels = []Model{

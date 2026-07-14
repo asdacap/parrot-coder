@@ -421,6 +421,7 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 	for _, field := range []string{
 		"providers.local.base_url",
 		"providers.local.api_key_env",
+		"providers.local.header_timeout_ms",
 		"mcp.server.command",
 		"lsp.go.command",
 		"formatters.gofmt.command",
