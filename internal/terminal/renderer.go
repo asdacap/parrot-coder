@@ -203,7 +203,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 
 	inputRows := make([]string, 0, dividerRows+barRows+len(pendingRows)+len(promptRows))
 	if frame.ShowDivider {
-		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.InputRight, r.columns))
+		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
 	}
 	if barRows > 0 {
 		inputRows = append(inputRows, statusBar(frame.InputLeft, frame.InputRight, r.columns))
@@ -224,9 +224,6 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	var activity []string
 	for _, item := range frame.Activity {
 		activity = append(activity, r.layoutLines([]string{item})...)
-	}
-	if frame.Status != "" {
-		activity = append(activity, r.layoutLines([]string{"status: " + frame.Status})...)
 	}
 	if frame.Message != "" || frame.MessagePrefix != "" {
 		activity = append(activity, r.messageRows(frame.MessagePrefix, frame.Message)...)
@@ -318,27 +315,29 @@ func statusBar(left, right string, columns int) string {
 	return left + " " + right
 }
 
-func dividerStatusBar(left, right string, columns int) string {
+func dividerStatusBar(left, status, right string, columns int) string {
 	width := max(3, columns-1)
-	left = Sanitize(left)
-	right = Sanitize(right)
-	if left == "" && right == "" {
+	values := make([]string, 0, 3)
+	if left = Sanitize(left); left != "" {
+		values = append(values, left)
+	}
+	if status = Sanitize(status); status != "" {
+		values = append(values, "status: "+status)
+	}
+	if right = Sanitize(right); right != "" {
+		values = append(values, right)
+	}
+	if len(values) == 0 {
 		return strings.Repeat("─", width)
 	}
-	if right == "" {
-		value := truncateWidth(left, max(1, width-2))
-		return "─" + value + strings.Repeat("─", max(1, width-displayWidth(value)-1))
+
+	// Keep whitespace between the rule and every label. Besides being easier
+	// to scan, this prevents output such as "─mode: build─model─".
+	line := "─ " + strings.Join(values, " ─ ") + " "
+	if displayWidth(line) >= width {
+		return truncateWidth(line, width-1) + "─"
 	}
-	if left == "" {
-		value := truncateWidth(right, max(1, width-2))
-		return strings.Repeat("─", max(1, width-displayWidth(value)-1)) + value + "─"
-	}
-	leftWidth := max(1, (width-3)/2)
-	rightWidth := max(1, width-displayWidth(truncateWidth(left, leftWidth))-3)
-	left = truncateWidth(left, leftWidth)
-	right = truncateWidth(right, rightWidth)
-	middle := max(1, width-displayWidth(left)-displayWidth(right)-2)
-	return "─" + left + strings.Repeat("─", middle) + right + "─"
+	return line + strings.Repeat("─", width-displayWidth(line))
 }
 
 func queuedPreview(value string, columns int) string {

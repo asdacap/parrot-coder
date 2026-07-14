@@ -194,4 +194,26 @@ func TestLiveRendererCompositeFrameShowsInputStatusBar(t *testing.T) {
 	if renderer.cursorRow != len(renderer.rows)-1 {
 		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
 	}
+	if got := renderer.rows[1]; !strings.Contains(got, "─ mode: build ") || !strings.Contains(got, " local/test ") {
+		t.Fatalf("modeline labels are not padded: %q", got)
+	}
+}
+
+func TestLiveRendererCompositeFrameShowsStatusInModeline(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: 6})
+	err := renderer.Frame(LiveFrame{
+		InputLeft: "mode: build", Status: "tool running", InputRight: "local/test",
+		Prompt: PromptState{Prefix: "$ "}, ShowDivider: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(renderer.rows, "\n")
+	if !strings.Contains(joined, "─ mode: build ─ status: tool running ─ local/test ") {
+		t.Fatalf("status is not in modeline: %#v", renderer.rows)
+	}
+	if strings.Contains(joined, "\nstatus: tool running\n") {
+		t.Fatalf("status was also rendered as an activity row: %#v", renderer.rows)
+	}
 }
