@@ -445,7 +445,7 @@ func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: usage}); err != nil {
 		t.Fatal(err)
 	}
-	if got := formatReasoningActivity(runtime.activity[0], runtime.activity[0].started, 100); !strings.Contains(got, "Checking the implementation · 123 tokens · 0.0s") {
+	if got := formatReasoningActivity(runtime.activity[0], runtime.activity[0].started, 100); !strings.Contains(got, "⠋ Thought: Checking the implementation · 123 tokens · 0.0s") {
 		t.Fatalf("activity after usage = %q", got)
 	}
 	if runtime.contextTokens != 456 {
@@ -559,6 +559,7 @@ func TestActivityStatusUsesAccessibleIcons(t *testing.T) {
 		status string
 		want   string
 	}{
+		{status: "thinking", want: "⠹ Thought: task · 1.2s"},
 		{status: "pending", want: "○ Queued tool: task · 1.2s"},
 		{status: "running", want: "⠹ Working: task · 1.2s"},
 		{status: "success", want: "✓ task · 1.2s"},

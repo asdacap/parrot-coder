@@ -482,11 +482,11 @@ func (r *enhancedChatRuntime) activityRows(now time.Time, columns int) []string 
 }
 
 func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns int) string {
-	const prefix = "Thought: "
 	elapsed := now.Sub(item.started)
 	if elapsed < 0 {
 		elapsed = 0
 	}
+	prefix := activityTitle("thinking", elapsed) + ": "
 	suffix := fmt.Sprintf("%s · %.1fs", formatActivityUsage(item), elapsed.Seconds())
 	width := max(1, columns-len(prefix)-len(suffix)-1)
 	label := item.label
@@ -551,7 +551,8 @@ func formatTokenCount(tokens int) string {
 func activityTitle(status string, elapsed time.Duration) string {
 	switch status {
 	case "thinking":
-		return "Thought"
+		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
+		return spinnerFrames[frame] + " Thought"
 	case "pending":
 		return "○ Queued tool"
 	case "running":
