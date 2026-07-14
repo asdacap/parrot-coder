@@ -356,9 +356,9 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 		}
 		interrupted = true
 		if options.renderer != nil {
-			_ = options.renderer.Commit("status: interrupt requested")
+			_ = options.renderer.Commit("■ Interrupt requested")
 		} else {
-			fmt.Fprintln(options.stderr, "status: interrupt requested")
+			fmt.Fprintln(options.stderr, "■ Interrupt requested")
 		}
 		go func() {
 			interruptCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -411,7 +411,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				}
 			}
 			if options.format != "jsonl" && strings.HasPrefix(item.Type, "session.tool.") {
-				line := "tool: " + strings.TrimPrefix(item.Type, "session.tool.")
+				line := streamToolStatus(strings.TrimPrefix(item.Type, "session.tool."))
 				if options.renderer != nil {
 					_ = options.renderer.Update([]string{line})
 				} else {
@@ -513,16 +513,34 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 		}
 	}
 	if finalError != "" {
+		line := "✗ Error: " + finalError
 		if options.renderer != nil {
-			_ = options.renderer.Commit("error: " + finalError)
+			_ = options.renderer.Commit(line)
 		} else {
-			fmt.Fprintln(options.stderr, "error:", finalError)
+			fmt.Fprintln(options.stderr, line)
 		}
 	}
 	if statusError || finalError != "" {
 		return streamResult{text: final, err: errors.New("session turn failed")}
 	}
 	return streamResult{text: final}
+}
+
+func streamToolStatus(status string) string {
+	switch status {
+	case "pending":
+		return "○ Queued tool"
+	case "running":
+		return "◌ Working: tool"
+	case "success":
+		return "✓ Done: tool"
+	case "failure":
+		return "✗ Failed: tool"
+	case "interrupted":
+		return "■ Interrupted: tool"
+	default:
+		return "Status: tool " + status
+	}
 }
 
 type hangingWriter struct {
@@ -1019,11 +1037,12 @@ func (s *chatShell) commit(text string) {
 }
 
 func (s *chatShell) commitError(text string) {
+	line := "✗ Error: " + terminal.Sanitize(text)
 	if s.renderer != nil {
-		_ = s.renderer.Commit("error: " + text)
+		_ = s.renderer.Commit(line)
 		return
 	}
-	fmt.Fprintln(s.stderr, terminal.Sanitize(text))
+	fmt.Fprintln(s.stderr, line)
 }
 
 func (s *chatShell) commitStatus(text string) {
@@ -1185,7 +1204,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		}
 		s.current = item
 		s.selection = selectionFromSession(item, s.selection.agent)
-		s.commitStatus("status: session selected " + item.ID)
+		s.commitStatus("✓ Session selected: " + item.ID)
 		if command == "/resume" {
 			result := streamTurn(s.ctx, s.api, item.ID, "", s.streamOptions(true))
 			if errors.Is(result.err, errSecondInterrupt) || errors.Is(result.err, context.Canceled) {
@@ -1197,7 +1216,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		}
 	case "/new":
 		s.current = v1.Session{}
-		s.commitStatus("status: new session")
+		s.commitStatus("✓ New session")
 	case "/connect":
 		if argument == "" {
 			s.commitError("connect requires an http:// or https:// API URL")
@@ -1233,10 +1252,14 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		s.current = v1.Session{}
 		s.selection = chatSelection{agent: agent}
 		s.models = models.Items
-		s.commitStatus("status: connected " + argument)
+		s.commitStatus("✓ Connected: " + argument)
 	case "/thinking":
 		s.options.thinking = !s.options.thinking
-		s.commitStatus(fmt.Sprintf("status: thinking %t", s.options.thinking))
+		state := "disabled"
+		if s.options.thinking {
+			state = "enabled"
+		}
+		s.commitStatus("✓ Thinking: " + state)
 	case "/compact":
 		if s.current.ID == "" {
 			s.commitError("no active session")
@@ -1253,7 +1276,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		if err != nil {
 			s.commitError(err.Error())
 		} else {
-			s.commitStatus("status: compaction " + result.Status)
+			s.commitStatus("✓ Compaction: " + result.Status)
 		}
 	case "/undo", "/redo":
 		if s.current.ID == "" {
@@ -1269,7 +1292,8 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		if err != nil {
 			s.commitError(err.Error())
 		} else {
-			s.commitStatus("status: " + strings.TrimPrefix(command, "/") + " complete")
+			action := strings.TrimPrefix(command, "/")
+			s.commitStatus("✓ " + strings.ToUpper(action[:1]) + action[1:] + " complete")
 		}
 	case "/status":
 		sessionID := s.current.ID
@@ -1333,7 +1357,7 @@ func (s *chatShell) applyModel(value string) error {
 	}
 	s.selection.provider, s.selection.model = provider, model
 	s.current.Provider, s.current.Model = provider, model
-	s.commitStatus("status: model selected " + value)
+	s.commitStatus("✓ Model selected: " + value)
 	return nil
 }
 
@@ -1361,7 +1385,7 @@ func (s *chatShell) applyAgent(argument string, announce bool) error {
 	s.selection.agent = argument
 	s.current.Agent = argument
 	if announce {
-		s.commitStatus("status: agent selected " + argument)
+		s.commitStatus("✓ Agent selected: " + argument)
 	}
 	return nil
 }
