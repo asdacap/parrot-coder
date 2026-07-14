@@ -612,6 +612,7 @@ func permissionChoices() []terminal.Candidate {
 		{Value: "allow all for session", Description: "Allow matching requests for this session"},
 		{Value: "allow all for workspace", Description: "Allow matching requests for this workspace"},
 		{Value: "allow all for process", Description: "Allow matching requests until Parrot exits"},
+		{Value: "enable yolo", Description: "Disable all permission checks for this session"},
 	}
 }
 
@@ -627,6 +628,8 @@ func permissionReplyFromAnswer(value string) v1.PermissionReply {
 		reply.Decision, reply.Scope = "allow", "workspace"
 	case "process", "allow all for process":
 		reply.Decision, reply.Scope = "allow", "process"
+	case "yolo", "enable yolo":
+		reply.Decision, reply.Scope = "allow", "yolo"
 	}
 	return reply
 }
@@ -671,6 +674,8 @@ func (r *enhancedChatRuntime) handlePermissionModalKey(key terminal.Key) (bool, 
 			return true, r.answerModal("allow all for workspace")
 		case "p":
 			return true, r.answerModal("allow all for process")
+		case "o":
+			return true, r.answerModal("enable yolo")
 		}
 	}
 	return false, nil

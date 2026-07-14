@@ -575,7 +575,7 @@ func settlePrompts(ctx context.Context, api apiClient, sessionID string, input i
 		reader = bufio.NewReader(input)
 	}
 	for _, item := range permissions.Items {
-		fmt.Fprintf(output, "permission: %s (%s)\nallow once/session/workspace? [deny]: ", item.ToolID, item.Reason)
+		fmt.Fprintf(output, "permission: %s (%s)\nallow once/session/workspace/process or enable yolo? [deny]: ", item.ToolID, item.Reason)
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return readErr

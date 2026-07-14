@@ -312,6 +312,8 @@ func (b *DomainBackend) ReplyPermission(ctx context.Context, sessionID, requestI
 			err = b.Permissions.ReplySession(requestID)
 		case "workspace":
 			err = b.Permissions.ReplyWorkspace(requestID)
+		case "yolo":
+			err = b.Permissions.EnableYolo(requestID)
 		default:
 			return ErrInvalid
 		}

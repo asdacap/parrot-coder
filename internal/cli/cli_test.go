@@ -570,7 +570,8 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 	}
 	if !strings.Contains(frame, "permission: shell") || !strings.Contains(frame, "reason: default policy") ||
 		!strings.Contains(frame, "resource: process execute /bin/bash") ||
-		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") {
+		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
+		!strings.Contains(frame, "enable yolo") {
 		t.Fatalf("permission choices missing from frame: %q", frame)
 	}
 
@@ -607,6 +608,13 @@ func TestEnhancedPermissionAnswerAllowsProcessScope(t *testing.T) {
 	}
 	if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "allow" || api.permissionReplies[0].Scope != "process" {
 		t.Fatalf("reply = %#v", api.permissionReplies)
+	}
+}
+
+func TestPermissionReplyEnableYolo(t *testing.T) {
+	reply := permissionReplyFromAnswer("enable yolo")
+	if reply.Decision != "allow" || reply.Scope != "yolo" {
+		t.Fatalf("reply = %#v", reply)
 	}
 }
 

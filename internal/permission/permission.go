@@ -209,10 +209,11 @@ type Broker struct {
 	prompter       Prompter
 	pending        map[string]*pendingState
 	grants         map[Scope]map[grantKey]struct{}
+	yoloSessions   map[string]struct{}
 }
 
 func NewBroker(policy Policy, noninteractive bool, prompter Prompter) *Broker {
-	return &Broker{policy: policy, noninteractive: noninteractive, prompter: prompter, pending: make(map[string]*pendingState), grants: map[Scope]map[grantKey]struct{}{ScopeProcess: {}, ScopeSession: {}, ScopeWorkspace: {}}}
+	return &Broker{policy: policy, noninteractive: noninteractive, prompter: prompter, pending: make(map[string]*pendingState), grants: map[Scope]map[grantKey]struct{}{ScopeProcess: {}, ScopeSession: {}, ScopeWorkspace: {}}, yoloSessions: make(map[string]struct{})}
 }
 
 // Authorize returns the effective decision. Ask is never returned: it is either
@@ -221,11 +222,23 @@ func (b *Broker) Authorize(ctx context.Context, request Request) (Decision, erro
 	if err := request.Verify(); err != nil {
 		return Deny, err
 	}
+	b.mu.Lock()
+	_, yolo := b.yoloSessions[request.SessionID]
+	b.mu.Unlock()
+	if yolo && request.SessionID != "" {
+		return Allow, nil
+	}
 	decision, reason, hard := b.policy.Evaluate(request)
+	b.mu.Lock()
+	_, yolo = b.yoloSessions[request.SessionID]
+	if yolo && request.SessionID != "" {
+		b.mu.Unlock()
+		return Allow, nil
+	}
 	if hard {
+		b.mu.Unlock()
 		return Deny, nil
 	}
-	b.mu.Lock()
 	if b.grantedLocked(request) {
 		decision = Allow
 	}
@@ -239,6 +252,9 @@ func (b *Broker) Authorize(ctx context.Context, request Request) (Decision, erro
 	state, err := b.addPending(request, reason)
 	if err != nil {
 		return Deny, err
+	}
+	if state == nil { // YOLO was enabled between evaluation and enqueueing.
+		return Allow, nil
 	}
 	if b.prompter != nil {
 		go func() {
@@ -278,6 +294,32 @@ func (b *Broker) ReplySession(id string) error   { return b.reply(id, Reply{Allo
 func (b *Broker) ReplyWorkspace(id string) error { return b.reply(id, Reply{Allow, ScopeWorkspace}) }
 func (b *Broker) Reject(id string) error         { return b.reply(id, Reply{Deny, ""}) }
 
+// EnableYolo allows every permission request in the pending request's session
+// for the lifetime of this broker. It also releases requests already pending
+// for that session. The setting is deliberately in-memory and session-scoped.
+func (b *Broker) EnableYolo(id string) error {
+	b.mu.Lock()
+	state, ok := b.pending[id]
+	if !ok || state.pending.Request.SessionID == "" {
+		b.mu.Unlock()
+		return errors.New("permission request is unknown, already settled, or has no session")
+	}
+	sessionID := state.pending.Request.SessionID
+	b.yoloSessions[sessionID] = struct{}{}
+	settled := make([]*pendingState, 0, 1)
+	for pendingID, candidate := range b.pending {
+		if candidate.pending.Request.SessionID == sessionID {
+			delete(b.pending, pendingID)
+			settled = append(settled, candidate)
+		}
+	}
+	b.mu.Unlock()
+	for _, candidate := range settled {
+		candidate.result <- Reply{Decision: Allow}
+	}
+	return nil
+}
+
 func (b *Broker) addPending(request Request, reason string) (*pendingState, error) {
 	idBytes := make([]byte, 16)
 	if _, err := rand.Read(idBytes); err != nil {
@@ -286,6 +328,9 @@ func (b *Broker) addPending(request Request, reason string) (*pendingState, erro
 	state := &pendingState{Pending{hex.EncodeToString(idBytes), request, reason}, make(chan Reply, 1)}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if _, ok := b.yoloSessions[request.SessionID]; ok && request.SessionID != "" {
+		return nil, nil
+	}
 	b.pending[state.pending.ID] = state
 	return state, nil
 }

@@ -44,6 +44,11 @@ or explicitly remember an in-memory process, session, or workspace grant; grants
 are not persisted across process restarts. Questions and security permissions
 use separate APIs and presentation.
 
+The explicit `enable yolo` reply disables all subsequent permission policy
+checks, including hard denies, for that session. It also allows permission
+requests already pending for the session. YOLO mode is held only in memory and
+ends when the session runtime or Parrot process exits.
+
 ## Processes
 
 Shell permission means arbitrary process execution. The process runner:

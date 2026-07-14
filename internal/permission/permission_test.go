@@ -80,3 +80,43 @@ func TestNoninteractiveAskDenies(t *testing.T) {
 		t.Fatalf("%v %v", d, err)
 	}
 }
+
+func TestEnableYoloAllowsSessionAndSettlesPending(t *testing.T) {
+	b := NewBroker(Policy{Default: Ask}, false, nil)
+	first := request(t)
+	second := request(t)
+	second.CanonicalInput = json.RawMessage(`{"a":1,"b":3}`)
+	second.OperationHash, _ = Hash(second)
+	results := make(chan Decision, 2)
+	go func() { decision, _ := b.Authorize(context.Background(), first); results <- decision }()
+	go func() { decision, _ := b.Authorize(context.Background(), second); results <- decision }()
+	deadline := time.Now().Add(time.Second)
+	for len(b.Pending()) != 2 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	items := b.Pending()
+	if len(items) != 2 {
+		t.Fatalf("pending = %d, want 2", len(items))
+	}
+	if err := b.EnableYolo(items[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if decision := <-results; decision != Allow {
+			t.Fatalf("pending decision = %q", decision)
+		}
+	}
+	if pending := b.Pending(); len(pending) != 0 {
+		t.Fatalf("pending after YOLO = %d", len(pending))
+	}
+
+	b.policy.Rules = []Rule{{Match: func(Request) bool { return true }, Decision: Deny, HardDeny: true}}
+	if decision, err := b.Authorize(context.Background(), request(t)); err != nil || decision != Allow {
+		t.Fatalf("YOLO session decision = %q, err = %v", decision, err)
+	}
+	other := request(t)
+	other.SessionID = "other"
+	if decision, err := b.Authorize(context.Background(), other); err != nil || decision != Deny {
+		t.Fatalf("other session decision = %q, err = %v", decision, err)
+	}
+}
