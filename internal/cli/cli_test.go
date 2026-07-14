@@ -509,6 +509,34 @@ func TestEnhancedErrorStopsSpinnerAndLateDeltaIsIgnored(t *testing.T) {
 	}
 }
 
+func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{
+		shell:           &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{})},
+		streamMessageID: "assistant",
+	}
+	pending, _ := json.Marshal(map[string]any{"ID": "call_opaque", "Name": "read", "Input": map[string]any{}})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	running, _ := json.Marshal(map[string]string{"call_id": "call_opaque", "status": "running"})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.running", Data: running})
+	success, _ := json.Marshal(map[string]string{"call_id": "call_opaque", "status": "success"})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+
+	if output.Len() != 0 {
+		t.Fatalf("completed tool split the active assistant message: %q", output.String())
+	}
+	if len(runtime.completedTools) != 1 || runtime.completedTools[0].label != "read" {
+		t.Fatalf("queued tools = %#v", runtime.completedTools)
+	}
+	runtime.streamMessageID = ""
+	if err := runtime.flushCompletedTools(); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "Done: read ·") || strings.Contains(got, "call_opaque") {
+		t.Fatalf("committed tool activity = %q", got)
+	}
+}
+
 func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "shell", Reason: "test"}}}}
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)

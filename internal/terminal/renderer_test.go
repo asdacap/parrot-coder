@@ -261,6 +261,49 @@ func TestLiveRendererPromotesStreamingRowsAndCommitsOnlySuffix(t *testing.T) {
 	}
 }
 
+func TestLiveRendererKeepsStreamingRowAtTopOfCompositeFrame(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 20, MaxRows: 6})
+	frame := LiveFrame{
+		Stream:      &StreamMessage{ID: "answer", Prefix: "- ", Text: "partial"},
+		Context:     []string{"question context"},
+		Activity:    []string{"Tool: running"},
+		Prompt:      PromptState{Prefix: "$ ", Text: "draft", Cursor: 5},
+		ShowDivider: true,
+	}
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := renderer.rows[0], "- partial"; got != want {
+		t.Fatalf("highest live row = %q; want %q; rows=%#v", got, want, renderer.rows)
+	}
+	if context, activity := indexOf(renderer.rows, "question context"), indexOf(renderer.rows, "Tool: running"); context <= 0 || activity <= context {
+		t.Fatalf("stream, context, and activity order is wrong: %#v", renderer.rows)
+	}
+
+	before := output.Len()
+	frame.Stream.Text = "partial response that wraps"
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	promotion := output.String()[before:]
+	if !strings.Contains(promotion, "- partial response t\n") {
+		t.Fatalf("top streaming row was not promoted at the live boundary: %q", promotion)
+	}
+	if len(renderer.rows) == 0 || renderer.rows[0] != "  hat wraps" {
+		t.Fatalf("unfinished suffix is not the highest live row: %#v", renderer.rows)
+	}
+}
+
+func indexOf(values []string, target string) int {
+	for i, value := range values {
+		if value == target {
+			return i
+		}
+	}
+	return -1
+}
+
 func TestLiveRendererStreamingFramesAreIdempotent(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 8, MaxRows: 6})

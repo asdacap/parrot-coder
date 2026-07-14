@@ -160,6 +160,7 @@ type enhancedChatRuntime struct {
 	inputMode       enhancedInputMode
 	knownMessages   map[string]bool
 	activity        []enhancedActivityItem
+	completedTools  []enhancedActivityItem
 	borderCommitted bool
 
 	stream           *client.EventStream
@@ -443,17 +444,21 @@ func (r *enhancedChatRuntime) activityRows(now time.Time) []string {
 		start = len(r.activity) - 4
 	}
 	for _, item := range r.activity[start:] {
-		end := now
-		if !item.ended.IsZero() {
-			end = item.ended
-		}
-		elapsed := end.Sub(item.started)
-		if elapsed < 0 {
-			elapsed = 0
-		}
-		rows = append(rows, fmt.Sprintf("%s: %s · %.1fs", activityTitle(item.status), item.label, elapsed.Seconds()))
+		rows = append(rows, formatActivity(item, now))
 	}
 	return rows
+}
+
+func formatActivity(item enhancedActivityItem, now time.Time) string {
+	end := now
+	if !item.ended.IsZero() {
+		end = item.ended
+	}
+	elapsed := end.Sub(item.started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return fmt.Sprintf("%s: %s · %.1fs", activityTitle(item.status), item.label, elapsed.Seconds())
 }
 
 func activityTitle(status string) string {
@@ -511,6 +516,34 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal 
 	if len(r.activity) > 12 {
 		r.activity = r.activity[len(r.activity)-12:]
 	}
+}
+
+func (r *enhancedChatRuntime) queueCompletedTool(id string) {
+	for i := range r.activity {
+		if r.activity[i].id != id {
+			continue
+		}
+		r.completedTools = append(r.completedTools, r.activity[i])
+		r.activity = append(r.activity[:i], r.activity[i+1:]...)
+		return
+	}
+}
+
+// flushCompletedTools commits terminal tool statuses only between assistant
+// messages. This keeps an activity line from splitting a streaming response.
+func (r *enhancedChatRuntime) flushCompletedTools() error {
+	if r.streamMessageID != "" || r.streamed.Len() != 0 || r.shell == nil || r.shell.renderer == nil {
+		return nil
+	}
+	for len(r.completedTools) > 0 {
+		item := r.completedTools[0]
+		if err := r.shell.renderer.Commit(formatActivity(item, time.Now())); err != nil {
+			return err
+		}
+		r.completedTools = r.completedTools[1:]
+		r.borderCommitted = false
+	}
+	return nil
 }
 
 func (r *enhancedChatRuntime) inputModeLabel() string {
@@ -1232,11 +1265,15 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	if callID == "" {
 		callID = fmt.Sprintf("tool-%d", time.Now().UnixNano())
 	}
-	if name == "" {
-		name = callID
-	}
 	status := strings.TrimPrefix(item.Type, "session.tool.")
-	r.upsertActivity(callID, name, status, status == "success" || status == "failure" || status == "interrupted")
+	terminal := status == "success" || status == "failure" || status == "interrupted"
+	r.upsertActivity(callID, name, status, terminal)
+	if terminal {
+		r.queueCompletedTool(callID)
+		if err := r.flushCompletedTools(); err != nil {
+			r.status = "tool activity flush failed"
+		}
+	}
 }
 
 func toolActivityPayload(data json.RawMessage) (string, string) {
@@ -1313,6 +1350,9 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 	if messageID == "" || messageID == r.streamMessageID {
 		r.streamed.Reset()
 		r.streamMessageID = ""
+	}
+	if err := r.flushCompletedTools(); err != nil {
+		return err
 	}
 	r.status = ""
 	return nil
