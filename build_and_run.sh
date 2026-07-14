@@ -8,6 +8,6 @@ ulimit -c unlimited
 GOTRACEBACK=${GOTRACEBACK:-crash}
 export GOTRACEBACK
 
-OUTPUT="$output" "$root/build.sh"
+STRIP=${STRIP:-0} OUTPUT="$output" "$root/build.sh"
 
 exec "$output" "$@"
