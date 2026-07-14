@@ -219,6 +219,16 @@ func TestCreateChatSessionIncludesSelectionAtomically(t *testing.T) {
 	}
 }
 
+func TestDefaultChatSelectionPreservesRestoredEffort(t *testing.T) {
+	defaults := v1.SessionSelection{Agent: "build", Provider: "chatgpt", Model: "gpt", Variant: "high"}
+	if got := defaultChatSelection(defaults, ""); got.variant != "high" {
+		t.Fatalf("restored selection = %#v, want high effort", got)
+	}
+	if got := defaultChatSelection(defaults, "low"); got.variant != "low" {
+		t.Fatalf("overridden selection = %#v, want low effort", got)
+	}
+}
+
 func TestEffortSlashCommandUpdatesActiveSession(t *testing.T) {
 	api := &effortSwitchAPI{models: v1.ModelList{Items: []v1.Model{{
 		Provider: "chatgpt", ID: "gpt", Variants: map[string]v1.ModelVariant{

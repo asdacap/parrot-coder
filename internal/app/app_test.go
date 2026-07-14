@@ -295,8 +295,9 @@ func TestOpenRestoresLatestProjectModelSelection(t *testing.T) {
 		t.Fatalf("Models = %#v, %v", models, err)
 	}
 	model := models.Items[0]
+	variant := "high"
 	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
-		ProjectID: runtime.Project.ID, Title: "remember", Agent: "build", Model: model.Provider + "/" + model.ID,
+		ProjectID: runtime.Project.ID, Title: "remember", Agent: "build", Model: model.Provider + "/" + model.ID, Variant: &variant,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -309,8 +310,8 @@ func TestOpenRestoresLatestProjectModelSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if reopened.DefaultSelection.Provider != model.Provider || reopened.DefaultSelection.Model != model.ID {
-		t.Fatalf("restored selection = %#v, want %s/%s", reopened.DefaultSelection, model.Provider, model.ID)
+	if reopened.DefaultSelection.Provider != model.Provider || reopened.DefaultSelection.Model != model.ID || reopened.DefaultSelection.Variant != variant {
+		t.Fatalf("restored selection = %#v, want %s/%s with %s effort", reopened.DefaultSelection, model.Provider, model.ID, variant)
 	}
 }
 

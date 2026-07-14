@@ -841,7 +841,7 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 			}
 		}
 	}
-	selection := chatSelection{agent: runtime.DefaultSelection.Agent, provider: runtime.DefaultSelection.Provider, model: runtime.DefaultSelection.Model, variant: options.variant}
+	selection := defaultChatSelection(runtime.DefaultSelection, options.variant)
 	if current.ID != "" {
 		selection = selectionFromSession(current, selection.agent)
 	}
@@ -1152,6 +1152,14 @@ func selectionFromSession(item v1.Session, fallbackAgent string) chatSelection {
 		agent = fallbackAgent
 	}
 	return chatSelection{agent: agent, provider: item.Provider, model: item.Model, variant: item.Variant}
+}
+
+func defaultChatSelection(item v1.SessionSelection, variantOverride string) chatSelection {
+	variant := item.Variant
+	if variantOverride != "" {
+		variant = variantOverride
+	}
+	return chatSelection{agent: item.Agent, provider: item.Provider, model: item.Model, variant: variant}
 }
 
 type sessionCreator interface {
