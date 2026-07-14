@@ -480,7 +480,7 @@ func (r *enhancedChatRuntime) activityRows(now time.Time, columns int) []string 
 		start = len(r.activity) - 4
 	}
 	for _, item := range r.activity[start:] {
-		if item.reasoning {
+		if item.reasoning && item.status == "thinking" {
 			rows = append(rows, formatReasoningActivity(item, now, columns))
 		} else {
 			rows = append(rows, formatActivity(item, now))
@@ -657,9 +657,29 @@ func (r *enhancedChatRuntime) startReasoningActivity(messageID, partID, label st
 			}
 		}
 	}
+	r.settleOtherReasoningActivities(messageID, activityID)
 	r.upsertActivity(activityID, cleanReasoningActivityLabel(label), "thinking", false, true, summary)
 	r.markActivityMessage(activityID, messageID)
 	r.syncAssistantActivityUsageByID(activityID)
+}
+
+// Providers can stream a reasoning summary as several independently identified
+// parts. Those parts are sequential progress updates, not concurrent assistant
+// work. Preserve each row, but keep only the most recently updated part active.
+func (r *enhancedChatRuntime) settleOtherReasoningActivities(messageID, activeID string) {
+	now := time.Now()
+	for i := range r.activity {
+		item := &r.activity[i]
+		if !item.reasoning || item.id == activeID || item.status != "thinking" {
+			continue
+		}
+		if item.messageID != messageID && item.id != messageID {
+			continue
+		}
+		item.status = "success"
+		item.terminal = true
+		item.ended = now
+	}
 }
 
 func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) {
@@ -793,6 +813,7 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal,
 			continue
 		}
 		previous := r.activity[i].status
+		wasTerminal := r.activity[i].terminal
 		if label != "" {
 			r.activity[i].label = label
 		}
@@ -805,7 +826,7 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal,
 		}
 		r.activity[i].reasoning = reasoning
 		r.activity[i].reasoningSummary = reasoningSummary
-		if r.activity[i].started.IsZero() || status == "running" && previous == "pending" {
+		if r.activity[i].started.IsZero() || (status == "running" && previous == "pending") || (!terminal && wasTerminal) {
 			r.activity[i].started = now
 		}
 		if terminal {
