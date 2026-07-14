@@ -195,3 +195,62 @@ func TestLiveRendererCompositeFrameShowsInputStatusBar(t *testing.T) {
 		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
 	}
 }
+
+func TestLiveRendererPromotesStreamingRowsAndCommitsOnlySuffix(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 10, MaxRows: 6})
+	frame := LiveFrame{
+		Stream:      &StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefgh"},
+		Prompt:      PromptState{Prefix: "$ ", Text: "draft", Cursor: 5},
+		ShowDivider: true,
+	}
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	if renderer.stream.started {
+		t.Fatal("short unfinished row was committed")
+	}
+	before := output.Len()
+	frame.Stream.Text = "abcdefghijklmnop"
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	promotion := output.String()[before:]
+	if !strings.Contains(promotion, "- abcdefgh\n") {
+		t.Fatalf("stable row was not promoted to scrollback: %q", promotion)
+	}
+	if !renderer.stream.started || string(renderer.stream.pending) != "ijklmnop" {
+		t.Fatalf("stream state = %#v", renderer.stream)
+	}
+	if renderer.cursorRow != len(renderer.rows)-1 || !strings.Contains(strings.Join(renderer.rows, "\n"), "$ draft") {
+		t.Fatalf("editor was not restored: rows=%#v cursor=%d", renderer.rows, renderer.cursorRow)
+	}
+
+	before = output.Len()
+	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop!"}, true); err != nil {
+		t.Fatal(err)
+	}
+	completion := output.String()[before:]
+	if strings.Contains(completion, "abcdefgh") || !strings.Contains(completion, "  ijklmnop") || !strings.Contains(completion, "!") {
+		t.Fatalf("completion duplicated prefix or lost suffix: %q", completion)
+	}
+	if renderer.stream.id != "" {
+		t.Fatalf("completed stream was retained: %#v", renderer.stream)
+	}
+}
+
+func TestLiveRendererStreamingFramesAreIdempotent(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 8, MaxRows: 6})
+	frame := LiveFrame{Stream: &StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghij"}, Prompt: PromptState{Prefix: "$ "}}
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	pending := string(renderer.stream.pending)
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	if string(renderer.stream.pending) != pending {
+		t.Fatalf("repeated cumulative frame changed pending text: %q -> %q", pending, renderer.stream.pending)
+	}
+}

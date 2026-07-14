@@ -38,9 +38,10 @@ The editor supports rune-aware movement, history, slash completion, bracketed
 paste, and Ctrl-J multiline input. Enter starts a turn while idle and queues a
 follow-up while the agent is running. Safe informational slash commands execute
 immediately; commands that switch or mutate the active session are rejected
-until it is idle. Assistant text, queued-input previews, the working spinner,
-and transient tool/status activity may redraw only in the bounded renderer
-region. Each complete assistant response is committed exactly once. Permission
+until it is idle. Stable assistant rows are progressively committed to normal scrollback as they
+arrive; only the unfinished final row, queued-input previews, the working
+spinner, and transient tool/status activity may redraw in the bounded renderer
+region. Each assistant response and divider is committed exactly once. Permission
 and question prompts temporarily take keyboard focus in the same renderer; the
 ordinary message draft is preserved and the surrounding transcript remains
 immutable.

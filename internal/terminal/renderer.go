@@ -48,6 +48,24 @@ type LiveFrame struct {
 	Busy          bool
 	Spinner       string
 	ShowDivider   bool
+	Stream        *StreamMessage
+}
+
+// StreamMessage is the cumulative text of one in-progress assistant message.
+// Stable rows are moved into normal terminal scrollback while the final,
+// unfinished row remains in the renderer-owned live region.
+type StreamMessage struct {
+	ID     string
+	Prefix string
+	Text   string
+}
+
+type liveStream struct {
+	id      string
+	prefix  string
+	text    string
+	pending []rune
+	started bool
 }
 
 // LiveRenderer owns the terminal's bounded, redrawable bottom region. No
@@ -64,6 +82,7 @@ type LiveRenderer struct {
 	cursorRow int
 	cursorCol int
 	plainSeen map[string]struct{}
+	stream    liveStream
 	closed    bool
 }
 
@@ -170,6 +189,16 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		return errors.New("terminal: renderer is closed")
 	}
 	r.syncColumns()
+	streamBefore := cloneLiveStream(r.stream)
+	var promoted, streamRows []string
+	if frame.Stream != nil {
+		var err error
+		promoted, streamRows, err = r.advanceStream(*frame.Stream, false)
+		if err != nil {
+			r.stream = streamBefore
+			return err
+		}
+	}
 	prompt := frame.Prompt
 	if frame.Busy {
 		spinner := frame.Spinner
@@ -231,6 +260,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	if frame.Message != "" || frame.MessagePrefix != "" {
 		activity = append(activity, r.messageRows(frame.MessagePrefix, frame.Message)...)
 	}
+	activity = append(activity, streamRows...)
 	if len(activity) > remaining {
 		activity = activity[len(activity)-remaining:]
 	}
@@ -238,9 +268,50 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	rows = append(rows, inputRows...)
 	cursorRow := len(contextRows) + len(activity) + dividerRows + barRows + len(pendingRows) + promptCursorRow
 	if !r.tty {
-		return r.writePlain(rows)
+		if err := r.writePlain(append(promoted, rows...)); err != nil {
+			r.stream = streamBefore
+			return err
+		}
+		return nil
 	}
-	return r.redraw(rows, cursorRow, promptCursorCol)
+	if len(promoted) > 0 {
+		if err := r.promoteAndRedraw(promoted, rows, cursorRow, promptCursorCol); err != nil {
+			r.stream = streamBefore
+			return err
+		}
+		return nil
+	}
+	if err := r.redraw(rows, cursorRow, promptCursorCol); err != nil {
+		r.stream = streamBefore
+		return err
+	}
+	return nil
+}
+
+// CommitStream commits only the suffix that has not already been promoted by
+// Frame, followed by an optional divider.
+func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	before := cloneLiveStream(r.stream)
+	rows, _, err := r.advanceStream(message, true)
+	if err != nil {
+		r.stream = before
+		return err
+	}
+	if divider {
+		rows = append(rows, strings.Repeat("─", max(3, r.columns-1)))
+	}
+	if err := r.commitRows(rows); err != nil {
+		r.stream = before
+		return err
+	}
+	r.stream = liveStream{}
+	return nil
 }
 
 func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, int) {
@@ -533,6 +604,117 @@ func (r *LiveRenderer) commitRows(rows []string) error {
 	r.rows = nil
 	r.cursorRow = 0
 	r.cursorCol = 0
+	return nil
+}
+
+func cloneLiveStream(value liveStream) liveStream {
+	value.pending = append([]rune(nil), value.pending...)
+	return value
+}
+
+func (r *LiveRenderer) advanceStream(message StreamMessage, complete bool) ([]string, []string, error) {
+	message.ID = Sanitize(message.ID)
+	message.Prefix = Sanitize(message.Prefix)
+	clean := Sanitize(message.Text)
+	if message.ID == "" {
+		return nil, nil, errors.New("terminal: stream message ID is empty")
+	}
+	if r.stream.id == "" {
+		r.stream = liveStream{id: message.ID, prefix: message.Prefix}
+	} else if r.stream.id != message.ID {
+		return nil, nil, errors.New("terminal: another assistant message is still streaming")
+	} else if r.stream.prefix != message.Prefix {
+		return nil, nil, errors.New("terminal: stream message prefix changed")
+	}
+	if !strings.HasPrefix(clean, r.stream.text) {
+		return nil, nil, errors.New("terminal: streamed assistant text changed")
+	}
+	r.stream.pending = append(r.stream.pending, []rune(clean[len(r.stream.text):])...)
+	r.stream.text = clean
+
+	prefix := r.stream.prefix
+	if r.stream.started {
+		prefix = strings.Repeat(" ", displayWidth(r.stream.prefix))
+	}
+	rows, boundaries := layoutStreamingRows(prefix, r.stream.pending, r.columns)
+	commitCount := len(rows) - 1
+	if complete {
+		commitCount = len(rows)
+		// A trailing newline creates an empty layout row, not an extra message row.
+		pendingEndsInNewline := len(r.stream.pending) > 0 && r.stream.pending[len(r.stream.pending)-1] == '\n'
+		if commitCount > 0 && (pendingEndsInNewline || len(r.stream.pending) == 0 && strings.HasSuffix(r.stream.text, "\n")) {
+			commitCount--
+		}
+	}
+	if commitCount < 0 {
+		commitCount = 0
+	}
+	promoted := append([]string(nil), rows[:commitCount]...)
+	if commitCount > 0 {
+		consumed := boundaries[commitCount-1]
+		r.stream.pending = append([]rune(nil), r.stream.pending[consumed:]...)
+		r.stream.started = true
+	}
+	if complete {
+		return promoted, nil, nil
+	}
+	return promoted, append([]string(nil), rows[commitCount:]...), nil
+}
+
+// layoutStreamingRows returns rendered rows and, for each row, the number of
+// source runes consumed through the end of that row. Prefix is formatting and
+// is not counted as source.
+func layoutStreamingRows(prefix string, source []rune, columns int) ([]string, []int) {
+	indent := strings.Repeat(" ", displayWidth(prefix))
+	if displayWidth(indent) >= columns {
+		indent = ""
+	}
+	rows := []string{prefix}
+	boundaries := []int{0}
+	row, col := 0, displayWidth(prefix)
+	for index, raw := range source {
+		if raw == '\n' {
+			boundaries[row] = index + 1
+			rows = append(rows, indent)
+			boundaries = append(boundaries, index+1)
+			row++
+			col = displayWidth(indent)
+			continue
+		}
+		for _, value := range expandRune(raw) {
+			width := runeWidth(value)
+			if col > 0 && col+width > columns {
+				boundaries[row] = index
+				rows = append(rows, indent)
+				boundaries = append(boundaries, index)
+				row++
+				col = displayWidth(indent)
+			}
+			rows[row] += string(value)
+			col += width
+		}
+		boundaries[row] = index + 1
+	}
+	return rows, boundaries
+}
+
+func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, cursorRow, cursorCol int) error {
+	var output strings.Builder
+	r.buildRedraw(&output, nil, 0, 0)
+	for _, row := range promoted {
+		output.WriteString(r.decorate(row))
+		output.WriteByte('\n')
+	}
+	oldRows, oldCursorRow, oldCursorCol := r.rows, r.cursorRow, r.cursorCol
+	r.rows, r.cursorRow, r.cursorCol = nil, 0, 0
+	r.buildRedraw(&output, rows, cursorRow, cursorCol)
+	r.rows, r.cursorRow, r.cursorCol = oldRows, oldCursorRow, oldCursorCol
+	if err := writeAtomic(r.w, output.String()); err != nil {
+		return err
+	}
+	r.rows = append(r.rows[:0], rows...)
+	r.cursorRow = cursorRow
+	r.cursorCol = cursorCol
 	return nil
 }
 
