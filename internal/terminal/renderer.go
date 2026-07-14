@@ -67,6 +67,15 @@ type StreamMessage struct {
 	Text   string
 }
 
+// commitKind describes how a permanent transcript entry is spaced. Compact
+// entries stack without gaps; block entries have an empty row at boundaries.
+type commitKind uint8
+
+const (
+	commitCompact commitKind = iota
+	commitBlock
+)
+
 type liveStream struct {
 	id      string
 	prefix  string
@@ -91,6 +100,9 @@ type LiveRenderer struct {
 	cursorCol    int
 	plainSeen    map[string]struct{}
 	stream       liveStream
+	committed    bool
+	lastCommit   commitKind
+	streamBlock  bool
 	closed       bool
 }
 
@@ -339,11 +351,17 @@ func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 	if divider {
 		rows = append(rows, strings.Repeat("─", max(3, r.columns-1)))
 	}
+	if !r.streamBlock {
+		rows = r.spaceRows(rows, commitBlock)
+	}
 	if err := r.commitRows(rows); err != nil {
 		r.stream = before
 		return err
 	}
 	r.stream = liveStream{}
+	r.streamBlock = false
+	r.committed = true
+	r.lastCommit = commitBlock
 	return nil
 }
 
@@ -538,7 +556,23 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	if divider {
 		rows = append(rows, strings.Repeat("─", max(1, r.columns-1)))
 	}
-	return r.commitRows(rows)
+	return r.commitRowsAs(rows, commitBlock)
+}
+
+// CommitBlock appends permanent multiline output as one spaced transcript block.
+func (r *LiveRenderer) CommitBlock(text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	clean := strings.TrimRight(Sanitize(text), "\r\n")
+	rows := make([]string, 0)
+	for _, line := range strings.Split(clean, "\n") {
+		rows = append(rows, wrapLine(line, r.columns)...)
+	}
+	return r.commitRowsAs(rows, commitBlock)
 }
 
 // CommitDivider appends one permanent input-boundary rule.
@@ -575,6 +609,9 @@ func (r *LiveRenderer) Commit(text string) error {
 	if r.tty && len(r.rows) > 0 {
 		r.buildRedraw(&output, nil, 0, 0)
 	}
+	if r.committed && r.lastCommit == commitBlock {
+		output.WriteByte('\n')
+	}
 	parts := strings.Split(clean, "\n")
 	for i, part := range parts {
 		if i > 0 {
@@ -591,6 +628,8 @@ func (r *LiveRenderer) Commit(text string) error {
 	r.rows = nil
 	r.cursorRow = 0
 	r.cursorCol = 0
+	r.committed = true
+	r.lastCommit = commitCompact
 	return nil
 }
 
@@ -672,6 +711,23 @@ func (r *LiveRenderer) commitRows(rows []string) error {
 	r.cursorRow = 0
 	r.cursorCol = 0
 	return nil
+}
+
+func (r *LiveRenderer) commitRowsAs(rows []string, kind commitKind) error {
+	rows = r.spaceRows(rows, kind)
+	if err := r.commitRows(rows); err != nil {
+		return err
+	}
+	r.committed = true
+	r.lastCommit = kind
+	return nil
+}
+
+func (r *LiveRenderer) spaceRows(rows []string, kind commitKind) []string {
+	if r.committed && (r.lastCommit == commitBlock || kind == commitBlock) {
+		return append([]string{""}, rows...)
+	}
+	return rows
 }
 
 func cloneLiveStream(value liveStream) liveStream {
@@ -768,6 +824,9 @@ func layoutStreamingRows(prefix string, source []rune, columns int) ([]string, [
 func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, cursorRow, cursorCol int) error {
 	var output strings.Builder
 	r.buildRedraw(&output, nil, 0, 0)
+	if !r.streamBlock {
+		promoted = r.spaceRows(promoted, commitBlock)
+	}
 	for _, row := range promoted {
 		output.WriteString(r.decorate(row))
 		output.WriteByte('\n')
@@ -782,6 +841,7 @@ func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, cursorRow, curs
 	r.rows = append(r.rows[:0], rows...)
 	r.cursorRow = cursorRow
 	r.cursorCol = cursorCol
+	r.streamBlock = true
 	return nil
 }
 

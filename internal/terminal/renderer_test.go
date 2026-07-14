@@ -433,3 +433,51 @@ func TestLiveRendererNarrowDividerDoesNotWrap(t *testing.T) {
 		}
 	}
 }
+
+func TestLiveRendererSpacesBlockAndCompactCommits(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{Columns: 80})
+	for _, text := range []string{"tool one", "tool two"} {
+		if err := renderer.Commit(text); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := renderer.CommitBlock("edit\n-old\n+new\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Commit("tool three"); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.CommitBlock("assistant"); err != nil {
+		t.Fatal(err)
+	}
+	want := "tool one\ntool two\n\nedit\n-old\n+new\n\ntool three\n\nassistant\n"
+	if got := output.String(); got != want {
+		t.Fatalf("commit spacing = %q; want %q", got, want)
+	}
+}
+
+func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 10, MaxRows: 6})
+	if err := renderer.Commit("tool"); err != nil {
+		t.Fatal(err)
+	}
+	frame := LiveFrame{Stream: &StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop"}, Prompt: PromptState{Prefix: "$ "}}
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(output.String(), "")
+	if got := strings.Count(plain, "\n\n- abcdefgh\n"); got != 1 {
+		t.Fatalf("stream block separator count = %d; output=%q", got, output.String())
+	}
+	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop!"}, false); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Commit("next tool"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(output.String(), "\nnext tool\n") {
+		t.Fatalf("commit after stream was not block-separated: %q", output.String())
+	}
+}

@@ -91,6 +91,10 @@ func TestEditPermissionReviewHashAndSnapshotIntegration(t *testing.T) {
 	if result.Metadata["transaction_id"] == "" || authorizer.request.OperationHash == "" {
 		t.Fatalf("result/request = %#v / %#v", result, authorizer.request)
 	}
+	if !strings.Contains(result.Text, "--- a/file") || !strings.Contains(result.Text, "+++ b/file") ||
+		!strings.Contains(result.Text, "-before") || !strings.Contains(result.Text, "+after") {
+		t.Fatalf("edit result lacks before/after diff: %q", result.Text)
+	}
 	if _, err := snapshots.Undo(ctx, ws, sessionID); err != nil {
 		t.Fatal(err)
 	}

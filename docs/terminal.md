@@ -76,6 +76,12 @@ means failure, `■ Interrupted` means execution stopped, and `○ Queued` means
 pending. Status text is dim and errors are red when color is enabled. The words
 remain present without color, so meaning never depends on styling or symbols.
 
+Permanent transcript output has compact and block entries. Consecutive one-line
+tool statuses are compact and have no padding between them. Assistant responses
+and successful `edit` output are blocks, separated from adjacent entries by one
+empty line. An edit block contains its completion status followed immediately by
+the reviewed unified before/after diff; no empty line splits that status and diff.
+
 Ctrl-C clears a nonempty draft. With an empty busy editor, the first Ctrl-C
 requests cancellation and remains in the session; a second interrupt before
 cancellation completes exits with status 130. Ctrl-D exits only from an empty

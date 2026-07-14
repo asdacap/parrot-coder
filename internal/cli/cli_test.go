@@ -1059,3 +1059,23 @@ func configureCLIConfig(t *testing.T, configuration string) {
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
 }
+
+func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
+	if err := runtime.shell.renderer.Commit("✓ Done: read · README.md"); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "edit", "input": map[string]any{"path": "file.go"}})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	diff := "--- a/file.go\n+++ b/file.go\n@@ -1,1 +1,1 @@\n-before\n+after\n"
+	success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "tool_name": "edit", "status": "success", "result": diff})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+	got := output.String()
+	if !strings.Contains(got, "README.md\n\n✓ Done: edit · file.go ·") {
+		t.Fatalf("edit block was not separated from compact output: %q", got)
+	}
+	if !strings.Contains(got, "\n--- a/file.go\n+++ b/file.go\n") || !strings.Contains(got, "\n-before\n+after\n") {
+		t.Fatalf("edit block omitted its before/after diff: %q", got)
+	}
+}

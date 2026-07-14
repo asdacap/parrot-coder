@@ -128,6 +128,7 @@ type enhancedActivityItem struct {
 	ended     time.Time
 	terminal  bool
 	reasoning bool
+	block     string
 }
 
 type enhancedModal struct {
@@ -658,7 +659,14 @@ func (r *enhancedChatRuntime) flushCompletedTools() error {
 	}
 	for len(r.completedTools) > 0 {
 		item := r.completedTools[0]
-		if err := r.shell.renderer.Commit(formatActivity(item, time.Now())); err != nil {
+		line := formatActivity(item, time.Now())
+		var err error
+		if item.block != "" {
+			err = r.shell.renderer.CommitBlock(line + "\n" + item.block)
+		} else {
+			err = r.shell.renderer.Commit(line)
+		}
+		if err != nil {
 			return err
 		}
 		r.completedTools = r.completedTools[1:]
@@ -1425,7 +1433,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 }
 
 func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
-	callID, name, input := toolActivityPayload(item.Data)
+	callID, name, input, result := toolActivityPayload(item.Data)
 	if callID == "" {
 		callID = fmt.Sprintf("tool-%d", time.Now().UnixNano())
 	}
@@ -1443,6 +1451,14 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminal := status == "success" || status == "failure" || status == "interrupted"
 	r.upsertActivity(callID, label, status, terminal, false)
+	if terminal && status == "success" && name == "edit" && strings.TrimSpace(result) != "" {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				r.activity[i].block = strings.TrimRight(result, "\r\n")
+				break
+			}
+		}
+	}
 	if terminal {
 		r.queueCompletedTool(callID)
 		if err := r.flushCompletedTools(); err != nil {
@@ -1451,14 +1467,15 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	}
 }
 
-func toolActivityPayload(data json.RawMessage) (string, string, map[string]any) {
+func toolActivityPayload(data json.RawMessage) (string, string, map[string]any, string) {
 	var raw map[string]any
 	if len(data) == 0 || json.Unmarshal(data, &raw) != nil {
-		return "", "", nil
+		return "", "", nil, ""
 	}
 	callID := firstString(raw, "call_id", "callID", "id", "ID")
 	name := firstString(raw, "name", "Name", "tool", "tool_name", "toolID", "tool_id")
 	input := firstObject(raw, "input", "Input", "arguments", "Arguments")
+	result := firstString(raw, "result", "Result")
 	if nested, ok := raw["call"].(map[string]any); ok {
 		if callID == "" {
 			callID = firstString(nested, "call_id", "callID", "id", "ID")
@@ -1469,8 +1486,11 @@ func toolActivityPayload(data json.RawMessage) (string, string, map[string]any) 
 		if input == nil {
 			input = firstObject(nested, "input", "Input", "arguments", "Arguments")
 		}
+		if result == "" {
+			result = firstString(nested, "result", "Result")
+		}
 	}
-	return callID, name, input
+	return callID, name, input, result
 }
 
 func toolActivityLabel(name string, input map[string]any) string {
