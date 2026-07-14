@@ -626,6 +626,61 @@ func TestStreamToolStatusUsesAccessibleIcons(t *testing.T) {
 	}
 }
 
+func TestStreamToolTrackerCommitsEditAndFailureBlocks(t *testing.T) {
+	var output bytes.Buffer
+	options := streamOptions{stderr: &output}
+	var tracker streamToolTracker
+
+	pendingEdit := json.RawMessage(`{"call_id":"edit_call","name":"edit","input":{"path":"file.go"}}`)
+	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.pending", Data: pendingEdit}); err != nil {
+		t.Fatal(err)
+	}
+	diff := strings.Join([]string{"--- a/file.go", "+++ b/file.go", "@@ -1 +1 @@", "-old", "+new"}, "\n")
+	editSuccess, _ := json.Marshal(map[string]string{"call_id": "edit_call", "result": diff})
+	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.success", Data: editSuccess}); err != nil {
+		t.Fatal(err)
+	}
+
+	pendingShell := json.RawMessage(`{"call_id":"shell_call","name":"shell","input":{"command":"exit 1","limit":9007199254740993}}`)
+	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.pending", Data: pendingShell}); err != nil {
+		t.Fatal(err)
+	}
+	failure := json.RawMessage(`{"call_id":"shell_call","error":"exit status 1"}`)
+	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.failure", Data: failure}); err != nil {
+		t.Fatal(err)
+	}
+
+	got := output.String()
+	for _, want := range []string{
+		"✓ tool\n--- a/file.go\n+++ b/file.go\n@@ -1 +1 @@\n-old\n+new",
+		"✗ tool: exit status 1\nrequest:\n  command: exit 1\n  limit: 9007199254740993",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("plain tool output = %q, want %q", got, want)
+		}
+	}
+	if len(tracker.calls) != 0 {
+		t.Fatalf("terminal tool calls remained tracked: %#v", tracker.calls)
+	}
+}
+
+func TestStreamToolTrackerTruncatesBlocks(t *testing.T) {
+	var tracker streamToolTracker
+	tracker.describe(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"edit_call","name":"edit","input":{"path":"file.go"}}`)})
+	lines := make([]string, 12)
+	for i := range lines {
+		lines[i] = fmt.Sprintf("line-%02d", i+1)
+	}
+	success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "result": strings.Join(lines, "\r\n") + "\r\n"})
+	_, block, terminalEvent := tracker.describe(v1.Event{Type: "session.tool.success", Data: success})
+	if !terminalEvent || !strings.Contains(block, "line-10\n… 2 more lines") {
+		t.Fatalf("truncated block = %q, terminal = %t", block, terminalEvent)
+	}
+	if strings.Contains(block, "line-11") || strings.Contains(block, "\r") {
+		t.Fatalf("truncated block retained omitted or CRLF content: %q", block)
+	}
+}
+
 func TestEnhancedKeyPumpDoesNotConsumePastUnacknowledgedKey(t *testing.T) {
 	decoder := terminal.NewKeyDecoder(bytes.NewBufferString("\rZ"))
 	pump := startEnhancedKeyPump(context.Background(), decoder)
@@ -759,9 +814,67 @@ func TestEnhancedFailedToolCommitsInputAsIndentedYAML(t *testing.T) {
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
 
 	got := output.String()
-	want := "input:\n  command: exit 1\n  options:\n    cwd: /tmp\n    env:\n      - CI=1\n      - COLOR=0\n  shell: bash"
+	want := "request:\n  command: exit 1\n  options:\n    cwd: /tmp\n    env:\n      - CI=1\n      - COLOR=0\n  shell: bash"
 	if !strings.Contains(got, "✗ shell · exit 1 · exit status 1") || !strings.Contains(got, want) {
-		t.Fatalf("failed tool block = %q, want YAML input containing %q", got, want)
+		t.Fatalf("failed tool block = %q, want YAML request containing %q", got, want)
+	}
+	if strings.Contains(got, `"command":`) || strings.Contains(got, `{"`) {
+		t.Fatalf("failed tool request was displayed as JSON instead of YAML: %q", got)
+	}
+}
+
+func TestEnhancedFailedToolTruncatesRequestAfterTenLines(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})},
+	}
+	arguments := make([]string, 12)
+	for i := range arguments {
+		arguments[i] = fmt.Sprintf("argument-%02d", i+1)
+	}
+	pending, _ := json.Marshal(map[string]any{
+		"call_id": "shell_call",
+		"name":    "shell",
+		"input":   map[string]any{"arguments": arguments, "command": "exit 1"},
+	})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "shell", "error": "exit status 1"})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
+
+	got := output.String()
+	if !strings.Contains(got, "    - argument-08\n… 5 more lines") {
+		t.Fatalf("failed tool block did not contain the truncated request and remaining line count: %q", got)
+	}
+	if strings.Contains(got, "argument-09") || strings.Contains(got, "argument-12") {
+		t.Fatalf("failed tool block included lines after the preview: %q", got)
+	}
+}
+
+func TestEnhancedFailedToolRetainsMoreThanTwelvePendingRequests(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{
+		shell:           &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})},
+		streamMessageID: "assistant",
+	}
+	for i := 1; i <= 13; i++ {
+		pending, _ := json.Marshal(map[string]any{
+			"call_id": fmt.Sprintf("call-%02d", i), "name": "shell", "input": map[string]any{"command": fmt.Sprintf("command-%02d", i)},
+		})
+		runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	}
+	for i := 1; i <= 13; i++ {
+		failure, _ := json.Marshal(map[string]string{"call_id": fmt.Sprintf("call-%02d", i), "error": "failed"})
+		runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
+	}
+	runtime.streamMessageID = ""
+	if err := runtime.flushCompletedTools(); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{"request:\n  command: command-01", "request:\n  command: command-13"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("pending request was evicted; output = %q, want %q", got, want)
+		}
 	}
 }
 
@@ -896,6 +1009,7 @@ func TestPermissionContextFormatsAndIndentsInputAsYAML(t *testing.T) {
 		ToolID:         "shell",
 		Reason:         "default policy",
 		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build","options":{"cwd":"/tmp","env":["CI=1","COLOR=0"]}}`),
+		Review:         json.RawMessage(`{"diff":"--- a/file.go\n+++ b/file.go\n-old\n+new\n","files":[{"path":"file.go","before_sha256":"abc","after_sha256":"def"}]}`),
 	})
 	want := []string{
 		"permission: shell",
@@ -908,6 +1022,16 @@ func TestPermissionContextFormatsAndIndentsInputAsYAML(t *testing.T) {
 		"    env:",
 		"      - CI=1",
 		"      - COLOR=0",
+		"review:",
+		"  diff: |",
+		"    --- a/file.go",
+		"    +++ b/file.go",
+		"    -old",
+		"    +new",
+		"  files:",
+		"    - path: file.go",
+		"      before_sha256: abc",
+		"      after_sha256: def",
 	}
 	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
 		t.Fatalf("permission context:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
@@ -1339,5 +1463,38 @@ func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {
 	}
 	if !strings.Contains(got, "\n--- a/file.go\n+++ b/file.go\n") || !strings.Contains(got, "\n-before\n+after\n") {
 		t.Fatalf("edit block omitted its before/after diff: %q", got)
+	}
+}
+
+func TestEnhancedEditTruncatesDiffAfterTenLines(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
+	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "edit", "input": map[string]any{"path": "file.go"}})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	diffLines := []string{
+		"--- a/file.go",
+		"+++ b/file.go",
+		"@@ -1,6 +1,6 @@",
+		"-old 1",
+		"+new 1",
+		"-old 2",
+		"+new 2",
+		"-old 3",
+		"+new 3",
+		"-old 4",
+		"+new 4",
+		" context",
+	}
+	success, _ := json.Marshal(map[string]string{
+		"call_id": "edit_call", "tool_name": "edit", "status": "success", "result": strings.Join(diffLines, "\n") + "\n",
+	})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+
+	got := output.String()
+	if !strings.Contains(got, strings.Join(diffLines[:10], "\n")+"\n… 2 more lines") {
+		t.Fatalf("edit block did not contain the truncated diff and remaining line count: %q", got)
+	}
+	if strings.Contains(got, diffLines[10]) || strings.Contains(got, diffLines[11]) {
+		t.Fatalf("edit block included lines after the preview: %q", got)
 	}
 }

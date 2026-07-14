@@ -84,7 +84,16 @@ Permanent transcript output has compact and block entries. Consecutive one-line
 tool statuses are compact and have no padding between them. Assistant responses
 and successful `edit` output are blocks, separated from adjacent entries by one
 empty line. An edit block contains its completion status followed immediately by
-the reviewed unified before/after diff; no empty line splits that status and diff.
+the first 10 lines of the reviewed unified before/after diff; no empty line splits
+that status and diff. Failed tool request blocks use the same 10-line limit.
+Longer blocks end with the number of omitted lines.
+
+## Structured Data Presentation
+
+Human-facing terminal output must display structured JSON data as block-style
+YAML for readability. This includes tool requests, failed-request details, and
+permission review context. JSON remains the format for APIs, JSONL output,
+configuration examples, and other explicitly machine-readable interfaces.
 
 Ctrl-C clears a nonempty draft. With an empty busy editor, the first Ctrl-C
 requests cancellation and remains in the session; a second interrupt before

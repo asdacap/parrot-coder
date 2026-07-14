@@ -302,6 +302,70 @@ type streamResult struct {
 	err  error
 }
 
+type streamToolCall struct {
+	name  string
+	input map[string]any
+}
+
+type streamToolTracker struct {
+	calls map[string]streamToolCall
+}
+
+// describe returns the human-facing status and any permanent detail block for
+// a tool event. Pending input is retained until the terminal event because
+// failure and some success payloads contain only the call ID.
+func (t *streamToolTracker) describe(item v1.Event) (string, string, bool) {
+	callID, name, input, result := toolActivityPayload(item.Data)
+	if t.calls == nil {
+		t.calls = make(map[string]streamToolCall)
+	}
+	call := t.calls[callID]
+	if name != "" {
+		call.name = name
+	}
+	if input != nil {
+		call.input = input
+	}
+	if callID != "" {
+		t.calls[callID] = call
+	}
+	status := strings.TrimPrefix(item.Type, "session.tool.")
+	terminalEvent := status == "success" || status == "failure" || status == "interrupted"
+	block := ""
+	if status == "success" && call.name == "edit" && strings.TrimSpace(result) != "" {
+		block = truncateToolBlock(result, maxToolBlockLines)
+	} else if status == "success" && (call.name == "todowrite" || call.name == "todo_write") {
+		if formatted, _, ok := formatTodoWriteBlock(result, call.input); ok {
+			block = formatted
+		}
+	} else if status == "failure" && call.input != nil {
+		block = truncateToolBlock(formatFailedToolRequest(call.input), maxToolBlockLines)
+	}
+	if terminalEvent && callID != "" {
+		delete(t.calls, callID)
+	}
+	return streamToolStatus(status, toolActivityError(item.Data)), block, terminalEvent
+}
+
+func writeStreamToolEvent(options streamOptions, tracker *streamToolTracker, item v1.Event) error {
+	line, block, terminalEvent := tracker.describe(item)
+	if options.renderer != nil {
+		if !terminalEvent {
+			return options.renderer.Update([]string{line})
+		}
+		if block != "" {
+			return options.renderer.CommitBlock(line + "\n" + block)
+		}
+		return options.renderer.Commit(line)
+	}
+	text := line
+	if block != "" {
+		text += "\n" + block
+	}
+	_, err := fmt.Fprintln(options.stderr, terminal.Sanitize(text))
+	return err
+}
+
 func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, options streamOptions) streamResult {
 	after := int64(^uint64(0) >> 1)
 	stream, err := api.Events(ctx, sessionID, &after)
@@ -363,6 +427,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 	statusError := false
 	interrupted := false
 	interruptCount := 0
+	var toolTracker streamToolTracker
 	interrupts, _ := ctx.Value(interruptKey{}).(<-chan os.Signal)
 	requestInterrupt := func() error {
 		interruptCount++
@@ -426,11 +491,8 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				}
 			}
 			if options.format != "jsonl" && strings.HasPrefix(item.Type, "session.tool.") {
-				line := streamToolStatus(strings.TrimPrefix(item.Type, "session.tool."), toolActivityError(item.Data))
-				if options.renderer != nil {
-					_ = options.renderer.Update([]string{line})
-				} else {
-					fmt.Fprintln(options.stderr, line)
+				if err := writeStreamToolEvent(options, &toolTracker, item); err != nil {
+					return streamResult{err: err}
 				}
 			}
 			payload, decodeErr := v1.DecodeEventData(item)
@@ -611,10 +673,10 @@ func writeAll(w io.Writer, value string) error {
 func permissionContextLines(item v1.Permission) []string {
 	lines := []string{"permission: " + item.ToolID, "reason: " + item.Reason}
 	if len(item.CanonicalInput) > 0 {
-		lines = append(lines, "tool request:")
-		for _, line := range strings.Split(formatJSONAsYAML(item.CanonicalInput), "\n") {
-			lines = append(lines, "  "+line)
-		}
+		lines = appendYAMLContext(lines, "tool request:", item.CanonicalInput)
+	}
+	if len(item.Review) > 0 {
+		lines = appendYAMLContext(lines, "review:", item.Review)
 	}
 	for _, resource := range item.Resources {
 		lines = append(lines, fmt.Sprintf("resource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier))
@@ -622,9 +684,17 @@ func permissionContextLines(item v1.Permission) []string {
 	return lines
 }
 
-// formatJSONAsYAML presents canonical JSON as block-style YAML. YAML is
-// easier to scan in a narrow terminal and the caller indents every resulting
-// line beneath the "tool request" heading.
+func appendYAMLContext(lines []string, heading string, value json.RawMessage) []string {
+	lines = append(lines, heading)
+	for _, line := range strings.Split(formatJSONAsYAML(value), "\n") {
+		lines = append(lines, "  "+line)
+	}
+	return lines
+}
+
+// formatJSONAsYAML follows the terminal presentation rule that human-facing
+// structured JSON is rendered as block-style YAML. Callers add any heading and
+// indentation required by their UI context.
 func formatJSONAsYAML(input json.RawMessage) string {
 	var document yaml.Node
 	if err := yaml.Unmarshal(input, &document); err != nil {
