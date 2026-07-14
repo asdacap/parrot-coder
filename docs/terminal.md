@@ -55,6 +55,10 @@ choice visible. When not every choice fits, a written `Showing … of … option
 the input, closes the menu, and collapses the input region back to its ordinary
 height (one physical row when the selected text fits the terminal width).
 
+Shift-Tab switches modes; Ctrl-X is the portable fallback for terminals that do
+not send the Shift-Tab sequence. Unbound control keys and malformed keyboard
+input are ignored and cannot terminate the chat session.
+
 Committed turns use aligned role markers and hanging indentation:
 
 ```text

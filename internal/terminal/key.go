@@ -31,6 +31,7 @@ const (
 	KeyEOF
 	KeyPaste
 	KeyModeSwitch
+	KeyIgnored
 )
 
 // Key is one decoded input event. Text is populated for KeyPaste.
@@ -82,7 +83,9 @@ func (d *KeyDecoder) ReadKey(ctx context.Context) (Key, error) {
 	switch b {
 	case 0x03:
 		return Key{Kind: KeyInterrupt}, nil
-	case 0x1e:
+	case 0x18, 0x1e:
+		// Ctrl-X is the portable mode-switch fallback for terminals that do not
+		// report Shift-Tab as CSI Z. Keep Ctrl-^ for backward compatibility.
 		return Key{Kind: KeyModeSwitch}, nil
 	case 0x04:
 		return Key{Kind: KeyEOF}, nil
@@ -99,17 +102,21 @@ func (d *KeyDecoder) ReadKey(ctx context.Context) (Key, error) {
 	}
 	if b < utf8.RuneSelf {
 		if b < 0x20 || b == 0x7f {
-			return Key{}, fmt.Errorf("terminal: rejected control byte 0x%02x", b)
+			// Unbound control keys are harmless. Terminals can emit these for
+			// shortcuts we do not implement, so never tear down chat for one.
+			return Key{Kind: KeyIgnored}, nil
 		}
 		return Key{Kind: KeyRune, Rune: rune(b)}, nil
 	}
 
 	r, err := d.readRune(ctx, b)
 	if err != nil {
-		return Key{}, err
+		// Malformed keyboard input is not a terminal I/O failure. The offending
+		// bytes have been consumed, so ignore the event and keep editing.
+		return Key{Kind: KeyIgnored}, nil
 	}
 	if unicode.IsControl(r) {
-		return Key{}, fmt.Errorf("terminal: rejected control character %U", r)
+		return Key{Kind: KeyIgnored}, nil
 	}
 	return Key{Kind: KeyRune, Rune: r}, nil
 }
@@ -126,8 +133,12 @@ func (d *KeyDecoder) readEscape(ctx context.Context) (Key, error) {
 		return Key{}, err
 	}
 	if b != '[' {
-		d.unreadByte(b)
-		return Key{Kind: KeyEscape}, nil
+		if b == 'O' {
+			// Function keys commonly use an SS3 sequence (ESC O plus one byte).
+			// Consume the final byte so it cannot leak into the input buffer.
+			_, _, _ = d.readByteOnce(ctx)
+		}
+		return Key{Kind: KeyIgnored}, nil
 	}
 	b, err = d.readByte(ctx)
 	if err != nil {
@@ -179,33 +190,59 @@ func (d *KeyDecoder) readEscape(ctx context.Context) (Key, error) {
 				}
 			}
 		}
+	default:
+		// Consume the remainder of an unknown CSI sequence through its final
+		// byte. This covers function keys such as Page Up without leaking their
+		// parameter bytes into the editable draft.
+		for b < 0x40 || b > 0x7e {
+			b, err = d.readByte(ctx)
+			if err != nil {
+				return Key{}, err
+			}
+		}
 	}
-	return Key{Kind: KeyEscape}, nil
+	return Key{Kind: KeyIgnored}, nil
 }
 
 func (d *KeyDecoder) readPaste(ctx context.Context) (Key, error) {
 	const end = "\x1b[201~"
 	data := make([]byte, 0, 256)
+	tooLarge := false
 	for {
 		b, err := d.readByte(ctx)
 		if err != nil {
 			return Key{}, fmt.Errorf("terminal: unterminated bracketed paste: %w", err)
 		}
-		data = append(data, b)
-		if len(data) > d.maxPaste+len(end) {
-			return Key{}, errors.New("terminal: bracketed paste exceeds byte limit")
+		if !tooLarge {
+			data = append(data, b)
+			if len(data) > d.maxPaste+len(end) {
+				// Keep consuming through the end marker so rejected paste bytes do
+				// not become keyboard input after this event.
+				tooLarge = true
+				data = data[len(data)-len(end):]
+			}
+		} else {
+			data = append(data, b)
+			if len(data) > len(end) {
+				data = data[len(data)-len(end):]
+			}
 		}
 		if len(data) >= len(end) && string(data[len(data)-len(end):]) == end {
-			data = data[:len(data)-len(end)]
+			if !tooLarge {
+				data = data[:len(data)-len(end)]
+			}
 			break
 		}
 	}
+	if tooLarge {
+		return Key{Kind: KeyIgnored}, nil
+	}
 	if !utf8.Valid(data) {
-		return Key{}, errors.New("terminal: bracketed paste is not valid UTF-8")
+		return Key{Kind: KeyIgnored}, nil
 	}
 	for _, r := range string(data) {
 		if unicode.IsControl(r) && r != '\n' && r != '\r' {
-			return Key{}, fmt.Errorf("terminal: rejected pasted control character %U", r)
+			return Key{Kind: KeyIgnored}, nil
 		}
 	}
 	return Key{Kind: KeyPaste, Text: string(data)}, nil
