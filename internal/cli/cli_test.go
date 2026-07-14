@@ -474,6 +474,31 @@ func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
 	}
 }
 
+func TestFormatTokenCountByHundreds(t *testing.T) {
+	tests := []struct {
+		tokens int
+		want   string
+	}{
+		{tokens: 999, want: "999"},
+		{tokens: 1000, want: "1.0k"},
+		{tokens: 300100, want: "300.1k"},
+		{tokens: 377845, want: "377.8k"},
+		{tokens: 690776, want: "690.8k"},
+	}
+	for _, test := range tests {
+		if got := formatTokenCount(test.tokens); got != test.want {
+			t.Errorf("formatTokenCount(%d) = %q, want %q", test.tokens, got, test.want)
+		}
+	}
+}
+
+func TestEnhancedTaskProgressFormatsLargeTokenCount(t *testing.T) {
+	item := enhancedActivityItem{label: "task · explore", status: "success", started: time.Unix(100, 0), ended: time.Unix(101, 0), tokens: 300100, hasUsage: true, toolUses: 44}
+	if got := formatActivity(item, item.ended); !strings.Contains(got, "300.1k tokens · 44 tools") {
+		t.Fatalf("line = %q", got)
+	}
+}
+
 func TestEnhancedReasoningSummaryReplacesRawReasoningActivity(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")

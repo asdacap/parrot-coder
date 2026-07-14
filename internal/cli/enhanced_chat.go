@@ -524,7 +524,7 @@ func formatActivityUsage(item enhancedActivityItem) string {
 		if item.tokens == 1 {
 			unit = "token"
 		}
-		parts = append(parts, fmt.Sprintf("%d %s", item.tokens, unit))
+		parts = append(parts, fmt.Sprintf("%s %s", formatTokenCount(item.tokens), unit))
 	}
 	if item.toolUses > 0 {
 		unit := "tools"
@@ -537,6 +537,15 @@ func formatActivityUsage(item enhancedActivityItem) string {
 		return ""
 	}
 	return " · " + strings.Join(parts, " · ")
+}
+
+// formatTokenCount keeps small counts exact and abbreviates larger counts to
+// the nearest hundred tokens (one decimal place in thousands).
+func formatTokenCount(tokens int) string {
+	if tokens < 1000 {
+		return fmt.Sprintf("%d", tokens)
+	}
+	return fmt.Sprintf("%.1fk", float64(tokens)/1000)
 }
 
 func activityTitle(status string, elapsed time.Duration) string {

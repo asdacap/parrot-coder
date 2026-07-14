@@ -471,7 +471,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				}
 			case *v1.TaskProgress:
 				if options.format != "jsonl" {
-					line := fmt.Sprintf("task: %s · %d tokens · %d tools", value.Agent, value.Usage.TotalTokens, value.ToolUses)
+					line := fmt.Sprintf("task: %s · %s tokens · %d tools", value.Agent, formatTokenCount(value.Usage.TotalTokens), value.ToolUses)
 					if options.renderer != nil {
 						_ = options.renderer.Update([]string{line})
 					} else {
