@@ -112,6 +112,15 @@ type queuedChatInput struct {
 	content   string
 }
 
+type enhancedActivityItem struct {
+	id       string
+	label    string
+	status   string
+	started  time.Time
+	ended    time.Time
+	terminal bool
+}
+
 type enhancedModal struct {
 	kind       string
 	prompt     string
@@ -143,6 +152,7 @@ type enhancedChatRuntime struct {
 	modal           *enhancedModal
 	inputMode       enhancedInputMode
 	knownMessages   map[string]bool
+	activity        []enhancedActivityItem
 	borderCommitted bool
 
 	stream           *client.EventStream
@@ -344,10 +354,90 @@ func (r *enhancedChatRuntime) render() error {
 		prompt.Prefix = r.modal.prompt
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
-		MessagePrefix: prefix, Message: message, Status: r.status, Pending: pending,
+		MessagePrefix: prefix, Message: message, Activity: r.activityRows(time.Now()), Status: r.status, Pending: pending,
 		Prompt: prompt, Busy: r.busy, Spinner: spinnerFrames[r.spinner],
-		ShowDivider: message != "" || r.status != "" || !r.borderCommitted,
+		ShowDivider: message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})
+}
+
+func (r *enhancedChatRuntime) activityRows(now time.Time) []string {
+	if len(r.activity) == 0 {
+		return nil
+	}
+	rows := make([]string, 0, len(r.activity))
+	start := 0
+	if len(r.activity) > 4 {
+		start = len(r.activity) - 4
+	}
+	for _, item := range r.activity[start:] {
+		end := now
+		if !item.ended.IsZero() {
+			end = item.ended
+		}
+		elapsed := end.Sub(item.started)
+		if elapsed < 0 {
+			elapsed = 0
+		}
+		rows = append(rows, fmt.Sprintf("%s: %s · %.1fs", activityTitle(item.status), item.label, elapsed.Seconds()))
+	}
+	return rows
+}
+
+func activityTitle(status string) string {
+	switch status {
+	case "thinking":
+		return "Thought"
+	case "pending":
+		return "Queued tool"
+	case "running":
+		return "Tool"
+	case "success":
+		return "Done"
+	case "failure":
+		return "Failed"
+	case "interrupted":
+		return "Interrupted"
+	default:
+		return "Status"
+	}
+}
+
+func (r *enhancedChatRuntime) startAssistantActivity(messageID string) {
+	if messageID == "" {
+		messageID = "assistant"
+	}
+	r.upsertActivity(messageID, "Verifying status and context", "thinking", false)
+}
+
+func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal bool) {
+	now := time.Now()
+	for i := range r.activity {
+		if r.activity[i].id != id {
+			continue
+		}
+		previous := r.activity[i].status
+		if label != "" {
+			r.activity[i].label = label
+		}
+		r.activity[i].status = status
+		r.activity[i].terminal = terminal
+		if r.activity[i].started.IsZero() || status == "running" && previous == "pending" {
+			r.activity[i].started = now
+		}
+		if terminal {
+			r.activity[i].ended = now
+		} else {
+			r.activity[i].ended = time.Time{}
+		}
+		return
+	}
+	if label == "" {
+		label = id
+	}
+	r.activity = append(r.activity, enhancedActivityItem{id: id, label: label, status: status, started: now, terminal: terminal})
+	if len(r.activity) > 12 {
+		r.activity = r.activity[len(r.activity)-12:]
+	}
 }
 
 func (r *enhancedChatRuntime) ensureInputBorder() error {
@@ -874,6 +964,11 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		if delta.Kind == "text" {
 			r.streamed.WriteString(delta.Delta)
 			r.status = ""
+		} else if delta.Kind == "reasoning" {
+			r.startAssistantActivity(delta.MessageID)
+			if r.shell.options.thinking {
+				r.status = delta.Kind
+			}
 		} else if delta.Kind != "reasoning" || r.shell.options.thinking {
 			r.status = delta.Kind
 		}
@@ -938,6 +1033,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			r.streamed.Reset()
 			r.streamMessageID = payload.MessageID
 		}
+		r.startAssistantActivity(payload.MessageID)
 		r.status = "working"
 	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
 		var payload struct {
@@ -946,13 +1042,66 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		if err := json.Unmarshal(item.Data, &payload); err != nil {
 			return err
 		}
+		if payload.MessageID != "" {
+			status := "success"
+			if item.Type == "session.assistant.error" {
+				status = "failure"
+			} else if item.Type == "session.assistant.interrupted" {
+				status = "interrupted"
+			}
+			r.upsertActivity(payload.MessageID, "Verifying status and context", status, true)
+		}
 		if err := r.commitCompletedAssistants(payload.MessageID); err != nil {
 			return err
 		}
 	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
+		r.handleToolActivity(item)
 		r.status = "tool " + strings.TrimPrefix(item.Type, "session.tool.")
 	}
 	return r.settleIdle()
+}
+
+func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
+	callID, name := toolActivityPayload(item.Data)
+	if callID == "" {
+		callID = fmt.Sprintf("tool-%d", time.Now().UnixNano())
+	}
+	if name == "" {
+		name = callID
+	}
+	status := strings.TrimPrefix(item.Type, "session.tool.")
+	r.upsertActivity(callID, name, status, status == "success" || status == "failure" || status == "interrupted")
+}
+
+func toolActivityPayload(data json.RawMessage) (string, string) {
+	var raw map[string]any
+	if len(data) == 0 || json.Unmarshal(data, &raw) != nil {
+		return "", ""
+	}
+	callID := firstString(raw, "call_id", "callID", "id", "ID")
+	name := firstString(raw, "name", "Name", "tool", "tool_name", "toolID", "tool_id")
+	if nested, ok := raw["call"].(map[string]any); ok {
+		if callID == "" {
+			callID = firstString(nested, "call_id", "callID", "id", "ID")
+		}
+		if name == "" {
+			name = firstString(nested, "name", "Name", "tool", "tool_name", "toolID", "tool_id")
+		}
+	}
+	return callID, name
+}
+
+func firstString(raw map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := raw[key]
+		if !ok {
+			continue
+		}
+		if text, ok := value.(string); ok && text != "" {
+			return text
+		}
+	}
+	return ""
 }
 
 func (r *enhancedChatRuntime) settleIdle() error {

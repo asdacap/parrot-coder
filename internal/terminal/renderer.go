@@ -38,6 +38,7 @@ type PromptState struct {
 type LiveFrame struct {
 	MessagePrefix string
 	Message       string
+	Activity      []string
 	Status        string
 	Pending       []string
 	Prompt        PromptState
@@ -202,6 +203,9 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	remaining := max(0, r.maxRows-len(inputRows))
 
 	var activity []string
+	for _, item := range frame.Activity {
+		activity = append(activity, r.layoutLines([]string{item})...)
+	}
 	if frame.Status != "" {
 		activity = append(activity, r.layoutLines([]string{"status: " + frame.Status})...)
 	}
