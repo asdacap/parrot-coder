@@ -274,7 +274,10 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
 	}
 	if barRows > 0 {
-		inputRows = append(inputRows, statusBar(frame.InputLeft, frame.InputRight, r.columns))
+		// The labels are the modeline, not a separate status row. Keep its heavy
+		// rule even when the transcript boundary was already committed (notably
+		// immediately after an assistant response).
+		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
 	}
 	inputRows = append(inputRows, pendingRows...)
 	inputRows = append(inputRows, promptRows...)
@@ -908,7 +911,7 @@ func (r *LiveRenderer) decorate(row string) string {
 		return color("31", row)
 	case strings.HasPrefix(row, "○ ") || strings.HasPrefix(row, "◌ ") || strings.HasPrefix(row, "■ "):
 		return color("2", row)
-	case strings.Trim(row, "─━") == "":
+	case strings.Trim(row, "─") == "":
 		return color("2;90", row)
 	case strings.HasPrefix(row, "error:"):
 		return color("31", row)
