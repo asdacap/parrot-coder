@@ -7,9 +7,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/client"
@@ -1338,13 +1340,24 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 }
 
 func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
-	callID, name := toolActivityPayload(item.Data)
+	callID, name, input := toolActivityPayload(item.Data)
 	if callID == "" {
 		callID = fmt.Sprintf("tool-%d", time.Now().UnixNano())
 	}
+	label := name
+	if input != nil {
+		label = toolActivityLabel(name, input)
+	} else {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				label = ""
+				break
+			}
+		}
+	}
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminal := status == "success" || status == "failure" || status == "interrupted"
-	r.upsertActivity(callID, name, status, terminal, false)
+	r.upsertActivity(callID, label, status, terminal, false)
 	if terminal {
 		r.queueCompletedTool(callID)
 		if err := r.flushCompletedTools(); err != nil {
@@ -1353,13 +1366,14 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	}
 }
 
-func toolActivityPayload(data json.RawMessage) (string, string) {
+func toolActivityPayload(data json.RawMessage) (string, string, map[string]any) {
 	var raw map[string]any
 	if len(data) == 0 || json.Unmarshal(data, &raw) != nil {
-		return "", ""
+		return "", "", nil
 	}
 	callID := firstString(raw, "call_id", "callID", "id", "ID")
 	name := firstString(raw, "name", "Name", "tool", "tool_name", "toolID", "tool_id")
+	input := firstObject(raw, "input", "Input", "arguments", "Arguments")
 	if nested, ok := raw["call"].(map[string]any); ok {
 		if callID == "" {
 			callID = firstString(nested, "call_id", "callID", "id", "ID")
@@ -1367,8 +1381,140 @@ func toolActivityPayload(data json.RawMessage) (string, string) {
 		if name == "" {
 			name = firstString(nested, "name", "Name", "tool", "tool_name", "toolID", "tool_id")
 		}
+		if input == nil {
+			input = firstObject(nested, "input", "Input", "arguments", "Arguments")
+		}
 	}
-	return callID, name
+	return callID, name, input
+}
+
+func toolActivityLabel(name string, input map[string]any) string {
+	var details []string
+	add := func(value string) {
+		if value = cleanActivityDetail(value); value != "" {
+			details = append(details, value)
+		}
+	}
+	quoted := func(value string) {
+		if value = cleanActivityDetail(value); value != "" {
+			details = append(details, fmt.Sprintf("%q", value))
+		}
+	}
+
+	switch name {
+	case "read", "edit", "format":
+		add(firstString(input, "path", "file", "filePath"))
+	case "glob":
+		quoted(firstString(input, "pattern"))
+	case "grep":
+		quoted(firstString(input, "pattern"))
+		path := firstString(input, "path")
+		if path == "" {
+			path = "."
+		}
+		add(path)
+	case "read_output":
+		add(firstString(input, "id"))
+	case "apply_patch":
+		details = append(details, patchActivityTargets(firstString(input, "patch"))...)
+	case "shell":
+		add(firstString(input, "command"))
+	case "todo_write":
+		if todos, ok := input["todos"].([]any); ok {
+			details = append(details, fmt.Sprintf("%d items", len(todos)))
+		}
+	case "question":
+		if questions, ok := input["questions"].([]any); ok && len(questions) > 0 {
+			if question, ok := questions[0].(map[string]any); ok {
+				add(firstString(question, "header", "prompt", "question"))
+			}
+			if len(questions) > 1 {
+				details = append(details, fmt.Sprintf("+%d more", len(questions)-1))
+			}
+		}
+	case "skill":
+		add(firstString(input, "name"))
+	case "web_fetch":
+		add(firstString(input, "url"))
+	case "task":
+		add(firstString(input, "agent"))
+		add(firstString(input, "prompt"))
+	case "task_status", "task_cancel":
+		add(firstString(input, "task_id"))
+	default:
+		if strings.HasPrefix(name, "lsp_") {
+			add(firstString(input, "path", "query"))
+			break
+		}
+		keys := make([]string, 0, len(input))
+		for key := range input {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			value, ok := input[key].(string)
+			if ok && !sensitiveActivityField(key) {
+				add(key + "=" + value)
+				break
+			}
+		}
+	}
+	if len(details) == 0 {
+		return name
+	}
+	return name + " · " + strings.Join(details, " · ")
+}
+
+func firstObject(raw map[string]any, keys ...string) map[string]any {
+	for _, key := range keys {
+		if value, ok := raw[key].(map[string]any); ok {
+			return value
+		}
+	}
+	return nil
+}
+
+func cleanActivityDetail(value string) string {
+	value = strings.Join(strings.FieldsFunc(value, unicode.IsControl), " ")
+	value = strings.TrimSpace(value)
+	runes := []rune(value)
+	if len(runes) > 96 {
+		value = string(runes[:93]) + "..."
+	}
+	return value
+}
+
+func patchActivityTargets(patch string) []string {
+	prefixes := []string{"*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "}
+	seen := make(map[string]bool)
+	var targets []string
+	for _, line := range strings.Split(patch, "\n") {
+		for _, prefix := range prefixes {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			path := cleanActivityDetail(strings.TrimPrefix(line, prefix))
+			if path != "" && !seen[path] {
+				seen[path] = true
+				targets = append(targets, path)
+			}
+			break
+		}
+	}
+	if len(targets) <= 2 {
+		return targets
+	}
+	return []string{targets[0], targets[1], fmt.Sprintf("+%d more", len(targets)-2)}
+}
+
+func sensitiveActivityField(key string) bool {
+	key = strings.ToLower(key)
+	for _, fragment := range []string{"authorization", "command", "content", "env", "key", "old", "new", "password", "patch", "prompt", "secret", "token"} {
+		if strings.Contains(key, fragment) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstString(raw map[string]any, keys ...string) string {

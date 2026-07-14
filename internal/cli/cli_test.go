@@ -515,7 +515,7 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 		shell:           &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{})},
 		streamMessageID: "assistant",
 	}
-	pending, _ := json.Marshal(map[string]any{"ID": "call_opaque", "Name": "read", "Input": map[string]any{}})
+	pending, _ := json.Marshal(map[string]any{"ID": "call_opaque", "Name": "read", "Input": map[string]any{"path": "internal/cli/enhanced_chat.go"}})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
 	running, _ := json.Marshal(map[string]string{"call_id": "call_opaque", "status": "running"})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.running", Data: running})
@@ -525,15 +525,44 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	if output.Len() != 0 {
 		t.Fatalf("completed tool split the active assistant message: %q", output.String())
 	}
-	if len(runtime.completedTools) != 1 || runtime.completedTools[0].label != "read" {
+	if len(runtime.completedTools) != 1 || runtime.completedTools[0].label != "read · internal/cli/enhanced_chat.go" {
 		t.Fatalf("queued tools = %#v", runtime.completedTools)
 	}
 	runtime.streamMessageID = ""
 	if err := runtime.flushCompletedTools(); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "Done: read ·") || strings.Contains(got, "call_opaque") {
+	if got := output.String(); !strings.Contains(got, "Done: read · internal/cli/enhanced_chat.go ·") || strings.Contains(got, "call_opaque") {
 		t.Fatalf("committed tool activity = %q", got)
+	}
+}
+
+func TestToolActivityLabelDescribesInputs(t *testing.T) {
+	tests := []struct {
+		name  string
+		input map[string]any
+		want  string
+	}{
+		{name: "read", input: map[string]any{"path": "README.md"}, want: "read · README.md"},
+		{name: "glob", input: map[string]any{"pattern": "**/*.go"}, want: `glob · "**/*.go"`},
+		{name: "grep", input: map[string]any{"pattern": "handleToolActivity", "path": "internal/cli"}, want: `grep · "handleToolActivity" · internal/cli`},
+		{name: "grep", input: map[string]any{"pattern": "TODO"}, want: `grep · "TODO" · .`},
+		{name: "skill", input: map[string]any{"name": "review"}, want: "skill · review"},
+		{name: "web_fetch", input: map[string]any{"url": "https://example.com/docs"}, want: "web_fetch · https://example.com/docs"},
+		{name: "custom", input: map[string]any{"token": "hidden", "path": "src/main.go"}, want: "custom · path=src/main.go"},
+	}
+	for _, test := range tests {
+		if got := toolActivityLabel(test.name, test.input); got != test.want {
+			t.Errorf("toolActivityLabel(%q) = %q, want %q", test.name, got, test.want)
+		}
+	}
+}
+
+func TestToolActivityLabelSanitizesAndTruncatesDetails(t *testing.T) {
+	input := map[string]any{"path": "src\n\x1b[31m" + strings.Repeat("x", 100)}
+	got := toolActivityLabel("read", input)
+	if strings.ContainsAny(got, "\n\x1b") || !strings.HasSuffix(got, "...") {
+		t.Fatalf("unsafe or unbounded activity label: %q", got)
 	}
 }
 
