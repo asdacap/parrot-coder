@@ -14,6 +14,8 @@ var (
 )
 
 func main() {
+	enableCoreDumps()
+
 	ctx, stop := cli.SignalContext(context.Background())
 	defer stop()
 
