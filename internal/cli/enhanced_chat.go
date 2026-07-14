@@ -122,6 +122,8 @@ type enhancedActivityItem struct {
 	id        string
 	label     string
 	status    string
+	tokens    int
+	hasUsage  bool
 	started   time.Time
 	ended     time.Time
 	terminal  bool
@@ -478,7 +480,7 @@ func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns i
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	suffix := fmt.Sprintf(" · %.1fs", elapsed.Seconds())
+	suffix := fmt.Sprintf("%s · %.1fs", formatActivityUsage(item), elapsed.Seconds())
 	width := max(1, columns-len(prefix)-len(suffix)-1)
 	label := item.label
 	if strings.TrimSpace(label) == "" {
@@ -497,7 +499,18 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	return fmt.Sprintf("%s: %s · %.1fs", activityTitle(item.status), item.label, elapsed.Seconds())
+	return fmt.Sprintf("%s: %s%s · %.1fs", activityTitle(item.status), item.label, formatActivityUsage(item), elapsed.Seconds())
+}
+
+func formatActivityUsage(item enhancedActivityItem) string {
+	if item.hasUsage {
+		unit := "tokens"
+		if item.tokens == 1 {
+			unit = "token"
+		}
+		return fmt.Sprintf(" · %d %s", item.tokens, unit)
+	}
+	return ""
 }
 
 func activityTitle(status string) string {
@@ -531,6 +544,22 @@ func (r *enhancedChatRuntime) startReasoningActivity(messageID, label string) {
 		messageID = "assistant"
 	}
 	r.upsertActivity(messageID, label, "thinking", false, true)
+}
+
+func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.Usage) {
+	if usage == nil {
+		return
+	}
+	if messageID == "" {
+		messageID = r.streamMessageID
+	}
+	for i := range r.activity {
+		if r.activity[i].id == messageID {
+			r.activity[i].tokens = usage.OutputTokens
+			r.activity[i].hasUsage = true
+			return
+		}
+	}
 }
 
 func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal, reasoning bool) {
@@ -1261,7 +1290,9 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			r.idleSeen = false
 		case "idle":
 			r.idleSeen = true
-		case "finish", "usage":
+		case "usage":
+			r.updateAssistantUsage(status.MessageID, status.Usage)
+		case "finish":
 		case "interrupted":
 			r.busy = false
 			r.idleSeen = false

@@ -427,6 +427,28 @@ func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
 	}
 }
 
+func TestEnhancedAssistantActivityShowsRunningTokenUsage(t *testing.T) {
+	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+
+	usage, _ := json.Marshal(v1.SessionStatus{
+		MessageID: "assistant",
+		Kind:      "usage",
+		Usage:     &v1.Usage{OutputTokens: 123, TotalTokens: 456},
+	})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: usage}); err != nil {
+		t.Fatal(err)
+	}
+	if got := formatActivity(runtime.activity[0], runtime.activity[0].started); !strings.Contains(got, "Verifying status and context · 123 tokens · 0.0s") {
+		t.Fatalf("activity after usage = %q", got)
+	}
+
+	runtime.upsertActivity("assistant", "Verifying status and context", "success", true, false)
+	if !runtime.activity[0].terminal || runtime.activity[0].tokens != 123 || !runtime.activity[0].hasUsage {
+		t.Fatalf("completed activity lost usage: %#v", runtime.activity[0])
+	}
+}
+
 func TestEnhancedKeyPumpDoesNotConsumePastUnacknowledgedKey(t *testing.T) {
 	decoder := terminal.NewKeyDecoder(bytes.NewBufferString("\rZ"))
 	pump := startEnhancedKeyPump(context.Background(), decoder)
