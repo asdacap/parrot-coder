@@ -301,8 +301,11 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, err
 	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
-	subagentExecutor := &appSubagentExecutor{sessions: sessions, project: info, providers: providerRegistry, defaultSelection: defaultSelection}
-	subagents := subagent.NewManager(subagentExecutor, subagent.Config{})
+	subagentExecutor := &appSubagentExecutor{sessions: sessions, project: info, providers: providerRegistry, defaultSelection: defaultSelection, live: live}
+	subagents := subagent.NewManager(subagentExecutor, subagent.Config{OnProgress: func(task subagent.Task) {
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
+		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, Data: data})
+	}})
 	tools := tool.NewRegistry()
 	for _, builtin := range []tool.Tool{tool.NewReadTool(tool.ReadConfig{}), tool.NewGlobTool(tool.GlobConfig{}), tool.NewGrepTool(tool.GrepConfig{}), tool.NewReadOutputTool(1 << 20)} {
 		if err := tools.Register(builtin); err != nil {
@@ -883,6 +886,7 @@ type appSubagentExecutor struct {
 	project          project.Info
 	providers        *agent.ProviderRegistry
 	defaultSelection session.Selection
+	live             *event.Broker
 }
 
 func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
@@ -926,6 +930,29 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	if _, err := e.sessions.Admit(ctx, child.ID, session.AdmitParams{MessageID: messageID, Content: execution.Request.Prompt, Delivery: session.DeliverySteer}); err != nil {
 		return "", err
 	}
+	var progressDone chan struct{}
+	stopProgress := func() {}
+	if e.live != nil && execution.ReportProgress != nil {
+		events, unsubscribe := e.live.Subscribe(child.ID, 128)
+		progressDone = make(chan struct{})
+		stop := make(chan struct{})
+		stopProgress = func() { close(stop); unsubscribe(); <-progressDone }
+		go func() {
+			defer close(progressDone)
+			for {
+				select {
+				case item, ok := <-events:
+					if !ok {
+						return
+					}
+					reportSubagentEvent(execution.ReportProgress, item)
+				case <-stop:
+					return
+				}
+			}
+		}()
+		defer stopProgress()
+	}
 	if err := e.coordinator.Resume(ctx, child.ID); err != nil {
 		if ctx.Err() != nil {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -948,4 +975,19 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 		return messages[i].Content, nil
 	}
 	return "", errors.New("app: subagent produced no assistant output")
+}
+
+func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {
+	switch item.Type {
+	case v1.EventSessionStatus:
+		var status v1.SessionStatus
+		if json.Unmarshal(item.Data, &status) != nil {
+			return
+		}
+		if status.Kind == "tool_call_complete" {
+			report(subagent.Progress{ToolUses: 1})
+		} else if status.Kind == "usage" && status.Usage != nil {
+			report(subagent.Progress{Usage: subagent.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, TotalTokens: status.Usage.TotalTokens, ReasoningTokens: status.Usage.ReasoningTokens, CachedInputTokens: status.Usage.CachedInputTokens}})
+		}
+	}
 }

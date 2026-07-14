@@ -466,6 +466,15 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					}
 					return finished
 				}
+			case *v1.TaskProgress:
+				if options.format != "jsonl" {
+					line := fmt.Sprintf("task: %s · %d tokens · %d tools", value.Agent, value.Usage.TotalTokens, value.ToolUses)
+					if options.renderer != nil {
+						_ = options.renderer.Update([]string{line})
+					} else {
+						fmt.Fprintln(options.stderr, line)
+					}
+				}
 			}
 		}
 	}

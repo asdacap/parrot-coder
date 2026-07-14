@@ -572,7 +572,7 @@ func (t *TaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		task, err := t.Manager.Status(call.SessionID, input.TaskID)
 		return taskResult(task), err
 	}
-	id, err := t.Manager.Launch(call.SessionID, []string{call.Agent}, subagent.Request{Prompt: input.Prompt, Agent: input.Agent, Model: input.Model})
+	id, err := t.Manager.Launch(call.SessionID, []string{call.Agent}, subagent.Request{Prompt: input.Prompt, Agent: input.Agent, Model: input.Model, ToolCallID: call.ToolCallID})
 	if err != nil {
 		return Result{}, err
 	}
@@ -589,7 +589,7 @@ func (t *TaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	return taskResult(task), nil
 }
 func taskResult(task subagent.Task) Result {
-	metadata := map[string]any{"task_id": task.ID, "status": task.Status, "agent": task.Agent, "model": task.Model, "depth": task.Depth, "truncated": task.Truncated}
+	metadata := map[string]any{"task_id": task.ID, "status": task.Status, "agent": task.Agent, "model": task.Model, "depth": task.Depth, "truncated": task.Truncated, "usage": task.Usage, "tool_uses": task.ToolUses}
 	if task.Error != "" {
 		metadata["error"] = task.Error
 	}

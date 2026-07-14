@@ -25,6 +25,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/project"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
@@ -517,6 +518,18 @@ func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
 	messages, _ := runtime.Client.Messages(context.Background(), parent.ID)
 	sessions, _ := runtime.Client.Sessions(context.Background())
 	t.Fatalf("task tool did not return child output; messages=%#v sessions=%#v", messages.Items, sessions.Items)
+}
+
+func TestReportSubagentEventConvertsUsageAndToolCalls(t *testing.T) {
+	var progress []subagent.Progress
+	report := func(item subagent.Progress) { progress = append(progress, item) }
+	usage, _ := json.Marshal(v1.SessionStatus{Kind: "usage", Usage: &v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}})
+	reportSubagentEvent(report, v1.Event{Type: v1.EventSessionStatus, Data: usage})
+	toolCall, _ := json.Marshal(v1.SessionStatus{Kind: "tool_call_complete"})
+	reportSubagentEvent(report, v1.Event{Type: v1.EventSessionStatus, Data: toolCall})
+	if len(progress) != 2 || progress[0].Usage.TotalTokens != 12 || progress[0].Usage.CachedInputTokens != 3 || progress[1].ToolUses != 1 {
+		t.Fatalf("progress = %#v", progress)
+	}
 }
 
 func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {

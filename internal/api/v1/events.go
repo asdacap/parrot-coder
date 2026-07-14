@@ -19,6 +19,7 @@ const (
 	EventSessionInputAdmitted = "session.input.admitted"
 	EventSessionInputPromoted = "session.input.promoted"
 	EventTodoUpdated          = "todo.updated"
+	EventTaskProgress         = "task.progress"
 )
 
 // Event is used for both durable and disposable live events. Sequence and
@@ -46,6 +47,15 @@ type Usage struct {
 	TotalTokens       int `json:"total_tokens"`
 	ReasoningTokens   int `json:"reasoning_tokens"`
 	CachedInputTokens int `json:"cached_input_tokens"`
+}
+
+type TaskProgress struct {
+	TaskID     string `json:"task_id"`
+	ToolCallID string `json:"tool_call_id,omitempty"`
+	Agent      string `json:"agent"`
+	Status     string `json:"status"`
+	Usage      Usage  `json:"usage"`
+	ToolUses   int    `json:"tool_uses"`
 }
 
 type SessionStatus struct {
@@ -101,6 +111,7 @@ var EventManifest = []EventDefinition{
 	{Name: EventSessionInputAdmitted, Durable: true, Payload: "SessionInputAdmitted"},
 	{Name: EventSessionInputPromoted, Durable: true, Payload: "SessionInputPromoted"},
 	{Name: EventTodoUpdated, Durable: true, Payload: "TodoUpdated"},
+	{Name: EventTaskProgress, Payload: "TaskProgress"},
 	{Name: "session.selection.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.initialized", Durable: true, Payload: "object"},
 	{Name: "session.context.observed", Durable: true, Payload: "object"},
@@ -156,6 +167,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &SessionInputPromoted{}
 	case EventTodoUpdated:
 		target = &TodoUpdated{}
+	case EventTaskProgress:
+		target = &TaskProgress{}
 	default:
 		if !KnownEvent(event.Type) {
 			return nil, errors.New("v1: unknown event type")

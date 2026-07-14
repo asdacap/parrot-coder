@@ -435,7 +435,7 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 				outcomes[i] = toolOutcome{call: call, persistErr: err}
 				return
 			}
-			result, err := executor.Execute(ctx, call.call.Name, json.RawMessage(call.call.Input), tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Agent: profile.ID})
+			result, err := executor.Execute(ctx, call.call.Name, json.RawMessage(call.call.Input), tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Agent: profile.ID, ToolCallID: call.call.ID})
 			outcome := toolOutcome{call: call, text: result.Text, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {
