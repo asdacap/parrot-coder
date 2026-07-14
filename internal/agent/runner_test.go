@@ -62,6 +62,19 @@ func (*sliceStream) Close() error { return nil }
 
 func events(items ...protocol.Event) provider.Stream { return &sliceStream{events: items} }
 
+func TestReasoningSummaryAccumulatorPreservesPartOrder(t *testing.T) {
+	var summary reasoningSummaryAccumulator
+	summary.Write("reasoning:0", "First")
+	summary.Write("reasoning:1", "Second item")
+	summary.Write("reasoning:0", " item")
+	if got, want := summary.String(), "First itemSecond item"; got != want {
+		t.Fatalf("summary = %q, want %q", got, want)
+	}
+	if summary.Len() != len("First itemSecond item") {
+		t.Fatalf("summary length = %d", summary.Len())
+	}
+}
+
 type blockingStream struct {
 	started chan struct{}
 	release <-chan struct{}

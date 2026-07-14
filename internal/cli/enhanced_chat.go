@@ -629,10 +629,9 @@ func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) 
 }
 
 func cleanReasoningActivityLabel(label string) string {
-	label = strings.TrimSpace(label)
-	label = strings.TrimPrefix(label, "**")
-	label = strings.TrimSuffix(label, "**")
-	return strings.TrimSpace(label)
+	label = strings.ReplaceAll(label, "****", " ")
+	label = strings.ReplaceAll(label, "**", "")
+	return strings.Join(strings.Fields(label), " ")
 }
 
 func (r *enhancedChatRuntime) resetReasoning() {

@@ -283,8 +283,8 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 		return nil, "", &providerTurnFailure{err: errors.Join(err, finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil}
 	}
 	defer stream.Close()
-	var text, reasoning, reasoningSummary strings.Builder
-	var reasoningSummaryPart string
+	var text, reasoning strings.Builder
+	var reasoningSummary reasoningSummaryAccumulator
 	var usage protocol.Usage
 	var calls []completedCall
 	finish := protocol.FinishIncomplete
@@ -312,13 +312,7 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 		case protocol.EventReasoningDelta:
 			reasoning.WriteString(item.Text)
 		case protocol.EventReasoningSummaryDelta:
-			if item.PartID != "" && reasoningSummaryPart != "" && item.PartID != reasoningSummaryPart && reasoningSummary.Len() > 0 {
-				reasoningSummary.WriteString("\n\n")
-			}
-			reasoningSummary.WriteString(item.Text)
-			if item.PartID != "" {
-				reasoningSummaryPart = item.PartID
-			}
+			reasoningSummary.Write(item.PartID, item.Text)
 		case protocol.EventToolCallComplete:
 			if item.ToolCall == nil {
 				continue
@@ -423,6 +417,40 @@ func preferredReasoning(reasoning, summary string) string {
 	}
 	return reasoning
 }
+
+type reasoningSummaryAccumulator struct {
+	parts map[string]*strings.Builder
+	order []string
+	bytes int
+}
+
+func (a *reasoningSummaryAccumulator) Write(partID, text string) {
+	if text == "" {
+		return
+	}
+	if a.parts == nil {
+		a.parts = make(map[string]*strings.Builder)
+	}
+	part := a.parts[partID]
+	if part == nil {
+		part = &strings.Builder{}
+		a.parts[partID] = part
+		a.order = append(a.order, partID)
+	}
+	part.WriteString(text)
+	a.bytes += len(text)
+}
+
+func (a *reasoningSummaryAccumulator) String() string {
+	var summary strings.Builder
+	summary.Grow(a.bytes)
+	for _, partID := range a.order {
+		summary.WriteString(a.parts[partID].String())
+	}
+	return summary.String()
+}
+
+func (a *reasoningSummaryAccumulator) Len() int { return a.bytes }
 
 type toolOutcome struct {
 	call        completedCall

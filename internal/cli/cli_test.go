@@ -596,6 +596,91 @@ func TestEnhancedReasoningSummaryPartsShowAsSeparateActivityRows(t *testing.T) {
 	}
 }
 
+func TestEnhancedReasoningSummaryStripsAdjacentBoldDelimiters(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+
+	for _, delta := range []string{
+		"**Investigating summary stripping issue**",
+		"**Analyzing reasoning summary handling flaws**",
+	} {
+		data, _ := json.Marshal(v1.MessagePartDelta{MessageID: "assistant", Kind: "reasoning_summary", Delta: delta})
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := "Investigating summary stripping issue Analyzing reasoning summary handling flaws"
+	if got := runtime.activity[0].label; got != want {
+		t.Fatalf("activity label = %q, want %q", got, want)
+	}
+}
+
+func TestEnhancedReasoningSummaryPartsUpdateIndependently(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "assistant", Kind: "reasoning", Delta: "private reasoning"},
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "**First"},
+		{MessageID: "assistant", PartID: "reasoning:1", Kind: "reasoning_summary", Delta: "**Second item**"},
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: " item**"},
+	} {
+		data, _ := json.Marshal(delta)
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(runtime.activity) != 2 || runtime.activity[0].label != "First item" || runtime.activity[1].label != "Second item" {
+		t.Fatalf("activity = %#v", runtime.activity)
+	}
+	if runtime.activity[0].messageID != "assistant" || runtime.activity[1].messageID != "assistant" {
+		t.Fatalf("summary rows lost assistant identity: %#v", runtime.activity)
+	}
+}
+
+func TestEnhancedLateAssistantStartKeepsReasoningSummaryRows(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	delta, _ := json.Marshal(v1.MessagePartDelta{
+		MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "Checking tests",
+	})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: delta}); err != nil {
+		t.Fatal(err)
+	}
+	started, _ := json.Marshal(map[string]string{"message_id": "assistant"})
+	if err := runtime.handleEvent(v1.Event{Type: "session.assistant.started", Data: started}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 || runtime.activity[0].label != "Checking tests" || !runtime.activity[0].reasoning {
+		t.Fatalf("late assistant start replaced summary activity: %#v", runtime.activity)
+	}
+}
+
+func TestEnhancedReasoningSummaryPartsFlushInProviderOrder(t *testing.T) {
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Status: "complete"}}}}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80})
+	shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
+	runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+
+	runtime.startReasoningActivity("assistant", "reasoning:0", "First item")
+	runtime.startReasoningActivity("assistant", "reasoning:1", "Second item")
+	runtime.completeAssistantActivity("assistant", "success")
+	if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+		t.Fatal(err)
+	}
+
+	first := strings.Index(output.String(), "First item")
+	second := strings.Index(output.String(), "Second item")
+	if first < 0 || second < first {
+		t.Fatalf("summary rows flushed out of order: %q", output.String())
+	}
+	if len(runtime.activity) != 0 {
+		t.Fatalf("completed activity remains live: %#v", runtime.activity)
+	}
+}
+
 func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 	for _, test := range []struct {
 		name        string
