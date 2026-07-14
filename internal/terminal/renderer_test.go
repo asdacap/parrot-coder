@@ -188,7 +188,7 @@ func TestLiveRendererCompositeFrameKeepsBusyEditorVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(renderer.rows, "\n")
-	for _, want := range []string{"- working response", "─", "$ next task  (○ queued)", "⠋ $ editable"} {
+	for _, want := range []string{"- working response", "━", "$ next task  (○ queued)", "⠋ $ editable"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("frame missing %q: %#v", want, renderer.rows)
 		}
@@ -219,7 +219,7 @@ func TestLiveRendererCompositeFrameShowsInputStatusBar(t *testing.T) {
 	if renderer.cursorRow != len(renderer.rows)-1 {
 		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
 	}
-	if got := renderer.rows[1]; !strings.Contains(got, "─ mode: build ") || !strings.Contains(got, " local/test ") {
+	if got := renderer.rows[1]; !strings.Contains(got, "━ mode: build ") || !strings.HasSuffix(got, " local/test ") {
 		t.Fatalf("modeline labels are not padded: %q", got)
 	}
 }
@@ -235,7 +235,7 @@ func TestLiveRendererCompositeFrameShowsStatusInModeline(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(renderer.rows, "\n")
-	if !strings.Contains(joined, "─ mode: build ─ status: tool running ─ local/test ") {
+	if got := renderer.rows[0]; !strings.HasPrefix(got, "━ mode: build ━ status: tool running ") || !strings.HasSuffix(got, " local/test ") {
 		t.Fatalf("status is not in modeline: %#v", renderer.rows)
 	}
 	if strings.Contains(joined, "\nstatus: tool running\n") {

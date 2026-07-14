@@ -733,9 +733,6 @@ func (r *enhancedChatRuntime) ensureInputBorder() error {
 }
 
 func (r *enhancedChatRuntime) commitUser(content string) error {
-	if err := r.ensureInputBorder(); err != nil {
-		return err
-	}
 	if err := r.shell.commitUser(content); err != nil {
 		return err
 	}
