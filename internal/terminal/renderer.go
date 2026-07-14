@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	defaultLiveRows  = 6
+	defaultLiveRows  = 10
 	defaultInputRows = 12
 	defaultColumns   = 80
 )
