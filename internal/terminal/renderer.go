@@ -38,6 +38,7 @@ type PromptState struct {
 type LiveFrame struct {
 	MessagePrefix string
 	Message       string
+	Context       []string
 	Activity      []string
 	Status        string
 	InputLeft     string
@@ -211,6 +212,15 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	inputRows = append(inputRows, promptRows...)
 	remaining := max(0, r.maxRows-len(inputRows))
 
+	contextRows := make([]string, 0, len(frame.Context))
+	for _, item := range frame.Context {
+		contextRows = append(contextRows, r.layoutLines([]string{item})...)
+	}
+	if len(contextRows) > remaining {
+		contextRows = contextRows[:remaining]
+	}
+	remaining -= len(contextRows)
+
 	var activity []string
 	for _, item := range frame.Activity {
 		activity = append(activity, r.layoutLines([]string{item})...)
@@ -224,8 +234,9 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	if len(activity) > remaining {
 		activity = activity[len(activity)-remaining:]
 	}
-	rows := append(activity, inputRows...)
-	cursorRow := len(activity) + dividerRows + barRows + len(pendingRows) + promptCursorRow
+	rows := append(contextRows, activity...)
+	rows = append(rows, inputRows...)
+	cursorRow := len(contextRows) + len(activity) + dividerRows + barRows + len(pendingRows) + promptCursorRow
 	if !r.tty {
 		return r.writePlain(rows)
 	}
