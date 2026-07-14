@@ -399,9 +399,9 @@ func (r *enhancedChatRuntime) render() error {
 		pending[i] = item.content
 	}
 	message := r.streamed.String()
-	prefix := ""
-	if message != "" {
-		prefix = "- "
+	var stream *terminal.StreamMessage
+	if message != "" && r.streamMessageID != "" {
+		stream = &terminal.StreamMessage{ID: r.streamMessageID, Prefix: "- ", Text: message}
 	}
 	prompt := r.state.PromptState()
 	if r.modal != nil {
@@ -419,7 +419,7 @@ func (r *enhancedChatRuntime) render() error {
 		busy = false
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
-		MessagePrefix: prefix, Message: message, Context: r.modalContext(), Activity: r.activityRows(time.Now()), Status: r.status, Pending: pending,
+		Stream: stream, Context: r.modalContext(), Activity: r.activityRows(time.Now()), Status: r.status, Pending: pending,
 		InputLeft: r.inputModeLabel(), InputRight: r.shell.selection.modelLabel(),
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
@@ -1291,7 +1291,11 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 			continue
 		}
 		if item.Content != "" {
-			if err := r.shell.renderer.CommitMessage("- ", item.Content, true); err != nil {
+			if item.ID == r.streamMessageID {
+				if err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "- ", Text: item.Content}, true); err != nil {
+					return err
+				}
+			} else if err := r.shell.renderer.CommitMessage("- ", item.Content, true); err != nil {
 				return err
 			}
 			r.borderCommitted = true
