@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log"
 	"net/http"
 	"net/url"
 	"os"
@@ -52,8 +53,9 @@ import (
 )
 
 const (
-	CredentialFile = "credentials.json"
-	DatabaseFile   = "parrot.db"
+	CredentialFile  = "credentials.json"
+	DatabaseFile    = "parrot.db"
+	DiagnosticsFile = "diagnostics.log"
 )
 
 // Options controls process-local composition. Model accepts provider/model or
@@ -93,6 +95,7 @@ type App struct {
 	outputs     *tool.OutputStore
 	mcp         *mcp.Manager
 	lsp         *lsp.Manager
+	diagnostics *os.File
 	closeOnce   sync.Once
 	closeErr    error
 }
@@ -203,8 +206,12 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: store: %w", err)
 	}
 	defaultSelection := session.Selection{Agent: agentID, Provider: providerID, Model: modelID}
+	// The diagnostics file records recovered tool panics without touching the
+	// interactive terminal. Failing to open it is non-fatal: the runner falls
+	// back to reporting panics only through the tool result.
+	diagnostics, _ := os.OpenFile(filepath.Join(paths.State, DiagnosticsFile), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	result := &App{
-		Paths: paths, Project: info, Config: loaded, Credentials: credentials, db: db,
+		Paths: paths, Project: info, Config: loaded, Credentials: credentials, db: db, diagnostics: diagnostics,
 		DefaultSelection: v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID},
 	}
 	defer func() {
@@ -365,6 +372,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
 		},
 		Workspace: ws, Outputs: outputs, Live: live, Compactor: compactionService,
+		ToolPanicLogger: toolPanicLogger(diagnostics),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: runner: %w", err)
@@ -542,6 +550,19 @@ func cleanupSnapshotTemps(ctx context.Context, root string, now time.Time, stale
 	return removed, err
 }
 
+// toolPanicLogger returns a runner panic hook that appends one timestamped
+// record per recovered tool panic to the diagnostics file. It returns nil when
+// no diagnostics sink is available so the runner skips logging entirely.
+func toolPanicLogger(sink *os.File) func(context.Context, string, string, any, []byte) {
+	if sink == nil {
+		return nil
+	}
+	logger := log.New(sink, "", log.LstdFlags|log.LUTC)
+	return func(_ context.Context, sessionID, toolName string, recovered any, stack []byte) {
+		logger.Printf("recovered tool panic: session=%s tool=%s value=%v\n%s", sessionID, toolName, recovered, stack)
+	}
+}
+
 func (a *App) Close() error {
 	if a == nil {
 		return nil
@@ -562,6 +583,9 @@ func (a *App) Close() error {
 		}
 		if a.db != nil {
 			a.closeErr = errors.Join(a.closeErr, a.db.Close())
+		}
+		if a.diagnostics != nil {
+			a.closeErr = errors.Join(a.closeErr, a.diagnostics.Close())
 		}
 	})
 	return a.closeErr
