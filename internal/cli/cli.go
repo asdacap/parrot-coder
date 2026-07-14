@@ -115,6 +115,7 @@ type codingFlags struct {
 	session   string
 	model     string
 	agent     string
+	variant   string
 	thinking  bool
 }
 
@@ -123,6 +124,7 @@ func addCodingFlags(fs *flag.FlagSet, options *codingFlags) {
 	fs.StringVar(&options.session, "session", "", "continue a session ID")
 	fs.StringVar(&options.model, "model", "", "select provider/model")
 	fs.StringVar(&options.agent, "agent", "", "select an agent profile")
+	fs.StringVar(&options.variant, "variant", "", "select a model reasoning variant")
 	fs.BoolVar(&options.thinking, "thinking", false, "show reasoning status")
 }
 
@@ -173,7 +175,7 @@ func (a *App) runCommand(ctx context.Context, args []string, stdin io.Reader, st
 		fmt.Fprintln(stderr, err)
 		return exitError
 	}
-	if err := applySelection(ctx, runtime.Client, sessionItem.ID, options.agent, options.model); err != nil {
+	if err := applySelection(ctx, runtime.Client, sessionItem.ID, options.agent, options.model, options.variant); err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitError
 	}
@@ -236,11 +238,15 @@ type resumableClient interface {
 	Resume(context.Context, string) error
 }
 
-func applySelection(ctx context.Context, api apiClient, sessionID, agentID, model string) error {
-	if agentID == "" && model == "" {
+func applySelection(ctx context.Context, api apiClient, sessionID, agentID, model, variant string) error {
+	if agentID == "" && model == "" && variant == "" {
 		return nil
 	}
-	_, err := api.UpdateSessionSelection(ctx, sessionID, v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model})
+	request := v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model}
+	if variant != "" {
+		request.Variant = &variant
+	}
+	_, err := api.UpdateSessionSelection(ctx, sessionID, request)
 	return err
 }
 
@@ -715,8 +721,19 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 			fmt.Fprintln(stderr, err)
 			return exitError
 		}
+		if err := applySelection(ctx, api, current.ID, options.agent, options.model, options.variant); err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitError
+		}
+		if options.agent != "" || options.model != "" || options.variant != "" {
+			current, err = api.Session(ctx, current.ID)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return exitError
+			}
+		}
 	}
-	selection := chatSelection{agent: runtime.DefaultSelection.Agent, provider: runtime.DefaultSelection.Provider, model: runtime.DefaultSelection.Model}
+	selection := chatSelection{agent: runtime.DefaultSelection.Agent, provider: runtime.DefaultSelection.Provider, model: runtime.DefaultSelection.Model, variant: options.variant}
 	if current.ID != "" {
 		selection = selectionFromSession(current, selection.agent)
 	}
@@ -763,6 +780,7 @@ type chatSelection struct {
 	agent    string
 	provider string
 	model    string
+	variant  string
 }
 
 func (s chatSelection) modelName() string {
@@ -774,6 +792,9 @@ func (s chatSelection) modelName() string {
 
 func (s chatSelection) modelLabel() string {
 	if value := s.modelName(); value != "" {
+		if s.variant != "" {
+			return value + " · " + s.variant
+		}
 		return value
 	}
 	return "no model"
@@ -986,7 +1007,7 @@ func selectionFromSession(item v1.Session, fallbackAgent string) chatSelection {
 	if agent == "" {
 		agent = fallbackAgent
 	}
-	return chatSelection{agent: agent, provider: item.Provider, model: item.Model}
+	return chatSelection{agent: agent, provider: item.Provider, model: item.Model, variant: item.Variant}
 }
 
 type sessionCreator interface {
@@ -998,9 +1019,11 @@ func createChatSession(ctx context.Context, api sessionCreator, projectID, title
 	if len(line) > 80 {
 		line = line[:80]
 	}
-	return api.CreateSession(ctx, v1.CreateSessionRequest{
-		ProjectID: projectID, Title: line, Agent: selection.agent, Model: selection.modelName(),
-	})
+	request := v1.CreateSessionRequest{ProjectID: projectID, Title: line, Agent: selection.agent, Model: selection.modelName()}
+	if selection.variant != "" {
+		request.Variant = &selection.variant
+	}
+	return api.CreateSession(ctx, request)
 }
 
 var builtinChatCommands = []terminal.Candidate{
@@ -1269,7 +1292,7 @@ func (s *chatShell) applyModel(value string) error {
 		return fmt.Errorf("invalid model %q", value)
 	}
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, "", value); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, "", value, ""); err != nil {
 			return err
 		}
 	}
@@ -1296,7 +1319,7 @@ func (s *chatShell) applyAgent(argument string, announce bool) error {
 		return fmt.Errorf("unknown agent %q", argument)
 	}
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, argument, ""); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, argument, "", ""); err != nil {
 			return err
 		}
 	}

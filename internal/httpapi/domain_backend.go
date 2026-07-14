@@ -74,6 +74,9 @@ func (b *DomainBackend) ListSessions(ctx context.Context) (v1.SessionList, error
 
 func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSessionRequest) (v1.Session, error) {
 	selection := b.DefaultSelection
+	if request.Variant != nil {
+		selection.Variant = *request.Variant
+	}
 	if request.Agent != "" {
 		selection.Agent = request.Agent
 	}
@@ -104,7 +107,7 @@ func (b *DomainBackend) GetSession(ctx context.Context, id string) (v1.Session, 
 }
 
 func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
-	if request.Agent == "" && request.Model == "" {
+	if request.Agent == "" && request.Model == "" && request.Variant == nil {
 		return v1.SessionSelection{}, ErrInvalid
 	}
 	if b.Coordinator != nil && b.Coordinator.Status(id) != agent.StatusIdle {
@@ -112,7 +115,7 @@ func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, r
 	}
 	patch := session.SelectionPatch{
 		Agent: request.Agent, FallbackAgent: b.DefaultSelection.Agent,
-		FallbackProvider: b.DefaultSelection.Provider,
+		FallbackProvider: b.DefaultSelection.Provider, Variant: request.Variant,
 	}
 	if request.Model != "" {
 		providerID, modelID, qualified := strings.Cut(request.Model, "/")
@@ -442,7 +445,11 @@ func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {
 			continue
 		}
 		for _, model := range provider.Models() {
-			out.Items = append(out.Items, v1.Model{Provider: provider.ID(), ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Tools: model.Capabilities.Tools, Reasoning: model.Capabilities.Reasoning, Output: append([]string(nil), model.Capabilities.Output...)})
+			variants := make(map[string]v1.ModelVariant, len(model.Capabilities.Variants))
+			for name, variant := range model.Capabilities.Variants {
+				variants[name] = v1.ModelVariant{ReasoningEffort: variant.ReasoningEffort}
+			}
+			out.Items = append(out.Items, v1.Model{Provider: provider.ID(), ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Tools: model.Capabilities.Tools, Reasoning: model.Capabilities.Reasoning, Output: append([]string(nil), model.Capabilities.Output...), Variants: variants})
 		}
 	}
 	sort.Slice(out.Items, func(i, j int) bool {
@@ -466,11 +473,11 @@ func (b *DomainBackend) ListAgents(context.Context) (v1.AgentList, error) {
 }
 
 func sessionDTO(item session.Session) v1.Session {
-	return v1.Session{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Provider: item.Provider, Model: item.Model, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	return v1.Session{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 }
 
 func selectionDTO(item session.Session) v1.SessionSelection {
-	return v1.SessionSelection{Agent: item.Agent, Provider: item.Provider, Model: item.Model}
+	return v1.SessionSelection{Agent: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant}
 }
 
 func completeSelection(selection session.Selection) bool {
@@ -495,8 +502,14 @@ func (b *DomainBackend) validateSelection(selection session.Selection) error {
 		}
 		resolver = registry
 	}
-	if _, _, err := resolver.Resolve(selection.Provider, selection.Model); err != nil {
+	_, model, err := resolver.Resolve(selection.Provider, selection.Model)
+	if err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
+	}
+	if selection.Variant != "" {
+		if _, ok := model.Capabilities.Variants[selection.Variant]; !ok {
+			return fmt.Errorf("%w: unknown variant %q", ErrInvalidSelection, selection.Variant)
+		}
 	}
 	return nil
 }

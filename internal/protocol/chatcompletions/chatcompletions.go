@@ -78,7 +78,11 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 		Tools    []tool `json:"tools,omitempty"`
 		Stream   bool   `json:"stream"`
 		Options  any    `json:"stream_options"`
-	}{request.Model, messages, tools, true, map[string]bool{"include_usage": true}}
+		ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	}{Model: request.Model, Messages: messages, Tools: tools, Stream: true, Options: map[string]bool{"include_usage": true}}
+	if request.Reasoning != nil {
+		body.ReasoningEffort = request.Reasoning.Effort
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("chatcompletions: encode request: %w", err)

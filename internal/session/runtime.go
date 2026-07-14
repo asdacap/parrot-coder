@@ -17,12 +17,14 @@ type Selection struct {
 	Agent    string `json:"agent"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	Variant  string `json:"variant,omitempty"`
 }
 
 type SelectionPatch struct {
 	Agent            string
 	Provider         string
 	Model            string
+	Variant          *string
 	FallbackAgent    string
 	FallbackProvider string
 }
@@ -33,7 +35,7 @@ func (s *Service) SetSelection(ctx context.Context, sessionID string, selection 
 	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
 		return ErrSelectionRequired
 	}
-	_, err := s.UpdateSelection(ctx, sessionID, SelectionPatch{Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model}, nil)
+	_, err := s.UpdateSelection(ctx, sessionID, SelectionPatch{Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: &selection.Variant}, nil)
 	return err
 }
 
@@ -44,12 +46,12 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 	var updated Session
 	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		current, err := scanSession(tx.QueryRowContext(ctx, `
-			SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, created_at, updated_at
+			SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
 			FROM session WHERE id = ?`, sessionID))
 		if err != nil {
 			return nil, nil, err
 		}
-		selection := Selection{Agent: current.Agent, Provider: current.Provider, Model: current.Model}
+		selection := Selection{Agent: current.Agent, Provider: current.Provider, Model: current.Model, Variant: current.Variant}
 		if patch.Agent != "" {
 			selection.Agent = patch.Agent
 		}
@@ -58,6 +60,9 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 		}
 		if patch.Model != "" {
 			selection.Model = patch.Model
+		}
+		if patch.Variant != nil {
+			selection.Variant = *patch.Variant
 		}
 		if selection.Agent == "" {
 			selection.Agent = patch.FallbackAgent
@@ -78,7 +83,7 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 			return nil, nil, err
 		}
 		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-			result, err := tx.ExecContext(ctx, `UPDATE session SET selected_agent=?, selected_provider=?, selected_model=?, updated_at=? WHERE id=?`, selection.Agent, selection.Provider, selection.Model, formatTime(events[0].CreatedAt), sessionID)
+			result, err := tx.ExecContext(ctx, `UPDATE session SET selected_agent=?, selected_provider=?, selected_model=?, selected_variant=?, updated_at=? WHERE id=?`, selection.Agent, selection.Provider, selection.Model, selection.Variant, formatTime(events[0].CreatedAt), sessionID)
 			if err != nil {
 				return err
 			}
@@ -90,7 +95,7 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 				return ErrNotFound
 			}
 			updated = current
-			updated.Agent, updated.Provider, updated.Model = selection.Agent, selection.Provider, selection.Model
+			updated.Agent, updated.Provider, updated.Model, updated.Variant = selection.Agent, selection.Provider, selection.Model, selection.Variant
 			updated.UpdatedAt = events[0].CreatedAt
 			return nil
 		}

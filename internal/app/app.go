@@ -214,10 +214,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		selected, selectionErr := sessions.LatestSelection(ctx, info.ID)
 		switch {
 		case selectionErr == nil:
-			if _, _, resolveErr := providerRegistry.Resolve(selected.Provider, selected.Model); resolveErr == nil {
+			if _, restoredModel, resolveErr := providerRegistry.Resolve(selected.Provider, selected.Model); resolveErr == nil && (selected.Variant == "" || modelHasVariant(restoredModel, selected.Variant)) {
 				providerID, modelID = selected.Provider, selected.Model
-				defaultSelection.Provider, defaultSelection.Model = providerID, modelID
-				result.DefaultSelection.Provider, result.DefaultSelection.Model = providerID, modelID
+				defaultSelection.Provider, defaultSelection.Model, defaultSelection.Variant = providerID, modelID, selected.Variant
+				result.DefaultSelection.Provider, result.DefaultSelection.Model, result.DefaultSelection.Variant = providerID, modelID, selected.Variant
 			}
 		case !errors.Is(selectionErr, session.ErrNotFound):
 			return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
@@ -636,6 +636,11 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 // BuildProviders creates configured provider clients. Environment credentials
 // take precedence over credentials stored under the provider ID.
+func modelHasVariant(model provider.Model, name string) bool {
+	_, ok := model.Capabilities.Variants[name]
+	return ok
+}
+
 func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Store, httpClient *http.Client) ([]provider.Provider, error) {
 	openAI := &auth.OpenAI{HTTPClient: httpClient}
 	tokens := auth.NewTokenSource(openAI, credentials, "chatgpt")
@@ -685,7 +690,11 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 			if name == "" {
 				name = modelID
 			}
-			models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...)}})
+			variants := make(map[string]provider.Variant, len(model.Variants))
+			for variantName, variant := range model.Variants {
+				variants[variantName] = provider.Variant{ReasoningEffort: variant.ReasoningEffort}
+			}
+			models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...), Variants: variants}})
 		}
 		compatible, createErr := provider.NewOpenAICompatible(provider.OpenAICompatibleOptions{
 			ID: id, BaseURL: item.BaseURL, Protocol: provider.CompatibleProtocol(item.Protocol), APIKey: auth.Secret(key),

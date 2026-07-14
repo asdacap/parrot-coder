@@ -77,12 +77,18 @@ type Provider struct {
 
 // Model contains provider-specific model metadata needed for selection.
 type Model struct {
-	Name      string   `json:"name,omitempty"`
-	Context   int      `json:"context,omitempty"`
-	MaxTokens int      `json:"max_tokens,omitempty"`
-	Tools     bool     `json:"tools,omitempty"`
-	Reasoning bool     `json:"reasoning,omitempty"`
-	Output    []string `json:"output,omitempty"`
+	Name      string             `json:"name,omitempty"`
+	Context   int                `json:"context,omitempty"`
+	MaxTokens int                `json:"max_tokens,omitempty"`
+	Tools     bool               `json:"tools,omitempty"`
+	Reasoning bool               `json:"reasoning,omitempty"`
+	Output    []string           `json:"output,omitempty"`
+	Variants  map[string]Variant `json:"variants,omitempty"`
+}
+
+// Variant describes provider request options exposed under a stable name.
+type Variant struct {
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
 // SourceKind identifies a configuration file's scope.

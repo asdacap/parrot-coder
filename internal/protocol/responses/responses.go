@@ -72,12 +72,20 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 		Tools        []any  `json:"tools,omitempty"`
 		Stream       bool   `json:"stream"`
 		Store        bool   `json:"store"`
-	}{request.Model, request.Instructions, input, tools, true, false}
+		Reasoning    *reasoningOptions `json:"reasoning,omitempty"`
+	}{Model: request.Model, Instructions: request.Instructions, Input: input, Tools: tools, Stream: true, Store: false}
+	if request.Reasoning != nil && request.Reasoning.Effort != "" {
+		body.Reasoning = &reasoningOptions{Effort: request.Reasoning.Effort}
+	}
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("responses: encode request: %w", err)
 	}
 	return encoded, nil
+}
+
+type reasoningOptions struct {
+	Effort string `json:"effort"`
 }
 
 type toolAccumulator struct {
