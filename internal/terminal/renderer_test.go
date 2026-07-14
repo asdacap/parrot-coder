@@ -2,6 +2,7 @@ package terminal
 
 import (
 	"bytes"
+	"fmt"
 	"regexp"
 	"strings"
 	"testing"
@@ -317,5 +318,94 @@ func TestLiveRendererStreamingFramesAreIdempotent(t *testing.T) {
 	}
 	if string(renderer.stream.pending) != pending {
 		t.Fatalf("repeated cumulative frame changed pending text: %q -> %q", pending, renderer.stream.pending)
+	}
+}
+
+func TestLiveRendererInputMenuExpandsToTwelveAndReportsHiddenOptions(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: 2, MaxInputRows: 12})
+	choices := make([]Candidate, 15)
+	for i := range choices {
+		choices[i] = Candidate{Value: fmt.Sprintf("option-%02d", i+1)}
+	}
+	if err := renderer.Prompt(PromptState{Prefix: "select> ", Completions: choices, Selected: 14}); err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.rows) != 12 {
+		t.Fatalf("menu rows = %d, want 12: %#v", len(renderer.rows), renderer.rows)
+	}
+	joined := strings.Join(renderer.rows, "\n")
+	if !strings.Contains(joined, "> option-15") || !strings.Contains(joined, "Showing 6-15 of 15 options; 5 hidden") {
+		t.Fatalf("menu viewport or overflow missing: %#v", renderer.rows)
+	}
+
+	if err := renderer.Prompt(PromptState{Prefix: "select> ", Text: "option-15", Cursor: 9}); err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.rows) != 1 || renderer.rows[0] != "select> option-15" {
+		t.Fatalf("collapsed input = %#v", renderer.rows)
+	}
+}
+
+func TestLiveRendererKeepsLiveBudgetSeparateFromInputMenu(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: 2, MaxInputRows: 5})
+	err := renderer.Frame(LiveFrame{
+		Context: []string{"live one", "live two"},
+		Prompt:  PromptState{Prefix: "pick> ", Completions: []Candidate{{Value: "one"}, {Value: "two"}, {Value: "three"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(renderer.rows, "\n"); !strings.Contains(got, "live one\nlive two\npick> \n> one\n  two\n  three") {
+		t.Fatalf("live and input regions were not independently budgeted: %#v", renderer.rows)
+	}
+}
+
+func TestLiveRendererDividerDoesNotReduceTwelveRowMenu(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: 1, MaxInputRows: 12})
+	choices := make([]Candidate, 15)
+	for i := range choices {
+		choices[i] = Candidate{Value: fmt.Sprintf("choice-%02d", i+1)}
+	}
+	if err := renderer.Frame(LiveFrame{
+		Context: []string{"live"}, ShowDivider: true,
+		Prompt: PromptState{Prefix: "pick> ", Completions: choices},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// One live row + one divider + twelve independently budgeted input rows.
+	if len(renderer.rows) != 14 {
+		t.Fatalf("frame rows = %d, want 14: %#v", len(renderer.rows), renderer.rows)
+	}
+	if got := strings.Join(renderer.rows, "\n"); !strings.Contains(got, "Showing 1-10 of 15 options; 5 hidden") {
+		t.Fatalf("full input viewport missing: %#v", renderer.rows)
+	}
+}
+
+func TestLiveRendererOneChoiceRowStillReportsHiddenOptions(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxInputRows: 2})
+	if err := renderer.Prompt(PromptState{
+		Prefix: "pick> ", Completions: []Candidate{{Value: "one"}, {Value: "two"}, {Value: "three"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.rows) != 2 || !strings.Contains(renderer.rows[1], "2 options hidden") {
+		t.Fatalf("single choice row did not report overflow: %#v", renderer.rows)
+	}
+}
+
+func TestLiveRendererNarrowDividerDoesNotWrap(t *testing.T) {
+	for _, columns := range []int{1, 2} {
+		var output bytes.Buffer
+		renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: columns})
+		if err := renderer.Frame(LiveFrame{ShowDivider: true, Prompt: PromptState{Prefix: "$ "}}); err != nil {
+			t.Fatal(err)
+		}
+		if got := physicalRowCount(renderer.rows[:1], columns); got != 1 {
+			t.Fatalf("columns=%d divider physical rows=%d: %#v", columns, got, renderer.rows)
+		}
 	}
 }

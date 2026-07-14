@@ -15,12 +15,16 @@ Interactive commands must not emit:
 - resize-triggered transcript replay;
 - mutable regions outside the renderer-owned bottom region.
 
-The terminal renderer may own a bounded region of at most six rows at the
-bottom of the terminal. Only that region may use carriage return, relative
-cursor up/down, erase-line, and temporary cursor hide/show sequences. Clearing
-or redrawing it must never alter committed transcript above it. Alternate
-screens, full-screen clears, mouse tracking, title changes, and replaying the
-committed transcript remain forbidden.
+The terminal renderer owns two bounded logical regions at the bottom of the
+terminal. The live status/response region may use at most six rows. Beneath it,
+the input region normally occupies one logical row and may expand to at most
+twelve rows while a picker, completion menu, permission, or question dialog is
+open. One renderer redraws both regions atomically; they are not independent
+cursor owners. Only this combined bottom region may use carriage return,
+relative cursor up/down, erase-line, and temporary cursor hide/show sequences.
+Clearing or redrawing it must never alter committed transcript above it.
+Alternate screens, full-screen clears, mouse tracking, title changes, and
+replaying the committed transcript remain forbidden.
 
 Color is optional for human-oriented interactive output and is disabled by
 `NO_COLOR`, `--no-color`, `TERM=dumb`, or non-TTY output. Untrusted model and
@@ -44,7 +48,12 @@ spinner, and transient tool/status activity may redraw in the bounded renderer
 region. Each assistant response and divider is committed exactly once. Permission
 and question prompts temporarily take keyboard focus in the same renderer; the
 ordinary message draft is preserved and the surrounding transcript remains
-immutable.
+immutable. Picker and dialog choices use the expandable input region rather
+than consuming the six live-status rows. A moving viewport keeps the selected
+choice visible. When not every choice fits, a written `Showing … of … options;
+… hidden` row reports the omitted choices. Accepting a choice copies it into
+the input, closes the menu, and collapses the input region back to its ordinary
+height (one physical row when the selected text fits the terminal width).
 
 Committed turns use aligned role markers and hanging indentation:
 

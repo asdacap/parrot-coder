@@ -736,7 +736,7 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 			shell.enhanced = true
 			shell.stdout = stdout
 			shell.renderer = terminal.NewLiveRenderer(stdout, terminal.RendererConfig{
-				TTY: true, Color: terminal.ColorEnabled(stdout, noColor), Columns: terminal.Columns(stdout), MaxRows: 6,
+				TTY: true, Color: terminal.ColorEnabled(stdout, noColor), Columns: terminal.Columns(stdout), MaxRows: 6, MaxInputRows: 12,
 				ColumnsFunc: func() int { return terminal.Columns(stdout) },
 			})
 			defer shell.renderer.Close()

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"testing"
 )
@@ -180,6 +181,21 @@ func TestIncrementalEditorStateMatchesBlockingEditing(t *testing.T) {
 	prompt := state.PromptState()
 	if len(prompt.Completions) != 1 || prompt.Completions[0].Value != "/status" {
 		t.Fatalf("completions = %#v", prompt.Completions)
+	}
+}
+
+func TestEditorPromptStateLeavesMenuViewportToRenderer(t *testing.T) {
+	choices := make([]Candidate, 15)
+	for i := range choices {
+		choices[i] = Candidate{Value: fmt.Sprintf("/command-%02d", i+1)}
+	}
+	editor := NewEditorIO(bytes.NewBuffer(nil), nil, WithCompletions(choices), WithEditorLimits(1024, 1024, 10, 2))
+	state, err := editor.Start("/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(state.PromptState().Completions); got != 15 {
+		t.Fatalf("PromptState prematurely sliced completions to %d", got)
 	}
 }
 

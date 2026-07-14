@@ -11,17 +11,22 @@ import (
 )
 
 const (
-	defaultLiveRows = 6
-	defaultColumns  = 80
+	defaultLiveRows  = 6
+	defaultInputRows = 12
+	defaultColumns   = 80
 )
 
 // RendererConfig configures a LiveRenderer.
 type RendererConfig struct {
-	TTY         bool
-	Color       bool
-	Columns     int
-	MaxRows     int
-	ColumnsFunc func() int
+	TTY     bool
+	Color   bool
+	Columns int
+	// MaxRows bounds transient status and response rows. It does not include
+	// the independently bounded input/menu region.
+	MaxRows int
+	// MaxInputRows bounds the prompt and an open picker/completion menu.
+	MaxInputRows int
+	ColumnsFunc  func() int
 }
 
 // PromptState describes an editable prompt. Cursor is a rune index in Text.
@@ -31,6 +36,8 @@ type PromptState struct {
 	Cursor      int
 	Completions []Candidate
 	Selected    int
+	// MaxRows optionally lowers the renderer's input-region row limit.
+	MaxRows int
 }
 
 // LiveFrame combines an active response with the always-visible input area.
@@ -71,19 +78,20 @@ type liveStream struct {
 // LiveRenderer owns the terminal's bounded, redrawable bottom region. No
 // other type in this package writes terminal control sequences.
 type LiveRenderer struct {
-	mu        sync.Mutex
-	w         io.Writer
-	tty       bool
-	color     bool
-	columns   int
-	maxRows   int
-	columnsFn func() int
-	rows      []string
-	cursorRow int
-	cursorCol int
-	plainSeen map[string]struct{}
-	stream    liveStream
-	closed    bool
+	mu           sync.Mutex
+	w            io.Writer
+	tty          bool
+	color        bool
+	columns      int
+	maxRows      int
+	maxInputRows int
+	columnsFn    func() int
+	rows         []string
+	cursorRow    int
+	cursorCol    int
+	plainSeen    map[string]struct{}
+	stream       liveStream
+	closed       bool
 }
 
 // NewLiveRenderer creates a renderer. TTY must only be enabled for a terminal
@@ -97,14 +105,19 @@ func NewLiveRenderer(w io.Writer, config RendererConfig) *LiveRenderer {
 	if maxRows <= 0 {
 		maxRows = defaultLiveRows
 	}
+	maxInputRows := config.MaxInputRows
+	if maxInputRows <= 0 {
+		maxInputRows = defaultInputRows
+	}
 	return &LiveRenderer{
-		w:         w,
-		tty:       config.TTY,
-		color:     config.Color && config.TTY,
-		columns:   columns,
-		maxRows:   maxRows,
-		columnsFn: config.ColumnsFunc,
-		plainSeen: make(map[string]struct{}),
+		w:            w,
+		tty:          config.TTY,
+		color:        config.Color && config.TTY,
+		columns:      columns,
+		maxRows:      maxRows,
+		maxInputRows: maxInputRows,
+		columnsFn:    config.ColumnsFunc,
+		plainSeen:    make(map[string]struct{}),
 	}
 }
 
@@ -133,7 +146,7 @@ func (r *LiveRenderer) Update(lines []string) error {
 	return r.redraw(rows, row, col)
 }
 
-// Prompt redraws an editable prompt and any completion choices.
+// Prompt redraws the independent input region and any completion choices.
 func (r *LiveRenderer) Prompt(state PromptState) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -142,37 +155,7 @@ func (r *LiveRenderer) Prompt(state PromptState) error {
 	}
 	r.syncColumns()
 
-	prefix := Sanitize(state.Prefix)
-	cleanText := Sanitize(state.Text)
-	text := prefix + cleanText
-	cursor := runeCount(prefix) + clamp(state.Cursor, 0, runeCount(cleanText))
-	rows, cursorRow, cursorCol := layoutTextHanging(text, cursor, r.columns, strings.Repeat(" ", displayWidth(prefix)))
-	for i, candidate := range state.Completions {
-		if i >= r.maxRows {
-			break
-		}
-		marker := "  "
-		if i == state.Selected {
-			marker = "> "
-		}
-		line := marker + Sanitize(candidate.Value)
-		if candidate.Description != "" {
-			line += "  " + Sanitize(candidate.Description)
-		}
-		rows = append(rows, wrapLine(line, r.columns)...)
-	}
-	if len(rows) > r.maxRows {
-		start := cursorRow - r.maxRows + 1
-		if start < 0 {
-			start = 0
-		}
-		if start+r.maxRows > len(rows) {
-			start = len(rows) - r.maxRows
-		}
-		rows = rows[start : start+r.maxRows]
-		cursorRow -= start
-		cursorRow = clamp(cursorRow, 0, len(rows)-1)
-	}
+	rows, cursorRow, cursorCol := r.promptRows(state, r.maxInputRows)
 	if !r.tty {
 		return r.writePlain(rows)
 	}
@@ -180,8 +163,8 @@ func (r *LiveRenderer) Prompt(state PromptState) error {
 }
 
 // Frame redraws a composite response, pending queue, and editor while keeping
-// the cursor in the editor. The input divider and prompt always have priority
-// over transient response rows when the bounded region is full.
+// the cursor in the editor. Transient output and the expandable input/menu are
+// separately bounded, so opening a picker does not consume live-status rows.
 func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -207,7 +190,9 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		}
 		prompt.Prefix = spinner + " " + prompt.Prefix
 	}
-	promptRows, promptCursorRow, promptCursorCol := r.promptRows(prompt, max(1, r.maxRows-1))
+	// The modeline is chrome between the live and input regions. It does not
+	// consume the input region's twelve-row prompt/menu budget.
+	promptRows, promptCursorRow, promptCursorCol := r.promptRows(prompt, r.maxInputRows)
 
 	dividerRows := 0
 	if frame.ShowDivider {
@@ -217,7 +202,9 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	if !frame.ShowDivider && (frame.InputLeft != "" || frame.InputRight != "") {
 		barRows = 1
 	}
-	available := max(0, r.maxRows-dividerRows-barRows-len(promptRows))
+	// Queued previews use only spare input capacity and never reduce the
+	// prompt/menu's own row budget.
+	available := max(0, r.maxInputRows-len(promptRows))
 	pendingCount := min(len(frame.Pending), min(2, available))
 	var pendingRows []string
 	for i := len(frame.Pending) - 1; i >= len(frame.Pending)-pendingCount; i-- {
@@ -239,7 +226,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	}
 	inputRows = append(inputRows, pendingRows...)
 	inputRows = append(inputRows, promptRows...)
-	remaining := max(0, r.maxRows-len(inputRows))
+	remaining := r.maxRows
 
 	// Keep the unfinished streaming row at the top of the live region. A row
 	// promoted on the next frame is written at this same boundary before the
@@ -321,6 +308,9 @@ func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 }
 
 func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, int) {
+	if state.MaxRows > 0 {
+		limit = min(limit, state.MaxRows)
+	}
 	prefix := Sanitize(state.Prefix)
 	cleanText := Sanitize(state.Text)
 	text := prefix + cleanText
@@ -339,34 +329,60 @@ func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, 
 		return rows, cursorRow, cursorCol
 	}
 	choiceBudget := limit - len(rows)
-	start := 0
-	if state.Selected >= choiceBudget {
-		start = state.Selected - choiceBudget + 1
+	total := len(state.Completions)
+	if choiceBudget <= 0 || total == 0 {
+		return rows, cursorRow, cursorCol
 	}
-	end := min(len(state.Completions), start+choiceBudget)
+	selected := clamp(state.Selected, 0, total-1)
+	visible := min(total, choiceBudget)
+	showMore := total > choiceBudget
+	if showMore && choiceBudget == 1 {
+		candidate := state.Completions[selected]
+		line := "> " + Sanitize(candidate.Value)
+		line += fmt.Sprintf("  (%d options hidden)", total-1)
+		rows = append(rows, truncateMenuLine(line, r.columns))
+		return rows, cursorRow, cursorCol
+	}
+	if showMore {
+		visible-- // reserve a row for an explicit viewport/overflow message
+	}
+	start := selected - visible + 1
+	if start < 0 {
+		start = 0
+	}
+	if start+visible > total {
+		start = total - visible
+	}
+	end := start + visible
 	for i := start; i < end; i++ {
 		candidate := state.Completions[i]
 		marker := "  "
-		if i == state.Selected {
+		if i == selected {
 			marker = "> "
 		}
 		line := marker + Sanitize(candidate.Value)
 		if candidate.Description != "" {
 			line += "  " + Sanitize(candidate.Description)
 		}
-		group := wrapLine(line, r.columns)
-		if i < state.Selected && len(rows)+len(group) >= limit {
-			continue
-		}
-		if len(rows)+len(group) > limit {
-			if i == state.Selected && len(rows) < limit {
-				rows = append(rows, group[:limit-len(rows)]...)
-			}
-			continue
-		}
-		rows = append(rows, group...)
+		rows = append(rows, truncateMenuLine(line, r.columns))
+	}
+	if showMore && choiceBudget > 1 {
+		hidden := total - visible
+		line := fmt.Sprintf("Showing %d-%d of %d options; %d hidden", start+1, end, total, hidden)
+		rows = append(rows, truncateMenuLine(line, r.columns))
 	}
 	return rows, cursorRow, cursorCol
+}
+
+func truncateMenuLine(line string, columns int) string {
+	width := max(1, columns-1)
+	if displayWidth(line) <= width {
+		return line
+	}
+	if width == 1 {
+		return "…"
+	}
+	return truncateWidth(line, width-1) + "…"
 }
 
 func statusBar(left, right string, columns int) string {
@@ -396,7 +412,10 @@ func statusBar(left, right string, columns int) string {
 }
 
 func dividerStatusBar(left, status, right string, columns int) string {
-	width := max(3, columns-1)
+	width := max(1, columns-1)
+	if width < 3 {
+		return strings.Repeat("─", width)
+	}
 	values := make([]string, 0, 3)
 	if left = Sanitize(left); left != "" {
 		values = append(values, left)
@@ -477,7 +496,7 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	r.syncColumns()
 	rows := r.messageRows(prefix, text)
 	if divider {
-		rows = append(rows, strings.Repeat("─", max(3, r.columns-1)))
+		rows = append(rows, strings.Repeat("─", max(1, r.columns-1)))
 	}
 	return r.commitRows(rows)
 }
@@ -490,7 +509,7 @@ func (r *LiveRenderer) CommitDivider() error {
 		return errors.New("terminal: renderer is closed")
 	}
 	r.syncColumns()
-	return r.commitRows([]string{strings.Repeat("─", max(3, r.columns-1))})
+	return r.commitRows([]string{strings.Repeat("─", max(1, r.columns-1))})
 }
 
 // Clear erases only the renderer-owned live region.

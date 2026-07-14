@@ -280,6 +280,19 @@ func (s *chatShell) runEnhanced(first string) int {
 				}
 				continue
 			}
+			if modalAction && runtime.modal.kind == "question" && len(runtime.modal.choices) > 0 {
+				handled, err := runtime.handleQuestionModalKey(result.key)
+				if handled {
+					close(result.ack)
+					if err != nil {
+						runtime.status = err.Error()
+					}
+					if err := runtime.render(); err != nil {
+						return exitError
+					}
+					continue
+				}
+			}
 			action := targetState.Handle(result.key)
 			if !action.Done {
 				close(result.ack)
@@ -408,11 +421,13 @@ func (r *enhancedChatRuntime) render() error {
 	if r.modal != nil {
 		prompt = r.modal.state.PromptState()
 		prompt.Prefix = r.modal.prompt
+		if len(r.modal.choices) > 0 {
+			prompt.Completions = r.modal.choices
+			prompt.Selected = r.modal.selected
+		}
 		if r.modal.kind == "permission" {
 			prompt.Text = ""
 			prompt.Cursor = 0
-			prompt.Completions = r.modal.choices
-			prompt.Selected = r.modal.selected
 		}
 	}
 	busy := r.busy
@@ -714,14 +729,51 @@ func (r *enhancedChatRuntime) handlePermissionModalKey(key terminal.Key) (bool, 
 	return false, nil
 }
 
+// handleQuestionModalKey makes option-bearing questions use the expandable
+// input selection buffer. Enter first copies the option into the input and
+// collapses the menu; pressing Enter again submits it through the editor.
+func (r *enhancedChatRuntime) handleQuestionModalKey(key terminal.Key) (bool, error) {
+	if r.modal == nil || r.modal.kind != "question" || len(r.modal.choices) == 0 {
+		return false, nil
+	}
+	switch key.Kind {
+	case terminal.KeyUp:
+		r.modal.selected = (r.modal.selected - 1 + len(r.modal.choices)) % len(r.modal.choices)
+		return true, nil
+	case terminal.KeyDown, terminal.KeyTab:
+		r.modal.selected = (r.modal.selected + 1) % len(r.modal.choices)
+		return true, nil
+	case terminal.KeyEnter:
+		selected := r.modal.selected
+		if selected < 0 {
+			selected = 0
+		} else if selected >= len(r.modal.choices) {
+			selected = len(r.modal.choices) - 1
+		}
+		if err := r.modal.state.Reset(r.modal.choices[selected].Value); err != nil {
+			return true, err
+		}
+		r.modal.choices = nil
+		return true, nil
+	}
+	return false, nil
+}
+
 func (r *enhancedChatRuntime) updateQuestionPrompt() {
 	if r.modal == nil || r.modal.question == nil || r.modal.index >= len(r.modal.question.Questions) {
 		return
 	}
 	question := r.modal.question.Questions[r.modal.index]
+	r.modal.choices = make([]terminal.Candidate, 0, len(question.Options))
+	r.modal.selected = 0
 	options := make([]string, len(question.Options))
 	for i, option := range question.Options {
 		options[i] = option.ID
+		description := option.Label
+		if option.Description != "" {
+			description += " - " + option.Description
+		}
+		r.modal.choices = append(r.modal.choices, terminal.Candidate{Value: option.ID, Description: description})
 	}
 	suffix := ""
 	if len(options) > 0 {
@@ -745,15 +797,7 @@ func (r *enhancedChatRuntime) showQuestionContext(question v1.Question) {
 	if r.modal == nil {
 		return
 	}
-	context := []string{"question: " + question.Prompt}
-	for _, option := range question.Options {
-		line := option.ID + ": " + option.Label
-		if option.Description != "" {
-			line += " - " + option.Description
-		}
-		context = append(context, line)
-	}
-	r.modal.context = context
+	r.modal.context = []string{"question: " + question.Prompt}
 }
 
 func (r *enhancedChatRuntime) answerModal(value string) error {

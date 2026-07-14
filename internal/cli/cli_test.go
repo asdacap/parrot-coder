@@ -646,6 +646,37 @@ func TestPermissionReplyEnableYolo(t *testing.T) {
 	}
 }
 
+func TestEnhancedQuestionOptionsUseInputMenuAndCollapseToSelection(t *testing.T) {
+	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
+	state, err := editor.Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &v1.QuestionRequest{Questions: []v1.Question{{
+		ID: "question", Prompt: "Choose", Options: []v1.Option{
+			{ID: "one", Label: "First"}, {ID: "two", Label: "Second", Description: "preferred"},
+		},
+	}}}
+	runtime := &enhancedChatRuntime{modal: &enhancedModal{kind: "question", state: state, question: request}}
+	runtime.updateQuestionPrompt()
+	runtime.showQuestionContext(request.Questions[0])
+	if len(runtime.modal.context) != 1 || len(runtime.modal.choices) != 2 {
+		t.Fatalf("context=%#v choices=%#v", runtime.modal.context, runtime.modal.choices)
+	}
+	if runtime.modal.choices[1].Description != "Second - preferred" {
+		t.Fatalf("choice description = %q", runtime.modal.choices[1].Description)
+	}
+	if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyDown}); !handled || err != nil {
+		t.Fatalf("Down handled=%t err=%v", handled, err)
+	}
+	if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyEnter}); !handled || err != nil {
+		t.Fatalf("Enter handled=%t err=%v", handled, err)
+	}
+	if state.Value() != "two" || len(runtime.modal.choices) != 0 {
+		t.Fatalf("selection=%q choices=%#v", state.Value(), runtime.modal.choices)
+	}
+}
+
 type enhancedQueueAPI struct {
 	apiClient
 	prompts           []v1.PromptRequest

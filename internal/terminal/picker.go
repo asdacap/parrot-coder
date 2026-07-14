@@ -74,7 +74,7 @@ func newPicker(decoder *KeyDecoder, writer io.Writer, options []Candidate, setti
 		prompt:        "Filter: ",
 		maxInputBytes: 4 << 10,
 		maxInputRunes: 1024,
-		maxRows:       defaultLiveRows - 1,
+		maxRows:       defaultInputRows - 1,
 	}
 	for _, setting := range settings {
 		setting(&config)
@@ -106,8 +106,11 @@ func (p *Picker) Pick(ctx context.Context) (Candidate, error) {
 	selected := 0
 
 	finish := func(value Candidate, err error) (Candidate, error) {
-		if p.renderer != nil {
-			if clearErr := p.renderer.Clear(); err == nil && clearErr != nil {
+		// A successful selection deliberately remains as collapsed input until
+		// the caller redraws its ordinary editor. Cancellation and failures do
+		// not have a selected value to preserve, so clear their picker region.
+		if p.renderer != nil && err != nil {
+			if clearErr := p.renderer.Clear(); clearErr != nil {
 				err = clearErr
 			}
 		}
@@ -118,21 +121,9 @@ func (p *Picker) Pick(ctx context.Context) (Candidate, error) {
 			return nil
 		}
 		matches := p.matches(string(query))
-		shown := matches
-		if len(shown) > p.maxRows {
-			start := 0
-			if selected >= p.maxRows {
-				start = selected - p.maxRows + 1
-			}
-			shown = shown[start : start+p.maxRows]
-		}
-		shownSelected := selected
-		if len(matches) > p.maxRows && selected >= p.maxRows {
-			shownSelected = p.maxRows - 1
-		}
 		return p.renderer.Prompt(PromptState{
 			Prefix: p.prompt, Text: string(query), Cursor: cursor,
-			Completions: shown, Selected: shownSelected,
+			Completions: matches, Selected: selected, MaxRows: p.maxRows + 1,
 		})
 	}
 	if err := render(); err != nil {
@@ -197,7 +188,13 @@ func (p *Picker) Pick(ctx context.Context) (Candidate, error) {
 		case KeyEnter:
 			matches := p.matches(string(query))
 			if len(matches) > 0 {
-				return finish(matches[clamp(selected, 0, len(matches)-1)], nil)
+				choice := matches[clamp(selected, 0, len(matches)-1)]
+				if p.renderer != nil {
+					if renderErr := p.renderer.Prompt(PromptState{Prefix: p.prompt, Text: choice.Value, Cursor: runeCount(choice.Value), MaxRows: 1}); renderErr != nil {
+						return finish(Candidate{}, renderErr)
+					}
+				}
+				return finish(choice, nil)
 			}
 		case KeyEscape:
 			return finish(Candidate{}, ErrCanceled)

@@ -247,19 +247,9 @@ func (s *EditorState) PromptState() PromptState {
 	} else {
 		s.selected = 0
 	}
-	shown := matches
-	shownSelected := s.selected
-	if len(shown) > s.editor.maxCompletionRows {
-		start := 0
-		if s.selected >= s.editor.maxCompletionRows {
-			start = s.selected - s.editor.maxCompletionRows + 1
-		}
-		shown = shown[start : start+s.editor.maxCompletionRows]
-		shownSelected = s.selected - start
-	}
 	return PromptState{
 		Prefix: s.editor.prompt, Text: string(s.buffer), Cursor: s.cursor,
-		Completions: shown, Selected: shownSelected,
+		Completions: matches, Selected: s.selected,
 	}
 }
 
