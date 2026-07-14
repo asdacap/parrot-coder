@@ -1037,7 +1037,7 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		"✓ todowrite · 4 items ·",
+		"✓ TODO · 4 items ·",
 		"○ high · Plan work",
 		"◐ medium · Implement UI",
 		"✓ low · Run tests",
@@ -1049,6 +1049,9 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 	}
 	if strings.Contains(got, "todo_1") || strings.Contains(got, "old input") {
 		t.Fatalf("todowrite block exposed IDs or ignored authoritative result: %q", got)
+	}
+	if strings.Contains(got, "todowrite") {
+		t.Fatalf("todo block exposed the internal tool name: %q", got)
 	}
 }
 
@@ -1088,9 +1091,9 @@ func TestToolActivityLabelDescribesInputs(t *testing.T) {
 		{name: "grep", input: map[string]any{"pattern": "TODO"}, want: `grep · "TODO" · .`},
 		{name: "skill", input: map[string]any{"name": "review"}, want: "skill · review"},
 		{name: "web_fetch", input: map[string]any{"url": "https://example.com/docs"}, want: "web_fetch · https://example.com/docs"},
-		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}, map[string]any{}}}, want: "todowrite · 2 items"},
-		{name: "todo_write", input: map[string]any{"todos": []any{}}, want: "todo_write · 0 items"},
-		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}}}, want: "todowrite · 1 item"},
+		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}, map[string]any{}}}, want: "TODO · 2 items"},
+		{name: "todo_write", input: map[string]any{"todos": []any{}}, want: "TODO · 0 items"},
+		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}}}, want: "TODO · 1 item"},
 		{name: "custom", input: map[string]any{"token": "hidden", "path": "src/main.go"}, want: "custom · path=src/main.go"},
 	}
 	for _, test := range tests {
