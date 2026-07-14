@@ -989,6 +989,12 @@ func TestEnhancedQuestionOptionsUseInputMenuAndCollapseToSelection(t *testing.T)
 	if len(runtime.modal.context) != 1 || len(runtime.modal.choices) != 2 {
 		t.Fatalf("context=%#v choices=%#v", runtime.modal.context, runtime.modal.choices)
 	}
+	if runtime.modal.context[0] != "question: Choose" || runtime.modal.prompt != "answer [one/two]: " {
+		t.Fatalf("context=%q prompt=%q", runtime.modal.context[0], runtime.modal.prompt)
+	}
+	if strings.Contains(runtime.modal.prompt, request.Questions[0].Prompt) {
+		t.Fatalf("question duplicated in answer prompt %q", runtime.modal.prompt)
+	}
 	if runtime.modal.choices[1].Description != "Second - preferred" {
 		t.Fatalf("choice description = %q", runtime.modal.choices[1].Description)
 	}
