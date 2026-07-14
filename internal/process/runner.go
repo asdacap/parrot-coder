@@ -59,6 +59,25 @@ type Result struct {
 
 type Runner struct{ config Config }
 
+// DefaultShell returns the user's configured shell when it is an absolute,
+// executable regular file, and otherwise falls back to the system POSIX shell.
+func DefaultShell() (string, error) {
+	for _, candidate := range []string{os.Getenv("SHELL"), "/bin/sh"} {
+		if candidate == "" || !filepath.IsAbs(candidate) {
+			continue
+		}
+		resolved, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(resolved)
+		if err == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o111 != 0 {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("process: could not detect an executable shell")
+}
+
 func NewRunner(config Config) (*Runner, error) {
 	if config.Workspace == nil {
 		return nil, errors.New("process: workspace is required")
@@ -76,9 +95,16 @@ func NewRunner(config Config) (*Runner, error) {
 }
 
 // Run treats the command as arbitrary process execution. The shell path is an
-// executable, not a policy boundary, and must be explicitly supplied.
+// executable, not a policy boundary. If omitted, it is detected automatically.
 func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
-	if request.Shell == "" || !filepath.IsAbs(request.Shell) || request.Command == "" {
+	if request.Shell == "" {
+		var err error
+		request.Shell, err = DefaultShell()
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	if !filepath.IsAbs(request.Shell) || request.Command == "" {
 		return Result{}, errors.New("process: absolute shell path and command are required")
 	}
 	if err := ctx.Err(); err != nil {
