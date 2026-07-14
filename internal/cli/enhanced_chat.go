@@ -128,6 +128,8 @@ type enhancedModal struct {
 	permission *v1.Permission
 	question   *v1.QuestionRequest
 	index      int
+	selected   int
+	choices    []terminal.Candidate
 	answers    []v1.Answer
 }
 
@@ -208,6 +210,7 @@ func (s *chatShell) runEnhanced(first string) int {
 			}
 			_ = runtime.render()
 		case result, ok := <-pump.events:
+			pumpStopped := false
 			if !ok {
 				return exitInterrupt
 			}
@@ -234,6 +237,31 @@ func (s *chatShell) runEnhanced(first string) int {
 			if runtime.modal != nil && result.epoch == runtime.inputMode.current() {
 				targetState = runtime.modal.state
 				modalAction = true
+			}
+			if modalAction && runtime.modal.kind == "permission" {
+				done, err := runtime.handlePermissionModalKey(result.key)
+				close(result.ack)
+				if done {
+					pump.stop()
+					pumpStopped = true
+				}
+				if err != nil {
+					if errors.Is(err, errSecondInterrupt) {
+						return exitInterrupt
+					}
+					runtime.commitError(err.Error())
+					runtime.cancelModal()
+				}
+				if !done {
+					// Ignore text-editing keys; the permission prompt is a selection.
+				}
+				if err := runtime.render(); err != nil {
+					return exitError
+				}
+				if pumpStopped {
+					pump = startEnhancedKeyPump(s.ctx, s.decoder, &runtime.inputMode)
+				}
+				continue
 			}
 			action := targetState.Handle(result.key)
 			if !action.Done {
@@ -363,11 +391,21 @@ func (r *enhancedChatRuntime) render() error {
 	if r.modal != nil {
 		prompt = r.modal.state.PromptState()
 		prompt.Prefix = r.modal.prompt
+		if r.modal.kind == "permission" {
+			prompt.Text = ""
+			prompt.Cursor = 0
+			prompt.Completions = r.modal.choices
+			prompt.Selected = r.modal.selected
+		}
+	}
+	busy := r.busy
+	if r.modal != nil && r.modal.kind == "permission" {
+		busy = false
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
 		MessagePrefix: prefix, Message: message, Activity: r.activityRows(time.Now()), Status: r.status, Pending: pending,
 		InputLeft: r.inputModeLabel(), InputRight: r.shell.selection.modelLabel(),
-		Prompt: prompt, Busy: r.busy, Spinner: spinnerFrames[r.spinner],
+		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})
 }
@@ -521,7 +559,7 @@ func (r *enhancedChatRuntime) detectModal() {
 		}
 		r.modal = &enhancedModal{
 			kind: "permission", state: state, permission: &item,
-			prompt: "allow once/session/workspace? [deny]: ",
+			prompt: "permission decision: ", choices: permissionChoices(),
 		}
 		r.inputMode.advance()
 		r.showPermissionContext(item)
@@ -542,6 +580,77 @@ func (r *enhancedChatRuntime) detectModal() {
 		r.updateQuestionPrompt()
 		r.showQuestionContext(request.Questions[0])
 	}
+}
+
+func permissionChoices() []terminal.Candidate {
+	return []terminal.Candidate{
+		{Value: "yes", Description: "Allow this request once"},
+		{Value: "no", Description: "Deny this request"},
+		{Value: "allow all for session", Description: "Allow matching requests for this session"},
+		{Value: "allow all for workspace", Description: "Allow matching requests for this workspace"},
+		{Value: "allow all for process", Description: "Allow matching requests until Parrot exits"},
+	}
+}
+
+func permissionReplyFromAnswer(value string) v1.PermissionReply {
+	answer := strings.ToLower(strings.TrimSpace(value))
+	reply := v1.PermissionReply{Decision: "deny"}
+	switch answer {
+	case "y", "yes", "once":
+		reply.Decision = "allow"
+	case "session", "allow all for session":
+		reply.Decision, reply.Scope = "allow", "session"
+	case "workspace", "allow all for workspace":
+		reply.Decision, reply.Scope = "allow", "workspace"
+	case "process", "allow all for process":
+		reply.Decision, reply.Scope = "allow", "process"
+	}
+	return reply
+}
+
+func (r *enhancedChatRuntime) handlePermissionModalKey(key terminal.Key) (bool, error) {
+	if r.modal == nil || r.modal.kind != "permission" {
+		return false, nil
+	}
+	choices := r.modal.choices
+	if len(choices) == 0 {
+		choices = permissionChoices()
+		r.modal.choices = choices
+	}
+	switch key.Kind {
+	case terminal.KeyUp:
+		r.modal.selected = (r.modal.selected - 1 + len(choices)) % len(choices)
+	case terminal.KeyDown, terminal.KeyTab:
+		r.modal.selected = (r.modal.selected + 1) % len(choices)
+	case terminal.KeyEnter, terminal.KeyNewline:
+		selected := r.modal.selected
+		if selected < 0 {
+			selected = 0
+		} else if selected >= len(choices) {
+			selected = len(choices) - 1
+		}
+		return true, r.answerModal(choices[selected].Value)
+	case terminal.KeyEscape, terminal.KeyEOF:
+		r.cancelModal()
+		return true, nil
+	case terminal.KeyInterrupt:
+		r.cancelModal()
+		return true, r.requestInterrupt()
+	case terminal.KeyRune:
+		switch strings.ToLower(string(key.Rune)) {
+		case "y":
+			return true, r.answerModal("yes")
+		case "n":
+			return true, r.answerModal("no")
+		case "s":
+			return true, r.answerModal("allow all for session")
+		case "w":
+			return true, r.answerModal("allow all for workspace")
+		case "p":
+			return true, r.answerModal("allow all for process")
+		}
+	}
+	return false, nil
 }
 
 func (r *enhancedChatRuntime) updateQuestionPrompt() {
@@ -592,16 +701,7 @@ func (r *enhancedChatRuntime) answerModal(value string) error {
 	modal := r.modal
 	switch modal.kind {
 	case "permission":
-		answer := strings.ToLower(strings.TrimSpace(value))
-		reply := v1.PermissionReply{Decision: "deny"}
-		switch answer {
-		case "y", "yes", "once":
-			reply.Decision = "allow"
-		case "session":
-			reply.Decision, reply.Scope = "allow", "session"
-		case "workspace":
-			reply.Decision, reply.Scope = "allow", "workspace"
-		}
+		reply := permissionReplyFromAnswer(value)
 		if err := r.shell.api.ReplyPermission(r.shell.ctx, r.shell.current.ID, modal.permission.ID, reply); err != nil {
 			return err
 		}

@@ -524,6 +524,73 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.T) {
+	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "shell", Reason: "test"}}}}
+	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
+	state, err := editor.Start("draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80, MaxRows: 8})
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{
+			ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, editor: editor, stdout: &output,
+			renderer: renderer,
+		},
+		state: state, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1),
+	}
+	runtime.detectModal()
+	if runtime.modal == nil {
+		t.Fatal("permission modal was not shown")
+	}
+	if err := runtime.render(); err != nil {
+		t.Fatal(err)
+	}
+	frame := output.String()
+	if strings.Contains(frame, "⠋ permission decision:") || strings.Contains(frame, "⠋ $") {
+		t.Fatalf("spinner rendered during permission modal: %q", frame)
+	}
+	if !strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") {
+		t.Fatalf("permission choices missing from frame: %q", frame)
+	}
+
+	for i := 0; i < 3; i++ {
+		done, err := runtime.handlePermissionModalKey(terminal.Key{Kind: terminal.KeyDown})
+		if err != nil || done {
+			t.Fatalf("down = done %t err %v", done, err)
+		}
+	}
+	done, err := runtime.handlePermissionModalKey(terminal.Key{Kind: terminal.KeyEnter})
+	if err != nil || !done {
+		t.Fatalf("enter = done %t err %v", done, err)
+	}
+	if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "allow" || api.permissionReplies[0].Scope != "workspace" {
+		t.Fatalf("reply = %#v", api.permissionReplies)
+	}
+	if state.Value() != "draft" {
+		t.Fatalf("draft changed to %q", state.Value())
+	}
+}
+
+func TestEnhancedPermissionAnswerAllowsProcessScope(t *testing.T) {
+	api := &enhancedQueueAPI{}
+	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}},
+		state: state, modal: &enhancedModal{kind: "permission", permission: &v1.Permission{ID: "permission"}},
+	}
+	if err := runtime.answerModal("allow all for process"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "allow" || api.permissionReplies[0].Scope != "process" {
+		t.Fatalf("reply = %#v", api.permissionReplies)
+	}
+}
+
 type enhancedQueueAPI struct {
 	apiClient
 	prompts           []v1.PromptRequest

@@ -580,16 +580,7 @@ func settlePrompts(ctx context.Context, api apiClient, sessionID string, input i
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return readErr
 		}
-		answer := strings.ToLower(strings.TrimSpace(line))
-		reply := v1.PermissionReply{Decision: "deny"}
-		switch answer {
-		case "y", "yes", "once":
-			reply.Decision = "allow"
-		case "session":
-			reply.Decision, reply.Scope = "allow", "session"
-		case "workspace":
-			reply.Decision, reply.Scope = "allow", "workspace"
-		}
+		reply := permissionReplyFromAnswer(line)
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
 		}
@@ -647,23 +638,16 @@ func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, o
 		if err := options.renderer.Commit(fmt.Sprintf("permission: %s (%s)", item.ToolID, item.Reason)); err != nil {
 			return err
 		}
-		line, readErr := read("allow once/session/workspace? [deny]: ")
+		picker := terminal.NewPickerDecoder(options.keyInput, options.stdout, permissionChoices(),
+			terminal.WithPickerPrompt("permission decision: "), terminal.WithPickerRenderer(options.renderer))
+		choice, readErr := picker.Pick(ctx)
 		if errors.Is(readErr, terminal.ErrCanceled) || errors.Is(readErr, io.EOF) {
-			line, readErr = "", nil
+			choice.Value, readErr = "no", nil
 		}
 		if readErr != nil {
 			return readErr
 		}
-		answer := strings.ToLower(strings.TrimSpace(line))
-		reply := v1.PermissionReply{Decision: "deny"}
-		switch answer {
-		case "y", "yes", "once":
-			reply.Decision = "allow"
-		case "session":
-			reply.Decision, reply.Scope = "allow", "session"
-		case "workspace":
-			reply.Decision, reply.Scope = "allow", "workspace"
-		}
+		reply := permissionReplyFromAnswer(choice.Value)
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
 		}
