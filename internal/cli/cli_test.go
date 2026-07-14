@@ -472,6 +472,17 @@ func TestEnhancedCycleModeAppliesNextAgentAndUpdatesLabels(t *testing.T) {
 	}
 }
 
+func TestExecutionHaltKeys(t *testing.T) {
+	for _, kind := range []terminal.KeyKind{terminal.KeyEscape, terminal.KeyInterrupt} {
+		if !isExecutionHaltKey(terminal.Key{Kind: kind}) {
+			t.Fatalf("key %v did not halt execution", kind)
+		}
+	}
+	if isExecutionHaltKey(terminal.Key{Kind: terminal.KeyTab}) {
+		t.Fatal("Tab halted execution")
+	}
+}
+
 func TestEnhancedErrorStopsSpinnerAndLateDeltaIsIgnored(t *testing.T) {
 	api := &enhancedQueueAPI{}
 	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
@@ -525,14 +536,17 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 }
 
 func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.T) {
-	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "shell", Reason: "test"}}}}
+	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
+		ID: "permission", ToolID: "shell", Reason: "default policy",
+		Resources: []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
+	}}}}
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 	state, err := editor.Start("draft")
 	if err != nil {
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80, MaxRows: 8})
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80, MaxRows: 12})
 	runtime := &enhancedChatRuntime{
 		shell: &chatShell{
 			ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, editor: editor, stdout: &output,
@@ -544,6 +558,9 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 	if runtime.modal == nil {
 		t.Fatal("permission modal was not shown")
 	}
+	if output.Len() != 0 {
+		t.Fatalf("permission context was committed to scrollback: %q", output.String())
+	}
 	if err := runtime.render(); err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +568,9 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 	if strings.Contains(frame, "⠋ permission decision:") || strings.Contains(frame, "⠋ $") {
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
-	if !strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") {
+	if !strings.Contains(frame, "permission: shell") || !strings.Contains(frame, "reason: default policy") ||
+		!strings.Contains(frame, "resource: process execute /bin/bash") ||
+		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") {
 		t.Fatalf("permission choices missing from frame: %q", frame)
 	}
 

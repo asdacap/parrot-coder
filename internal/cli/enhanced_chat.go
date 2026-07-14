@@ -19,6 +19,10 @@ import (
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 var errInvalidModalAnswer = errors.New("invalid modal answer")
 
+func isExecutionHaltKey(key terminal.Key) bool {
+	return key.Kind == terminal.KeyEscape || key.Kind == terminal.KeyInterrupt
+}
+
 type enhancedKeyResult struct {
 	key   terminal.Key
 	err   error
@@ -124,6 +128,7 @@ type enhancedActivityItem struct {
 type enhancedModal struct {
 	kind       string
 	prompt     string
+	context    []string
 	state      *terminal.EditorState
 	permission *v1.Permission
 	question   *v1.QuestionRequest
@@ -225,6 +230,17 @@ func (s *chatShell) runEnhanced(first string) int {
 				close(result.ack)
 				if err := runtime.cycleMode(); err != nil {
 					runtime.status = err.Error()
+				}
+				if err := runtime.render(); err != nil {
+					return exitError
+				}
+				continue
+			}
+			if runtime.busy && isExecutionHaltKey(result.key) {
+				close(result.ack)
+				runtime.cancelModal()
+				if err := runtime.requestInterrupt(); errors.Is(err, errSecondInterrupt) {
+					return exitInterrupt
 				}
 				if err := runtime.render(); err != nil {
 					return exitError
@@ -403,11 +419,18 @@ func (r *enhancedChatRuntime) render() error {
 		busy = false
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
-		MessagePrefix: prefix, Message: message, Activity: r.activityRows(time.Now()), Status: r.status, Pending: pending,
+		MessagePrefix: prefix, Message: message, Context: r.modalContext(), Activity: r.activityRows(time.Now()), Status: r.status, Pending: pending,
 		InputLeft: r.inputModeLabel(), InputRight: r.shell.selection.modelLabel(),
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
-		ShowDivider: message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
+		ShowDivider: r.modal != nil || message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})
+}
+
+func (r *enhancedChatRuntime) modalContext() []string {
+	if r.modal == nil {
+		return nil
+	}
+	return r.modal.context
 }
 
 func (r *enhancedChatRuntime) activityRows(now time.Time) []string {
@@ -670,28 +693,29 @@ func (r *enhancedChatRuntime) updateQuestionPrompt() {
 }
 
 func (r *enhancedChatRuntime) showPermissionContext(permission v1.Permission) {
-	var text strings.Builder
-	fmt.Fprintf(&text, "permission: %s\nreason: %s", permission.ToolID, permission.Reason)
-	for _, resource := range permission.Resources {
-		fmt.Fprintf(&text, "\nresource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier)
+	if r.modal == nil {
+		return
 	}
-	r.shell.commit(text.String())
-	r.borderCommitted = false
-	_ = r.ensureInputBorder()
+	context := []string{"permission: " + permission.ToolID, "reason: " + permission.Reason}
+	for _, resource := range permission.Resources {
+		context = append(context, fmt.Sprintf("resource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier))
+	}
+	r.modal.context = context
 }
 
 func (r *enhancedChatRuntime) showQuestionContext(question v1.Question) {
-	var text strings.Builder
-	fmt.Fprintf(&text, "question: %s", question.Prompt)
-	for _, option := range question.Options {
-		fmt.Fprintf(&text, "\n%s: %s", option.ID, option.Label)
-		if option.Description != "" {
-			fmt.Fprintf(&text, " - %s", option.Description)
-		}
+	if r.modal == nil {
+		return
 	}
-	r.shell.commit(text.String())
-	r.borderCommitted = false
-	_ = r.ensureInputBorder()
+	context := []string{"question: " + question.Prompt}
+	for _, option := range question.Options {
+		line := option.ID + ": " + option.Label
+		if option.Description != "" {
+			line += " - " + option.Description
+		}
+		context = append(context, line)
+	}
+	r.modal.context = context
 }
 
 func (r *enhancedChatRuntime) answerModal(value string) error {

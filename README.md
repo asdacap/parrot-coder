@@ -150,10 +150,10 @@ Interactive chat supports `/help`, `/models`, `/model`, `/agents`, `/agent`,
 `/undo`, `/redo`, `/status`, custom commands, and `/exit`.
 
 Keybindings: Enter submits, Ctrl-J inserts a newline, arrows edit/navigate
-history and choices, Tab completes slash commands, Escape cancels a picker,
-idle Ctrl-C clears the current edit, and Ctrl-D on an empty prompt exits. During
-a turn, the first Ctrl-C requests cancellation and a second exits with status
-130.
+history and choices, Tab completes slash commands, Shift-Tab switches modes,
+Escape cancels a picker or halts an active turn, idle Ctrl-C clears the current
+edit, and Ctrl-D on an empty prompt exits. During a turn, the first Ctrl-C
+requests cancellation and a second exits with status 130.
 
 ## Data Paths
 

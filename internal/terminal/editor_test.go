@@ -141,13 +141,15 @@ func TestKeyDecoderIgnoresTimedTTYEOF(t *testing.T) {
 }
 
 func TestKeyDecoderModeSwitch(t *testing.T) {
-	decoder := NewKeyDecoder(bytes.NewBufferString("\x1e"))
-	key, err := decoder.ReadKey(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if key.Kind != KeyModeSwitch {
-		t.Fatalf("key kind = %v, want %v", key.Kind, KeyModeSwitch)
+	for _, input := range []string{"\x1e", "\x1b[Z"} {
+		decoder := NewKeyDecoder(bytes.NewBufferString(input))
+		key, err := decoder.ReadKey(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if key.Kind != KeyModeSwitch {
+			t.Fatalf("input %q: key kind = %v, want %v", input, key.Kind, KeyModeSwitch)
+		}
 	}
 }
 

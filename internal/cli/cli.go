@@ -389,7 +389,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				pollCtx, cancel := context.WithTimeout(ctx, 10*time.Millisecond)
 				key, keyErr := options.keyInput.ReadKey(pollCtx)
 				cancel()
-				if keyErr == nil && key.Kind == terminal.KeyInterrupt {
+				if keyErr == nil && isExecutionHaltKey(key) {
 					if err := requestInterrupt(); err != nil {
 						return streamResult{err: err}
 					}
