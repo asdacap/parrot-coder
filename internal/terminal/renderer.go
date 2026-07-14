@@ -322,8 +322,16 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	}
 	rows := append(streamRows, contextRows...)
 	rows = append(rows, activity...)
+	// Permanent transcript blocks and transient output are separate visual
+	// regions. Keep their separator in the live region so it appears immediately
+	// both after a submitted user message and after a response settles.
+	blockGap := 0
+	if r.committed && r.lastCommit == commitBlock && !r.streamBlock && len(promoted) == 0 {
+		rows = append([]string{""}, rows...)
+		blockGap = 1
+	}
 	rows = append(rows, inputRows...)
-	cursorRow := len(streamRows) + len(contextRows) + len(activity) + dividerRows + barRows + len(pendingRows) + len(promptContextRows) + promptCursorRow
+	cursorRow := len(streamRows) + len(contextRows) + len(activity) + blockGap + dividerRows + barRows + len(pendingRows) + len(promptContextRows) + promptCursorRow
 	if !r.tty {
 		if err := r.writePlain(append(promoted, rows...)); err != nil {
 			r.stream = streamBefore

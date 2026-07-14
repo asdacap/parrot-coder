@@ -249,6 +249,50 @@ func TestLiveRendererKeepsModelineHeavyAfterTranscriptBoundaryWasCommitted(t *te
 	}
 }
 
+func TestLiveRendererSpacesSettledResponseFromModelineImmediately(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 40, MaxRows: 6})
+	if err := renderer.CommitMessage("- ", "complete response", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Frame(LiveFrame{
+		InputLeft: "mode: build", InputRight: "local/test",
+		Prompt: PromptState{Prefix: "$ "}, ShowDivider: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.rows) < 3 || renderer.rows[0] != "" {
+		t.Fatalf("settled response is not spaced from modeline: %#v", renderer.rows)
+	}
+	if got := renderer.rows[1]; !strings.HasPrefix(got, "━ mode: build ") {
+		t.Fatalf("modeline = %q", got)
+	}
+	if renderer.cursorRow != 2 {
+		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
+	}
+}
+
+func TestLiveRendererSpacesWorkingActivityFromUserMessageImmediately(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 40, MaxRows: 6})
+	if err := renderer.CommitUserMessage("$ ", "test again"); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Frame(LiveFrame{
+		Activity: []string{"Thought: Working…"}, Status: "working",
+		InputLeft: "mode: build", InputRight: "local/test",
+		Prompt: PromptState{Prefix: "$ "}, ShowDivider: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.rows) < 4 || renderer.rows[0] != "" || renderer.rows[1] != "Thought: Working…" {
+		t.Fatalf("working activity is not spaced from user message: %#v", renderer.rows)
+	}
+	if renderer.cursorRow != len(renderer.rows)-1 {
+		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
+	}
+}
+
 func TestLiveRendererCompositeFrameShowsStatusInModeline(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: 6})
