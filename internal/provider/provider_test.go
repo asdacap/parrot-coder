@@ -303,3 +303,27 @@ func TestChatGPTFixedEndpointHeadersAndModels(t *testing.T) {
 		t.Fatal("Models exposed mutable provider metadata")
 	}
 }
+
+func TestChatGPTSubscriptionUsage(t *testing.T) {
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.String() != chatGPTUsageEndpoint || request.Method != http.MethodGet {
+			t.Errorf("request = %s %s", request.Method, request.URL)
+		}
+		if request.Header.Get("Authorization") != "Bearer oauth-token" || request.Header.Get("ChatGPT-Account-Id") != "account-1" {
+			t.Errorf("headers = %#v", request.Header)
+		}
+		body := `{"plan_type":"plus","rate_limit":{"primary_window":{"used_percent":27.5,"reset_at":1893456000,"limit_window_seconds":18000},"secondary_window":{"used_percent":4,"reset_at":1894060800,"limit_window_seconds":604800}},"credits":{"has_credits":true,"balance":12.50},"unknown":true}`
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	value, err := NewChatGPT(ChatGPTOptions{TokenSource: fixedTokenSource{auth.OAuthCredential{AccessToken: "oauth-token", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)}}, HTTPClient: client})
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage, err := value.Usage(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.PlanType != "plus" || usage.PrimaryWindow == nil || usage.PrimaryWindow.UsedPercent != 27.5 || usage.SecondaryWindow == nil || usage.Credits == nil || usage.Credits.Balance != "12.50" {
+		t.Fatalf("usage = %#v", usage)
+	}
+}

@@ -55,6 +55,9 @@ parrot chat --model chatgpt/gpt-5.6-sol
 
 OAuth credentials are stored in Parrot's private data directory. They are sent
 only to the compiled OpenAI authentication and ChatGPT endpoints.
+`parrot usage` (or `/usage` in chat) shows the remaining percentage and reset
+time for the subscription's available rate-limit windows. This relies on an
+upstream ChatGPT endpoint and requires a stored ChatGPT OAuth credential.
 
 ### Compatible Endpoint
 
@@ -114,6 +117,7 @@ parrot run [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
            [--agent ID] [--thinking] [--format text|jsonl]
            [--permission deny|ask] [--interactive-prompts]
 parrot models [--format lines|json]
+parrot usage [--format lines|json]
 parrot agents
 parrot session list
 parrot session show ID
@@ -146,7 +150,7 @@ picker and preserves the draft until a model is selected. Explicit non-TTY
 `parrot chat` retains the same role markers in a deterministic, ANSI-free line
 REPL. `/status` shows the active agent, model, session, and project.
 
-Interactive chat supports `/help`, `/models`, `/model`, `/agents`, `/agent`,
+Interactive chat supports `/help`, `/models`, `/usage`, `/model`, `/agents`, `/agent`,
 `/sessions`, `/session`, `/resume`, `/new`, `/compact`, `/connect`, `/thinking`,
 `/undo`, `/redo`, `/status`, custom commands, and `/exit`.
 

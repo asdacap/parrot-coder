@@ -50,5 +50,6 @@ type Backend interface {
 	Undo(context.Context, string) (v1.SnapshotTransaction, error)
 	Redo(context.Context, string) (v1.SnapshotTransaction, error)
 	ListModels(context.Context) (v1.ModelList, error)
+	SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error)
 	ListAgents(context.Context) (v1.AgentList, error)
 }

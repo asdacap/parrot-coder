@@ -948,6 +948,21 @@ func TestModelsDoesNotRequireDefaultModel(t *testing.T) {
 	}
 }
 
+func TestFormatSubscriptionUsageShowsRemainingAndReset(t *testing.T) {
+	now := time.Date(2030, time.January, 1, 12, 0, 0, 0, time.UTC)
+	usage := v1.SubscriptionUsage{
+		PlanType:        "plus",
+		PrimaryWindow:   &v1.UsageWindow{UsedPercent: 27.5, RemainingPercent: 72.5, ResetAt: now.Add(2*time.Hour + 15*time.Minute)},
+		SecondaryWindow: &v1.UsageWindow{UsedPercent: 4, RemainingPercent: 96, ResetAt: now.Add(48 * time.Hour)},
+	}
+	output := formatSubscriptionUsage(usage, now)
+	for _, want := range []string{"ChatGPT subscription (plus)", "primary: 72.5% remaining", "in 2h 15m", "secondary: 96.0% remaining", "in 2d 0h"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output %q does not contain %q", output, want)
+		}
+	}
+}
+
 func TestRunCancellationInterruptsActiveSession(t *testing.T) {
 	started := make(chan struct{})
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
