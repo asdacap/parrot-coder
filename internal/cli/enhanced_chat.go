@@ -170,6 +170,8 @@ type enhancedChatRuntime struct {
 	knownMessages   map[string]bool
 	activity        []enhancedActivityItem
 	completedTools  []enhancedActivityItem
+	planReviewID    string
+	lastCompleteID  string
 	borderCommitted bool
 	contextTokens   int
 
@@ -937,6 +939,24 @@ func (r *enhancedChatRuntime) answerModal(value string) error {
 	}
 	modal := r.modal
 	switch modal.kind {
+	case "plan_complete":
+		answer := strings.TrimSpace(value)
+		switch strings.ToLower(answer) {
+		case "yes", "y":
+			r.finishModal()
+			if err := r.shell.applyAgent("build", false); err != nil {
+				return err
+			}
+			return r.submitPrompt("Implement the approved plan.")
+		case "no", "n":
+			r.finishModal()
+			return nil
+		case "":
+			return fmt.Errorf("%w: enter yes, no, or feedback", errInvalidModalAnswer)
+		default:
+			r.finishModal()
+			return r.submitPrompt(answer)
+		}
 	case "permission":
 		reply := permissionReplyFromAnswer(value)
 		if err := r.shell.api.ReplyPermission(r.shell.ctx, r.shell.current.ID, modal.permission.ID, reply); err != nil {
@@ -1238,6 +1258,9 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 			}
 			if item.Status != "active" {
 				r.knownMessages[item.ID] = true
+				if item.Error == "" {
+					r.lastCompleteID = item.ID
+				}
 			}
 			if item.Role == "assistant" && item.Status != "active" {
 				var usage v1.Usage
@@ -1710,6 +1733,15 @@ func (r *enhancedChatRuntime) settleIdle() error {
 	r.idleSeen = false
 	r.status = ""
 	r.interruptCount = 0
+	if r.shell.selection.agent == "plan" && r.lastCompleteID != "" && r.planReviewID != r.lastCompleteID && r.modal == nil {
+		state, err := r.shell.editor.Start("")
+		if err != nil {
+			return err
+		}
+		r.planReviewID = r.lastCompleteID
+		r.modal = &enhancedModal{kind: "plan_complete", state: state, prompt: "Plan complete — yes to implement, no to stop, or type feedback: ", context: []string{"Review the plan before implementation."}}
+		r.inputMode.advance()
+	}
 	return nil
 }
 

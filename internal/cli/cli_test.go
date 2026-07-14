@@ -193,7 +193,7 @@ func TestNoModelPromptPickerPreservesDraftAndSlashPickers(t *testing.T) {
 		t.Fatalf("code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	combined := stdout.String() + stderr.String()
-	for _, value := range []string{"model> ", "✓ Model selected: local/test", "agent> ", "✓ Agent selected: plan", "session> "} {
+	for _, value := range []string{"model> ", "✓ Model selected: local/test", "mode> ", "✓ Mode selected: plan", "session> "} {
 		if !strings.Contains(combined, value) {
 			t.Errorf("transcript missing %q: %q", value, combined)
 		}

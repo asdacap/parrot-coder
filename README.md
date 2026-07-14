@@ -112,13 +112,14 @@ styling.
 
 ```text
 parrot chat [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
-            [--agent ID] [--thinking]
+            [--mode ID] [--thinking]
 parrot run [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
-           [--agent ID] [--thinking] [--format text|jsonl]
+           [--mode ID] [--thinking] [--format text|jsonl]
            [--permission deny|ask] [--interactive-prompts]
 parrot models [--format lines|json]
 parrot usage [--format lines|json]
-parrot agents
+parrot modes
+parrot agents  # task subagents
 parrot session list
 parrot session show ID
 parrot session compact ID
@@ -151,7 +152,7 @@ picker and preserves the draft until a model is selected. Explicit non-TTY
 `parrot chat` retains the same role markers in a deterministic, ANSI-free line
 REPL. `/status` shows the active agent, model, session, and project.
 
-Interactive chat supports `/help`, `/models`, `/usage`, `/model`, `/agents`, `/agent`,
+Interactive chat supports `/help`, `/models`, `/usage`, `/model`, `/modes`, `/mode`,
 `/sessions`, `/session`, `/resume`, `/new`, `/compact`, `/connect`, `/thinking`,
 `/undo`, `/redo`, `/status`, custom commands, and `/exit`.
 

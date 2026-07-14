@@ -176,6 +176,12 @@ func (c *Client) Agents(ctx context.Context) (v1.AgentList, error) {
 	return out, err
 }
 
+func (c *Client) Modes(ctx context.Context) (v1.ModeList, error) {
+	var out v1.ModeList
+	err := c.do(ctx, http.MethodGet, "/api/v1/modes", nil, http.StatusOK, &out)
+	return out, err
+}
+
 func (c *Client) OpenAPI(ctx context.Context) (json.RawMessage, error) {
 	var out json.RawMessage
 	err := c.do(ctx, http.MethodGet, "/openapi.json", nil, http.StatusOK, &out)

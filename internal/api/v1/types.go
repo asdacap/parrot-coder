@@ -41,6 +41,7 @@ type Session struct {
 	ProjectID string    `json:"project_id,omitempty"`
 	Title     string    `json:"title"`
 	Agent     string    `json:"agent,omitempty"`
+	Mode      string    `json:"mode,omitempty"`
 	Provider  string    `json:"provider,omitempty"`
 	Model     string    `json:"model,omitempty"`
 	Variant   string    `json:"variant,omitempty"`
@@ -57,6 +58,7 @@ type CreateSessionRequest struct {
 	ProjectID string  `json:"project_id,omitempty"`
 	Title     string  `json:"title,omitempty"`
 	Agent     string  `json:"agent,omitempty"`
+	Mode      string  `json:"mode,omitempty"`
 	Model     string  `json:"model,omitempty"`
 	Variant   *string `json:"variant,omitempty"`
 }
@@ -64,6 +66,7 @@ type CreateSessionRequest struct {
 // SessionSelection is the resolved execution selection persisted on a session.
 type SessionSelection struct {
 	Agent    string `json:"agent"`
+	Mode     string `json:"mode"`
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
 	Variant  string `json:"variant,omitempty"`
@@ -73,6 +76,7 @@ type SessionSelection struct {
 // Model accepts provider/model or a model ID under the current provider.
 type UpdateSessionSelectionRequest struct {
 	Agent   string  `json:"agent,omitempty"`
+	Mode    string  `json:"mode,omitempty"`
 	Model   string  `json:"model,omitempty"`
 	Variant *string `json:"variant,omitempty"`
 }
@@ -252,6 +256,17 @@ type Agent struct {
 
 type AgentList struct {
 	Items []Agent `json:"items"`
+}
+
+type Mode struct {
+	ID         string `json:"id"`
+	ReadOnly   bool   `json:"read_only"`
+	MaxTurns   int    `json:"max_turns"`
+	ReviewPlan bool   `json:"review_plan"`
+}
+
+type ModeList struct {
+	Items []Mode `json:"items"`
 }
 
 type Empty struct{}

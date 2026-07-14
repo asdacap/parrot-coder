@@ -47,10 +47,15 @@ type Compactor interface {
 	Compact(context.Context, compaction.Request) (compaction.Result, error)
 }
 
+type ProfileResolver interface {
+	GetProfile(string) (Profile, error)
+}
+
 type RunnerConfig struct {
 	Sessions           SessionRuntime
 	Contexts           ContextRuntime
 	Agents             *Registry
+	Profiles           ProfileResolver
 	Providers          ProviderResolver
 	ToolSnapshot       func() tool.Snapshot
 	ToolExecutor       func(tool.Snapshot) tool.Executor
@@ -65,7 +70,10 @@ type RunnerConfig struct {
 type Runner struct{ config RunnerConfig }
 
 func NewRunner(config RunnerConfig) (*Runner, error) {
-	if config.Sessions == nil || config.Agents == nil || config.Providers == nil || config.ToolSnapshot == nil || config.ToolExecutor == nil {
+	if config.Profiles == nil {
+		config.Profiles = config.Agents
+	}
+	if config.Sessions == nil || config.Profiles == nil || config.Providers == nil || config.ToolSnapshot == nil || config.ToolExecutor == nil {
 		return nil, errors.New("agent: runner dependencies are required")
 	}
 	if config.MaxConcurrentTools <= 0 {
@@ -122,7 +130,7 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) error {
 		if err != nil {
 			return err
 		}
-		profile, err := r.config.Agents.Get(selected.Agent)
+		profile, err := r.config.Profiles.GetProfile(selected.Agent)
 		if err != nil {
 			return err
 		}
