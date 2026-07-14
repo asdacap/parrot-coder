@@ -12,6 +12,24 @@ terminal screen or execute a JavaScript plugin runtime.
 
 ## Install And Build
 
+The easiest installation on macOS or Linux downloads the latest release binary
+to `~/.local/bin` and verifies its checksum:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/asdacap/parrot-coder/main/install.sh | sh
+```
+
+Make sure `~/.local/bin` is on `PATH`, then confirm the installation:
+
+```sh
+parrot version
+```
+
+To select a release or installation directory, download the script and use
+`--version VERSION` or `--bin-dir DIRECTORY`. The equivalent environment
+variables `PARROT_VERSION` and `PARROT_INSTALL_DIR` also work when piping it to
+`sh`.
+
 The canonical build uses the Nix flake:
 
 ```sh
