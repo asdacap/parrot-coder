@@ -596,8 +596,11 @@ func TestEnhancedReasoningSummaryPartsShowAsSeparateActivityRows(t *testing.T) {
 		t.Fatalf("activity = %#v", runtime.activity)
 	}
 	rows := runtime.activityRows(runtime.activity[0].started, 100)
-	if len(rows) != 2 || !strings.Contains(rows[0], "Thought: Inspecting the implementation") || !strings.Contains(rows[1], "Thought: Running tests") {
+	if len(rows) != 2 || !strings.Contains(rows[0], "✓ Inspecting the implementation") || !strings.Contains(rows[1], "Thought: Running tests") {
 		t.Fatalf("activity rows = %#v", rows)
+	}
+	if runtime.activity[0].status != "success" || !runtime.activity[0].terminal || runtime.activity[1].status != "thinking" || runtime.activity[1].terminal {
+		t.Fatalf("summary activity states = %#v", runtime.activity)
 	}
 
 	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 42})
@@ -653,6 +656,16 @@ func TestEnhancedReasoningSummaryPartsUpdateIndependently(t *testing.T) {
 	}
 	if runtime.activity[0].messageID != "assistant" || runtime.activity[1].messageID != "assistant" {
 		t.Fatalf("summary rows lost assistant identity: %#v", runtime.activity)
+	}
+	rows := runtime.activityRows(time.Now(), 100)
+	active := 0
+	for _, row := range rows {
+		if strings.Contains(row, "Thought:") {
+			active++
+		}
+	}
+	if active != 1 || runtime.activity[0].status != "thinking" || runtime.activity[1].status != "success" {
+		t.Fatalf("interleaved summary parts have %d active thoughts: rows=%#v activity=%#v", active, rows, runtime.activity)
 	}
 }
 
