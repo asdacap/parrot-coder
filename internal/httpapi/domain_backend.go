@@ -30,6 +30,7 @@ type DomainBackend struct {
 	Providers          []provider.Provider
 	Permissions        *permission.Broker
 	Questions          *question.Broker
+	Todos              *session.TodoService
 	Snapshots          *snapshot.Service
 	Workspace          *workspace.Workspace
 	Events             *event.Repository
@@ -161,6 +162,24 @@ func (b *DomainBackend) ListMessages(ctx context.Context, id string) (v1.Message
 			usage = json.RawMessage(`{}`)
 		}
 		out.Items[i] = v1.Message{ID: item.ID, SessionID: item.SessionID, Role: item.Role, Content: item.Content, Parts: parts, Status: item.Status, FinishReason: item.FinishReason, Error: item.Error, Usage: usage, InputID: item.InputID, Sequence: item.Sequence, CreatedAt: item.CreatedAt}
+	}
+	return out, nil
+}
+
+func (b *DomainBackend) ListTodos(ctx context.Context, id string) (v1.TodoList, error) {
+	if _, err := b.GetSession(ctx, id); err != nil {
+		return v1.TodoList{}, err
+	}
+	if b.Todos == nil {
+		return v1.TodoList{}, errors.New("httpapi: todo service is unavailable")
+	}
+	items, err := b.Todos.List(ctx, id)
+	if err != nil {
+		return v1.TodoList{}, err
+	}
+	out := v1.TodoList{Items: make([]v1.Todo, len(items))}
+	for i, item := range items {
+		out.Items[i] = v1.Todo{ID: item.ID, Content: item.Content, Status: string(item.Status), Priority: string(item.Priority), Position: item.Position}
 	}
 	return out, nil
 }

@@ -50,6 +50,9 @@ func (b *stubBackend) DeleteSession(context.Context, string) error { return b.ba
 func (b *stubBackend) ListMessages(context.Context, string) (v1.MessageList, error) {
 	return v1.MessageList{Items: []v1.Message{}}, b.backendErr
 }
+func (b *stubBackend) ListTodos(context.Context, string) (v1.TodoList, error) {
+	return v1.TodoList{Items: []v1.Todo{}}, b.backendErr
+}
 func (b *stubBackend) AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error) {
 	b.mu.Lock()
 	b.order = append(b.order, "admit")
@@ -108,6 +111,7 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"DELETE", "/api/v1/sessions/ses_test", "", 204},
 		{"PUT", "/api/v1/sessions/ses_test/selection", `{"agent":"plan"}`, 200},
 		{"GET", "/api/v1/sessions/ses_test/messages", "", 200},
+		{"GET", "/api/v1/sessions/ses_test/todos", "", 200},
 		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello","delivery":"steer"}`, 202},
 		{"POST", "/api/v1/sessions/ses_test/interrupt", "", 204},
 		{"GET", "/api/v1/sessions/ses_test/permissions", "", 200},

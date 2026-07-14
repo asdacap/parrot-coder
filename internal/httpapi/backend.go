@@ -38,6 +38,7 @@ type Backend interface {
 	UpdateSessionSelection(context.Context, string, v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error)
 	DeleteSession(context.Context, string) error
 	ListMessages(context.Context, string) (v1.MessageList, error)
+	ListTodos(context.Context, string) (v1.TodoList, error)
 	AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error)
 	Wake(string)
 	Interrupt(context.Context, string) error

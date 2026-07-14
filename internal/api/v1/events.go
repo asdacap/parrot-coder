@@ -18,6 +18,7 @@ const (
 	EventQuestionReply        = "question.resolved"
 	EventSessionInputAdmitted = "session.input.admitted"
 	EventSessionInputPromoted = "session.input.promoted"
+	EventTodoUpdated          = "todo.updated"
 )
 
 // Event is used for both durable and disposable live events. Sequence and
@@ -77,6 +78,10 @@ type SessionInputPromoted struct {
 	MessageID string `json:"message_id"`
 }
 
+type TodoUpdated struct {
+	Todos []Todo `json:"todos"`
+}
+
 type EventDefinition struct {
 	Name    string `json:"name"`
 	Durable bool   `json:"durable"`
@@ -95,6 +100,7 @@ var EventManifest = []EventDefinition{
 	{Name: EventQuestionReply, Payload: "QuestionResolved"},
 	{Name: EventSessionInputAdmitted, Durable: true, Payload: "SessionInputAdmitted"},
 	{Name: EventSessionInputPromoted, Durable: true, Payload: "SessionInputPromoted"},
+	{Name: EventTodoUpdated, Durable: true, Payload: "TodoUpdated"},
 	{Name: "session.selection.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.initialized", Durable: true, Payload: "object"},
 	{Name: "session.context.observed", Durable: true, Payload: "object"},
@@ -148,6 +154,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &SessionInputAdmitted{}
 	case EventSessionInputPromoted:
 		target = &SessionInputPromoted{}
+	case EventTodoUpdated:
+		target = &TodoUpdated{}
 	default:
 		if !KnownEvent(event.Type) {
 			return nil, errors.New("v1: unknown event type")

@@ -66,6 +66,7 @@ var routes = []Route{
 	{"DELETE", "/api/v1/sessions/{id}", "deleteSession"},
 	{"PUT", "/api/v1/sessions/{id}/selection", "updateSessionSelection"},
 	{"GET", "/api/v1/sessions/{id}/messages", "listMessages"},
+	{"GET", "/api/v1/sessions/{id}/todos", "listTodos"},
 	{"POST", "/api/v1/sessions/{id}/prompts", "createPrompt"},
 	{"POST", "/api/v1/sessions/{id}/compact", "compactSession"},
 	{"POST", "/api/v1/sessions/{id}/interrupt", "interruptSession"},
@@ -98,6 +99,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/sessions/{id}", s.session)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/selection", s.selection)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/messages", s.messages)
+	s.mux.HandleFunc("/api/v1/sessions/{id}/todos", s.todos)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/prompts", s.prompts)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/compact", s.compact)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/interrupt", s.interrupt)
@@ -213,6 +215,14 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		item, err = paginateMessages(r, item)
 	}
+	s.respond(w, r, http.StatusOK, item, err)
+}
+
+func (s *Server) todos(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	item, err := s.backend.ListTodos(r.Context(), r.PathValue("id"))
 	s.respond(w, r, http.StatusOK, item, err)
 }
 

@@ -30,6 +30,11 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			},
 			want: &v1.SessionInputPromoted{InputID: "inp_1", MessageID: "msg_1"},
 		},
+		{
+			name:  "todos",
+			event: v1.Event{Type: v1.EventTodoUpdated, Data: json.RawMessage(`{"todos":[{"id":"todo_1","content":"test","status":"pending","priority":"high","position":0}]}`)},
+			want:  &v1.TodoUpdated{Todos: []v1.Todo{{ID: "todo_1", Content: "test", Status: "pending", Priority: "high", Position: 0}}},
+		},
 	}
 
 	for _, test := range tests {

@@ -223,7 +223,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
 		}
 	}
-	todos := session.NewTodoService(db)
+	todos := session.NewTodoService(db, repository)
 	ws, err := workspace.New(info.Root)
 	if err != nil {
 		return nil, fmt.Errorf("app: workspace: %w", err)
@@ -363,7 +363,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	result.coordinator = coordinator
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, Sessions: sessions, Coordinator: coordinator, Agents: agents,
-		Providers: providers, Permissions: permissions, Questions: questions, Snapshots: snapshots,
+		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Snapshots: snapshots,
 		Workspace: ws, Events: repository, Live: live, DefaultSelection: defaultSelection,
 		ProviderResolver: providerRegistry,
 	}

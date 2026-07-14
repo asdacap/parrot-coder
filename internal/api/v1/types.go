@@ -93,6 +93,18 @@ type MessageList struct {
 	NextCursor string    `json:"next_cursor,omitempty"`
 }
 
+type Todo struct {
+	ID       string `json:"id"`
+	Content  string `json:"content"`
+	Status   string `json:"status"`
+	Priority string `json:"priority"`
+	Position int    `json:"position"`
+}
+
+type TodoList struct {
+	Items []Todo `json:"items"`
+}
+
 type PromptRequest struct {
 	MessageID string `json:"message_id"`
 	Content   string `json:"content"`

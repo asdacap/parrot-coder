@@ -101,6 +101,12 @@ func (c *Client) MessagesPage(ctx context.Context, id, cursor string, limit int)
 	return out, err
 }
 
+func (c *Client) Todos(ctx context.Context, id string) (v1.TodoList, error) {
+	var out v1.TodoList
+	err := c.do(ctx, http.MethodGet, sessionPath(id)+"/todos", nil, http.StatusOK, &out)
+	return out, err
+}
+
 // Prompt returns after durable admission (202), not model completion.
 func (c *Client) Prompt(ctx context.Context, id string, request v1.PromptRequest) (v1.PromptAccepted, error) {
 	var out v1.PromptAccepted

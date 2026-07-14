@@ -3,9 +3,12 @@ package session
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
+	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 )
@@ -35,9 +38,20 @@ type Todo struct {
 	Position int          `json:"position"`
 }
 
-type TodoService struct{ db *store.DB }
+const EventTodoUpdated = "todo.updated"
 
-func NewTodoService(db *store.DB) *TodoService { return &TodoService{db: db} }
+type TodoService struct {
+	db     *store.DB
+	events *event.Repository
+}
+
+func NewTodoService(db *store.DB, repositories ...*event.Repository) *TodoService {
+	service := &TodoService{db: db}
+	if len(repositories) > 0 {
+		service.events = repositories[0]
+	}
+	return service
+}
 
 func (s *TodoService) List(ctx context.Context, sessionID string) ([]Todo, error) {
 	if s == nil || s.db == nil {
@@ -50,7 +64,7 @@ func (s *TodoService) List(ctx context.Context, sessionID string) ([]Todo, error
 		return nil, fmt.Errorf("session: list todos: %w", err)
 	}
 	defer rows.Close()
-	var todos []Todo
+	todos := make([]Todo, 0)
 	for rows.Next() {
 		var item Todo
 		if err := rows.Scan(&item.ID, &item.Content, &item.Status, &item.Priority, &item.Position); err != nil {
@@ -73,6 +87,7 @@ func (s *TodoService) Replace(ctx context.Context, sessionID string, todos []Tod
 	items := append([]Todo(nil), todos...)
 	seen := make(map[string]struct{}, len(items))
 	for i := range items {
+		items[i].Content = strings.TrimSpace(items[i].Content)
 		if items[i].Content == "" || !validTodoStatus(items[i].Status) || !validTodoPriority(items[i].Priority) {
 			return nil, fmt.Errorf("session: invalid todo at position %d", i)
 		}
@@ -89,7 +104,7 @@ func (s *TodoService) Replace(ctx context.Context, sessionID string, todos []Tod
 		seen[items[i].ID] = struct{}{}
 		items[i].Position = i
 	}
-	err := s.db.WithImmediate(ctx, func(tx *sql.Tx) error {
+	project := func(ctx context.Context, tx *sql.Tx, _ []event.Event) error {
 		var exists int
 		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session WHERE id = ?`, sessionID).Scan(&exists); err != nil {
 			return err
@@ -108,7 +123,19 @@ func (s *TodoService) Replace(ctx context.Context, sessionID string, todos []Tod
 			}
 		}
 		return nil
-	})
+	}
+	var err error
+	if s.events != nil {
+		data, marshalErr := json.Marshal(struct {
+			Todos []Todo `json:"todos"`
+		}{Todos: items})
+		if marshalErr != nil {
+			return nil, fmt.Errorf("session: marshal todo update: %w", marshalErr)
+		}
+		_, err = s.events.Append(ctx, sessionID, []event.NewEvent{{Type: EventTodoUpdated, Data: data}}, project)
+	} else {
+		err = s.db.WithImmediate(ctx, func(tx *sql.Tx) error { return project(ctx, tx, nil) })
+	}
 	if err != nil {
 		return nil, fmt.Errorf("session: replace todos: %w", err)
 	}
