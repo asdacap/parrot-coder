@@ -892,11 +892,7 @@ func (r *enhancedChatRuntime) showPermissionContext(permission v1.Permission) {
 	if r.modal == nil {
 		return
 	}
-	context := []string{"permission: " + permission.ToolID, "reason: " + permission.Reason}
-	for _, resource := range permission.Resources {
-		context = append(context, fmt.Sprintf("resource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier))
-	}
-	r.modal.context = context
+	r.modal.context = permissionContextLines(permission)
 }
 
 func (r *enhancedChatRuntime) showQuestionContext(question v1.Question) {

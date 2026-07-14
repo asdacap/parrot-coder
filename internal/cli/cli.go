@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -588,6 +589,32 @@ func writeAll(w io.Writer, value string) error {
 	return err
 }
 
+// permissionContextLines describes the exact, hash-bound tool invocation being
+// approved instead of asking the user to decide from only a tool name.
+func permissionContextLines(item v1.Permission) []string {
+	lines := []string{"permission: " + item.ToolID, "reason: " + item.Reason}
+	if len(item.CanonicalInput) > 0 {
+		var formatted bytes.Buffer
+		if err := json.Indent(&formatted, item.CanonicalInput, "", "  "); err != nil {
+			formatted.Write(item.CanonicalInput)
+		}
+		lines = append(lines, "tool request:")
+		for _, line := range strings.Split(formatted.String(), "\n") {
+			lines = append(lines, "  "+line)
+		}
+	}
+	for _, resource := range item.Resources {
+		lines = append(lines, fmt.Sprintf("resource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier))
+	}
+	return lines
+}
+
+func writePermissionContext(w io.Writer, item v1.Permission) {
+	for _, line := range permissionContextLines(item) {
+		fmt.Fprintln(w, line)
+	}
+}
+
 func settlePrompts(ctx context.Context, api apiClient, sessionID string, input io.Reader, output io.Writer) error {
 	permissions, err := api.Permissions(ctx, sessionID)
 	if err != nil {
@@ -605,7 +632,8 @@ func settlePrompts(ctx context.Context, api apiClient, sessionID string, input i
 		reader = bufio.NewReader(input)
 	}
 	for _, item := range permissions.Items {
-		fmt.Fprintf(output, "permission: %s (%s)\nallow once/session/workspace/process or enable yolo? [deny]: ", item.ToolID, item.Reason)
+		writePermissionContext(output, item)
+		fmt.Fprint(output, "allow once/session/workspace/process or enable yolo? [deny]: ")
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return readErr
@@ -672,8 +700,10 @@ func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, o
 		return editor.Read(ctx)
 	}
 	for _, item := range permissions.Items {
-		if err := options.renderer.Commit(fmt.Sprintf("permission: %s (%s)", item.ToolID, item.Reason)); err != nil {
-			return err
+		for _, line := range permissionContextLines(item) {
+			if err := options.renderer.Commit(line); err != nil {
+				return err
+			}
 		}
 		picker := terminal.NewPickerDecoder(options.keyInput, options.stdout, permissionChoices(),
 			terminal.WithPickerPrompt("permission decision: "), terminal.WithPickerRenderer(options.renderer))

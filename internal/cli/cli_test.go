@@ -696,7 +696,8 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
 		ID: "permission", ToolID: "shell", Reason: "default policy",
-		Resources: []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
+		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build"}`),
+		Resources:      []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
 	}}}}
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 	state, err := editor.Start("draft")
@@ -727,6 +728,7 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
 	if !strings.Contains(frame, "permission: shell") || !strings.Contains(frame, "reason: default policy") ||
+		!strings.Contains(frame, "tool request:") || !strings.Contains(frame, `"command": "rm -rf build"`) ||
 		!strings.Contains(frame, "resource: process execute /bin/bash") ||
 		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
 		!strings.Contains(frame, "enable yolo") {
