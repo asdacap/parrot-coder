@@ -378,6 +378,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
 		},
 		Workspace: ws, Outputs: outputs, Live: live, Compactor: compactionService,
+		ToolPanicLogger: toolPanicLogger(),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: runner: %w", err)
@@ -572,6 +573,17 @@ func cleanupSnapshotTemps(ctx context.Context, root string, now time.Time, stale
 		return removed, nil
 	}
 	return removed, err
+}
+
+// toolPanicLogger routes the original tool-goroutine stack into the process
+// diagnostics log. The diagnostics package makes this a no-op when process
+// diagnostics could not be initialized.
+func toolPanicLogger() func(context.Context, string, string, any, []byte) {
+	return func(_ context.Context, sessionID, toolName string, recovered any, stack []byte) {
+		diagnostics.PanicWithStack("agent_tool_call", recovered, stack,
+			"session_id", sessionID, "tool", toolName,
+		)
+	}
 }
 
 func (a *App) Close() error {

@@ -59,3 +59,26 @@ func TestLiveBrokerRejectsUnknownOrInvalidEvents(t *testing.T) {
 	default:
 	}
 }
+
+func TestLiveBrokerPreservesReasoningSummaryPartID(t *testing.T) {
+	broker := event.NewBroker()
+	events, closeSubscription := broker.Subscribe("ses_test", 1)
+	defer closeSubscription()
+
+	broker.Publish("ses_test", protocol.Event{
+		Type:      protocol.EventReasoningSummaryDelta,
+		MessageID: "msg_test",
+		PartID:    "reasoning_item:2",
+		Text:      "Checking tests",
+	})
+
+	item := <-events
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	delta := payload.(*v1.MessagePartDelta)
+	if delta.MessageID != "msg_test" || delta.PartID != "reasoning_item:2" || delta.Delta != "Checking tests" {
+		t.Fatalf("payload = %#v", delta)
+	}
+}

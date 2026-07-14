@@ -521,6 +521,37 @@ func TestSSEValidatesBeforeCommittingHeaders(t *testing.T) {
 	}
 }
 
+func TestSSEWritesReadyLiveEventsBeforeDurableCompletion(t *testing.T) {
+	durable := make(chan v1.Event, 1)
+	live := make(chan v1.Event, 1)
+	live <- v1.Event{ID: "evt_live", Type: v1.EventMessagePartDelta, SessionID: "ses_test", Data: json.RawMessage(`{"kind":"reasoning_summary","delta":"Checking"}`)}
+	durable <- v1.Event{ID: "evt_complete", Type: "session.assistant.complete", SessionID: "ses_test", Data: json.RawMessage(`{"message_id":"msg_test"}`)}
+	backend := &stubBackend{stream: &EventStream{Durable: durable, Live: live}}
+	server := httptest.NewServer(New(backend, Config{HeartbeatInterval: time.Second}))
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/api/v1/sessions/ses_test/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	reader := bufio.NewReader(response.Body)
+	if _, err := readSSEBlock(reader); err != nil { // server.connected
+		t.Fatal(err)
+	}
+	first, err := readSSEBlock(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := readSSEBlock(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first, "id: evt_live\n") || !strings.Contains(second, "id: evt_complete\n") {
+		t.Fatalf("events emitted out of causal order: first=%q second=%q", first, second)
+	}
+}
+
 func TestClientParityNetworkAndInProcess(t *testing.T) {
 	for _, transport := range []string{"network", "inproc"} {
 		t.Run(transport, func(t *testing.T) {

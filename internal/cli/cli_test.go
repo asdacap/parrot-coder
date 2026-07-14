@@ -476,12 +476,12 @@ func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
 func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")
-	runtime.startReasoningActivity("assistant", "", "Checking the implementation")
+	runtime.startReasoningActivity("assistant", "", "Checking the implementation", true)
 
 	usage, _ := json.Marshal(v1.SessionStatus{
 		MessageID: "assistant",
 		Kind:      "usage",
-		Usage:     &v1.Usage{OutputTokens: 123, TotalTokens: 456},
+		Usage:     &v1.Usage{OutputTokens: 200, TotalTokens: 456, ReasoningTokens: 123},
 	})
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: usage}); err != nil {
 		t.Fatal(err)
@@ -499,9 +499,25 @@ func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	}
 }
 
+func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
+	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30})
+	runtime.startReasoningActivity("assistant", "", "Checking", true)
+	if runtime.activity[0].hasUsage {
+		t.Fatalf("reasoning activity used output tokens: %#v", runtime.activity[0])
+	}
+
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30, ReasoningTokens: 12})
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 40})
+	if runtime.activity[0].tokens != 12 || !runtime.activity[0].hasUsage {
+		t.Fatalf("reasoning usage was not retained: %#v", runtime.activity[0])
+	}
+}
+
 func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
 	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
-	runtime.upsertActivity("call-task", "task · explore", "running", false, false)
+	runtime.upsertActivity("call-task", "task · explore", "running", false, false, false)
 	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-task", Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
 		t.Fatal(err)
@@ -596,13 +612,98 @@ func TestEnhancedReasoningSummaryPartsShowAsSeparateActivityRows(t *testing.T) {
 	}
 }
 
+func TestEnhancedReasoningSummaryStripsAdjacentBoldDelimiters(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+
+	for _, delta := range []string{
+		"**Investigating summary stripping issue**",
+		"**Analyzing reasoning summary handling flaws**",
+	} {
+		data, _ := json.Marshal(v1.MessagePartDelta{MessageID: "assistant", Kind: "reasoning_summary", Delta: delta})
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := "Investigating summary stripping issue Analyzing reasoning summary handling flaws"
+	if got := runtime.activity[0].label; got != want {
+		t.Fatalf("activity label = %q, want %q", got, want)
+	}
+}
+
+func TestEnhancedReasoningSummaryPartsUpdateIndependently(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "assistant", Kind: "reasoning", Delta: "private reasoning"},
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "**First"},
+		{MessageID: "assistant", PartID: "reasoning:1", Kind: "reasoning_summary", Delta: "**Second item**"},
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: " item**"},
+	} {
+		data, _ := json.Marshal(delta)
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(runtime.activity) != 2 || runtime.activity[0].label != "First item" || runtime.activity[1].label != "Second item" {
+		t.Fatalf("activity = %#v", runtime.activity)
+	}
+	if runtime.activity[0].messageID != "assistant" || runtime.activity[1].messageID != "assistant" {
+		t.Fatalf("summary rows lost assistant identity: %#v", runtime.activity)
+	}
+}
+
+func TestEnhancedLateAssistantStartKeepsReasoningSummaryRows(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	delta, _ := json.Marshal(v1.MessagePartDelta{
+		MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "Checking tests",
+	})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: delta}); err != nil {
+		t.Fatal(err)
+	}
+	started, _ := json.Marshal(map[string]string{"message_id": "assistant"})
+	if err := runtime.handleEvent(v1.Event{Type: "session.assistant.started", Data: started}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 || runtime.activity[0].label != "Checking tests" || !runtime.activity[0].reasoning {
+		t.Fatalf("late assistant start replaced summary activity: %#v", runtime.activity)
+	}
+}
+
+func TestEnhancedReasoningSummaryPartsFlushInProviderOrder(t *testing.T) {
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Status: "complete"}}}}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80})
+	shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
+	runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+
+	runtime.startReasoningActivity("assistant", "reasoning:0", "First item", true)
+	runtime.startReasoningActivity("assistant", "reasoning:1", "Second item", true)
+	runtime.completeAssistantActivity("assistant", "success")
+	if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+		t.Fatal(err)
+	}
+
+	first := strings.Index(output.String(), "First item")
+	second := strings.Index(output.String(), "Second item")
+	if first < 0 || second < first {
+		t.Fatalf("summary rows flushed out of order: %q", output.String())
+	}
+	if len(runtime.activity) != 0 {
+		t.Fatalf("completed activity remains live: %#v", runtime.activity)
+	}
+}
+
 func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 	for _, test := range []struct {
 		name        string
 		content     string
 		wantFlushed bool
 	}{
-		{name: "message replaces activity", content: "answer"},
+		{name: "message retains summary", content: "answer", wantFlushed: true},
 		{name: "no message flushes activity", wantFlushed: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -612,8 +713,8 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
 			runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
 			runtime.startAssistantActivity("assistant")
-			runtime.startReasoningActivity("assistant", "", "Checking")
-			runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 12})
+			runtime.startReasoningActivity("assistant", "", "Checking", true)
+			runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30, ReasoningTokens: 12})
 			runtime.completeAssistantActivity("assistant", "success")
 
 			if err := runtime.commitCompletedAssistants("assistant"); err != nil {
@@ -625,6 +726,65 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			flushed := strings.Contains(output.String(), "✓ Checking · 12 tokens")
 			if flushed != test.wantFlushed {
 				t.Fatalf("flushed activity = %t, want %t; output=%q", flushed, test.wantFlushed, output.String())
+			}
+		})
+	}
+}
+
+func TestEnhancedReasoningSummaryIsPlainSingleLineAndRetainedBeforeAnswer(t *testing.T) {
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Content: "final answer", Status: "complete"}}}}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})
+	shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
+	runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+	runtime.startReasoningActivity("assistant", "", "- **Verifying\ncomplete suite**", true)
+	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30, ReasoningTokens: 12})
+	runtime.completeAssistantActivity("assistant", "success")
+
+	if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	summary := strings.Index(got, "✓ Verifying complete suite · 12 tokens")
+	answer := strings.Index(got, "final answer")
+	if summary < 0 || answer < summary || strings.Contains(got, "**") {
+		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestSingleLineReasoningSummaryRemovesMarkdownWithoutCorruptingText(t *testing.T) {
+	tests := map[string]string{
+		"**one** **two**":        "one two",
+		"- **one** two":          "one two",
+		"*one* and **two**":      "one and two",
+		"# heading\n- next item": "heading next item",
+		"check `file_name.go`":   "check file_name.go",
+	}
+	for input, want := range tests {
+		if got := singleLineReasoningSummary(input); got != want {
+			t.Errorf("singleLineReasoningSummary(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestEnhancedRawReasoningIsNeverRetained(t *testing.T) {
+	for _, content := range []string{"", "final answer"} {
+		t.Run(fmt.Sprintf("content=%q", content), func(t *testing.T) {
+			api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Content: content, Status: "complete"}}}}
+			var output bytes.Buffer
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})
+			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
+			runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+			runtime.startAssistantActivity("assistant")
+			runtime.startReasoningActivity("assistant", "", "private chain of thought", false)
+			runtime.completeAssistantActivity("assistant", "success")
+
+			if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(output.String(), "private chain of thought") || len(runtime.activity) != 0 {
+				t.Fatalf("raw reasoning was retained: output=%q activity=%#v", output.String(), runtime.activity)
 			}
 		})
 	}
@@ -952,7 +1112,7 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 	}
 	got := output.String()
 	for _, want := range []string{
-		"✓ todowrite · 4 items ·",
+		"✓ TODO · 4 items ·",
 		"○ high · Plan work",
 		"◐ medium · Implement UI",
 		"✓ low · Run tests",
@@ -964,6 +1124,9 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 	}
 	if strings.Contains(got, "todo_1") || strings.Contains(got, "old input") {
 		t.Fatalf("todowrite block exposed IDs or ignored authoritative result: %q", got)
+	}
+	if strings.Contains(got, "todowrite") {
+		t.Fatalf("todo block exposed the internal tool name: %q", got)
 	}
 }
 
@@ -1003,9 +1166,9 @@ func TestToolActivityLabelDescribesInputs(t *testing.T) {
 		{name: "grep", input: map[string]any{"pattern": "TODO"}, want: `grep · "TODO" · .`},
 		{name: "skill", input: map[string]any{"name": "review"}, want: "skill · review"},
 		{name: "web_fetch", input: map[string]any{"url": "https://example.com/docs"}, want: "web_fetch · https://example.com/docs"},
-		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}, map[string]any{}}}, want: "todowrite · 2 items"},
-		{name: "todo_write", input: map[string]any{"todos": []any{}}, want: "todo_write · 0 items"},
-		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}}}, want: "todowrite · 1 item"},
+		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}, map[string]any{}}}, want: "TODO · 2 items"},
+		{name: "todo_write", input: map[string]any{"todos": []any{}}, want: "TODO · 0 items"},
+		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}}}, want: "TODO · 1 item"},
 		{name: "custom", input: map[string]any{"token": "hidden", "path": "src/main.go"}, want: "custom · path=src/main.go"},
 	}
 	for _, test := range tests {

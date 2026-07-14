@@ -121,20 +121,23 @@ type queuedChatInput struct {
 }
 
 type enhancedActivityItem struct {
-	id        string
-	messageID string
-	label     string
-	input     map[string]any
-	error     string
-	status    string
-	tokens    int
-	hasUsage  bool
-	toolUses  int
-	started   time.Time
-	ended     time.Time
-	terminal  bool
-	reasoning bool
-	block     string
+	id               string
+	messageID        string
+	label            string
+	input            map[string]any
+	error            string
+	status           string
+	tokens           int
+	hasUsage         bool
+	outputTokens     int
+	reasoningTokens  int
+	toolUses         int
+	started          time.Time
+	ended            time.Time
+	terminal         bool
+	reasoning        bool
+	reasoningSummary bool
+	block            string
 }
 
 type enhancedModal struct {
@@ -494,7 +497,7 @@ func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns i
 	prefix := activityTitle("thinking", elapsed) + ": "
 	suffix := fmt.Sprintf("%s · %.1fs", formatActivityUsage(item), elapsed.Seconds())
 	width := max(1, columns-len(prefix)-len(suffix)-1)
-	label := item.label
+	label := singleLineReasoningSummary(item.label)
 	if strings.TrimSpace(label) == "" {
 		label = "Thinking…"
 	}
@@ -519,7 +522,45 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 	if item.status == "success" || item.status == "failure" {
 		separator = " "
 	}
-	return fmt.Sprintf("%s%s%s%s%s · %.1fs", activityTitle(item.status, elapsed), separator, item.label, detail, formatActivityUsage(item), elapsed.Seconds())
+	label := item.label
+	if item.reasoning {
+		label = singleLineReasoningSummary(label)
+	}
+	return fmt.Sprintf("%s%s%s%s%s · %.1fs", activityTitle(item.status, elapsed), separator, label, detail, formatActivityUsage(item), elapsed.Seconds())
+}
+
+func singleLineReasoningSummary(summary string) string {
+	lines := strings.Split(summary, "\n")
+	for i := range lines {
+		line := strings.TrimSpace(lines[i])
+		for _, prefix := range []string{"- ", "* ", "+ ", "> ", "### ", "## ", "# "} {
+			if strings.HasPrefix(line, prefix) {
+				line = strings.TrimSpace(strings.TrimPrefix(line, prefix))
+				break
+			}
+		}
+		lines[i] = line
+	}
+	summary = strings.Join(strings.Fields(strings.Join(lines, " ")), " ")
+	for _, marker := range []string{"**", "*", "`"} {
+		summary = stripPairedMarkdownMarker(summary, marker)
+	}
+	return strings.TrimSpace(summary)
+}
+
+func stripPairedMarkdownMarker(value, marker string) string {
+	for {
+		start := strings.Index(value, marker)
+		if start < 0 {
+			return value
+		}
+		rest := value[start+len(marker):]
+		end := strings.Index(rest, marker)
+		if end < 0 {
+			return value
+		}
+		value = value[:start] + rest[:end] + rest[end+len(marker):]
+	}
 }
 
 func formatActivityUsage(item enhancedActivityItem) string {
@@ -586,11 +627,12 @@ func (r *enhancedChatRuntime) startAssistantActivity(messageID string) {
 			return
 		}
 	}
-	r.upsertActivity(messageID, "Thinking…", "thinking", false, false)
+	r.upsertActivity(messageID, "Thinking…", "thinking", false, false, false)
 	r.markActivityMessage(messageID, messageID)
+	r.syncAssistantActivityUsageByID(messageID)
 }
 
-func (r *enhancedChatRuntime) startReasoningActivity(messageID, partID, label string) {
+func (r *enhancedChatRuntime) startReasoningActivity(messageID, partID, label string, summary bool) {
 	if messageID == "" {
 		messageID = "assistant"
 	}
@@ -615,8 +657,9 @@ func (r *enhancedChatRuntime) startReasoningActivity(messageID, partID, label st
 			}
 		}
 	}
-	r.upsertActivity(activityID, cleanReasoningActivityLabel(label), "thinking", false, true)
+	r.upsertActivity(activityID, cleanReasoningActivityLabel(label), "thinking", false, true, summary)
 	r.markActivityMessage(activityID, messageID)
+	r.syncAssistantActivityUsageByID(activityID)
 }
 
 func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) {
@@ -629,10 +672,9 @@ func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) 
 }
 
 func cleanReasoningActivityLabel(label string) string {
-	label = strings.TrimSpace(label)
-	label = strings.TrimPrefix(label, "**")
-	label = strings.TrimSuffix(label, "**")
-	return strings.TrimSpace(label)
+	label = strings.ReplaceAll(label, "****", " ")
+	label = strings.ReplaceAll(label, "**", "")
+	return strings.Join(strings.Fields(label), " ")
 }
 
 func (r *enhancedChatRuntime) resetReasoning() {
@@ -654,17 +696,46 @@ func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.U
 	if messageID == "" {
 		messageID = r.streamMessageID
 	}
+	// Aggregate usage belongs on the newest matching row, which remains visible
+	// when the live UI limits a long sequence of reasoning summaries to its last
+	// rows.
 	activityIndex := -1
 	for i := range r.activity {
 		if r.activity[i].id == messageID || r.activity[i].messageID == messageID {
 			activityIndex = i
 		}
 	}
-	// Aggregate usage belongs on the newest row, which remains visible when the
-	// live UI limits a long sequence of reasoning summaries to its last rows.
 	if activityIndex >= 0 {
-		r.activity[activityIndex].tokens = usage.OutputTokens
-		r.activity[activityIndex].hasUsage = true
+		if usage.OutputTokens > 0 {
+			r.activity[activityIndex].outputTokens = usage.OutputTokens
+		}
+		if usage.ReasoningTokens > 0 {
+			r.activity[activityIndex].reasoningTokens = usage.ReasoningTokens
+		}
+		r.syncAssistantActivityUsage(&r.activity[activityIndex])
+	}
+}
+
+// syncAssistantActivityUsage picks the token count shown for an assistant or
+// reasoning row. Reasoning rows prefer the provider's reasoning-token count and
+// fall back to output tokens only when reasoning tokens are unavailable. Output
+// tokens that accrued during the pre-summary thinking phase are cleared when a
+// row becomes a reasoning summary (see upsertActivity) so they do not leak into
+// the summary's displayed usage.
+func (r *enhancedChatRuntime) syncAssistantActivityUsage(item *enhancedActivityItem) {
+	item.tokens = item.outputTokens
+	if item.reasoning && item.reasoningTokens > 0 {
+		item.tokens = item.reasoningTokens
+	}
+	item.hasUsage = item.tokens > 0
+}
+
+func (r *enhancedChatRuntime) syncAssistantActivityUsageByID(id string) {
+	for i := range r.activity {
+		if r.activity[i].id == id {
+			r.syncAssistantActivityUsage(&r.activity[i])
+			return
+		}
 	}
 }
 
@@ -680,13 +751,13 @@ func (r *enhancedChatRuntime) completeAssistantActivity(id, status string) {
 	}
 }
 
-func (r *enhancedChatRuntime) finishAssistantActivity(id string, flush bool) error {
+func (r *enhancedChatRuntime) finishAssistantActivity(id string, noContent bool) error {
 	for i := 0; i < len(r.activity); {
 		if r.activity[i].id != id && r.activity[i].messageID != id {
 			i++
 			continue
 		}
-		if flush && r.shell != nil && r.shell.renderer != nil {
+		if r.shouldFlushActivityItem(r.activity[i], noContent) && r.shell != nil && r.shell.renderer != nil {
 			if err := r.shell.renderer.Commit(formatActivity(r.activity[i], time.Now())); err != nil {
 				return err
 			}
@@ -697,6 +768,17 @@ func (r *enhancedChatRuntime) finishAssistantActivity(id string, flush bool) err
 	return nil
 }
 
+// shouldFlushActivityItem decides whether a completed assistant row is kept as
+// ordinary one-line transcript output. A reasoning summary with visible text is
+// retained (rendered above the answer); raw chain-of-thought is discarded. A
+// plain assistant row is only flushed when the message carried no content.
+func (r *enhancedChatRuntime) shouldFlushActivityItem(item enhancedActivityItem, noContent bool) bool {
+	if item.reasoning {
+		return item.reasoningSummary && singleLineReasoningSummary(item.label) != ""
+	}
+	return noContent
+}
+
 func contextTokenCount(usage v1.Usage) int {
 	if usage.TotalTokens > 0 {
 		return usage.TotalTokens
@@ -704,7 +786,7 @@ func contextTokenCount(usage v1.Usage) int {
 	return usage.InputTokens
 }
 
-func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal, reasoning bool) {
+func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal, reasoning, reasoningSummary bool) {
 	now := time.Now()
 	for i := range r.activity {
 		if r.activity[i].id != id {
@@ -716,7 +798,13 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal,
 		}
 		r.activity[i].status = status
 		r.activity[i].terminal = terminal
+		if !r.activity[i].reasoning && reasoning {
+			// Output tokens accrued while the row was still in the pre-summary
+			// thinking phase belong to the answer, not this reasoning summary.
+			r.activity[i].outputTokens = 0
+		}
 		r.activity[i].reasoning = reasoning
+		r.activity[i].reasoningSummary = reasoningSummary
 		if r.activity[i].started.IsZero() || status == "running" && previous == "pending" {
 			r.activity[i].started = now
 		}
@@ -730,7 +818,7 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal,
 	if label == "" {
 		label = id
 	}
-	r.activity = append(r.activity, enhancedActivityItem{id: id, label: label, status: status, started: now, terminal: terminal, reasoning: reasoning})
+	r.activity = append(r.activity, enhancedActivityItem{id: id, label: label, status: status, started: now, terminal: terminal, reasoning: reasoning, reasoningSummary: reasoningSummary})
 }
 
 func (r *enhancedChatRuntime) queueCompletedTool(id string) {
@@ -1448,13 +1536,13 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			}
 			if delta.PartID == "" {
 				r.reasoningText.WriteString(delta.Delta)
-				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String())
+				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String(), true)
 			} else {
 				if r.reasoningParts == nil {
 					r.reasoningParts = make(map[string]string)
 				}
 				r.reasoningParts[delta.PartID] += delta.Delta
-				r.startReasoningActivity(delta.MessageID, delta.PartID, r.reasoningParts[delta.PartID])
+				r.startReasoningActivity(delta.MessageID, delta.PartID, r.reasoningParts[delta.PartID], true)
 			}
 			if r.shell.options.thinking {
 				r.status = "reasoning"
@@ -1462,7 +1550,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		} else if delta.Kind == "reasoning" {
 			if !r.reasoningSummary {
 				r.reasoningText.WriteString(delta.Delta)
-				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String())
+				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String(), false)
 			}
 			if r.shell.options.thinking {
 				r.status = delta.Kind
@@ -1588,7 +1676,7 @@ func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
 		r.activity[i].toolUses = progress.ToolUses
 		return
 	}
-	r.upsertActivity(id, "task · "+progress.Agent, "running", false, false)
+	r.upsertActivity(id, "task · "+progress.Agent, "running", false, false, false)
 	r.updateTaskProgress(progress)
 }
 
@@ -1611,7 +1699,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	}
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminal := status == "success" || status == "failure" || status == "interrupted"
-	r.upsertActivity(callID, label, status, terminal, false)
+	r.upsertActivity(callID, label, status, terminal, false, false)
 	if input != nil {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
@@ -1843,6 +1931,9 @@ func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
 }
 
 func todoWriteNameFromLabel(label string) string {
+	if label == "TODO" || strings.HasPrefix(label, "TODO · ") {
+		return "todowrite"
+	}
 	for _, name := range []string{"todowrite", "todo_write"} {
 		if label == name || strings.HasPrefix(label, name+" · ") {
 			return name
@@ -1851,12 +1942,12 @@ func todoWriteNameFromLabel(label string) string {
 	return ""
 }
 
-func todoWriteActivityLabel(name string, count int) string {
+func todoWriteActivityLabel(_ string, count int) string {
 	noun := "items"
 	if count == 1 {
 		noun = "item"
 	}
-	return fmt.Sprintf("%s · %d %s", name, count, noun)
+	return fmt.Sprintf("TODO · %d %s", count, noun)
 }
 
 func toolActivityLabel(name string, input map[string]any) string {
@@ -2035,6 +2126,12 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		if item.Role != "assistant" || item.Status == "active" || r.knownMessages[item.ID] || messageID != "" && item.ID != messageID {
 			continue
 		}
+		// Keep any retained reasoning summary as ordinary one-line transcript
+		// output before the answer instead of rendering it as a multiline block,
+		// and drop raw chain-of-thought rows without emitting them.
+		if err := r.finishAssistantActivity(item.ID, item.Content == ""); err != nil {
+			return err
+		}
 		if item.Content != "" {
 			if item.ID == r.streamMessageID {
 				if err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "- ", Text: item.Content}, false); err != nil {
@@ -2050,9 +2147,6 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		}
 		if item.Error != "" {
 			r.commitError(item.Error)
-		}
-		if err := r.finishAssistantActivity(item.ID, item.Content == ""); err != nil {
-			return err
 		}
 		r.knownMessages[item.ID] = true
 	}

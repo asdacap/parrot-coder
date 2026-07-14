@@ -179,11 +179,21 @@ func Critical(name string, attributes ...any) {
 
 // Panic records a recovered panic and the complete current goroutine stack.
 func Panic(component string, recovered any) {
-	Critical("panic_recovered",
+	PanicWithStack(component, recovered, debug.Stack())
+}
+
+// PanicWithStack records a recovered panic with a stack captured at its
+// recovery boundary. Additional attributes may identify the failed operation,
+// but callers must not include prompts, tool inputs, or other private content.
+func PanicWithStack(component string, recovered any, stack []byte, attributes ...any) {
+	attributes = append([]any{
 		"component", component,
 		"panic_type", fmt.Sprintf("%T", recovered),
 		"panic", formatPanic(recovered),
-		"stack", boundedString(string(debug.Stack()), 1<<20),
+		"stack", boundedString(string(stack), 1<<20),
+	}, attributes...)
+	Critical("panic_recovered",
+		attributes...,
 	)
 }
 

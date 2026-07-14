@@ -97,6 +97,25 @@ func TestParserCallIDFallbackIncompleteAndErrors(t *testing.T) {
 	}
 }
 
+func TestParserPreservesReasoningSummaryPartIdentity(t *testing.T) {
+	fixture := streamFixture(
+		`{"type":"response.reasoning_summary_text.delta","item_id":"reasoning_a","summary_index":0,"delta":"First"}`,
+		`{"type":"response.reasoning_summary_text.delta","item_id":"reasoning_a","summary_index":1,"delta":"Second"}`,
+		`{"type":"response.reasoning_summary_text.delta","item_id":"reasoning_a","summary_index":0,"delta":" item"}`,
+		`{"type":"response.completed","response":{}}`,
+	)
+	events := collect(t, NewParser(strings.NewReader(fixture), 2048))
+	if len(events) != 4 {
+		t.Fatalf("event count = %d: %#v", len(events), events)
+	}
+	wantPartIDs := []string{"reasoning_a:reasoning:0", "reasoning_a:reasoning:1", "reasoning_a:reasoning:0"}
+	for i, want := range wantPartIDs {
+		if events[i].Type != protocol.EventReasoningSummaryDelta || events[i].PartID != want {
+			t.Errorf("event %d = %#v, want part ID %q", i, events[i], want)
+		}
+	}
+}
+
 func TestParserRejectsMalformedJSON(t *testing.T) {
 	parser := NewParser(strings.NewReader("data: nope\n\n"), 1024)
 	if _, err := parser.Next(context.Background()); err == nil || !strings.Contains(err.Error(), "decode stream event") {

@@ -435,6 +435,21 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
+			// Live deltas are published before the durable event they lead to, but
+			// both sources reach this multiplexer through buffered channels. Drain
+			// ready live events before writing a durable completion so select does
+			// not invert their causal order.
+			for {
+				select {
+				case liveItem, liveOK := <-stream.Live:
+					if !liveOK || writeSSE(w, flusher, liveItem) != nil {
+						return
+					}
+				default:
+					goto liveDrained
+				}
+			}
+		liveDrained:
 			if writeSSE(w, flusher, item) != nil {
 				return
 			}
