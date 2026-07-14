@@ -611,7 +611,7 @@ func permissionContextLines(item v1.Permission) []string {
 	lines := []string{"permission: " + item.ToolID, "reason: " + item.Reason}
 	if len(item.CanonicalInput) > 0 {
 		lines = append(lines, "tool request:")
-		for _, line := range strings.Split(formatPermissionInput(item.CanonicalInput), "\n") {
+		for _, line := range strings.Split(formatJSONAsYAML(item.CanonicalInput), "\n") {
 			lines = append(lines, "  "+line)
 		}
 	}
@@ -621,10 +621,10 @@ func permissionContextLines(item v1.Permission) []string {
 	return lines
 }
 
-// formatPermissionInput presents canonical JSON as block-style YAML. YAML is
+// formatJSONAsYAML presents canonical JSON as block-style YAML. YAML is
 // easier to scan in a narrow terminal and the caller indents every resulting
 // line beneath the "tool request" heading.
-func formatPermissionInput(input json.RawMessage) string {
+func formatJSONAsYAML(input json.RawMessage) string {
 	var document yaml.Node
 	if err := yaml.Unmarshal(input, &document); err != nil {
 		return string(input)

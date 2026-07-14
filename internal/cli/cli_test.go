@@ -683,6 +683,31 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	}
 }
 
+func TestEnhancedFailedToolCommitsInputAsIndentedYAML(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})},
+	}
+	pending, _ := json.Marshal(map[string]any{
+		"call_id": "shell_call",
+		"name":    "shell",
+		"input": map[string]any{
+			"shell":   "bash",
+			"command": "exit 1",
+			"options": map[string]any{"cwd": "/tmp", "env": []string{"CI=1", "COLOR=0"}},
+		},
+	})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "shell", "error": "exit status 1"})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
+
+	got := output.String()
+	want := "input:\n  command: exit 1\n  options:\n    cwd: /tmp\n    env:\n      - CI=1\n      - COLOR=0\n  shell: bash"
+	if !strings.Contains(got, "✗ shell · exit 1 · exit status 1") || !strings.Contains(got, want) {
+		t.Fatalf("failed tool block = %q, want YAML input containing %q", got, want)
+	}
+}
+
 func TestToolActivityLabelDescribesInputs(t *testing.T) {
 	tests := []struct {
 		name  string
