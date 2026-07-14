@@ -117,6 +117,46 @@ func (r *LiveRenderer) SetColumns(columns int) {
 	}
 }
 
+// Columns returns the width used to lay out the next live frame.
+func (r *LiveRenderer) Columns() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.syncColumns()
+	return r.columns
+}
+
+// Marquee returns one display-width-bounded window moving from right to left.
+func Marquee(value string, width, offset int) string {
+	if width <= 0 {
+		return ""
+	}
+	value = strings.Join(strings.Fields(Sanitize(value)), " ")
+	if displayWidth(value) <= width {
+		return value
+	}
+	gap := strings.Repeat(" ", min(3, width))
+	runes := []rune(value + gap)
+	if len(runes) == 0 {
+		return ""
+	}
+	offset %= len(runes)
+	if offset < 0 {
+		offset += len(runes)
+	}
+	var out strings.Builder
+	used := 0
+	for i := 0; i < len(runes) && used < width; i++ {
+		value := runes[(offset+i)%len(runes)]
+		next := runeWidth(value)
+		if used+next > width {
+			break
+		}
+		out.WriteRune(value)
+		used += next
+	}
+	return out.String()
+}
+
 // Update replaces the live region. Input is sanitized and physically wrapped.
 func (r *LiveRenderer) Update(lines []string) error {
 	r.mu.Lock()

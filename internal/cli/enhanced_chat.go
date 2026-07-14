@@ -117,12 +117,13 @@ type queuedChatInput struct {
 }
 
 type enhancedActivityItem struct {
-	id       string
-	label    string
-	status   string
-	started  time.Time
-	ended    time.Time
-	terminal bool
+	id        string
+	label     string
+	status    string
+	started   time.Time
+	ended     time.Time
+	terminal  bool
+	reasoning bool
 }
 
 type enhancedModal struct {
@@ -154,6 +155,7 @@ type enhancedChatRuntime struct {
 	spinner         int
 	interruptCount  int
 	streamed        strings.Builder
+	reasoningText   strings.Builder
 	streamMessageID string
 	pending         []queuedChatInput
 	modal           *enhancedModal
@@ -420,7 +422,7 @@ func (r *enhancedChatRuntime) render() error {
 		busy = false
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
-		Stream: stream, Context: r.modalContext(), Activity: r.activityRows(time.Now()), Status: r.status, Pending: pending,
+		Stream: stream, Context: r.modalContext(), Activity: r.activityRows(time.Now(), r.shell.renderer.Columns()), Status: r.status, Pending: pending,
 		InputLeft: r.inputModeLabel(), InputRight: r.shell.selection.modelLabel(),
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
@@ -434,7 +436,7 @@ func (r *enhancedChatRuntime) modalContext() []string {
 	return r.modal.context
 }
 
-func (r *enhancedChatRuntime) activityRows(now time.Time) []string {
+func (r *enhancedChatRuntime) activityRows(now time.Time, columns int) []string {
 	if len(r.activity) == 0 {
 		return nil
 	}
@@ -444,9 +446,29 @@ func (r *enhancedChatRuntime) activityRows(now time.Time) []string {
 		start = len(r.activity) - 4
 	}
 	for _, item := range r.activity[start:] {
-		rows = append(rows, formatActivity(item, now))
+		if item.reasoning {
+			rows = append(rows, formatReasoningActivity(item, now, columns))
+		} else {
+			rows = append(rows, formatActivity(item, now))
+		}
 	}
 	return rows
+}
+
+func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns int) string {
+	const prefix = "Thought: "
+	elapsed := now.Sub(item.started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	suffix := fmt.Sprintf(" · %.1fs", elapsed.Seconds())
+	width := max(1, columns-len(prefix)-len(suffix)-1)
+	label := item.label
+	if strings.TrimSpace(label) == "" {
+		label = "Thinking…"
+	}
+	offset := int(elapsed / (100 * time.Millisecond))
+	return prefix + terminal.Marquee(label, width, offset) + suffix
 }
 
 func formatActivity(item enhancedActivityItem, now time.Time) string {
@@ -484,10 +506,17 @@ func (r *enhancedChatRuntime) startAssistantActivity(messageID string) {
 	if messageID == "" {
 		messageID = "assistant"
 	}
-	r.upsertActivity(messageID, "Verifying status and context", "thinking", false)
+	r.upsertActivity(messageID, "Verifying status and context", "thinking", false, false)
 }
 
-func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal bool) {
+func (r *enhancedChatRuntime) startReasoningActivity(messageID, label string) {
+	if messageID == "" {
+		messageID = "assistant"
+	}
+	r.upsertActivity(messageID, label, "thinking", false, true)
+}
+
+func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal, reasoning bool) {
 	now := time.Now()
 	for i := range r.activity {
 		if r.activity[i].id != id {
@@ -499,6 +528,7 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal 
 		}
 		r.activity[i].status = status
 		r.activity[i].terminal = terminal
+		r.activity[i].reasoning = reasoning
 		if r.activity[i].started.IsZero() || status == "running" && previous == "pending" {
 			r.activity[i].started = now
 		}
@@ -512,7 +542,7 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal 
 	if label == "" {
 		label = id
 	}
-	r.activity = append(r.activity, enhancedActivityItem{id: id, label: label, status: status, started: now, terminal: terminal})
+	r.activity = append(r.activity, enhancedActivityItem{id: id, label: label, status: status, started: now, terminal: terminal, reasoning: reasoning})
 	if len(r.activity) > 12 {
 		r.activity = r.activity[len(r.activity)-12:]
 	}
@@ -1158,13 +1188,15 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		}
 		if delta.MessageID != "" && delta.MessageID != r.streamMessageID {
 			r.streamed.Reset()
+			r.reasoningText.Reset()
 			r.streamMessageID = delta.MessageID
 		}
 		if delta.Kind == "text" {
 			r.streamed.WriteString(delta.Delta)
 			r.status = ""
 		} else if delta.Kind == "reasoning" {
-			r.startAssistantActivity(delta.MessageID)
+			r.reasoningText.WriteString(delta.Delta)
+			r.startReasoningActivity(delta.MessageID, r.reasoningText.String())
 			if r.shell.options.thinking {
 				r.status = delta.Kind
 			}
@@ -1230,6 +1262,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		}
 		if payload.MessageID != "" && payload.MessageID != r.streamMessageID {
 			r.streamed.Reset()
+			r.reasoningText.Reset()
 			r.streamMessageID = payload.MessageID
 		}
 		r.startAssistantActivity(payload.MessageID)
@@ -1248,7 +1281,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			} else if item.Type == "session.assistant.interrupted" {
 				status = "interrupted"
 			}
-			r.upsertActivity(payload.MessageID, "Verifying status and context", status, true)
+			r.upsertActivity(payload.MessageID, "Verifying status and context", status, true, false)
 		}
 		if err := r.commitCompletedAssistants(payload.MessageID); err != nil {
 			return err
@@ -1267,7 +1300,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	}
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminal := status == "success" || status == "failure" || status == "interrupted"
-	r.upsertActivity(callID, name, status, terminal)
+	r.upsertActivity(callID, name, status, terminal, false)
 	if terminal {
 		r.queueCompletedTool(callID)
 		if err := r.flushCompletedTools(); err != nil {
@@ -1349,6 +1382,7 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 	}
 	if messageID == "" || messageID == r.streamMessageID {
 		r.streamed.Reset()
+		r.reasoningText.Reset()
 		r.streamMessageID = ""
 	}
 	if err := r.flushCompletedTools(); err != nil {
