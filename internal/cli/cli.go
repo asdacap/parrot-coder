@@ -48,7 +48,10 @@ type App struct {
 	open  func(context.Context, app.Options) (*app.App, error)
 }
 
-var enableRawMode = terminal.EnableRawMode
+var (
+	enableRawMode     = terminal.EnableRawMode
+	setBracketedPaste = terminal.SetBracketedPaste
+)
 
 func New(build BuildInfo) *App { return &App{build: build, open: app.Open} }
 
@@ -738,18 +741,24 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 		if rawErr != nil {
 			fmt.Fprintln(stderr, "enhanced terminal unavailable; using plain input:", rawErr)
 		} else {
-			defer raw.Close()
-			shell.enhanced = true
-			shell.stdout = stdout
-			shell.renderer = terminal.NewLiveRenderer(stdout, terminal.RendererConfig{
-				TTY: true, Color: terminal.ColorEnabled(stdout, noColor), Columns: terminal.Columns(stdout), MaxRows: 6, MaxInputRows: 12,
-				ColumnsFunc: func() int { return terminal.Columns(stdout) },
-			})
-			defer shell.renderer.Close()
-			shell.decoder = terminal.NewKeyDecoder(inputFile)
-			shell.editor = terminal.NewEditorDecoder(shell.decoder, stdout,
-				terminal.WithCompletions(chatCompletionCandidates(runtime.Commands)),
-				terminal.WithEditorRenderer(shell.renderer))
+			if err := setBracketedPaste(stdout, true); err != nil {
+				fmt.Fprintln(stderr, "enhanced terminal unavailable; using plain input:", err)
+				_ = raw.Close()
+			} else {
+				defer setBracketedPaste(stdout, false)
+				defer raw.Close()
+				shell.enhanced = true
+				shell.stdout = stdout
+				shell.renderer = terminal.NewLiveRenderer(stdout, terminal.RendererConfig{
+					TTY: true, Color: terminal.ColorEnabled(stdout, noColor), Columns: terminal.Columns(stdout), MaxRows: 6, MaxInputRows: 12,
+					ColumnsFunc: func() int { return terminal.Columns(stdout) },
+				})
+				defer shell.renderer.Close()
+				shell.decoder = terminal.NewKeyDecoder(inputFile)
+				shell.editor = terminal.NewEditorDecoder(shell.decoder, stdout,
+					terminal.WithCompletions(chatCompletionCandidates(runtime.Commands)),
+					terminal.WithEditorRenderer(shell.renderer))
+			}
 		}
 	}
 	if !shell.enhanced {
