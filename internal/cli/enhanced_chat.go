@@ -500,7 +500,7 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	return fmt.Sprintf("%s: %s%s · %.1fs", activityTitle(item.status), item.label, formatActivityUsage(item), elapsed.Seconds())
+	return fmt.Sprintf("%s: %s%s · %.1fs", activityTitle(item.status, elapsed), item.label, formatActivityUsage(item), elapsed.Seconds())
 }
 
 func formatActivityUsage(item enhancedActivityItem) string {
@@ -514,20 +514,21 @@ func formatActivityUsage(item enhancedActivityItem) string {
 	return ""
 }
 
-func activityTitle(status string) string {
+func activityTitle(status string, elapsed time.Duration) string {
 	switch status {
 	case "thinking":
 		return "Thought"
 	case "pending":
-		return "Queued tool"
+		return "○ Queued tool"
 	case "running":
-		return "Tool"
+		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
+		return spinnerFrames[frame] + " Working"
 	case "success":
-		return "Done"
+		return "✓ Done"
 	case "failure":
-		return "Failed"
+		return "✗ Failed"
 	case "interrupted":
-		return "Interrupted"
+		return "■ Interrupted"
 	default:
 		return "Status"
 	}

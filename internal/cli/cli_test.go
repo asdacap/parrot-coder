@@ -193,7 +193,7 @@ func TestNoModelPromptPickerPreservesDraftAndSlashPickers(t *testing.T) {
 		t.Fatalf("code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	combined := stdout.String() + stderr.String()
-	for _, value := range []string{"model> ", "status: model selected local/test", "agent> ", "status: agent selected plan", "session> "} {
+	for _, value := range []string{"model> ", "✓ Model selected: local/test", "agent> ", "✓ Agent selected: plan", "session> "} {
 		if !strings.Contains(combined, value) {
 			t.Errorf("transcript missing %q: %q", value, combined)
 		}
@@ -479,11 +479,48 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			if len(runtime.activity) != 0 {
 				t.Fatalf("completed activity remains live: %#v", runtime.activity)
 			}
-			flushed := strings.Contains(output.String(), "Done: Checking · 12 tokens")
+			flushed := strings.Contains(output.String(), "✓ Done: Checking · 12 tokens")
 			if flushed != test.wantFlushed {
 				t.Fatalf("flushed activity = %t, want %t; output=%q", flushed, test.wantFlushed, output.String())
 			}
 		})
+	}
+}
+
+func TestActivityStatusUsesAccessibleIcons(t *testing.T) {
+	tests := []struct {
+		status string
+		want   string
+	}{
+		{status: "pending", want: "○ Queued tool: task · 1.2s"},
+		{status: "running", want: "⠹ Working: task · 1.2s"},
+		{status: "success", want: "✓ Done: task · 1.2s"},
+		{status: "failure", want: "✗ Failed: task · 1.2s"},
+		{status: "interrupted", want: "■ Interrupted: task · 1.2s"},
+		{status: "unknown", want: "Status: task · 1.2s"},
+	}
+	started := time.Unix(100, 0)
+	for _, test := range tests {
+		item := enhancedActivityItem{label: "task", status: test.status, started: started}
+		if got := formatActivity(item, started.Add(1200*time.Millisecond)); got != test.want {
+			t.Errorf("formatActivity(%q) = %q, want %q", test.status, got, test.want)
+		}
+	}
+}
+
+func TestStreamToolStatusUsesAccessibleIcons(t *testing.T) {
+	tests := map[string]string{
+		"pending":     "○ Queued tool",
+		"running":     "◌ Working: tool",
+		"success":     "✓ Done: tool",
+		"failure":     "✗ Failed: tool",
+		"interrupted": "■ Interrupted: tool",
+		"custom":      "Status: tool custom",
+	}
+	for status, want := range tests {
+		if got := streamToolStatus(status); got != want {
+			t.Errorf("streamToolStatus(%q) = %q, want %q", status, got, want)
+		}
 	}
 }
 
@@ -596,7 +633,7 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	if err := runtime.flushCompletedTools(); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "Done: read · internal/cli/enhanced_chat.go ·") || strings.Contains(got, "call_opaque") {
+	if got := output.String(); !strings.Contains(got, "✓ Done: read · internal/cli/enhanced_chat.go ·") || strings.Contains(got, "call_opaque") {
 		t.Fatalf("committed tool activity = %q", got)
 	}
 }

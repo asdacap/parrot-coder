@@ -69,9 +69,12 @@ $ User message
 
 The `$` marker is the user accent, `-` is the assistant accent, and the divider
 is dim. The divider after an assistant response is also the input area's top
-border. Pending follow-ups appear below it with a written `(queued)` label.
-Status text is dim and errors are red when color is enabled. These labels remain
-present without color, so meaning never depends on styling.
+border. Pending follow-ups appear below it with a written `(○ queued)` label.
+Human-oriented state uses an icon plus a written label where practical: the
+Braille spinner means working, `✓ Done` means success, `✗ Failed` or `✗ Error`
+means failure, `■ Interrupted` means execution stopped, and `○ Queued` means
+pending. Status text is dim and errors are red when color is enabled. The words
+remain present without color, so meaning never depends on styling or symbols.
 
 Ctrl-C clears a nonempty draft. With an empty busy editor, the first Ctrl-C
 requests cancellation and remains in the session; a second interrupt before
@@ -96,7 +99,8 @@ terminal.
 
 ## Accessibility
 
-Status and decisions are expressed in words rather than color or symbols alone.
+Status and decisions are expressed with words even when an icon is also used;
+meaning never depends on color or symbols alone.
 Permission scope and default choices are written before input is requested.
 The working spinner is confined to one renderer-owned cell and never enters the
 committed transcript. There are no repeated transcript blocks. Tables have

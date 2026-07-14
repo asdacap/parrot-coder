@@ -481,10 +481,10 @@ func dividerStatusBar(left, status, right string, columns int) string {
 
 func queuedPreview(value string, columns int) string {
 	const prefix = "$ "
-	const suffix = "  (queued)"
+	const suffix = "  (○ queued)"
 	available := columns - displayWidth(prefix) - displayWidth(suffix)
 	if available <= 0 {
-		return truncateWidth(prefix+"(queued)", max(1, columns-1))
+		return truncateWidth(prefix+"queued", max(1, columns-1))
 	}
 	if displayWidth(value) > available {
 		value = truncateWidth(value, max(1, available-1)) + "…"
@@ -817,6 +817,12 @@ func (r *LiveRenderer) decorate(row string) string {
 		return color("36", "$") + row[1:]
 	case strings.HasPrefix(row, "- "):
 		return color("32", "-") + row[1:]
+	case strings.HasPrefix(row, "✓ "):
+		return color("32", "✓") + row[len("✓"):]
+	case strings.HasPrefix(row, "✗ "):
+		return color("31", row)
+	case strings.HasPrefix(row, "○ ") || strings.HasPrefix(row, "◌ ") || strings.HasPrefix(row, "■ "):
+		return color("2", row)
 	case strings.Trim(row, "─") == "":
 		return color("2;90", row)
 	case strings.HasPrefix(row, "error:"):

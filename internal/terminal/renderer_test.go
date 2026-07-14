@@ -107,6 +107,30 @@ func TestLiveRendererColoredMessagesAlignAndSanitize(t *testing.T) {
 	}
 }
 
+func TestLiveRendererDecoratesIconStatuses(t *testing.T) {
+	renderer := NewLiveRenderer(&bytes.Buffer{}, RendererConfig{TTY: true, Color: true, Columns: 80})
+	tests := map[string]string{
+		"✓ Done: task":        "\x1b[32m✓\x1b[0m Done: task",
+		"✗ Failed: task":      "\x1b[31m✗ Failed: task\x1b[0m",
+		"○ Queued tool: task": "\x1b[2m○ Queued tool: task\x1b[0m",
+		"■ Interrupted: task": "\x1b[2m■ Interrupted: task\x1b[0m",
+	}
+	for input, want := range tests {
+		if got := renderer.decorate(input); got != want {
+			t.Errorf("decorate(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestQueuedPreviewKeepsWrittenLabelAtNarrowWidths(t *testing.T) {
+	if got := queuedPreview("next task", 80); got != "$ next task  (○ queued)" {
+		t.Fatalf("queuedPreview() = %q", got)
+	}
+	if got := queuedPreview("next task", 10); !strings.Contains(got, "queued") {
+		t.Fatalf("narrow queued preview lost written label: %q", got)
+	}
+}
+
 func TestLiveRendererPromptUsesHangingIndentAndExplicitResize(t *testing.T) {
 	var output bytes.Buffer
 	columns := 8
@@ -164,7 +188,7 @@ func TestLiveRendererCompositeFrameKeepsBusyEditorVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(renderer.rows, "\n")
-	for _, want := range []string{"- working response", "─", "$ next task  (queued)", "⠋ $ editable"} {
+	for _, want := range []string{"- working response", "─", "$ next task  (○ queued)", "⠋ $ editable"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("frame missing %q: %#v", want, renderer.rows)
 		}
