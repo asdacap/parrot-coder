@@ -445,7 +445,7 @@ func (r *enhancedChatRuntime) render() error {
 		busy = false
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
-		Stream: stream, Context: r.modalContext(), Activity: r.activityRows(time.Now(), r.shell.renderer.Columns()), Status: r.status, Pending: pending,
+		Stream: stream, PromptContext: r.modalContext(), Activity: r.activityRows(time.Now(), r.shell.renderer.Columns()), Status: r.status, Pending: pending,
 		InputLeft: r.inputModeLabel(), InputRight: r.shell.modelineModelLabel(r.contextTokens),
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
