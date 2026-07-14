@@ -708,6 +708,11 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 	}
 	defer runtime.Close()
 	api := apiClient(runtime.Client)
+	models, err := api.Models(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitError
+	}
 	var current v1.Session
 	if options.continued || options.session != "" {
 		current, err = chooseSession(ctx, api, runtime.Project.ID, options.continued, options.session, "")
@@ -724,6 +729,7 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 	shell := &chatShell{
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
 		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, commands: runtime.Commands,
+		models: models.Items,
 		stdout: plainOut, stderr: stderr, inputTTY: terminal.IsTTY(stdin), outputTTY: terminal.IsTTY(stdout),
 		inputEcho: terminal.InputEchoed(stdin, stdout), columns: terminal.Columns(stdout),
 	}
@@ -779,6 +785,33 @@ func (s chatSelection) modelLabel() string {
 	return "no model"
 }
 
+func (s *chatShell) modelineModelLabel() string {
+	label := s.selection.modelLabel()
+	for _, item := range s.models {
+		if item.Provider == s.selection.provider && item.ID == s.selection.model && item.ContextWindow > 0 {
+			return fmt.Sprintf("%s (%s context)", label, compactTokenCount(item.ContextWindow))
+		}
+	}
+	return label
+}
+
+func compactTokenCount(value int) string {
+	switch {
+	case value >= 1_000_000:
+		if value%1_000_000 == 0 {
+			return fmt.Sprintf("%dm", value/1_000_000)
+		}
+		return fmt.Sprintf("%.1fm", float64(value)/1_000_000)
+	case value >= 1_000:
+		if value%1_000 == 0 {
+			return fmt.Sprintf("%dk", value/1_000)
+		}
+		return fmt.Sprintf("%.1fk", float64(value)/1_000)
+	default:
+		return fmt.Sprintf("%d", value)
+	}
+}
+
 type chatShell struct {
 	ctx         context.Context
 	api         apiClient
@@ -788,6 +821,7 @@ type chatShell struct {
 	projectID   string
 	projectRoot string
 	commands    *customcommand.Registry
+	models      []v1.Model
 	stdout      io.Writer
 	stderr      io.Writer
 	reader      *bufio.Reader
@@ -1048,6 +1082,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 			s.commitError(err.Error())
 			break
 		}
+		s.models = items.Items
 		if len(items.Items) == 0 {
 			s.commit("no models available")
 		}
@@ -1154,7 +1189,8 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 			s.commitError(err.Error())
 			break
 		}
-		if _, err := remote.Models(s.ctx); err != nil {
+		models, err := remote.Models(s.ctx)
+		if err != nil {
 			s.commitError(err.Error())
 			break
 		}
@@ -1177,6 +1213,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		s.api = remote
 		s.current = v1.Session{}
 		s.selection = chatSelection{agent: agent}
+		s.models = models.Items
 		s.commitStatus("status: connected " + argument)
 	case "/thinking":
 		s.options.thinking = !s.options.thinking
@@ -1239,6 +1276,7 @@ func (s *chatShell) selectModel(argument string) error {
 	if err != nil {
 		return err
 	}
+	s.models = items.Items
 	value, err := matchModel(argument, items.Items)
 	if err != nil {
 		return err
@@ -1251,6 +1289,7 @@ func (s *chatShell) pickModel() (string, error) {
 	if err != nil {
 		return "", err
 	}
+	s.models = items.Items
 	candidates := make([]terminal.Candidate, 0, len(items.Items))
 	for _, item := range items.Items {
 		candidates = append(candidates, terminal.Candidate{Value: item.Provider + "/" + item.ID, Description: item.Name})

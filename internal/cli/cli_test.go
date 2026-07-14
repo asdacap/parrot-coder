@@ -450,6 +450,7 @@ func TestEnhancedCycleModeAppliesNextAgentAndUpdatesLabels(t *testing.T) {
 		ctx: context.Background(), api: api,
 		current:   v1.Session{ID: "session", Agent: "build", Provider: "local", Model: "test"},
 		selection: chatSelection{agent: "build", provider: "local", model: "test"},
+		models:    []v1.Model{{Provider: "local", ID: "test", ContextWindow: 128000}},
 	}
 	runtime := &enhancedChatRuntime{shell: shell}
 	if got := runtime.inputModeLabel(); got != "mode: build" {
@@ -457,6 +458,9 @@ func TestEnhancedCycleModeAppliesNextAgentAndUpdatesLabels(t *testing.T) {
 	}
 	if got := shell.selection.modelLabel(); got != "local/test" {
 		t.Fatalf("modelLabel() = %q", got)
+	}
+	if got := shell.modelineModelLabel(); got != "local/test (128k context)" {
+		t.Fatalf("modelineModelLabel() = %q", got)
 	}
 	if err := runtime.cycleMode(); err != nil {
 		t.Fatal(err)
