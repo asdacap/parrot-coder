@@ -427,9 +427,10 @@ func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
 	}
 }
 
-func TestEnhancedAssistantActivityShowsRunningTokenUsage(t *testing.T) {
+func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")
+	runtime.startReasoningActivity("assistant", "Checking the implementation")
 
 	usage, _ := json.Marshal(v1.SessionStatus{
 		MessageID: "assistant",
@@ -439,13 +440,47 @@ func TestEnhancedAssistantActivityShowsRunningTokenUsage(t *testing.T) {
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: usage}); err != nil {
 		t.Fatal(err)
 	}
-	if got := formatActivity(runtime.activity[0], runtime.activity[0].started); !strings.Contains(got, "Verifying status and context · 123 tokens · 0.0s") {
+	if got := formatReasoningActivity(runtime.activity[0], runtime.activity[0].started, 100); !strings.Contains(got, "Checking the implementation · 123 tokens · 0.0s") {
 		t.Fatalf("activity after usage = %q", got)
 	}
 
-	runtime.upsertActivity("assistant", "Verifying status and context", "success", true, false)
-	if !runtime.activity[0].terminal || runtime.activity[0].tokens != 123 || !runtime.activity[0].hasUsage {
+	runtime.completeAssistantActivity("assistant", "success")
+	if !runtime.activity[0].terminal || !runtime.activity[0].reasoning || runtime.activity[0].tokens != 123 || !runtime.activity[0].hasUsage {
 		t.Fatalf("completed activity lost usage: %#v", runtime.activity[0])
+	}
+}
+
+func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		content     string
+		wantFlushed bool
+	}{
+		{name: "message replaces activity", content: "answer"},
+		{name: "no message flushes activity", wantFlushed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Content: test.content, Status: "complete"}}}}
+			var output bytes.Buffer
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80})
+			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
+			runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+			runtime.startAssistantActivity("assistant")
+			runtime.startReasoningActivity("assistant", "Checking")
+			runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 12})
+			runtime.completeAssistantActivity("assistant", "success")
+
+			if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+				t.Fatal(err)
+			}
+			if len(runtime.activity) != 0 {
+				t.Fatalf("completed activity remains live: %#v", runtime.activity)
+			}
+			flushed := strings.Contains(output.String(), "Done: Checking · 12 tokens")
+			if flushed != test.wantFlushed {
+				t.Fatalf("flushed activity = %t, want %t; output=%q", flushed, test.wantFlushed, output.String())
+			}
+		})
 	}
 }
 

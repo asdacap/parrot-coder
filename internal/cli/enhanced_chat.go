@@ -562,6 +562,36 @@ func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.U
 	}
 }
 
+func (r *enhancedChatRuntime) completeAssistantActivity(id, status string) {
+	now := time.Now()
+	for i := range r.activity {
+		if r.activity[i].id != id {
+			continue
+		}
+		r.activity[i].status = status
+		r.activity[i].terminal = true
+		r.activity[i].ended = now
+		return
+	}
+}
+
+func (r *enhancedChatRuntime) finishAssistantActivity(id string, flush bool) error {
+	for i := range r.activity {
+		if r.activity[i].id != id {
+			continue
+		}
+		if flush && r.shell != nil && r.shell.renderer != nil {
+			if err := r.shell.renderer.Commit(formatActivity(r.activity[i], time.Now())); err != nil {
+				return err
+			}
+			r.borderCommitted = false
+		}
+		r.activity = append(r.activity[:i], r.activity[i+1:]...)
+		return nil
+	}
+	return nil
+}
+
 func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal, reasoning bool) {
 	now := time.Now()
 	for i := range r.activity {
@@ -1358,7 +1388,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			} else if item.Type == "session.assistant.interrupted" {
 				status = "interrupted"
 			}
-			r.upsertActivity(payload.MessageID, "Verifying status and context", status, true, false)
+			r.completeAssistantActivity(payload.MessageID, status)
 		}
 		if err := r.commitCompletedAssistants(payload.MessageID); err != nil {
 			return err
@@ -1598,6 +1628,9 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		}
 		if item.Error != "" {
 			r.commitError(item.Error)
+		}
+		if err := r.finishAssistantActivity(item.ID, item.Content == ""); err != nil {
+			return err
 		}
 		r.knownMessages[item.ID] = true
 	}
