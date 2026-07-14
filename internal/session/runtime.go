@@ -328,23 +328,30 @@ func (s *Service) SettleTool(ctx context.Context, sessionID, callID, status, res
 }
 
 func (s *Service) transitionTool(ctx context.Context, sessionID, callID, status, resultText, errorText string) error {
-	payload, _ := json.Marshal(map[string]string{"call_id": callID, "status": status, "result": resultText, "error": errorText})
-	_, err := s.events.Append(ctx, sessionID, []event.NewEvent{{Type: "session.tool." + status, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-		query := `UPDATE session_tool_call SET status=? WHERE id=? AND session_id=? AND status='pending'`
-		args := []any{status, callID, sessionID}
-		if status != "running" {
-			query = `UPDATE session_tool_call SET status=?,result_text=?,error_text=?,settled_sequence=?,settled_at=? WHERE id=? AND session_id=? AND status IN ('pending','running')`
-			args = []any{status, resultText, errorText, events[0].Sequence, formatTime(events[0].CreatedAt), callID, sessionID}
+	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
+		var name string
+		if err := tx.QueryRowContext(ctx, `SELECT name FROM session_tool_call WHERE id=? AND session_id=?`, callID, sessionID).Scan(&name); err != nil {
+			return nil, nil, err
 		}
-		res, err := tx.ExecContext(ctx, query, args...)
-		if err != nil {
-			return err
+		payload, _ := json.Marshal(map[string]string{"call_id": callID, "tool_name": name, "status": status, "result": resultText, "error": errorText})
+		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+			query := `UPDATE session_tool_call SET status=? WHERE id=? AND session_id=? AND status='pending'`
+			args := []any{status, callID, sessionID}
+			if status != "running" {
+				query = `UPDATE session_tool_call SET status=?,result_text=?,error_text=?,settled_sequence=?,settled_at=? WHERE id=? AND session_id=? AND status IN ('pending','running')`
+				args = []any{status, resultText, errorText, events[0].Sequence, formatTime(events[0].CreatedAt), callID, sessionID}
+			}
+			res, err := tx.ExecContext(ctx, query, args...)
+			if err != nil {
+				return err
+			}
+			n, _ := res.RowsAffected()
+			if n != 1 {
+				return errors.New("session: tool call is not active")
+			}
+			return nil
 		}
-		n, _ := res.RowsAffected()
-		if n != 1 {
-			return errors.New("session: tool call is not active")
-		}
-		return nil
+		return []event.NewEvent{{Type: "session.tool." + status, Data: payload}}, project, nil
 	})
 	return err
 }

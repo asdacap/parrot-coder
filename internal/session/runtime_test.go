@@ -100,6 +100,15 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 		t.Fatalf("tool state = %q, %q", toolStatus, toolError)
 	}
 	eventsBefore, _ := repository.List(ctx, created.ID, -1, 100)
+	for _, item := range eventsBefore {
+		if item.Type != "session.tool.running" {
+			continue
+		}
+		var payload map[string]string
+		if err := json.Unmarshal(item.Data, &payload); err != nil || payload["tool_name"] != "tool" {
+			t.Fatalf("running tool event lost its name: %s, %v", item.Data, err)
+		}
+	}
 	if err := service.RepairActive(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
