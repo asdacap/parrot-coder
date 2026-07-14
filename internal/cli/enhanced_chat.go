@@ -925,7 +925,10 @@ func (r *enhancedChatRuntime) updateQuestionPrompt() {
 	if len(options) > 0 {
 		suffix = " [" + strings.Join(options, "/") + "]"
 	}
-	r.modal.prompt = question.Prompt + suffix + ": "
+	// The question text is already rendered in the modal context. Keep the
+	// editor prefix focused on the expected answer so the full question is not
+	// displayed a second time immediately below it.
+	r.modal.prompt = "answer" + suffix + ": "
 }
 
 func (r *enhancedChatRuntime) showPermissionContext(permission v1.Permission) {
