@@ -21,6 +21,8 @@ import (
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 var errInvalidModalAnswer = errors.New("invalid modal answer")
 
+const maxToolBlockLines = 10
+
 func isExecutionHaltKey(key terminal.Key) bool {
 	return key.Kind == terminal.KeyEscape || key.Kind == terminal.KeyInterrupt
 }
@@ -729,9 +731,6 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal,
 		label = id
 	}
 	r.activity = append(r.activity, enhancedActivityItem{id: id, label: label, status: status, started: now, terminal: terminal, reasoning: reasoning})
-	if len(r.activity) > 12 {
-		r.activity = r.activity[len(r.activity)-12:]
-	}
 }
 
 func (r *enhancedChatRuntime) queueCompletedTool(id string) {
@@ -1624,7 +1623,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	if terminal && status == "success" && name == "edit" && strings.TrimSpace(result) != "" {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
-				r.activity[i].block = strings.TrimRight(result, "\r\n")
+				r.activity[i].block = truncateToolBlock(result, maxToolBlockLines)
 				break
 			}
 		}
@@ -1658,7 +1657,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	if terminal && status == "failure" {
 		for i := range r.activity {
 			if r.activity[i].id == callID && r.activity[i].input != nil {
-				r.activity[i].block = formatFailedToolInput(r.activity[i].input)
+				r.activity[i].block = truncateToolBlock(formatFailedToolRequest(r.activity[i].input), maxToolBlockLines)
 				break
 			}
 		}
@@ -1671,12 +1670,23 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	}
 }
 
-func formatFailedToolInput(input map[string]any) string {
+func truncateToolBlock(block string, maxLines int) string {
+	block = strings.ReplaceAll(block, "\r\n", "\n")
+	block = strings.TrimRight(block, "\r\n")
+	lines := strings.Split(block, "\n")
+	if maxLines <= 0 || len(lines) <= maxLines {
+		return block
+	}
+	remaining := len(lines) - maxLines
+	return strings.Join(lines[:maxLines], "\n") + fmt.Sprintf("\n… %d more lines", remaining)
+}
+
+func formatFailedToolRequest(input map[string]any) string {
 	encoded, err := json.Marshal(input)
 	if err != nil {
 		return ""
 	}
-	lines := []string{"input:"}
+	lines := []string{"request:"}
 	for _, line := range strings.Split(formatJSONAsYAML(encoded), "\n") {
 		lines = append(lines, "  "+line)
 	}
@@ -1782,16 +1792,16 @@ func todoActivityMarker(status string) string {
 }
 
 func toolActivityError(data json.RawMessage) string {
-	var raw map[string]any
-	if len(data) == 0 || json.Unmarshal(data, &raw) != nil {
+	raw, ok := decodeJSONObject(data)
+	if !ok {
 		return ""
 	}
 	return firstString(raw, "error", "error_message", "message")
 }
 
 func toolActivityPayload(data json.RawMessage) (string, string, map[string]any, string) {
-	var raw map[string]any
-	if len(data) == 0 || json.Unmarshal(data, &raw) != nil {
+	raw, ok := decodeJSONObject(data)
+	if !ok {
 		return "", "", nil, ""
 	}
 	callID := firstString(raw, "call_id", "callID", "id", "ID")
@@ -1813,6 +1823,23 @@ func toolActivityPayload(data json.RawMessage) (string, string, map[string]any, 
 		}
 	}
 	return callID, name, input, result
+}
+
+func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
+	if len(data) == 0 {
+		return nil, false
+	}
+	decoder := json.NewDecoder(strings.NewReader(string(data)))
+	decoder.UseNumber()
+	var raw map[string]any
+	if err := decoder.Decode(&raw); err != nil {
+		return nil, false
+	}
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		return nil, false
+	}
+	return raw, true
 }
 
 func todoWriteNameFromLabel(label string) string {
