@@ -173,6 +173,23 @@ func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T
 	}
 }
 
+func TestShellDefaultsShellAndWorkingDirectory(t *testing.T) {
+	_, ws, _, _, _ := phase6Harness(t)
+	t.Setenv("SHELL", "/bin/sh")
+	planned, err := NewShellTool(nil).Plan(context.Background(), json.RawMessage(`{"command":"printf ok"}`), CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := planned.Data.(shellInput)
+	if input.Shell != "/bin/sh" || input.Cwd != ws.Root() || input.ResolvedCwd != ws.Root() {
+		t.Fatalf("defaults = %#v", input)
+	}
+	schema := string(NewShellTool(nil).JSONSchema())
+	if strings.Contains(schema, `"required":["shell"`) || !strings.Contains(schema, `"required":["command"]`) {
+		t.Fatalf("shell should be optional in schema: %s", schema)
+	}
+}
+
 func TestRegisterPhase6Definitions(t *testing.T) {
 	registry := NewRegistry()
 	if err := RegisterPhase6(registry, Phase6Services{}); err != nil {

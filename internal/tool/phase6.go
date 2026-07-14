@@ -173,10 +173,10 @@ func NewShellTool(runner *process.Runner) *ShellTool { return &ShellTool{Runner:
 
 func (*ShellTool) ID() string { return "shell" }
 func (*ShellTool) Description() string {
-	return "Execute an arbitrary process through an explicit shell in the workspace. Shell permission permits arbitrary process execution."
+	return "Execute an arbitrary process through a shell in the workspace. The shell and working directory are detected from the environment and workspace when omitted. Shell permission permits arbitrary process execution."
 }
 func (*ShellTool) JSONSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"shell":{"type":"string"},"command":{"type":"string"},"cwd":{"type":"string"},"env":{"type":"object","additionalProperties":true},"timeout_ms":{"type":"integer"}},"required":["shell","command"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"shell":{"type":"string","description":"Absolute shell path; automatically detected when omitted"},"command":{"type":"string"},"cwd":{"type":"string","description":"Working directory; defaults to the workspace root"},"env":{"type":"object","additionalProperties":true},"timeout_ms":{"type":"integer","minimum":0}},"required":["command"],"additionalProperties":false}`)
 }
 
 type shellInput struct {
@@ -197,8 +197,18 @@ func (t *ShellTool) Plan(ctx context.Context, raw json.RawMessage, call CallCont
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	if input.Shell == "" || !filepath.IsAbs(input.Shell) || input.Command == "" || input.TimeoutMS < 0 || input.TimeoutMS > int64((24*time.Hour)/time.Millisecond) {
-		return Plan{}, errors.New("shell: absolute shell, command, and nonnegative timeout are required")
+	if input.Command == "" || input.TimeoutMS < 0 || input.TimeoutMS > int64((24*time.Hour)/time.Millisecond) {
+		return Plan{}, errors.New("shell: command and a nonnegative timeout are required")
+	}
+	if input.Shell == "" {
+		var err error
+		input.Shell, err = process.DefaultShell()
+		if err != nil {
+			return Plan{}, fmt.Errorf("shell: detect executable: %w", err)
+		}
+	}
+	if !filepath.IsAbs(input.Shell) {
+		return Plan{}, errors.New("shell: shell must be an absolute path when specified")
 	}
 	resolvedShell, err := filepath.EvalSymlinks(input.Shell)
 	if err != nil {
@@ -208,11 +218,10 @@ func (t *ShellTool) Plan(ctx context.Context, raw json.RawMessage, call CallCont
 	if err != nil || !shellInfo.Mode().IsRegular() || shellInfo.Mode().Perm()&0o111 == 0 {
 		return Plan{}, errors.New("shell: shell is not an executable regular file")
 	}
-	cwd := input.Cwd
-	if cwd == "" {
-		cwd = "."
+	if input.Cwd == "" {
+		input.Cwd = call.Workspace.Root()
 	}
-	resolved, err := call.Workspace.ResolveRead(cwd)
+	resolved, err := call.Workspace.ResolveRead(input.Cwd)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -250,11 +259,7 @@ func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	if err != nil || resolvedShell != input.ResolvedShell {
 		return Result{}, errors.New("shell: executable changed after planning")
 	}
-	cwd := input.Cwd
-	if cwd == "" {
-		cwd = "."
-	}
-	resolvedCwd, err := call.Workspace.ResolveRead(cwd)
+	resolvedCwd, err := call.Workspace.ResolveRead(input.Cwd)
 	if err != nil || resolvedCwd != input.ResolvedCwd {
 		return Result{}, errors.New("shell: cwd changed after planning")
 	}

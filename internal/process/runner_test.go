@@ -61,6 +61,18 @@ func TestExitOutputCwdAndEnvironment(t *testing.T) {
 	}
 }
 
+func TestRunDetectsShellWhenOmitted(t *testing.T) {
+	t.Setenv("SHELL", "/bin/sh")
+	runner := testRunner(t, Config{})
+	result, err := runner.Run(context.Background(), Request{Command: "printf detected"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "detected" || result.ExitCode != 0 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestStreamsFullOutputToStoreWhileBoundingMemory(t *testing.T) {
 	store := &memoryOutputStore{}
 	runner := testRunner(t, Config{MaxOutputBytes: 4, OutputStore: store})
