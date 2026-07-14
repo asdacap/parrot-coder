@@ -30,6 +30,7 @@ const (
 	KeyInterrupt
 	KeyEOF
 	KeyPaste
+	KeyModeSwitch
 )
 
 // Key is one decoded input event. Text is populated for KeyPaste.
@@ -81,6 +82,8 @@ func (d *KeyDecoder) ReadKey(ctx context.Context) (Key, error) {
 	switch b {
 	case 0x03:
 		return Key{Kind: KeyInterrupt}, nil
+	case 0x1e:
+		return Key{Kind: KeyModeSwitch}, nil
 	case 0x04:
 		return Key{Kind: KeyEOF}, nil
 	case '\t':

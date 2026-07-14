@@ -172,3 +172,26 @@ func TestLiveRendererCompositeFrameKeepsBusyEditorVisible(t *testing.T) {
 		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
 	}
 }
+
+func TestLiveRendererCompositeFrameShowsInputStatusBar(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 40, MaxRows: 6})
+	err := renderer.Frame(LiveFrame{
+		MessagePrefix: "- ", Message: "working response",
+		InputLeft: "mode: build", InputRight: "local/test",
+		Prompt:      PromptState{Prefix: "$ ", Text: "editable", Cursor: 8},
+		ShowDivider: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(renderer.rows, "\n")
+	for _, want := range []string{"mode: build", "local/test", "$ editable"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("frame missing %q: %#v", want, renderer.rows)
+		}
+	}
+	if renderer.cursorRow != len(renderer.rows)-1 {
+		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
+	}
+}

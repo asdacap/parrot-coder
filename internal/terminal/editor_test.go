@@ -140,6 +140,17 @@ func TestKeyDecoderIgnoresTimedTTYEOF(t *testing.T) {
 	}
 }
 
+func TestKeyDecoderModeSwitch(t *testing.T) {
+	decoder := NewKeyDecoder(bytes.NewBufferString("\x1e"))
+	key, err := decoder.ReadKey(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if key.Kind != KeyModeSwitch {
+		t.Fatalf("key kind = %v, want %v", key.Kind, KeyModeSwitch)
+	}
+}
+
 func TestIncrementalEditorStateMatchesBlockingEditing(t *testing.T) {
 	editor := NewEditorIO(bytes.NewBuffer(nil), nil, WithCompletions([]Candidate{{Value: "/status", Description: "state"}}))
 	state, err := editor.Start("ab")

@@ -357,6 +357,8 @@ func (s *EditorState) Handle(key Key) EditorResult {
 		}
 	case KeyInterrupt:
 		return EditorResult{Done: true, Err: ErrInterrupted}
+	case KeyModeSwitch:
+		return EditorResult{}
 	case KeyEnter:
 		matches := s.editor.visibleMatches(string(s.buffer), s.menuClosed, s.tabMatches)
 		exact := false

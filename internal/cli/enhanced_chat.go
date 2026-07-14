@@ -218,6 +218,17 @@ func (s *chatShell) runEnhanced(first string) int {
 				runtime.commitError(result.err.Error())
 				return exitError
 			}
+			if result.key.Kind == terminal.KeyModeSwitch {
+				close(result.ack)
+				if err := runtime.cycleMode(); err != nil {
+					runtime.status = err.Error()
+				}
+				if err := runtime.render(); err != nil {
+					return exitError
+				}
+				continue
+			}
+
 			targetState := state
 			modalAction := false
 			if runtime.modal != nil && result.epoch == runtime.inputMode.current() {
@@ -355,6 +366,7 @@ func (r *enhancedChatRuntime) render() error {
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
 		MessagePrefix: prefix, Message: message, Activity: r.activityRows(time.Now()), Status: r.status, Pending: pending,
+		InputLeft: r.inputModeLabel(), InputRight: r.shell.selection.modelLabel(),
 		Prompt: prompt, Busy: r.busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})
@@ -438,6 +450,31 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal 
 	if len(r.activity) > 12 {
 		r.activity = r.activity[len(r.activity)-12:]
 	}
+}
+
+func (r *enhancedChatRuntime) inputModeLabel() string {
+	mode := r.shell.selection.agent
+	if mode == "" {
+		mode = "unknown"
+	}
+	return "mode: " + mode
+}
+
+func (r *enhancedChatRuntime) cycleMode() error {
+	previous := r.shell.selection.agent
+	next, err := r.shell.nextAgent(previous)
+	if err != nil {
+		return err
+	}
+	if next == previous {
+		r.status = "mode: " + next
+		return nil
+	}
+	if err := r.shell.applyAgent(next, false); err != nil {
+		return err
+	}
+	r.status = "mode: " + next
+	return nil
 }
 
 func (r *enhancedChatRuntime) ensureInputBorder() error {

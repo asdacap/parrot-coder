@@ -788,6 +788,13 @@ func (s chatSelection) modelName() string {
 	return s.provider + "/" + s.model
 }
 
+func (s chatSelection) modelLabel() string {
+	if value := s.modelName(); value != "" {
+		return value
+	}
+	return "no model"
+}
+
 type chatShell struct {
 	ctx         context.Context
 	api         apiClient
@@ -1289,6 +1296,10 @@ func (s *chatShell) applyModel(value string) error {
 }
 
 func (s *chatShell) selectAgent(argument string) error {
+	return s.applyAgent(argument, true)
+}
+
+func (s *chatShell) applyAgent(argument string, announce bool) error {
 	items, err := s.api.Agents(s.ctx)
 	if err != nil {
 		return err
@@ -1307,8 +1318,26 @@ func (s *chatShell) selectAgent(argument string) error {
 	}
 	s.selection.agent = argument
 	s.current.Agent = argument
-	s.commitStatus("status: agent selected " + argument)
+	if announce {
+		s.commitStatus("status: agent selected " + argument)
+	}
 	return nil
+}
+
+func (s *chatShell) nextAgent(current string) (string, error) {
+	items, err := s.api.Agents(s.ctx)
+	if err != nil {
+		return "", err
+	}
+	if len(items.Items) == 0 {
+		return "", errors.New("no agents available")
+	}
+	for i, item := range items.Items {
+		if item.ID == current {
+			return items.Items[(i+1)%len(items.Items)].ID, nil
+		}
+	}
+	return items.Items[0].ID, nil
 }
 
 func matchModel(argument string, items []v1.Model) (string, error) {

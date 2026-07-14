@@ -444,6 +444,34 @@ func TestEnhancedKeyPumpDoesNotConsumePastUnacknowledgedKey(t *testing.T) {
 	pump.stop()
 }
 
+func TestEnhancedCycleModeAppliesNextAgentAndUpdatesLabels(t *testing.T) {
+	api := &modeSwitchAPI{agents: v1.AgentList{Items: []v1.Agent{{ID: "build"}, {ID: "plan"}, {ID: "explore"}}}}
+	shell := &chatShell{
+		ctx: context.Background(), api: api,
+		current:   v1.Session{ID: "session", Agent: "build", Provider: "local", Model: "test"},
+		selection: chatSelection{agent: "build", provider: "local", model: "test"},
+	}
+	runtime := &enhancedChatRuntime{shell: shell}
+	if got := runtime.inputModeLabel(); got != "mode: build" {
+		t.Fatalf("inputModeLabel() = %q", got)
+	}
+	if got := shell.selection.modelLabel(); got != "local/test" {
+		t.Fatalf("modelLabel() = %q", got)
+	}
+	if err := runtime.cycleMode(); err != nil {
+		t.Fatal(err)
+	}
+	if shell.selection.agent != "plan" || shell.current.Agent != "plan" || runtime.status != "mode: plan" {
+		t.Fatalf("mode not updated: selection=%#v current=%#v status=%q", shell.selection, shell.current, runtime.status)
+	}
+	if len(api.updates) != 1 || api.updates[0].Agent != "plan" {
+		t.Fatalf("updates = %#v", api.updates)
+	}
+	if got := (chatSelection{}).modelLabel(); got != "no model" {
+		t.Fatalf("empty modelLabel() = %q", got)
+	}
+}
+
 func TestEnhancedErrorStopsSpinnerAndLateDeltaIsIgnored(t *testing.T) {
 	api := &enhancedQueueAPI{}
 	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
@@ -551,6 +579,19 @@ type catalogOnlyAPI struct {
 }
 
 func (a catalogOnlyAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
+
+type modeSwitchAPI struct {
+	apiClient
+	agents  v1.AgentList
+	updates []v1.UpdateSessionSelectionRequest
+}
+
+func (a *modeSwitchAPI) Agents(context.Context) (v1.AgentList, error) { return a.agents, nil }
+
+func (a *modeSwitchAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
+	a.updates = append(a.updates, request)
+	return v1.SessionSelection{Agent: request.Agent}, nil
+}
 
 type staticMessageClient struct{ items v1.MessageList }
 

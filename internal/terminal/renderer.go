@@ -40,6 +40,8 @@ type LiveFrame struct {
 	Message       string
 	Activity      []string
 	Status        string
+	InputLeft     string
+	InputRight    string
 	Pending       []string
 	Prompt        PromptState
 	Busy          bool
@@ -181,7 +183,11 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	if frame.ShowDivider {
 		dividerRows = 1
 	}
-	available := max(0, r.maxRows-dividerRows-len(promptRows))
+	barRows := 0
+	if frame.InputLeft != "" || frame.InputRight != "" {
+		barRows = 1
+	}
+	available := max(0, r.maxRows-dividerRows-barRows-len(promptRows))
 	pendingCount := min(len(frame.Pending), min(2, available))
 	var pendingRows []string
 	for i := len(frame.Pending) - 1; i >= len(frame.Pending)-pendingCount; i-- {
@@ -194,9 +200,12 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		pendingRows = append(group, pendingRows...)
 	}
 
-	inputRows := make([]string, 0, dividerRows+len(pendingRows)+len(promptRows))
+	inputRows := make([]string, 0, dividerRows+barRows+len(pendingRows)+len(promptRows))
 	if frame.ShowDivider {
 		inputRows = append(inputRows, strings.Repeat("─", max(3, r.columns-1)))
+	}
+	if barRows > 0 {
+		inputRows = append(inputRows, statusBar(frame.InputLeft, frame.InputRight, r.columns))
 	}
 	inputRows = append(inputRows, pendingRows...)
 	inputRows = append(inputRows, promptRows...)
@@ -216,7 +225,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		activity = activity[len(activity)-remaining:]
 	}
 	rows := append(activity, inputRows...)
-	cursorRow := len(activity) + dividerRows + len(pendingRows) + promptCursorRow
+	cursorRow := len(activity) + dividerRows + barRows + len(pendingRows) + promptCursorRow
 	if !r.tty {
 		return r.writePlain(rows)
 	}
@@ -270,6 +279,32 @@ func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, 
 		rows = append(rows, group...)
 	}
 	return rows, cursorRow, cursorCol
+}
+
+func statusBar(left, right string, columns int) string {
+	left = Sanitize(left)
+	right = Sanitize(right)
+	if columns <= 1 {
+		return ""
+	}
+	width := columns - 1
+	if right == "" {
+		return truncateWidth(left, width)
+	}
+	if left == "" {
+		return truncateWidth(right, width)
+	}
+	if displayWidth(left)+1+displayWidth(right) <= width {
+		return left + strings.Repeat(" ", width-displayWidth(left)-displayWidth(right)) + right
+	}
+	rightWidth := min(displayWidth(right), max(1, width/2))
+	right = truncateWidth(right, rightWidth)
+	leftWidth := max(0, width-displayWidth(right)-1)
+	left = truncateWidth(left, leftWidth)
+	if left == "" {
+		return truncateWidth(right, width)
+	}
+	return left + " " + right
 }
 
 func queuedPreview(value string, columns int) string {
