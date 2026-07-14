@@ -738,6 +738,29 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestPermissionContextFormatsAndIndentsInputAsYAML(t *testing.T) {
+	lines := permissionContextLines(v1.Permission{
+		ToolID:         "shell",
+		Reason:         "default policy",
+		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build","options":{"cwd":"/tmp","env":["CI=1","COLOR=0"]}}`),
+	})
+	want := []string{
+		"permission: shell",
+		"reason: default policy",
+		"tool request:",
+		"  shell: bash",
+		"  command: rm -rf build",
+		"  options:",
+		"    cwd: /tmp",
+		"    env:",
+		"      - CI=1",
+		"      - COLOR=0",
+	}
+	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
+		t.Fatalf("permission context:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
 func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
 		ID: "permission", ToolID: "shell", Reason: "default policy",
@@ -775,7 +798,7 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
 	if !strings.Contains(frame, "permission: shell") || !strings.Contains(frame, "reason: default policy") ||
-		!strings.Contains(frame, "tool request:") || !strings.Contains(frame, `"command": "rm -rf build"`) ||
+		!strings.Contains(frame, "tool request:") || !strings.Contains(frame, "  command: rm -rf build") ||
 		!strings.Contains(frame, "resource: process execute /bin/bash") ||
 		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
 		!strings.Contains(frame, "enable yolo") {
