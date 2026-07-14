@@ -121,6 +121,7 @@ type queuedChatInput struct {
 type enhancedActivityItem struct {
 	id        string
 	label     string
+	input     map[string]any
 	error     string
 	status    string
 	tokens    int
@@ -1544,6 +1545,14 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminal := status == "success" || status == "failure" || status == "interrupted"
 	r.upsertActivity(callID, label, status, terminal, false)
+	if input != nil {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				r.activity[i].input = input
+				break
+			}
+		}
+	}
 	if terminal && status == "success" && name == "edit" && strings.TrimSpace(result) != "" {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
@@ -1560,12 +1569,32 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
+	if terminal && status == "failure" {
+		for i := range r.activity {
+			if r.activity[i].id == callID && r.activity[i].input != nil {
+				r.activity[i].block = formatFailedToolInput(r.activity[i].input)
+				break
+			}
+		}
+	}
 	if terminal {
 		r.queueCompletedTool(callID)
 		if err := r.flushCompletedTools(); err != nil {
 			r.status = "tool activity flush failed"
 		}
 	}
+}
+
+func formatFailedToolInput(input map[string]any) string {
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return ""
+	}
+	lines := []string{"input:"}
+	for _, line := range strings.Split(formatJSONAsYAML(encoded), "\n") {
+		lines = append(lines, "  "+line)
+	}
+	return strings.Join(lines, "\n")
 }
 
 func toolActivityError(data json.RawMessage) string {

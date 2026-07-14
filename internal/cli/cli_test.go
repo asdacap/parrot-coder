@@ -740,6 +740,31 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	}
 }
 
+func TestEnhancedFailedToolCommitsInputAsIndentedYAML(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})},
+	}
+	pending, _ := json.Marshal(map[string]any{
+		"call_id": "shell_call",
+		"name":    "shell",
+		"input": map[string]any{
+			"shell":   "bash",
+			"command": "exit 1",
+			"options": map[string]any{"cwd": "/tmp", "env": []string{"CI=1", "COLOR=0"}},
+		},
+	})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "shell", "error": "exit status 1"})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
+
+	got := output.String()
+	want := "input:\n  command: exit 1\n  options:\n    cwd: /tmp\n    env:\n      - CI=1\n      - COLOR=0\n  shell: bash"
+	if !strings.Contains(got, "✗ shell · exit 1 · exit status 1") || !strings.Contains(got, want) {
+		t.Fatalf("failed tool block = %q, want YAML input containing %q", got, want)
+	}
+}
+
 func TestToolActivityLabelDescribesInputs(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -795,6 +820,29 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestPermissionContextFormatsAndIndentsInputAsYAML(t *testing.T) {
+	lines := permissionContextLines(v1.Permission{
+		ToolID:         "shell",
+		Reason:         "default policy",
+		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build","options":{"cwd":"/tmp","env":["CI=1","COLOR=0"]}}`),
+	})
+	want := []string{
+		"permission: shell",
+		"reason: default policy",
+		"tool request:",
+		"  shell: bash",
+		"  command: rm -rf build",
+		"  options:",
+		"    cwd: /tmp",
+		"    env:",
+		"      - CI=1",
+		"      - COLOR=0",
+	}
+	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
+		t.Fatalf("permission context:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+}
+
 func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
 		ID: "permission", ToolID: "shell", Reason: "default policy",
@@ -832,7 +880,7 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
 	if !strings.Contains(frame, "permission: shell") || !strings.Contains(frame, "reason: default policy") ||
-		!strings.Contains(frame, "tool request:") || !strings.Contains(frame, `"command": "rm -rf build"`) ||
+		!strings.Contains(frame, "tool request:") || !strings.Contains(frame, "  command: rm -rf build") ||
 		!strings.Contains(frame, "resource: process execute /bin/bash") ||
 		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
 		!strings.Contains(frame, "enable yolo") {

@@ -30,6 +30,7 @@ import (
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
+	"go.yaml.in/yaml/v3"
 )
 
 const (
@@ -610,12 +611,8 @@ func writeAll(w io.Writer, value string) error {
 func permissionContextLines(item v1.Permission) []string {
 	lines := []string{"permission: " + item.ToolID, "reason: " + item.Reason}
 	if len(item.CanonicalInput) > 0 {
-		var formatted bytes.Buffer
-		if err := json.Indent(&formatted, item.CanonicalInput, "", "  "); err != nil {
-			formatted.Write(item.CanonicalInput)
-		}
 		lines = append(lines, "tool request:")
-		for _, line := range strings.Split(formatted.String(), "\n") {
+		for _, line := range strings.Split(formatJSONAsYAML(item.CanonicalInput), "\n") {
 			lines = append(lines, "  "+line)
 		}
 	}
@@ -623,6 +620,32 @@ func permissionContextLines(item v1.Permission) []string {
 		lines = append(lines, fmt.Sprintf("resource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier))
 	}
 	return lines
+}
+
+// formatJSONAsYAML presents canonical JSON as block-style YAML. YAML is
+// easier to scan in a narrow terminal and the caller indents every resulting
+// line beneath the "tool request" heading.
+func formatJSONAsYAML(input json.RawMessage) string {
+	var document yaml.Node
+	if err := yaml.Unmarshal(input, &document); err != nil {
+		return string(input)
+	}
+	setYAMLBlockStyle(&document)
+	var formatted bytes.Buffer
+	encoder := yaml.NewEncoder(&formatted)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&document); err != nil {
+		return string(input)
+	}
+	_ = encoder.Close()
+	return strings.TrimSuffix(formatted.String(), "\n")
+}
+
+func setYAMLBlockStyle(node *yaml.Node) {
+	node.Style = 0
+	for _, child := range node.Content {
+		setYAMLBlockStyle(child)
+	}
 }
 
 func writePermissionContext(w io.Writer, item v1.Permission) {
