@@ -40,7 +40,7 @@ func TestEncodeRequest(t *testing.T) {
 
 func TestParserInterleavedFunctionsTextReasoningUsageAndCompletion(t *testing.T) {
 	fixture := streamFixture(
-		`{"type":"response.reasoning_summary_text.delta","delta":"thinking"}`,
+		`{"type":"response.reasoning_summary_text.delta","item_id":"reasoning_item","summary_index":0,"delta":"thinking"}`,
 		`{"type":"response.output_text.delta","delta":"result"}`,
 		`{"type":"response.output_item.added","item":{"id":"item_b","type":"function_call","call_id":"call_b","name":"beta","arguments":""}}`,
 		`{"type":"response.output_item.added","item":{"id":"item_a","type":"function_call","call_id":"call_a","name":"alpha","arguments":""}}`,
@@ -66,6 +66,9 @@ func TestParserInterleavedFunctionsTextReasoningUsageAndCompletion(t *testing.T)
 		if events[index].Type != want {
 			t.Fatalf("event %d type = %q, want %q", index, events[index].Type, want)
 		}
+	}
+	if events[0].PartID != "reasoning_item:reasoning:0" {
+		t.Fatalf("reasoning part ID = %q", events[0].PartID)
 	}
 	if events[6].ToolCall.ID != "call_a" || string(events[6].ToolCall.Input) != `{"a":1}` {
 		t.Fatalf("first tool = %#v", events[6].ToolCall)

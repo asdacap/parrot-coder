@@ -141,15 +141,16 @@ func (p *Parser) Next(ctx context.Context) (protocol.Event, error) {
 
 func (p *Parser) consume(data []byte) error {
 	var event struct {
-		Type      string `json:"type"`
-		Delta     string `json:"delta"`
-		ItemID    string `json:"item_id"`
-		CallID    string `json:"call_id"`
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-		Code      string `json:"code"`
-		Message   string `json:"message"`
-		Item      struct {
+		Type         string `json:"type"`
+		Delta        string `json:"delta"`
+		ItemID       string `json:"item_id"`
+		SummaryIndex *int   `json:"summary_index"`
+		CallID       string `json:"call_id"`
+		Name         string `json:"name"`
+		Arguments    string `json:"arguments"`
+		Code         string `json:"code"`
+		Message      string `json:"message"`
+		Item         struct {
 			ID        string `json:"id"`
 			Type      string `json:"type"`
 			CallID    string `json:"call_id"`
@@ -177,7 +178,14 @@ func (p *Parser) consume(data []byte) error {
 		}
 	case "response.reasoning_summary_text.delta":
 		if event.Delta != "" {
-			p.pending = append(p.pending, protocol.Event{Type: protocol.EventReasoningSummaryDelta, Text: event.Delta})
+			partID := ""
+			if event.SummaryIndex != nil {
+				partID = fmt.Sprintf("reasoning:%d", *event.SummaryIndex)
+				if event.ItemID != "" {
+					partID = fmt.Sprintf("%s:reasoning:%d", event.ItemID, *event.SummaryIndex)
+				}
+			}
+			p.pending = append(p.pending, protocol.Event{Type: protocol.EventReasoningSummaryDelta, PartID: partID, Text: event.Delta})
 		}
 	case "response.reasoning_text.delta", "response.output_text.annotation.added":
 		if event.Delta != "" {

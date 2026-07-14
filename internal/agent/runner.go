@@ -284,6 +284,7 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 	}
 	defer stream.Close()
 	var text, reasoning, reasoningSummary strings.Builder
+	var reasoningSummaryPart string
 	var usage protocol.Usage
 	var calls []completedCall
 	finish := protocol.FinishIncomplete
@@ -311,7 +312,13 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 		case protocol.EventReasoningDelta:
 			reasoning.WriteString(item.Text)
 		case protocol.EventReasoningSummaryDelta:
+			if item.PartID != "" && reasoningSummaryPart != "" && item.PartID != reasoningSummaryPart && reasoningSummary.Len() > 0 {
+				reasoningSummary.WriteString("\n\n")
+			}
 			reasoningSummary.WriteString(item.Text)
+			if item.PartID != "" {
+				reasoningSummaryPart = item.PartID
+			}
 		case protocol.EventToolCallComplete:
 			if item.ToolCall == nil {
 				continue

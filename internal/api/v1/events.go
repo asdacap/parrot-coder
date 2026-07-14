@@ -35,6 +35,7 @@ type Event struct {
 
 type MessagePartDelta struct {
 	MessageID  string `json:"message_id,omitempty"`
+	PartID     string `json:"part_id,omitempty"`
 	Kind       string `json:"kind"`
 	Delta      string `json:"delta"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
