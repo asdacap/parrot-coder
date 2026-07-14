@@ -98,6 +98,8 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 		return a.chatCommand(ctx, args[1:], stdin, stdout, errout, noColor)
 	case "models":
 		return a.modelsCommand(ctx, args[1:], out, errout)
+	case "usage":
+		return a.usageCommand(ctx, args[1:], out, errout)
 	case "agents":
 		return a.agentsCommand(ctx, args[1:], out, errout)
 	case "session":
@@ -233,6 +235,7 @@ type apiClient interface {
 	Undo(context.Context, string) (v1.SnapshotTransaction, error)
 	Redo(context.Context, string) (v1.SnapshotTransaction, error)
 	Models(context.Context) (v1.ModelList, error)
+	SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error)
 	Agents(context.Context) (v1.AgentList, error)
 }
 
@@ -1101,6 +1104,7 @@ func createChatSession(ctx context.Context, api sessionCreator, projectID, title
 var builtinChatCommands = []terminal.Candidate{
 	{Value: "/help", Description: "show commands and keybindings"},
 	{Value: "/models", Description: "list available models"},
+	{Value: "/usage", Description: "show ChatGPT subscription usage"},
 	{Value: "/model", Description: "select a model"},
 	{Value: "/agents", Description: "list available agents"},
 	{Value: "/agent", Description: "select an agent"},
@@ -1150,6 +1154,13 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		for _, item := range items.Items {
 			s.commit(fmt.Sprintf("%s/%s\t%s", item.Provider, item.ID, item.Name))
 		}
+	case "/usage":
+		usage, err := s.api.SubscriptionUsage(s.ctx)
+		if err != nil {
+			s.commitError(err.Error())
+			break
+		}
+		s.commit(formatSubscriptionUsage(usage, time.Now()))
 	case "/model":
 		if argument == "" {
 			value, err := s.pickModel()
@@ -1517,7 +1528,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/models", "/model", "/agents", "/agent", "/sessions", "/session", "/resume", "/new", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
+	case "/help", "/models", "/usage", "/model", "/agents", "/agent", "/sessions", "/session", "/resume", "/new", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
 		return true
 	default:
 		return false
@@ -1565,6 +1576,73 @@ func (a *App) modelsCommand(ctx context.Context, args []string, stdout, stderr i
 		fmt.Fprintf(stdout, "%s/%s\t%s\n", item.Provider, item.ID, item.Name)
 	}
 	return exitOK
+}
+
+func (a *App) usageCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	fs := newFlagSet("usage", stderr)
+	format := fs.String("format", "lines", "output format: lines or json")
+	if err := fs.Parse(args); err != nil {
+		return flagCode(err)
+	}
+	if fs.NArg() != 0 || *format != "lines" && *format != "json" {
+		return usageError(stderr, "usage accepts --format lines|json")
+	}
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitError
+	}
+	defer runtime.Close()
+	usage, err := runtime.Client.SubscriptionUsage(ctx)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitError
+	}
+	if *format == "json" {
+		return encodeOutput(stdout, stderr, usage)
+	}
+	fmt.Fprintln(stdout, formatSubscriptionUsage(usage, time.Now()))
+	return exitOK
+}
+
+func formatSubscriptionUsage(usage v1.SubscriptionUsage, now time.Time) string {
+	lines := []string{"ChatGPT subscription"}
+	if usage.PlanType != "" {
+		lines[0] += " (" + usage.PlanType + ")"
+	}
+	appendWindow := func(name string, window *v1.UsageWindow) {
+		if window == nil {
+			return
+		}
+		reset := window.ResetAt.Local().Format("2006-01-02 15:04 MST")
+		if window.ResetAt.After(now) {
+			reset += " (in " + formatResetDuration(window.ResetAt.Sub(now)) + ")"
+		}
+		lines = append(lines, fmt.Sprintf("%s: %.1f%% remaining (%.1f%% used), resets %s", name, window.RemainingPercent, window.UsedPercent, reset))
+	}
+	appendWindow("primary", usage.PrimaryWindow)
+	appendWindow("secondary", usage.SecondaryWindow)
+	if usage.Credits != nil && usage.Credits.HasCredits {
+		lines = append(lines, "credits: "+usage.Credits.Balance)
+	}
+	if len(lines) == 1 {
+		lines = append(lines, "usage windows unavailable")
+	}
+	return strings.Join(lines, "\n")
+}
+
+func formatResetDuration(duration time.Duration) string {
+	if duration < 0 {
+		duration = 0
+	}
+	duration = duration.Round(time.Minute)
+	if duration >= 24*time.Hour {
+		return fmt.Sprintf("%dd %dh", int(duration/(24*time.Hour)), int(duration/time.Hour)%24)
+	}
+	if duration >= time.Hour {
+		return fmt.Sprintf("%dh %dm", int(duration/time.Hour), int(duration/time.Minute)%60)
+	}
+	return fmt.Sprintf("%dm", int(duration/time.Minute))
 }
 
 func (a *App) agentsCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
@@ -1914,6 +1992,7 @@ Commands:
   run        execute one prompt
   auth       manage provider credentials
   models     list configured models
+  usage      show ChatGPT subscription usage
   agents     list available agents
   session    manage sessions
   serve      start the HTTP API server

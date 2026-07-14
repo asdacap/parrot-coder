@@ -164,6 +164,12 @@ func (c *Client) Models(ctx context.Context) (v1.ModelList, error) {
 	return out, err
 }
 
+func (c *Client) SubscriptionUsage(ctx context.Context) (v1.SubscriptionUsage, error) {
+	var out v1.SubscriptionUsage
+	err := c.do(ctx, http.MethodGet, "/api/v1/usage", nil, http.StatusOK, &out)
+	return out, err
+}
+
 func (c *Client) Agents(ctx context.Context) (v1.AgentList, error) {
 	var out v1.AgentList
 	err := c.do(ctx, http.MethodGet, "/api/v1/agents", nil, http.StatusOK, &out)

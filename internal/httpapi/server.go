@@ -78,6 +78,7 @@ var routes = []Route{
 	{"POST", "/api/v1/sessions/{id}/undo", "undo"},
 	{"POST", "/api/v1/sessions/{id}/redo", "redo"},
 	{"GET", "/api/v1/models", "listModels"},
+	{"GET", "/api/v1/usage", "getSubscriptionUsage"},
 	{"GET", "/api/v1/agents", "listAgents"},
 	{"GET", "/openapi.json", "getOpenAPI"},
 }
@@ -111,6 +112,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/sessions/{id}/undo", s.undo)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/redo", s.redo)
 	s.mux.HandleFunc("/api/v1/models", s.models)
+	s.mux.HandleFunc("/api/v1/usage", s.subscriptionUsage)
 	s.mux.HandleFunc("/api/v1/agents", s.agents)
 	s.mux.HandleFunc("/openapi.json", s.openAPIDocument)
 	return s
@@ -339,6 +341,14 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.backend.ListModels(r.Context())
+	s.respond(w, r, http.StatusOK, item, err)
+}
+
+func (s *Server) subscriptionUsage(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	item, err := s.backend.SubscriptionUsage(r.Context())
 	s.respond(w, r, http.StatusOK, item, err)
 }
 
