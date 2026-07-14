@@ -46,6 +46,10 @@ type LiveFrame struct {
 	MessagePrefix string
 	Message       string
 	Context       []string
+	// PromptContext is rendered in full immediately before Prompt. Unlike
+	// Context, it is not part of the bounded upper live arena. This is for
+	// decision-critical context that must remain visible beside its selector.
+	PromptContext []string
 	Activity      []string
 	Status        string
 	InputLeft     string
@@ -245,6 +249,10 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	// The modeline is chrome between the live and input regions. It does not
 	// consume the input region's twelve-row prompt/menu budget.
 	promptRows, promptCursorRow, promptCursorCol := r.promptRows(prompt, r.maxInputRows)
+	var promptContextRows []string
+	for _, item := range frame.PromptContext {
+		promptContextRows = append(promptContextRows, r.layoutLines([]string{item})...)
+	}
 
 	dividerRows := 0
 	if frame.ShowDivider {
@@ -269,7 +277,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		pendingRows = append(group, pendingRows...)
 	}
 
-	inputRows := make([]string, 0, dividerRows+barRows+len(pendingRows)+len(promptRows))
+	inputRows := make([]string, 0, dividerRows+barRows+len(pendingRows)+len(promptContextRows)+len(promptRows))
 	if frame.ShowDivider {
 		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
 	}
@@ -277,6 +285,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		inputRows = append(inputRows, statusBar(frame.InputLeft, frame.InputRight, r.columns))
 	}
 	inputRows = append(inputRows, pendingRows...)
+	inputRows = append(inputRows, promptContextRows...)
 	inputRows = append(inputRows, promptRows...)
 	remaining := r.maxRows
 
@@ -311,7 +320,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	rows := append(streamRows, contextRows...)
 	rows = append(rows, activity...)
 	rows = append(rows, inputRows...)
-	cursorRow := len(streamRows) + len(contextRows) + len(activity) + dividerRows + barRows + len(pendingRows) + promptCursorRow
+	cursorRow := len(streamRows) + len(contextRows) + len(activity) + dividerRows + barRows + len(pendingRows) + len(promptContextRows) + promptCursorRow
 	if !r.tty {
 		if err := r.writePlain(append(promoted, rows...)); err != nil {
 			r.stream = streamBefore

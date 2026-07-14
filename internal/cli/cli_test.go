@@ -745,7 +745,9 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		t.Fatal(err)
 	}
 	var output bytes.Buffer
-	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80, MaxRows: 12})
+	// Permission details belong beside the selector and must not be clipped by
+	// the deliberately tiny upper live-arena budget.
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80, MaxRows: 1})
 	runtime := &enhancedChatRuntime{
 		shell: &chatShell{
 			ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, editor: editor, stdout: &output,
@@ -773,6 +775,9 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
 		!strings.Contains(frame, "enable yolo") {
 		t.Fatalf("permission choices missing from frame: %q", frame)
+	}
+	if contextIndex, selectorIndex := strings.Index(frame, "permission: shell"), strings.Index(frame, "permission decision:"); contextIndex < 0 || selectorIndex <= contextIndex {
+		t.Fatalf("permission context was not rendered before its selector: %q", frame)
 	}
 
 	for i := 0; i < 3; i++ {
