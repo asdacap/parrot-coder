@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -77,6 +78,46 @@ func TestExecutorSchemaAndStalePlan(t *testing.T) {
 	e := Executor{Snapshot: r.Materialize()}
 	if _, err := e.Execute(context.Background(), "test", json.RawMessage(`{"value":"x"}`), CallContext{}); err == nil || !strings.Contains(err.Error(), "stale") {
 		t.Fatalf("got %v", err)
+	}
+}
+
+func TestExecutorDiagnosticsOmitInputAndOutput(t *testing.T) {
+	state := t.TempDir()
+	run, err := diagnostics.Start(state, diagnostics.Build{Version: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry()
+	if err := registry.Register(testTool{id: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	executor := Executor{Snapshot: registry.Materialize()}
+	const secret = "sensitive-tool-input"
+	call := CallContext{SessionID: "ses_test", ToolCallID: "call_test"}
+	if _, err := executor.Execute(context.Background(), "test", json.RawMessage(`{"value":"`+secret+`"}`), call); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := executor.Execute(context.Background(), "test", json.RawMessage(`{"value":7,"private":"`+secret+`"}`), call); err == nil {
+		t.Fatal("invalid tool input accepted")
+	}
+	run.Finish(0)
+
+	data, err := os.ReadFile(filepath.Join(state, "diagnostics", "parrot.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(data)
+	if strings.Contains(text, secret) || strings.Contains(text, `"text":"ok"`) {
+		t.Fatalf("diagnostics exposed tool content: %s", text)
+	}
+	for _, expected := range []string{
+		`"event":"tool_execution_started"`, `"event":"tool_execution_finished"`,
+		`"session_id":"ses_test"`, `"tool_call_id":"call_test"`, `"tool":"test"`,
+		`"output_bytes":2`, `"status":"error"`, `"error_type":`,
+	} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("diagnostics missing %s: %s", expected, text)
+		}
 	}
 }
 

@@ -16,6 +16,12 @@ executables, or private web access; those fields require global configuration.
   operation.
 - Authorization headers, API keys, OAuth codes, and tokens are redacted from
   logs and errors.
+- Process diagnostics do not record HTTP headers, query strings, request
+  bodies, prompts, provider responses, tool inputs, tool outputs, or error
+  messages. Routine errors are recorded only by concrete type and operational
+  status. Go's report for an unhandled panic
+  necessarily includes the panic value, so crash reports remain private state
+  and should be reviewed before sharing.
 - Authenticated HTTP clients reject cross-origin redirects.
 
 ChatGPT subscription support is a standard feature but relies on endpoints and

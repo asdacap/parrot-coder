@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 )
 
@@ -131,6 +132,10 @@ func streamWithHeaderRetry(ctx context.Context, client Provider, request protoco
 		if delay > maximumDelay {
 			delay = maximumDelay
 		}
+		diagnostics.Warn("provider_header_retry",
+			"provider", client.ID(), "model", request.Model, "attempt", attempt+1,
+			"header_timeout_ms", timeoutErr.Timeout.Milliseconds(), "retry_delay_ms", delay.Milliseconds(),
+		)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():

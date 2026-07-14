@@ -192,11 +192,30 @@ Parrot follows XDG variables on both macOS and Linux:
 | Configuration, skills, commands | `~/.config/parrot/` |
 | Credentials | `~/.local/share/parrot/credentials.json` |
 | SQLite state | `~/.local/state/parrot/parrot.db` |
+| Process diagnostics | `~/.local/state/parrot/diagnostics/` |
 | Managed tool output | `~/.cache/parrot/outputs/` |
 
 `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_STATE_HOME`, and `XDG_CACHE_HOME`
 replace their corresponding parent directories. Application directories are
-created with mode `0700`; credential and database files use mode `0600`.
+created with mode `0700`; credential, database, and diagnostic files use mode
+`0600`.
+
+### Process Diagnostics
+
+`diagnostics/parrot.jsonl` is a rotating structured log of process starts,
+commands, signals, application startup and shutdown, maintenance, session runs,
+provider requests and retries, compaction, tool execution, HTTP requests,
+recovered panics with stack traces, and exit codes. `diagnostics/crash.log`
+receives a duplicate of Go's report for an unhandled panic or fatal runtime
+error, even when stderr belongs to a terminal
+or supervisor that later disappears. Each file rotates at 4 MiB and retains
+three backups.
+
+While running, Parrot also keeps a small marker under `diagnostics/runs/`. An
+orderly exit removes it. If `SIGKILL`, an out-of-memory kill, power loss, or a
+similar event prevents cleanup, a later invocation records
+`unclean_previous_exit`. No in-process logger can write at the moment of
+`SIGKILL` or power loss, so OS logs may still be needed to identify the cause.
 
 ## Security Model
 

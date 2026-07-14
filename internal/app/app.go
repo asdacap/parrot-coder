@@ -26,6 +26,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/config"
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/formatter"
 	"github.com/amirulashraf/parrot-coder/internal/httpapi"
@@ -128,6 +129,18 @@ func (c *Client) Resume(ctx context.Context, sessionID string) error {
 // Open resolves the current project and XDG paths, opens durable state, and
 // constructs all application services. It never opens a network listener.
 func Open(ctx context.Context, options Options) (_ *App, err error) {
+	started := time.Now()
+	diagnostics.Event("app_open_started", "allow_no_model", options.AllowNoModel, "non_interactive", options.NonInteractive)
+	defer func() {
+		attributes := []any{"duration_ms", time.Since(started).Milliseconds(), "status", "success"}
+		if err != nil {
+			attributes[3] = "error"
+			attributes = append(attributes, "error_type", diagnostics.ErrorType(err))
+			diagnostics.Error("app_open_finished", attributes...)
+			return
+		}
+		diagnostics.Event("app_open_finished", attributes...)
+	}()
 	cwd := options.CWD
 	if cwd == "" {
 		cwd, err = os.Getwd()
@@ -415,7 +428,12 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.Backend = backend
 	composed := &compositionBackend{DomainBackend: backend}
-	apiServer := httpapi.New(composed, httpapi.Config{})
+	apiServer := httpapi.New(composed, httpapi.Config{Logger: httpapi.LoggerFunc(func(_ context.Context, record httpapi.LogRecord) {
+		diagnostics.Event("http_request",
+			"request_id", record.RequestID, "method", record.Method, "path", record.Path,
+			"status", record.Status, "duration_ms", record.Duration.Milliseconds(), "error_ref", record.ErrorRef,
+		)
+	})})
 	handler := resumeHandler{next: apiServer, sessions: sessions, coordinator: coordinator, live: live}
 	transport := inproc.New(handler)
 	typed, err := client.New("http://parrot.local", transport)
@@ -474,6 +492,8 @@ type MaintenanceReport struct {
 // Maintain performs bounded, idempotent cleanup. Durable events, messages,
 // context epochs, and compaction records are never deleted.
 func (a *App) Maintain(ctx context.Context) (MaintenanceReport, error) {
+	started := time.Now()
+	diagnostics.Event("maintenance_started")
 	var report MaintenanceReport
 	var maintenanceErr error
 	if a.outputs != nil {
@@ -501,6 +521,18 @@ func (a *App) Maintain(ctx context.Context) (MaintenanceReport, error) {
 		repaired, err := a.compactions.InterruptAbandoned(ctx, 1000, "process restarted")
 		report.CompactionAttemptsRepaired = repaired
 		maintenanceErr = errors.Join(maintenanceErr, err)
+	}
+	attributes := []any{
+		"duration_ms", time.Since(started).Milliseconds(),
+		"outputs_removed", report.OutputsRemoved,
+		"temporary_files_removed", report.TemporaryFilesRemoved,
+		"snapshot_blobs_pruned", report.SnapshotBlobsPruned,
+		"compaction_attempts_repaired", report.CompactionAttemptsRepaired,
+	}
+	if maintenanceErr != nil {
+		diagnostics.Error("maintenance_finished", append(attributes, "status", "error", "error_type", diagnostics.ErrorType(maintenanceErr))...)
+	} else {
+		diagnostics.Event("maintenance_finished", append(attributes, "status", "success")...)
 	}
 	return report, maintenanceErr
 }
@@ -547,12 +579,19 @@ func (a *App) Close() error {
 		return nil
 	}
 	a.closeOnce.Do(func() {
+		started := time.Now()
+		activeSessions := 0
 		if a.coordinator != nil {
-			for _, active := range a.coordinator.Active() {
+			active := a.coordinator.Active()
+			activeSessions = len(active)
+			diagnostics.Event("app_close_started", "active_sessions", activeSessions)
+			for _, active := range active {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 				a.closeErr = errors.Join(a.closeErr, a.coordinator.Interrupt(ctx, active.SessionID))
 				cancel()
 			}
+		} else {
+			diagnostics.Event("app_close_started", "active_sessions", activeSessions)
 		}
 		if a.mcp != nil {
 			a.closeErr = errors.Join(a.closeErr, a.mcp.Close())
@@ -562,6 +601,12 @@ func (a *App) Close() error {
 		}
 		if a.db != nil {
 			a.closeErr = errors.Join(a.closeErr, a.db.Close())
+		}
+		attributes := []any{"active_sessions", activeSessions, "duration_ms", time.Since(started).Milliseconds()}
+		if a.closeErr != nil {
+			diagnostics.Error("app_close_finished", append(attributes, "status", "error", "error_type", diagnostics.ErrorType(a.closeErr))...)
+		} else {
+			diagnostics.Event("app_close_finished", append(attributes, "status", "success")...)
 		}
 	})
 	return a.closeErr
@@ -585,6 +630,7 @@ func (d statusDrainer) Drain(ctx context.Context, sessionID string) error {
 }
 
 func (d statusDrainer) LifecycleStarted(sessionID string) {
+	diagnostics.Event("session_run_started", "session_id", sessionID)
 	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
 }
@@ -599,6 +645,15 @@ func (d statusDrainer) LifecycleComplete(sessionID string, err error) {
 	}
 	data, _ := json.Marshal(status)
 	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
+	attributes := []any{"session_id", sessionID, "status", status.Kind}
+	if err != nil {
+		attributes = append(attributes, "error_type", diagnostics.ErrorType(err))
+		if err != context.Canceled {
+			diagnostics.Error("session_run_finished", attributes...)
+			return
+		}
+	}
+	diagnostics.Event("session_run_finished", attributes...)
 }
 
 type questionPrompter struct{}
@@ -615,6 +670,12 @@ type resumeHandler struct {
 }
 
 func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			diagnostics.Panic("application_http_handler", recovered)
+			http.Error(w, "internal server error", http.StatusInternalServerError)
+		}
+	}()
 	const prefix = "/api/v1/sessions/"
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, prefix) && strings.HasSuffix(r.URL.Path, "/events") && r.URL.Query().Get("after") == "" {
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), "/events")

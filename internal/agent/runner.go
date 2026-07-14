@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -193,7 +194,7 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) error {
 			}
 			request.Reasoning = &protocol.ReasoningOptions{Effort: variant.ReasoningEffort, Summary: "auto"}
 		}
-		calls, finish, err := r.providerTurn(ctx, sessionID, providerClient, request)
+		calls, finish, err := r.loggedProviderTurn(ctx, sessionID, selected.Provider, turn, providerClient, request)
 		if err != nil {
 			var failure *providerTurnFailure
 			if !errors.As(err, &failure) || !failure.overflow || !failure.retrySafe || r.config.Compactor == nil {
@@ -228,7 +229,7 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) error {
 			}
 			request.Instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
 			request.Messages = history
-			calls, finish, err = r.providerTurn(ctx, sessionID, providerClient, request)
+			calls, finish, err = r.loggedProviderTurn(ctx, sessionID, selected.Provider, turn, providerClient, request)
 			if err != nil {
 				return err
 			}
@@ -270,6 +271,25 @@ type providerTurnFailure struct {
 
 func (e *providerTurnFailure) Error() string { return e.err.Error() }
 func (e *providerTurnFailure) Unwrap() error { return e.err }
+
+func (r *Runner) loggedProviderTurn(ctx context.Context, sessionID, providerID string, turn int, client provider.Provider, request protocol.Request) ([]completedCall, protocol.FinishReason, error) {
+	started := time.Now()
+	diagnostics.Event("provider_turn_started",
+		"session_id", sessionID, "provider", providerID, "model", request.Model, "turn", turn,
+		"message_count", len(request.Messages), "tool_count", len(request.Tools),
+	)
+	calls, finish, err := r.providerTurn(ctx, sessionID, client, request)
+	attributes := []any{
+		"session_id", sessionID, "provider", providerID, "model", request.Model, "turn", turn,
+		"finish_reason", finish, "tool_call_count", len(calls), "duration_ms", time.Since(started).Milliseconds(),
+	}
+	if err != nil {
+		diagnostics.Error("provider_turn_finished", append(attributes, "status", "error", "error_type", diagnostics.ErrorType(err))...)
+	} else {
+		diagnostics.Event("provider_turn_finished", append(attributes, "status", "success")...)
+	}
+	return calls, finish, err
+}
 
 func (r *Runner) providerTurn(ctx context.Context, sessionID string, client provider.Provider, request protocol.Request) ([]completedCall, protocol.FinishReason, error) {
 	assistant, err := r.config.Sessions.StartAssistant(ctx, sessionID)

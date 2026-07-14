@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"sync"
+
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 )
 
 type Transport struct {
@@ -39,6 +41,7 @@ func (t *Transport) RoundTrip(request *http.Request) (*http.Response, error) {
 		defer request.Body.Close()
 		defer func() {
 			if recovered := recover(); recovered != nil {
+				diagnostics.Panic("inproc_transport", recovered)
 				wasCommitted := rw.committed()
 				if !wasCommitted {
 					rw.Header().Set("Content-Type", "text/plain; charset=utf-8")
