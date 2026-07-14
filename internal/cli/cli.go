@@ -57,7 +57,7 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	signal.Notify(interrupts, os.Interrupt)
 	defer signal.Stop(interrupts)
 	ctx = context.WithValue(ctx, interruptKey{}, (<-chan os.Signal)(interrupts))
-	args = removeNoColor(args)
+	args, noColor := removeNoColor(args)
 	var controllingTerminal *os.File
 	if len(args) == 0 && !terminal.IsTTY(stdin) {
 		if _, fileInput := stdin.(*os.File); fileInput {
@@ -92,7 +92,7 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	case "chat":
 		// The enhanced renderer owns its ANSI output, so chat receives the
 		// underlying writer and sanitizes all committed content itself.
-		return a.chatCommand(ctx, args[1:], stdin, stdout, errout)
+		return a.chatCommand(ctx, args[1:], stdin, stdout, errout, noColor)
 	case "models":
 		return a.modelsCommand(ctx, args[1:], out, errout)
 	case "agents":
@@ -211,6 +211,7 @@ func promptInput(stdin io.Reader, arguments []string) (string, error) {
 }
 
 type apiClient interface {
+	Runtime(context.Context) (v1.Runtime, error)
 	Sessions(context.Context) (v1.SessionList, error)
 	CreateSession(context.Context, v1.CreateSessionRequest) (v1.Session, error)
 	UpdateSessionSelection(context.Context, string, v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error)
@@ -322,7 +323,6 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 			return streamResult{err: err}
 		}
 	}
-
 	events := make(chan eventResult)
 	done := make(chan struct{})
 	defer close(done)
@@ -424,11 +424,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				if value.Kind == "text" {
 					streamed.WriteString(value.Delta)
 					if options.renderer != nil {
-						if err := options.renderer.Update([]string{"assistant> " + streamed.String()}); err != nil {
-							return streamResult{err: err}
-						}
-					} else if options.chat && options.format != "jsonl" {
-						if _, err := io.WriteString(options.stdout, terminal.Sanitize(value.Delta)); err != nil {
+						if err := options.renderer.UpdateMessage("- ", streamed.String()); err != nil {
 							return streamResult{err: err}
 						}
 					}
@@ -500,16 +496,17 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 	}
 	if options.chat {
 		if options.renderer != nil {
-			if err := options.renderer.Commit("assistant> " + final); err != nil {
+			if err := options.renderer.CommitMessage("- ", final, false); err != nil {
 				return streamResult{err: err}
 			}
-		} else if streamed == "" && final != "" {
-			_, _ = io.WriteString(options.stdout, terminal.Sanitize(final))
-		} else if strings.HasPrefix(final, streamed) && len(final) > len(streamed) {
-			_, _ = io.WriteString(options.stdout, terminal.Sanitize(final[len(streamed):]))
-		}
-		if options.renderer == nil {
-			_, _ = io.WriteString(options.stdout, "\n")
+		} else if final = strings.TrimRight(final, "\r\n"); final != "" {
+			writer := &hangingWriter{w: options.stdout}
+			if _, err := writer.Write([]byte(terminal.Sanitize(final))); err != nil {
+				return streamResult{err: err}
+			}
+			if _, err := io.WriteString(options.stdout, "\n"); err != nil {
+				return streamResult{err: err}
+			}
 		}
 	}
 	if finalError != "" {
@@ -523,6 +520,42 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 		return streamResult{text: final, err: errors.New("session turn failed")}
 	}
 	return streamResult{text: final}
+}
+
+type hangingWriter struct {
+	w         io.Writer
+	started   bool
+	lineStart bool
+}
+
+func (w *hangingWriter) Write(data []byte) (int, error) {
+	var output strings.Builder
+	if len(data) > 0 && !w.started {
+		output.WriteString("- ")
+		w.started = true
+	}
+	for _, value := range data {
+		if w.lineStart && value != '\n' {
+			output.WriteString("  ")
+			w.lineStart = false
+		}
+		output.WriteByte(value)
+		if value == '\n' {
+			w.lineStart = true
+		}
+	}
+	if err := writeAll(w.w, output.String()); err != nil {
+		return 0, err
+	}
+	return len(data), nil
+}
+
+func writeAll(w io.Writer, value string) error {
+	n, err := io.WriteString(w, value)
+	if err == nil && n != len(value) {
+		return io.ErrShortWrite
+	}
+	return err
 }
 
 func settlePrompts(ctx context.Context, api apiClient, sessionID string, input io.Reader, output io.Writer) error {
@@ -672,7 +705,7 @@ func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, o
 	return nil
 }
 
-func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer, noColor bool) int {
 	fs := newFlagSet("chat", stderr)
 	args = normalizeLeadingPrompt(args)
 	var options codingFlags
@@ -707,9 +740,10 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 	shell := &chatShell{
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
 		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, commands: runtime.Commands,
-		stdout: plainOut, stderr: stderr,
+		stdout: plainOut, stderr: stderr, inputTTY: terminal.IsTTY(stdin), outputTTY: terminal.IsTTY(stdout),
+		inputEcho: terminal.InputEchoed(stdin, stdout), columns: terminal.Columns(stdout),
 	}
-	if inputFile, ok := stdin.(*os.File); ok && terminal.IsTTY(inputFile) && terminal.IsTTY(stdout) {
+	if inputFile, ok := stdin.(*os.File); ok && terminal.IsTTY(inputFile) && terminal.IsTTY(stdout) && os.Getenv("TERM") != "dumb" {
 		raw, rawErr := enableRawMode(inputFile)
 		if rawErr != nil {
 			fmt.Fprintln(stderr, "enhanced terminal unavailable; using plain input:", rawErr)
@@ -717,7 +751,10 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 			defer raw.Close()
 			shell.enhanced = true
 			shell.stdout = stdout
-			shell.renderer = terminal.NewLiveRenderer(stdout, terminal.RendererConfig{TTY: true, MaxRows: 6})
+			shell.renderer = terminal.NewLiveRenderer(stdout, terminal.RendererConfig{
+				TTY: true, Color: terminal.ColorEnabled(stdout, noColor), Columns: terminal.Columns(stdout), MaxRows: 6,
+				ColumnsFunc: func() int { return terminal.Columns(stdout) },
+			})
 			defer shell.renderer.Close()
 			shell.decoder = terminal.NewKeyDecoder(inputFile)
 			shell.editor = terminal.NewEditorDecoder(shell.decoder, stdout,
@@ -731,6 +768,9 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 	first := ""
 	if fs.NArg() == 1 {
 		first = fs.Arg(0)
+	}
+	if shell.enhanced {
+		return shell.runEnhanced(first)
 	}
 	return shell.run(first)
 }
@@ -764,6 +804,11 @@ type chatShell struct {
 	editor      *terminal.Editor
 	renderer    *terminal.LiveRenderer
 	enhanced    bool
+	inputTTY    bool
+	outputTTY   bool
+	inputEcho   bool
+	inputEchoed bool
+	columns     int
 }
 
 func (s *chatShell) run(first string) int {
@@ -833,6 +878,9 @@ func (s *chatShell) run(first string) int {
 				line = expansion.Prompt
 			}
 		}
+		if line != draft {
+			s.inputEchoed = false
+		}
 
 		if s.selection.modelName() == "" {
 			selected, err := s.pickModel()
@@ -865,9 +913,6 @@ func (s *chatShell) run(first string) int {
 			s.commitError(err.Error())
 			return exitError
 		}
-		if !s.enhanced {
-			fmt.Fprint(s.stdout, "assistant> ")
-		}
 		result := streamTurn(s.ctx, s.api, s.current.ID, line, s.streamOptions(false))
 		draft = ""
 		if result.err != nil {
@@ -880,18 +925,31 @@ func (s *chatShell) run(first string) int {
 }
 
 func (s *chatShell) commitUser(text string) error {
-	if s.renderer == nil {
-		return nil
+	text = strings.TrimRight(text, "\r\n")
+	if s.renderer != nil {
+		return s.renderer.CommitMessage("$ ", text, true)
 	}
-	return s.renderer.Commit("you> " + text)
+	if !s.inputEchoed || !s.outputTTY {
+		fmt.Fprintln(s.stdout, "$ "+strings.ReplaceAll(text, "\n", "\n  "))
+	}
+	columns := s.columns
+	if columns <= 0 {
+		columns = 80
+	}
+	fmt.Fprintln(s.stdout, strings.Repeat("-", max(3, columns-1)))
+	return nil
 }
 
 func (s *chatShell) readPrompt(initial string) (string, error) {
 	if s.enhanced {
+		s.inputEchoed = false
 		s.editor.SetPrompt(s.promptLabel())
 		return s.editor.ReadInitial(s.ctx, initial)
 	}
-	fmt.Fprint(s.stdout, "you> ")
+	if s.inputTTY {
+		fmt.Fprint(s.stdout, "$ ")
+	}
+	s.inputEchoed = s.inputEcho
 	line, err := s.reader.ReadString('\n')
 	if errors.Is(err, io.EOF) && line != "" {
 		err = nil
@@ -900,15 +958,7 @@ func (s *chatShell) readPrompt(initial string) (string, error) {
 }
 
 func (s *chatShell) promptLabel() string {
-	model := s.selection.modelName()
-	if model == "" {
-		model = "no model"
-	}
-	agent := s.selection.agent
-	if agent == "" {
-		agent = "no agent"
-	}
-	return fmt.Sprintf("you [%s · %s]> ", agent, model)
+	return "$ "
 }
 
 func (s *chatShell) streamOptions(resume bool) streamOptions {
@@ -996,7 +1046,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 	switch command {
 	case "/help":
 		var text strings.Builder
-		text.WriteString("Keys: Enter submit; Ctrl-J newline; Ctrl-C clear edit/interrupt turn; Ctrl-D exit; Tab complete; Escape cancel\nCommands:\n")
+		text.WriteString("Keys: Enter submit/queue; Ctrl-J newline; Ctrl-C clear draft/interrupt turn; Ctrl-D exit when idle; Tab complete; Escape cancel\nCommands:\n")
 		for _, item := range chatCompletionCandidates(s.commands) {
 			fmt.Fprintf(&text, "%s\t%s\n", item.Value, item.Description)
 		}
@@ -1711,14 +1761,21 @@ func opaqueID(prefix string) (string, error) {
 	return prefix + "_" + hex.EncodeToString(value), nil
 }
 
-func removeNoColor(args []string) []string {
+func removeNoColor(args []string) ([]string, bool) {
 	result := make([]string, 0, len(args))
+	disabled := false
+	options := true
 	for _, argument := range args {
-		if argument != "--no-color" {
+		if options && argument == "--" {
+			options = false
+			result = append(result, argument)
+		} else if options && argument == "--no-color" {
+			disabled = true
+		} else {
 			result = append(result, argument)
 		}
 	}
-	return result
+	return result, disabled
 }
 
 func normalizeLeadingPrompt(args []string) []string {

@@ -115,6 +115,7 @@ type ProviderError struct {
 // is populated.
 type Event struct {
 	Type          EventType
+	MessageID     string
 	Text          string
 	ToolInput     *ToolInputDelta
 	ToolCall      *ToolCall

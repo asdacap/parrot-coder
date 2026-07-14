@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"time"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/store"
@@ -154,6 +155,26 @@ func (s *Service) List(ctx context.Context) ([]Session, error) {
 	return result, nil
 }
 
+// LatestSelection returns the most recently used complete selection for a
+// project. It is used as an interactive startup preference, not as a config
+// override.
+func (s *Service) LatestSelection(ctx context.Context, projectID string) (Selection, error) {
+	var selection Selection
+	err := s.db.SQL().QueryRowContext(ctx, `
+		SELECT selected_agent, selected_provider, selected_model
+		FROM session
+		WHERE project_id = ? AND selected_agent <> '' AND selected_provider <> '' AND selected_model <> ''
+		ORDER BY updated_at DESC, id DESC
+		LIMIT 1`, projectID).Scan(&selection.Agent, &selection.Provider, &selection.Model)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Selection{}, ErrNotFound
+	}
+	if err != nil {
+		return Selection{}, fmt.Errorf("session: latest selection: %w", err)
+	}
+	return selection, nil
+}
+
 func (s *Service) Delete(ctx context.Context, sessionID string) error {
 	result, err := s.db.SQL().ExecContext(ctx, `DELETE FROM session WHERE id = ?`, sessionID)
 	if err != nil {
@@ -180,19 +201,19 @@ func (s *Service) Admit(ctx context.Context, sessionID string, params AdmitParam
 	if err != nil {
 		return Admission{}, fmt.Errorf("session: generate input ID: %w", err)
 	}
-	payload, err := json.Marshal(struct {
-		InputID   string   `json:"input_id"`
-		MessageID string   `json:"message_id"`
-		Content   string   `json:"content"`
-		Delivery  Delivery `json:"delivery"`
-	}{inputID, params.MessageID, params.Content, params.Delivery})
+	payload, err := json.Marshal(v1.SessionInputAdmitted{
+		InputID:   inputID,
+		MessageID: params.MessageID,
+		Content:   params.Content,
+		Delivery:  string(params.Delivery),
+	})
 	if err != nil {
 		return Admission{}, fmt.Errorf("session: encode admission event: %w", err)
 	}
 
 	var admitted Input
 	appended, err := s.events.Append(ctx, sessionID,
-		[]event.NewEvent{{Type: "session.input.admitted", Data: payload}},
+		[]event.NewEvent{{Type: v1.EventSessionInputAdmitted, Data: payload}},
 		func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 			existing, err := getInput(ctx, tx, sessionID, params.MessageID)
 			if err == nil {
@@ -291,14 +312,14 @@ func (s *Service) promote(ctx context.Context, sessionID string, delivery Delive
 
 		pending := make([]event.NewEvent, len(promoted))
 		for i, input := range promoted {
-			data, err := json.Marshal(struct {
-				InputID   string `json:"input_id"`
-				MessageID string `json:"message_id"`
-			}{input.ID, input.MessageID})
+			data, err := json.Marshal(v1.SessionInputPromoted{
+				InputID:   input.ID,
+				MessageID: input.MessageID,
+			})
 			if err != nil {
 				return nil, nil, fmt.Errorf("session: encode promotion event: %w", err)
 			}
-			pending[i] = event.NewEvent{Type: "session.input.promoted", Data: data}
+			pending[i] = event.NewEvent{Type: v1.EventSessionInputPromoted, Data: data}
 		}
 
 		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {

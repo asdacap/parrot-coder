@@ -182,51 +182,227 @@ func (e *Editor) Read(ctx context.Context) (string, error) {
 	return e.ReadInitial(ctx, "")
 }
 
+// EditorState is one reusable editing session. It does not read from the
+// terminal, allowing a parent event loop to route keys alongside other events.
+type EditorState struct {
+	editor       *Editor
+	buffer       []rune
+	cursor       int
+	historyIndex int
+	historyDraft []rune
+	selected     int
+	menuClosed   bool
+	tabMatches   []Candidate
+	tabIndex     int
+}
+
+// EditorResult reports a terminal action produced by one key.
+type EditorResult struct {
+	Value string
+	Done  bool
+	Err   error
+}
+
+// Start initializes an incremental editing session.
+func (e *Editor) Start(initial string) (*EditorState, error) {
+	if !validInput(initial) || len(initial) > e.maxInputBytes || runeCount(initial) > e.maxInputRunes {
+		return nil, ErrInputLimit
+	}
+	return &EditorState{
+		editor: e, buffer: []rune(initial), cursor: runeCount(initial), historyIndex: len(e.history),
+	}, nil
+}
+
+// Value returns the current draft.
+func (s *EditorState) Value() string { return string(s.buffer) }
+
+// Reset replaces the draft while preserving editor history and completions.
+func (s *EditorState) Reset(value string) error {
+	if !validInput(value) || len(value) > s.editor.maxInputBytes || runeCount(value) > s.editor.maxInputRunes {
+		return ErrInputLimit
+	}
+	s.buffer = []rune(value)
+	s.cursor = len(s.buffer)
+	s.historyIndex = len(s.editor.history)
+	s.historyDraft = nil
+	s.selected = 0
+	s.menuClosed = false
+	s.tabMatches = nil
+	s.tabIndex = 0
+	return nil
+}
+
+// PromptState returns the current renderer snapshot.
+func (s *EditorState) PromptState() PromptState {
+	matches := []Candidate(nil)
+	if !s.menuClosed {
+		if len(s.tabMatches) > 0 {
+			matches = s.tabMatches
+		} else {
+			matches = s.editor.completionMatches(string(s.buffer))
+		}
+	}
+	if len(matches) > 0 {
+		s.selected = clamp(s.selected, 0, len(matches)-1)
+	} else {
+		s.selected = 0
+	}
+	shown := matches
+	shownSelected := s.selected
+	if len(shown) > s.editor.maxCompletionRows {
+		start := 0
+		if s.selected >= s.editor.maxCompletionRows {
+			start = s.selected - s.editor.maxCompletionRows + 1
+		}
+		shown = shown[start : start+s.editor.maxCompletionRows]
+		shownSelected = s.selected - start
+	}
+	return PromptState{
+		Prefix: s.editor.prompt, Text: string(s.buffer), Cursor: s.cursor,
+		Completions: shown, Selected: shownSelected,
+	}
+}
+
+// Handle applies one decoded key without reading or rendering.
+func (s *EditorState) Handle(key Key) EditorResult {
+	changed := false
+	var err error
+	switch key.Kind {
+	case KeyRune:
+		s.buffer, s.cursor, err = s.editor.insert(s.buffer, s.cursor, []rune{key.Rune})
+		changed = err == nil
+	case KeyPaste:
+		paste := strings.ReplaceAll(strings.ReplaceAll(key.Text, "\r\n", "\n"), "\r", "\n")
+		s.buffer, s.cursor, err = s.editor.insert(s.buffer, s.cursor, []rune(paste))
+		changed = err == nil
+	case KeyLeft:
+		if s.cursor > 0 {
+			s.cursor--
+		}
+	case KeyRight:
+		if s.cursor < len(s.buffer) {
+			s.cursor++
+		}
+	case KeyHome:
+		s.cursor = lineStart(s.buffer, s.cursor)
+	case KeyEnd:
+		s.cursor = lineEnd(s.buffer, s.cursor)
+	case KeyBackspace:
+		if s.cursor > 0 {
+			s.buffer = append(s.buffer[:s.cursor-1], s.buffer[s.cursor:]...)
+			s.cursor--
+			changed = true
+		}
+	case KeyDelete:
+		if s.cursor < len(s.buffer) {
+			s.buffer = append(s.buffer[:s.cursor], s.buffer[s.cursor+1:]...)
+			changed = true
+		}
+	case KeyEOF:
+		if len(s.buffer) == 0 {
+			return EditorResult{Done: true, Err: io.EOF}
+		}
+		if s.cursor < len(s.buffer) {
+			s.buffer = append(s.buffer[:s.cursor], s.buffer[s.cursor+1:]...)
+			changed = true
+		}
+	case KeyNewline:
+		s.buffer, s.cursor, err = s.editor.insert(s.buffer, s.cursor, []rune{'\n'})
+		changed = err == nil
+	case KeyUp, KeyDown:
+		matches := s.editor.visibleMatches(string(s.buffer), s.menuClosed, s.tabMatches)
+		if len(matches) > 0 {
+			if key.Kind == KeyUp {
+				s.selected = (s.selected - 1 + len(matches)) % len(matches)
+			} else {
+				s.selected = (s.selected + 1) % len(matches)
+			}
+		} else if len(s.editor.history) > 0 {
+			if key.Kind == KeyUp && s.historyIndex > 0 {
+				if s.historyIndex == len(s.editor.history) {
+					s.historyDraft = append([]rune(nil), s.buffer...)
+				}
+				s.historyIndex--
+				s.buffer = []rune(s.editor.history[s.historyIndex])
+				s.cursor = len(s.buffer)
+			} else if key.Kind == KeyDown && s.historyIndex < len(s.editor.history) {
+				s.historyIndex++
+				if s.historyIndex == len(s.editor.history) {
+					s.buffer = append([]rune(nil), s.historyDraft...)
+				} else {
+					s.buffer = []rune(s.editor.history[s.historyIndex])
+				}
+				s.cursor = len(s.buffer)
+			}
+		}
+	case KeyTab:
+		if len(s.tabMatches) == 0 {
+			s.tabMatches = s.editor.completionMatches(string(s.buffer))
+			s.tabIndex = s.selected
+		} else {
+			s.tabIndex = (s.tabIndex + 1) % len(s.tabMatches)
+		}
+		if len(s.tabMatches) > 0 {
+			s.selected = s.tabIndex
+			s.buffer = []rune(s.tabMatches[s.tabIndex].Value)
+			s.cursor = len(s.buffer)
+			s.menuClosed = false
+		}
+	case KeyEscape:
+		if len(s.editor.visibleMatches(string(s.buffer), s.menuClosed, s.tabMatches)) > 0 {
+			s.menuClosed = true
+			s.tabMatches = nil
+		} else {
+			return EditorResult{Done: true, Err: ErrCanceled}
+		}
+	case KeyInterrupt:
+		return EditorResult{Done: true, Err: ErrInterrupted}
+	case KeyEnter:
+		matches := s.editor.visibleMatches(string(s.buffer), s.menuClosed, s.tabMatches)
+		exact := false
+		for _, match := range matches {
+			if string(s.buffer) == match.Value {
+				exact = true
+				break
+			}
+		}
+		if len(matches) > 0 && !exact && !s.editor.hasCommandArguments(string(s.buffer)) {
+			s.selected = clamp(s.selected, 0, len(matches)-1)
+			s.buffer = []rune(matches[s.selected].Value + " ")
+			s.cursor = len(s.buffer)
+			s.menuClosed = true
+			s.tabMatches = nil
+			break
+		}
+		value := string(s.buffer)
+		s.editor.AddHistory(value)
+		return EditorResult{Value: value, Done: true}
+	}
+	if err != nil {
+		return EditorResult{Done: true, Err: err}
+	}
+	if changed {
+		s.historyIndex = len(s.editor.history)
+		s.menuClosed = false
+		if key.Kind != KeyTab {
+			s.tabMatches = nil
+		}
+		s.selected = 0
+	}
+	return EditorResult{}
+}
+
 // ReadInitial edits one submission starting with an existing draft.
 func (e *Editor) ReadInitial(ctx context.Context, initial string) (string, error) {
-	if !validInput(initial) || len(initial) > e.maxInputBytes || runeCount(initial) > e.maxInputRunes {
-		return "", ErrInputLimit
+	state, err := e.Start(initial)
+	if err != nil {
+		return "", err
 	}
-	buffer := []rune(initial)
-	cursor := len(buffer)
-	historyIndex := len(e.history)
-	var historyDraft []rune
-	selected := 0
-	menuClosed := false
-	var tabMatches []Candidate
-	tabIndex := 0
-
 	render := func() error {
 		if e.renderer == nil {
 			return nil
 		}
-		matches := []Candidate(nil)
-		if !menuClosed {
-			if len(tabMatches) > 0 {
-				matches = tabMatches
-			} else {
-				matches = e.completionMatches(string(buffer))
-			}
-		}
-		if len(matches) > 0 {
-			selected = clamp(selected, 0, len(matches)-1)
-		} else {
-			selected = 0
-		}
-		shown := matches
-		shownSelected := selected
-		if len(shown) > e.maxCompletionRows {
-			start := 0
-			if selected >= e.maxCompletionRows {
-				start = selected - e.maxCompletionRows + 1
-			}
-			shown = shown[start : start+e.maxCompletionRows]
-			shownSelected = selected - start
-		}
-		return e.renderer.Prompt(PromptState{
-			Prefix: e.prompt, Text: string(buffer), Cursor: cursor,
-			Completions: shown, Selected: shownSelected,
-		})
+		return e.renderer.Prompt(state.PromptState())
 	}
 	finish := func(value string, err error) (string, error) {
 		if e.renderer != nil {
@@ -245,128 +421,9 @@ func (e *Editor) ReadInitial(ctx context.Context, initial string) (string, error
 		if err != nil {
 			return finish("", err)
 		}
-		changed := false
-		switch key.Kind {
-		case KeyRune:
-			buffer, cursor, err = e.insert(buffer, cursor, []rune{key.Rune})
-			changed = err == nil
-		case KeyPaste:
-			paste := strings.ReplaceAll(strings.ReplaceAll(key.Text, "\r\n", "\n"), "\r", "\n")
-			buffer, cursor, err = e.insert(buffer, cursor, []rune(paste))
-			changed = err == nil
-		case KeyLeft:
-			if cursor > 0 {
-				cursor--
-			}
-		case KeyRight:
-			if cursor < len(buffer) {
-				cursor++
-			}
-		case KeyHome:
-			cursor = lineStart(buffer, cursor)
-		case KeyEnd:
-			cursor = lineEnd(buffer, cursor)
-		case KeyBackspace:
-			if cursor > 0 {
-				buffer = append(buffer[:cursor-1], buffer[cursor:]...)
-				cursor--
-				changed = true
-			}
-		case KeyDelete:
-			if cursor < len(buffer) {
-				buffer = append(buffer[:cursor], buffer[cursor+1:]...)
-				changed = true
-			}
-		case KeyEOF:
-			if len(buffer) == 0 {
-				return finish("", io.EOF)
-			}
-			if cursor < len(buffer) {
-				buffer = append(buffer[:cursor], buffer[cursor+1:]...)
-				changed = true
-			}
-		case KeyNewline:
-			buffer, cursor, err = e.insert(buffer, cursor, []rune{'\n'})
-			changed = err == nil
-		case KeyUp, KeyDown:
-			matches := e.visibleMatches(string(buffer), menuClosed, tabMatches)
-			if len(matches) > 0 {
-				if key.Kind == KeyUp {
-					selected = (selected - 1 + len(matches)) % len(matches)
-				} else {
-					selected = (selected + 1) % len(matches)
-				}
-			} else if len(e.history) > 0 {
-				if key.Kind == KeyUp && historyIndex > 0 {
-					if historyIndex == len(e.history) {
-						historyDraft = append([]rune(nil), buffer...)
-					}
-					historyIndex--
-					buffer = []rune(e.history[historyIndex])
-					cursor = len(buffer)
-				} else if key.Kind == KeyDown && historyIndex < len(e.history) {
-					historyIndex++
-					if historyIndex == len(e.history) {
-						buffer = append([]rune(nil), historyDraft...)
-					} else {
-						buffer = []rune(e.history[historyIndex])
-					}
-					cursor = len(buffer)
-				}
-			}
-		case KeyTab:
-			if len(tabMatches) == 0 {
-				tabMatches = e.completionMatches(string(buffer))
-				tabIndex = selected
-			} else {
-				tabIndex = (tabIndex + 1) % len(tabMatches)
-			}
-			if len(tabMatches) > 0 {
-				selected = tabIndex
-				buffer = []rune(tabMatches[tabIndex].Value)
-				cursor = len(buffer)
-				menuClosed = false
-			}
-		case KeyEscape:
-			if len(e.visibleMatches(string(buffer), menuClosed, tabMatches)) > 0 {
-				menuClosed = true
-				tabMatches = nil
-			} else {
-				return finish("", ErrCanceled)
-			}
-		case KeyInterrupt:
-			return finish("", ErrInterrupted)
-		case KeyEnter:
-			matches := e.visibleMatches(string(buffer), menuClosed, tabMatches)
-			exact := false
-			for _, match := range matches {
-				if string(buffer) == match.Value {
-					exact = true
-					break
-				}
-			}
-			if len(matches) > 0 && !exact && !e.hasCommandArguments(string(buffer)) {
-				selected = clamp(selected, 0, len(matches)-1)
-				buffer = []rune(matches[selected].Value + " ")
-				cursor = len(buffer)
-				menuClosed = true
-				tabMatches = nil
-				break
-			}
-			value := string(buffer)
-			e.AddHistory(value)
-			return finish(value, nil)
-		}
-		if err != nil {
-			return finish("", err)
-		}
-		if changed {
-			historyIndex = len(e.history)
-			menuClosed = false
-			if key.Kind != KeyTab {
-				tabMatches = nil
-			}
-			selected = 0
+		result := state.Handle(key)
+		if result.Done {
+			return finish(result.Value, result.Err)
 		}
 		if err := render(); err != nil {
 			return "", err

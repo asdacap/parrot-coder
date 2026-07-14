@@ -1,7 +1,7 @@
 # Parrot Coder
 
 Parrot Coder is a local-first coding agent for macOS and Linux, implemented as
-a single Go binary. It provides append-only terminal chat, durable SQLite
+a single Go binary. It provides scrollback-preserving terminal chat, durable SQLite
 sessions and event history, ChatGPT subscription OAuth, OpenAI-compatible
 providers, permission-bound tools, transactional file changes with undo/redo,
 session compaction, MCP, LSP, formatters, and bounded web fetching.
@@ -30,7 +30,7 @@ go build -o bin/parrot ./cmd/parrot
 Without Nix, install Go 1.25 or newer and build directly:
 
 ```sh
-go build -trimpath -o bin/parrot ./cmd/parrot
+./build.sh
 ./bin/parrot version
 ```
 
@@ -104,8 +104,8 @@ examples.
 ## CLI Reference
 
 `parrot` starts chat only when stdin is a terminal; otherwise it prints help.
-The global `--no-color` compatibility flag is accepted, although output is
-currently uncolored.
+The global `--no-color` flag, `NO_COLOR`, and `TERM=dumb` disable interactive
+styling.
 
 ```text
 parrot chat [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
@@ -135,10 +135,15 @@ replies. `serve` refuses non-loopback addresses because the HTTP API has no
 authentication layer.
 
 On a real terminal, chat uses a bounded inline editor without an alternate
-screen. The prompt displays the active agent and model, and chat can start
+screen. User messages start with `$`, assistant messages start with `-`, and a
+dim rule separates every committed message and forms the input area's top
+border. The editor remains active while the agent works: Enter queues a
+follow-up, safe slash commands run immediately, and a spinner marks the busy
+prompt. Chat can start
 without a configured model. Submitting a normal prompt with no model opens a
 picker and preserves the draft until a model is selected. Explicit non-TTY
-`parrot chat` retains a deterministic, ANSI-free line REPL.
+`parrot chat` retains the same role markers in a deterministic, ANSI-free line
+REPL. `/status` shows the active agent, model, session, and project.
 
 Interactive chat supports `/help`, `/models`, `/model`, `/agents`, `/agent`,
 `/sessions`, `/session`, `/resume`, `/new`, `/compact`, `/connect`, `/thinking`,

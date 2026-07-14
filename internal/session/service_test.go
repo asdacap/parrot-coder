@@ -7,6 +7,7 @@ import (
 	"sync"
 	"testing"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
@@ -65,6 +66,32 @@ func TestCreateSelectedPersistsCompleteInitialSelection(t *testing.T) {
 	}
 	if loaded.Agent != "build" || loaded.Provider != "local" || loaded.Model != "code" {
 		t.Fatalf("selection = %#v", loaded)
+	}
+}
+
+func TestLatestSelectionUsesCurrentProject(t *testing.T) {
+	ctx, db, _, service, _ := newService(t)
+	for _, projectID := range []string{"other", "project"} {
+		if _, err := db.SQL().ExecContext(ctx, `INSERT INTO project(id, root_path, created_at) VALUES (?, ?, ?)`, projectID, "/"+projectID, "2026-01-01T00:00:00Z"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := service.CreateSelected(ctx, session.CreateParams{ProjectID: "other", Title: "other"}, session.Selection{Agent: "build", Provider: "other", Model: "newer"}); err != nil {
+		t.Fatal(err)
+	}
+	want := session.Selection{Agent: "plan", Provider: "local", Model: "code"}
+	if _, err := service.CreateSelected(ctx, session.CreateParams{ProjectID: "project", Title: "selected"}, want); err != nil {
+		t.Fatal(err)
+	}
+	got, err := service.LatestSelection(ctx, "project")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != want {
+		t.Fatalf("LatestSelection() = %#v, want %#v", got, want)
+	}
+	if _, err := service.LatestSelection(ctx, "missing"); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("missing LatestSelection() error = %v", err)
 	}
 }
 
@@ -133,6 +160,52 @@ func TestAdmitIsExactlyIdempotent(t *testing.T) {
 	}
 	if len(events) != 1 || events[0].Sequence != 0 {
 		t.Fatalf("admission events = %#v", events)
+	}
+}
+
+func TestSessionInputEventPayloads(t *testing.T) {
+	ctx, _, repository, service, sessionID := newService(t)
+	admission, err := service.Admit(ctx, sessionID, session.AdmitParams{
+		MessageID: "msg_payload",
+		Content:   "payload content",
+		Delivery:  session.DeliveryQueue,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.PromoteNextQueue(ctx, sessionID); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := repository.List(ctx, sessionID, -1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("event count = %d, want 2", len(events))
+	}
+
+	admitted, err := v1.DecodeEventData(v1.Event{Type: events[0].Type, Data: events[0].Data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAdmitted := &v1.SessionInputAdmitted{
+		InputID:   admission.Input.ID,
+		MessageID: "msg_payload",
+		Content:   "payload content",
+		Delivery:  "queue",
+	}
+	if admittedPayload, ok := admitted.(*v1.SessionInputAdmitted); !ok || *admittedPayload != *wantAdmitted {
+		t.Fatalf("admitted payload = %#v, want %#v", admitted, wantAdmitted)
+	}
+
+	promoted, err := v1.DecodeEventData(v1.Event{Type: events[1].Type, Data: events[1].Data})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPromoted := &v1.SessionInputPromoted{InputID: admission.Input.ID, MessageID: "msg_payload"}
+	if promotedPayload, ok := promoted.(*v1.SessionInputPromoted); !ok || *promotedPayload != *wantPromoted {
+		t.Fatalf("promoted payload = %#v, want %#v", promoted, wantPromoted)
 	}
 }
 

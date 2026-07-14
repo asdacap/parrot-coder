@@ -19,3 +19,16 @@ func makeRawState(state terminalState) terminalState {
 	raw.Cc[unix.VTIME] = 1
 	return &raw
 }
+
+func terminalColumns(fd uintptr) int {
+	size, err := unix.IoctlGetWinsize(int(fd), unix.TIOCGWINSZ)
+	if err != nil || size.Col == 0 {
+		return 0
+	}
+	return int(size.Col)
+}
+
+func terminalEchoEnabled(fd uintptr) bool {
+	state, err := getTerminalState(fd)
+	return err == nil && state.Lflag&unix.ECHO != 0
+}

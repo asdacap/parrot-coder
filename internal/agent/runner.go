@@ -287,6 +287,7 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			return nil, "", nextErr
 		}
 		if r.config.Live != nil {
+			item.MessageID = assistant.ID
 			r.config.Live.Publish(sessionID, item)
 		}
 		switch item.Type {

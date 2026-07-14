@@ -1,6 +1,7 @@
 # Terminal Contract
 
-Parrot uses the terminal's normal scrollback. It is not a screen application.
+Parrot uses the terminal's normal scrollback. It is not a screen application,
+but it may redraw the last few lines that it explicitly owns.
 
 ## Forbidden Behavior
 
@@ -21,27 +22,51 @@ or redrawing it must never alter committed transcript above it. Alternate
 screens, full-screen clears, mouse tracking, title changes, and replaying the
 committed transcript remain forbidden.
 
-Color is optional on terminal stderr and is disabled by `NO_COLOR`,
-`--no-color`, or `TERM=dumb`.
+Color is optional for human-oriented interactive output and is disabled by
+`NO_COLOR`, `--no-color`, `TERM=dumb`, or non-TTY output. Untrusted model and
+tool text is sanitized before renderer-owned styling is applied.
 
 ## Chat Loop
 
-Enhanced chat reads ordinary user input only while the session is idle:
+Enhanced chat keeps one editor active while the session is idle or running:
 
 ```text
-read line -> submit -> stream until idle -> read next line
+edit -> submit steer or queue -> continue editing while events stream
 ```
 
 The editor supports rune-aware movement, history, slash completion, bracketed
-paste, and Ctrl-J multiline input. Assistant text and transient tool/status
-activity may redraw only in the bounded renderer region. Once a turn is idle,
-the complete assistant response is committed exactly once. Permission and
-question prompts temporarily take ownership of the same renderer; decisions
-and the surrounding transcript remain immutable.
+paste, and Ctrl-J multiline input. Enter starts a turn while idle and queues a
+follow-up while the agent is running. Safe informational slash commands execute
+immediately; commands that switch or mutate the active session are rejected
+until it is idle. Assistant text, queued-input previews, the working spinner,
+and transient tool/status activity may redraw only in the bounded renderer
+region. Each complete assistant response is committed exactly once. Permission
+and question prompts temporarily take keyboard focus in the same renderer; the
+ordinary message draft is preserved and the surrounding transcript remains
+immutable.
 
-During a turn, the first `Ctrl-C` requests cancellation and remains in the
-session. A second interrupt before cancellation completes exits with status
-130. `Ctrl-D` on an empty idle prompt exits cleanly.
+Committed turns use aligned role markers and hanging indentation:
+
+```text
+$ User message
+  continuation line
+───────────────────────────────────────
+- Assistant response
+  continuation line
+───────────────────────────────────────
+⠋ $ Editable while the agent works
+```
+
+The `$` marker is the user accent, `-` is the assistant accent, and the divider
+is dim. The divider after an assistant response is also the input area's top
+border. Pending follow-ups appear below it with a written `(queued)` label.
+Status text is dim and errors are red when color is enabled. These labels remain
+present without color, so meaning never depends on styling.
+
+Ctrl-C clears a nonempty draft. With an empty busy editor, the first Ctrl-C
+requests cancellation and remains in the session; a second interrupt before
+cancellation completes exits with status 130. Ctrl-D exits only from an empty
+idle prompt.
 
 If raw mode cannot be enabled, or input/output are not real terminals, explicit
 `parrot chat` uses a deterministic line REPL with no terminal escape sequences.
@@ -63,5 +88,6 @@ terminal.
 
 Status and decisions are expressed in words rather than color or symbols alone.
 Permission scope and default choices are written before input is requested.
-There are no rapidly changing spinners or repeated transcript blocks. Tables
-have machine-readable alternatives and remain understandable when wrapped.
+The working spinner is confined to one renderer-owned cell and never enters the
+committed transcript. There are no repeated transcript blocks. Tables have
+machine-readable alternatives and remain understandable when wrapped.

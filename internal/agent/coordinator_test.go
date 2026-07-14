@@ -13,6 +13,12 @@ type drainerFunc func(context.Context, string) error
 
 func (f drainerFunc) Drain(ctx context.Context, sessionID string) error { return f(ctx, sessionID) }
 
+type lifecycleObserverFunc func(string, error)
+
+func (f lifecycleObserverFunc) LifecycleComplete(sessionID string, err error) {
+	f(sessionID, err)
+}
+
 func TestCoordinatorConcurrentResumeJoinsOneDrain(t *testing.T) {
 	entered := make(chan struct{})
 	release := make(chan struct{})
@@ -48,6 +54,7 @@ func TestCoordinatorConcurrentResumeJoinsOneDrain(t *testing.T) {
 func TestCoordinatorCoalescesWakeAndHandlesSettlementRace(t *testing.T) {
 	entered := make(chan int, 4)
 	releases := []chan struct{}{make(chan struct{}), make(chan struct{}), make(chan struct{})}
+	completed := make(chan error, 2)
 	var calls atomic.Int32
 	coordinator := NewCoordinator(drainerFunc(func(ctx context.Context, _ string) error {
 		call := int(calls.Add(1))
@@ -58,7 +65,7 @@ func TestCoordinatorCoalescesWakeAndHandlesSettlementRace(t *testing.T) {
 		case <-ctx.Done():
 			return ctx.Err()
 		}
-	}))
+	}), lifecycleObserverFunc(func(_ string, err error) { completed <- err }))
 	coordinator.Wake("session")
 	if call := <-entered; call != 1 {
 		t.Fatalf("first call = %d", call)
@@ -70,8 +77,26 @@ func TestCoordinatorCoalescesWakeAndHandlesSettlementRace(t *testing.T) {
 	if call := <-entered; call != 2 {
 		t.Fatalf("coalesced call = %d", call)
 	}
+	select {
+	case err := <-completed:
+		t.Fatalf("lifecycle completed between coalesced drains: %v", err)
+	default:
+	}
 	close(releases[1])
 	waitFor(t, func() bool { return coordinator.Status("session") == StatusIdle })
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatalf("lifecycle error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle completion was not reported")
+	}
+	select {
+	case err := <-completed:
+		t.Fatalf("duplicate lifecycle completion: %v", err)
+	default:
+	}
 	if got := calls.Load(); got != 2 {
 		t.Fatalf("coalesced Drain calls = %d", got)
 	}
@@ -82,6 +107,7 @@ func TestCoordinatorInterruptWaitsForCleanupAndWakeAfterCancelRestarts(t *testin
 	cleanup := make(chan struct{})
 	restarted := make(chan struct{})
 	finishRestart := make(chan struct{})
+	completed := make(chan error, 2)
 	var calls atomic.Int32
 	coordinator := NewCoordinator(drainerFunc(func(ctx context.Context, _ string) error {
 		if calls.Add(1) == 1 {
@@ -93,7 +119,7 @@ func TestCoordinatorInterruptWaitsForCleanupAndWakeAfterCancelRestarts(t *testin
 		close(restarted)
 		<-finishRestart
 		return nil
-	}))
+	}), lifecycleObserverFunc(func(_ string, err error) { completed <- err }))
 	coordinator.Wake("session")
 	waitFor(t, func() bool { return coordinator.Status("session") == StatusRunning })
 	interruptDone := make(chan error, 1)
@@ -114,8 +140,26 @@ func TestCoordinatorInterruptWaitsForCleanupAndWakeAfterCancelRestarts(t *testin
 	case <-time.After(time.Second):
 		t.Fatal("wake during settlement was lost")
 	}
+	select {
+	case err := <-completed:
+		t.Fatalf("lifecycle completed before restarted drain: %v", err)
+	default:
+	}
 	close(finishRestart)
 	waitFor(t, func() bool { return coordinator.Status("session") == StatusIdle })
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatalf("restarted lifecycle error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("restarted lifecycle completion was not reported")
+	}
+	select {
+	case err := <-completed:
+		t.Fatalf("duplicate restarted lifecycle completion: %v", err)
+	default:
+	}
 }
 
 func TestCoordinatorRunsDifferentSessionsConcurrently(t *testing.T) {

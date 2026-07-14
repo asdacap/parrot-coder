@@ -10,6 +10,14 @@ type Drainer interface {
 	Drain(context.Context, string) error
 }
 
+type LifecycleObserver interface {
+	LifecycleComplete(sessionID string, err error)
+}
+
+type LifecycleStartObserver interface {
+	LifecycleStarted(sessionID string)
+}
+
 type Status string
 
 const (
@@ -32,13 +40,14 @@ type drainState struct {
 }
 
 type Coordinator struct {
-	mu      sync.Mutex
-	drainer Drainer
-	active  map[string]*drainState
+	mu        sync.Mutex
+	drainer   Drainer
+	observers []LifecycleObserver
+	active    map[string]*drainState
 }
 
-func NewCoordinator(drainer Drainer) *Coordinator {
-	return &Coordinator{drainer: drainer, active: make(map[string]*drainState)}
+func NewCoordinator(drainer Drainer, observers ...LifecycleObserver) *Coordinator {
+	return &Coordinator{drainer: drainer, observers: observers, active: make(map[string]*drainState)}
 }
 
 // Wake coalesces with an active drain and returns immediately.
@@ -58,6 +67,11 @@ func (c *Coordinator) startOrJoin(sessionID string, requestWake bool) *drainStat
 	ctx, cancel := context.WithCancel(context.Background())
 	state := &drainState{done: make(chan struct{}), cancel: cancel, status: StatusRunning}
 	c.active[sessionID] = state
+	for _, observer := range c.observers {
+		if starter, ok := observer.(LifecycleStartObserver); ok {
+			starter.LifecycleStarted(sessionID)
+		}
+	}
 	c.mu.Unlock()
 	go c.run(ctx, sessionID, state)
 	return state
@@ -122,9 +136,7 @@ func (c *Coordinator) run(ctx context.Context, sessionID string, state *drainSta
 	for {
 		err := c.drainer.Drain(ctx, sessionID)
 		c.mu.Lock()
-		if err != nil && state.err == nil {
-			state.err = err
-		}
+		state.err = err
 		if state.wake && ctx.Err() == nil {
 			state.wake = false
 			c.mu.Unlock()
@@ -135,9 +147,19 @@ func (c *Coordinator) run(ctx context.Context, sessionID string, state *drainSta
 			nextCtx, cancel := context.WithCancel(context.Background())
 			next := &drainState{done: make(chan struct{}), cancel: cancel, status: StatusRunning}
 			c.active[sessionID] = next
+			for _, observer := range c.observers {
+				if starter, ok := observer.(LifecycleStartObserver); ok {
+					starter.LifecycleStarted(sessionID)
+				}
+			}
 			go c.run(nextCtx, sessionID, next)
 		} else {
 			delete(c.active, sessionID)
+			for _, observer := range c.observers {
+				if observer != nil {
+					observer.LifecycleComplete(sessionID, state.err)
+				}
+			}
 		}
 		close(state.done)
 		c.mu.Unlock()

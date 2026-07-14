@@ -36,3 +36,37 @@ func TestCharacterDeviceIsNotAssumedToBeTTY(t *testing.T) {
 		t.Fatal("null device reported as a terminal")
 	}
 }
+
+func TestColorDisabledForNonTTYAndDumbTerminal(t *testing.T) {
+	previousNoColor, hadNoColor := os.LookupEnv("NO_COLOR")
+	if err := os.Unsetenv("NO_COLOR"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadNoColor {
+			_ = os.Setenv("NO_COLOR", previousNoColor)
+		} else {
+			_ = os.Unsetenv("NO_COLOR")
+		}
+	})
+	t.Setenv("TERM", "xterm-256color")
+	var output bytes.Buffer
+	if ColorEnabled(&output, false) {
+		t.Fatal("color enabled for non-TTY output")
+	}
+	if !colorEnabled(true, false) {
+		t.Fatal("color disabled for an ordinary TTY")
+	}
+	t.Setenv("TERM", "dumb")
+	if colorEnabled(true, false) {
+		t.Fatal("color enabled for TERM=dumb")
+	}
+	t.Setenv("TERM", "xterm-256color")
+	t.Setenv("NO_COLOR", "")
+	if colorEnabled(true, false) {
+		t.Fatal("color enabled with NO_COLOR")
+	}
+	if colorEnabled(true, true) {
+		t.Fatal("color enabled when explicitly disabled")
+	}
+}

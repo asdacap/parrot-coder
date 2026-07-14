@@ -1,4 +1,4 @@
-// Package terminal implements Parrot's append-only terminal contract.
+// Package terminal implements Parrot's scrollback-preserving terminal contract.
 package terminal
 
 import (
@@ -19,6 +19,41 @@ func IsTTY(value any) bool {
 	}
 	_, err := getTerminalState(file.Fd())
 	return err == nil
+}
+
+// Columns returns the current terminal width, or zero when it is unavailable.
+func Columns(value any) int {
+	file, ok := value.(*os.File)
+	if !ok || file == nil {
+		return 0
+	}
+	return terminalColumns(file.Fd())
+}
+
+// InputEchoed reports whether input and output are the same terminal and its
+// line discipline echoes typed input to that terminal.
+func InputEchoed(input, output any) bool {
+	in, inOK := input.(*os.File)
+	out, outOK := output.(*os.File)
+	if !inOK || !outOK || in == nil || out == nil || !IsTTY(in) || !IsTTY(out) || !terminalEchoEnabled(in.Fd()) {
+		return false
+	}
+	inInfo, inErr := in.Stat()
+	outInfo, outErr := out.Stat()
+	return inErr == nil && outErr == nil && os.SameFile(inInfo, outInfo)
+}
+
+// ColorEnabled reports whether human-oriented ANSI styling may be emitted.
+func ColorEnabled(output any, disabled bool) bool {
+	return colorEnabled(IsTTY(output), disabled)
+}
+
+func colorEnabled(tty, disabled bool) bool {
+	if disabled || !tty || os.Getenv("TERM") == "dumb" {
+		return false
+	}
+	_, noColor := os.LookupEnv("NO_COLOR")
+	return !noColor
 }
 
 // OpenInput opens the controlling terminal. Piped stdin is never reused for

@@ -139,13 +139,24 @@ func TestChatTranscriptAndSlashCommands(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, value := range []string{"you> ", "assistant> answer", "/model", "/undo"} {
+	for _, value := range []string{"$ hello", "- answer", "---", "/model", "/undo"} {
 		if !strings.Contains(stdout.String(), value) {
 			t.Errorf("transcript missing %q: %q", value, stdout.String())
 		}
 	}
 	if strings.Contains(stdout.String(), "\x1b") || strings.Contains(stderr.String(), "\x1b") {
 		t.Fatalf("escape leaked into transcript")
+	}
+}
+
+func TestRemoveNoColorPreservesArgumentsAndRecordsPreference(t *testing.T) {
+	args, disabled := removeNoColor([]string{"chat", "--no-color", "hello"})
+	if !disabled || len(args) != 2 || args[0] != "chat" || args[1] != "hello" {
+		t.Fatalf("removeNoColor() = %#v, %t", args, disabled)
+	}
+	args, disabled = removeNoColor([]string{"run", "--", "--no-color"})
+	if disabled || len(args) != 3 || args[2] != "--no-color" {
+		t.Fatalf("removeNoColor() after terminator = %#v, %t", args, disabled)
 	}
 }
 
@@ -242,9 +253,10 @@ func TestChatCompletionCandidatesIncludeBuiltinsAndCustomCommands(t *testing.T) 
 func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, MaxRows: 6})
-	if err := renderer.Update([]string{"assistant> partial"}); err != nil {
+	if err := renderer.UpdateMessage("- ", "partial"); err != nil {
 		t.Fatal(err)
 	}
+	before := output.Len()
 	api := staticMessageClient{items: v1.MessageList{Items: []v1.Message{{ID: "answer", Role: "assistant", Content: "complete answer"}}}}
 	result := finishStream(api, "session", v1.MessageList{}, "partial", false, streamOptions{format: "text", chat: true, renderer: renderer})
 	if result.err != nil {
@@ -253,19 +265,25 @@ func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	if strings.Count(output.String(), "complete answer") != 1 {
 		t.Fatalf("final assistant response was not committed once: %q", output.String())
 	}
+	committed := output.String()[before:]
+	if !strings.HasPrefix(committed, "\x1b[?25l") || !strings.Contains(committed, "\x1b[2K") || strings.Count(committed, "- complete answer") != 1 {
+		t.Fatalf("live response was not cleared before final commit: %q", committed)
+	}
 }
 
 func TestEnhancedSubmissionCommitsUserMessage(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, MaxRows: 6})
-	if err := renderer.Prompt(terminal.PromptState{Prefix: "you [build · local/test]> ", Text: "keep this", Cursor: 9}); err != nil {
+	if err := renderer.Prompt(terminal.PromptState{Prefix: "$ ", Text: "keep this", Cursor: 9}); err != nil {
 		t.Fatal(err)
 	}
+	before := output.Len()
 	shell := &chatShell{renderer: renderer}
 	if err := shell.commitUser("keep this"); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Count(output.String(), "you> keep this") != 1 {
+	committed := output.String()[before:]
+	if strings.Count(committed, "$ keep this") != 1 || !strings.Contains(committed, "───") {
 		t.Fatalf("submitted user message was not committed once: %q", output.String())
 	}
 }
@@ -284,7 +302,7 @@ func TestEnhancedNoModelPickerCancellationRestoresDraft(t *testing.T) {
 	if code := shell.run(""); code != exitOK {
 		t.Fatalf("code = %d, output=%q", code, output.String())
 	}
-	if !strings.Contains(output.String(), "you [build · no model]> preserved") {
+	if !strings.Contains(output.String(), "$ preserved") {
 		t.Fatalf("draft was not restored after picker cancellation: %q", output.String())
 	}
 }
@@ -316,6 +334,196 @@ func TestEnhancedPermissionEscapeDeniesAndInterruptPropagates(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEnhancedBusySubmissionQueuesAndPromotionCommits(t *testing.T) {
+	api := &enhancedQueueAPI{}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 40, MaxRows: 6})
+	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil, terminal.WithEditorPrompt("$ "))
+	state, err := editor.Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	shell := &chatShell{
+		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: "build", Provider: "local", Model: "test"},
+		selection: chatSelection{agent: "build", provider: "local", model: "test"}, renderer: renderer, stdout: &output,
+	}
+	runtime := &enhancedChatRuntime{shell: shell, state: state, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
+	if err := runtime.submitPrompt("next task"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.prompts) != 1 || api.prompts[0].Delivery != "queue" || len(runtime.pending) != 1 {
+		t.Fatalf("prompts=%#v pending=%#v", api.prompts, runtime.pending)
+	}
+	if err := runtime.render(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "next task") || !strings.Contains(output.String(), "⠋ $ ") {
+		t.Fatalf("queue frame = %q", output.String())
+	}
+	payload, _ := json.Marshal(v1.SessionInputPromoted{InputID: "input", MessageID: "message"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionInputPromoted, Data: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.pending) != 0 || !strings.Contains(output.String(), "$ next task") {
+		t.Fatalf("promoted queue pending=%#v output=%q", runtime.pending, output.String())
+	}
+}
+
+func TestEnhancedBusySlashRunsSafeAndRejectsMutation(t *testing.T) {
+	api := &enhancedQueueAPI{}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 50})
+	shell := &chatShell{
+		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: "build", Provider: "local", Model: "test"},
+		selection: chatSelection{agent: "build", provider: "local", model: "test"}, renderer: renderer, stdout: &output,
+		projectRoot: "/project",
+	}
+	runtime := &enhancedChatRuntime{shell: shell, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
+	runtime.handleBuiltin("/status", "")
+	if !strings.Contains(output.String(), "session: session") || len(api.prompts) != 0 {
+		t.Fatalf("safe slash output=%q prompts=%#v", output.String(), api.prompts)
+	}
+	runtime.handleBuiltin("/new", "")
+	if shell.current.ID != "session" || !strings.Contains(output.String(), "unavailable while the agent is working") {
+		t.Fatalf("busy mutation changed session: %#v output=%q", shell.current, output.String())
+	}
+}
+
+func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{
+		{ID: "first", Role: "assistant", Content: "first answer", Status: "complete"},
+		{ID: "second", Role: "assistant", Content: "second answer", Status: "complete"},
+	}}}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 50})
+	shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer, stdout: &output}
+	runtime := &enhancedChatRuntime{
+		shell: shell, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1),
+		pending: []queuedChatInput{{inputID: "input", messageID: "queued", content: "queued question"}},
+	}
+	idle, _ := json.Marshal(v1.SessionStatus{Kind: "idle"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: idle}); err != nil {
+		t.Fatal(err)
+	}
+	if !runtime.busy || strings.Contains(output.String(), "second answer") {
+		t.Fatalf("idle settled before promotion: busy=%t output=%q", runtime.busy, output.String())
+	}
+	complete, _ := json.Marshal(map[string]string{"message_id": "first"})
+	if err := runtime.handleEvent(v1.Event{Type: "session.assistant.complete", Data: complete}); err != nil {
+		t.Fatal(err)
+	}
+	promoted, _ := json.Marshal(v1.SessionInputPromoted{InputID: "input", MessageID: "queued"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionInputPromoted, Data: promoted}); err != nil {
+		t.Fatal(err)
+	}
+	text := output.String()
+	first := strings.Index(text, "first answer")
+	queued := strings.Index(text, "queued question")
+	second := strings.Index(text, "second answer")
+	if first < 0 || queued < first || second < queued || runtime.busy {
+		t.Fatalf("turn order first=%d queued=%d second=%d busy=%t output=%q", first, queued, second, runtime.busy, text)
+	}
+}
+
+func TestEnhancedKeyPumpDoesNotConsumePastUnacknowledgedKey(t *testing.T) {
+	decoder := terminal.NewKeyDecoder(bytes.NewBufferString("\rZ"))
+	pump := startEnhancedKeyPump(context.Background(), decoder)
+	result := <-pump.events
+	if result.err != nil || result.key.Kind != terminal.KeyEnter {
+		t.Fatalf("first key = %#v, %v", result.key, result.err)
+	}
+	pump.stop()
+	pump = startEnhancedKeyPump(context.Background(), decoder)
+	result = <-pump.events
+	if result.err != nil || result.key.Kind != terminal.KeyRune || result.key.Rune != 'Z' {
+		t.Fatalf("handoff key = %#v, %v", result.key, result.err)
+	}
+	close(result.ack)
+	pump.stop()
+}
+
+func TestEnhancedErrorStopsSpinnerAndLateDeltaIsIgnored(t *testing.T) {
+	api := &enhancedQueueAPI{}
+	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}},
+		state: state, busy: true, knownMessages: map[string]bool{"finished": true}, events: make(chan enhancedSessionEvent, 1),
+	}
+	status, _ := json.Marshal(v1.SessionStatus{Kind: "error"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: status}); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.busy {
+		t.Fatal("runner error left enhanced chat busy")
+	}
+	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "finished", Kind: "text", Delta: "stale"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: delta}); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.streamed.Len() != 0 {
+		t.Fatalf("late finalized delta was rendered: %q", runtime.streamed.String())
+	}
+}
+
+func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
+	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "shell", Reason: "test"}}}}
+	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
+	state, err := editor.Start("keep draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{
+			ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, editor: editor, stdout: io.Discard,
+			renderer: terminal.NewLiveRenderer(io.Discard, terminal.RendererConfig{}),
+		},
+		state: state, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1),
+	}
+	runtime.detectModal()
+	if runtime.modal == nil || state.Value() != "keep draft" {
+		t.Fatalf("modal=%#v draft=%q", runtime.modal, state.Value())
+	}
+	if err := runtime.answerModal("once"); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.modal != nil || state.Value() != "keep draft" || len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "allow" {
+		t.Fatalf("modal=%#v draft=%q replies=%#v", runtime.modal, state.Value(), api.permissionReplies)
+	}
+}
+
+type enhancedQueueAPI struct {
+	apiClient
+	prompts           []v1.PromptRequest
+	messages          v1.MessageList
+	permissions       v1.PermissionList
+	permissionReplies []v1.PermissionReply
+}
+
+func (a *enhancedQueueAPI) Prompt(_ context.Context, _ string, request v1.PromptRequest) (v1.PromptAccepted, error) {
+	a.prompts = append(a.prompts, request)
+	return v1.PromptAccepted{InputID: "input", MessageID: "message", Delivery: request.Delivery, Status: "pending", Created: true}, nil
+}
+
+func (a *enhancedQueueAPI) Messages(context.Context, string) (v1.MessageList, error) {
+	return a.messages, nil
+}
+
+func (a *enhancedQueueAPI) Permissions(context.Context, string) (v1.PermissionList, error) {
+	return a.permissions, nil
+}
+
+func (a *enhancedQueueAPI) Questions(context.Context, string) (v1.QuestionList, error) {
+	return v1.QuestionList{}, nil
+}
+
+func (a *enhancedQueueAPI) ReplyPermission(_ context.Context, _, _ string, reply v1.PermissionReply) error {
+	a.permissionReplies = append(a.permissionReplies, reply)
+	return nil
 }
 
 type promptReplyAPI struct {

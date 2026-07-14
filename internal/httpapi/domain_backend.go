@@ -207,10 +207,6 @@ func (b *DomainBackend) Interrupt(ctx context.Context, id string) error {
 	if err := b.Coordinator.Interrupt(ctx, id); err != nil {
 		return err
 	}
-	if b.Live != nil {
-		data, _ := json.Marshal(v1.SessionStatus{Kind: "interrupted"})
-		b.Live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})
-	}
 	return nil
 }
 

@@ -140,6 +140,36 @@ func TestKeyDecoderIgnoresTimedTTYEOF(t *testing.T) {
 	}
 }
 
+func TestIncrementalEditorStateMatchesBlockingEditing(t *testing.T) {
+	editor := NewEditorIO(bytes.NewBuffer(nil), nil, WithCompletions([]Candidate{{Value: "/status", Description: "state"}}))
+	state, err := editor.Start("ab")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []Key{{Kind: KeyLeft}, {Kind: KeyRune, Rune: 'X'}} {
+		if result := state.Handle(key); result.Done || result.Err != nil {
+			t.Fatalf("Handle(%#v) = %#v", key, result)
+		}
+	}
+	if state.Value() != "aXb" {
+		t.Fatalf("draft = %q", state.Value())
+	}
+	result := state.Handle(Key{Kind: KeyEnter})
+	if !result.Done || result.Err != nil || result.Value != "aXb" {
+		t.Fatalf("submit = %#v", result)
+	}
+	if got := editor.History(); len(got) != 1 || got[0] != "aXb" {
+		t.Fatalf("history = %#v", got)
+	}
+	if err := state.Reset("/st"); err != nil {
+		t.Fatal(err)
+	}
+	prompt := state.PromptState()
+	if len(prompt.Completions) != 1 || prompt.Completions[0].Value != "/status" {
+		t.Fatalf("completions = %#v", prompt.Completions)
+	}
+}
+
 type contextOnlyReader struct{}
 
 func (contextOnlyReader) Read([]byte) (int, error) { return 0, errors.New("unexpected Read") }

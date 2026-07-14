@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"unicode"
+	"unicode/utf8"
 )
 
 const (
@@ -16,9 +17,11 @@ const (
 
 // RendererConfig configures a LiveRenderer.
 type RendererConfig struct {
-	TTY     bool
-	Columns int
-	MaxRows int
+	TTY         bool
+	Color       bool
+	Columns     int
+	MaxRows     int
+	ColumnsFunc func() int
 }
 
 // PromptState describes an editable prompt. Cursor is a rune index in Text.
@@ -30,16 +33,32 @@ type PromptState struct {
 	Selected    int
 }
 
+// LiveFrame combines an active response with the always-visible input area.
+// Pending entries are displayed inside the input area below its top divider.
+type LiveFrame struct {
+	MessagePrefix string
+	Message       string
+	Status        string
+	Pending       []string
+	Prompt        PromptState
+	Busy          bool
+	Spinner       string
+	ShowDivider   bool
+}
+
 // LiveRenderer owns the terminal's bounded, redrawable bottom region. No
 // other type in this package writes terminal control sequences.
 type LiveRenderer struct {
 	mu        sync.Mutex
 	w         io.Writer
 	tty       bool
+	color     bool
 	columns   int
 	maxRows   int
+	columnsFn func() int
 	rows      []string
 	cursorRow int
+	cursorCol int
 	plainSeen map[string]struct{}
 	closed    bool
 }
@@ -58,8 +77,10 @@ func NewLiveRenderer(w io.Writer, config RendererConfig) *LiveRenderer {
 	return &LiveRenderer{
 		w:         w,
 		tty:       config.TTY,
+		color:     config.Color && config.TTY,
 		columns:   columns,
 		maxRows:   maxRows,
+		columnsFn: config.ColumnsFunc,
 		plainSeen: make(map[string]struct{}),
 	}
 }
@@ -80,6 +101,7 @@ func (r *LiveRenderer) Update(lines []string) error {
 	if r.closed {
 		return errors.New("terminal: renderer is closed")
 	}
+	r.syncColumns()
 	rows := r.layoutLines(lines)
 	if !r.tty {
 		return r.writePlain(rows)
@@ -95,10 +117,13 @@ func (r *LiveRenderer) Prompt(state PromptState) error {
 	if r.closed {
 		return errors.New("terminal: renderer is closed")
 	}
+	r.syncColumns()
 
-	text := Sanitize(state.Prefix) + Sanitize(state.Text)
-	cursor := runeCount(Sanitize(state.Prefix)) + clamp(state.Cursor, 0, runeCount(Sanitize(state.Text)))
-	rows, cursorRow, cursorCol := layoutText(text, cursor, r.columns)
+	prefix := Sanitize(state.Prefix)
+	cleanText := Sanitize(state.Text)
+	text := prefix + cleanText
+	cursor := runeCount(prefix) + clamp(state.Cursor, 0, runeCount(cleanText))
+	rows, cursorRow, cursorCol := layoutTextHanging(text, cursor, r.columns, strings.Repeat(" ", displayWidth(prefix)))
 	for i, candidate := range state.Completions {
 		if i >= r.maxRows {
 			break
@@ -131,6 +156,191 @@ func (r *LiveRenderer) Prompt(state PromptState) error {
 	return r.redraw(rows, cursorRow, cursorCol)
 }
 
+// Frame redraws a composite response, pending queue, and editor while keeping
+// the cursor in the editor. The input divider and prompt always have priority
+// over transient response rows when the bounded region is full.
+func (r *LiveRenderer) Frame(frame LiveFrame) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	prompt := frame.Prompt
+	if frame.Busy {
+		spinner := frame.Spinner
+		if spinner == "" {
+			spinner = "*"
+		}
+		prompt.Prefix = spinner + " " + prompt.Prefix
+	}
+	promptRows, promptCursorRow, promptCursorCol := r.promptRows(prompt, max(1, r.maxRows-1))
+
+	dividerRows := 0
+	if frame.ShowDivider {
+		dividerRows = 1
+	}
+	available := max(0, r.maxRows-dividerRows-len(promptRows))
+	pendingCount := min(len(frame.Pending), min(2, available))
+	var pendingRows []string
+	for i := len(frame.Pending) - 1; i >= len(frame.Pending)-pendingCount; i-- {
+		item := frame.Pending[i]
+		line, _, _ := strings.Cut(strings.TrimSpace(Sanitize(item)), "\n")
+		group := []string{queuedPreview(line, r.columns)}
+		if len(pendingRows) >= available {
+			continue
+		}
+		pendingRows = append(group, pendingRows...)
+	}
+
+	inputRows := make([]string, 0, dividerRows+len(pendingRows)+len(promptRows))
+	if frame.ShowDivider {
+		inputRows = append(inputRows, strings.Repeat("─", max(3, r.columns-1)))
+	}
+	inputRows = append(inputRows, pendingRows...)
+	inputRows = append(inputRows, promptRows...)
+	remaining := max(0, r.maxRows-len(inputRows))
+
+	var activity []string
+	if frame.Status != "" {
+		activity = append(activity, r.layoutLines([]string{"status: " + frame.Status})...)
+	}
+	if frame.Message != "" || frame.MessagePrefix != "" {
+		activity = append(activity, r.messageRows(frame.MessagePrefix, frame.Message)...)
+	}
+	if len(activity) > remaining {
+		activity = activity[len(activity)-remaining:]
+	}
+	rows := append(activity, inputRows...)
+	cursorRow := len(activity) + dividerRows + len(pendingRows) + promptCursorRow
+	if !r.tty {
+		return r.writePlain(rows)
+	}
+	return r.redraw(rows, cursorRow, promptCursorCol)
+}
+
+func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, int) {
+	prefix := Sanitize(state.Prefix)
+	cleanText := Sanitize(state.Text)
+	text := prefix + cleanText
+	cursor := runeCount(prefix) + clamp(state.Cursor, 0, runeCount(cleanText))
+	rows, cursorRow, cursorCol := layoutTextHanging(text, cursor, r.columns, strings.Repeat(" ", displayWidth(prefix)))
+	if len(rows) >= limit {
+		start := cursorRow - limit + 1
+		if start < 0 {
+			start = 0
+		}
+		if start+limit > len(rows) {
+			start = len(rows) - limit
+		}
+		rows = rows[start : start+limit]
+		cursorRow = clamp(cursorRow-start, 0, len(rows)-1)
+		return rows, cursorRow, cursorCol
+	}
+	choiceBudget := limit - len(rows)
+	start := 0
+	if state.Selected >= choiceBudget {
+		start = state.Selected - choiceBudget + 1
+	}
+	end := min(len(state.Completions), start+choiceBudget)
+	for i := start; i < end; i++ {
+		candidate := state.Completions[i]
+		marker := "  "
+		if i == state.Selected {
+			marker = "> "
+		}
+		line := marker + Sanitize(candidate.Value)
+		if candidate.Description != "" {
+			line += "  " + Sanitize(candidate.Description)
+		}
+		group := wrapLine(line, r.columns)
+		if i < state.Selected && len(rows)+len(group) >= limit {
+			continue
+		}
+		if len(rows)+len(group) > limit {
+			if i == state.Selected && len(rows) < limit {
+				rows = append(rows, group[:limit-len(rows)]...)
+			}
+			continue
+		}
+		rows = append(rows, group...)
+	}
+	return rows, cursorRow, cursorCol
+}
+
+func queuedPreview(value string, columns int) string {
+	const prefix = "$ "
+	const suffix = "  (queued)"
+	available := columns - displayWidth(prefix) - displayWidth(suffix)
+	if available <= 0 {
+		return truncateWidth(prefix+"(queued)", max(1, columns-1))
+	}
+	if displayWidth(value) > available {
+		value = truncateWidth(value, max(1, available-1)) + "…"
+	}
+	return prefix + value + suffix
+}
+
+func truncateWidth(value string, width int) string {
+	var output strings.Builder
+	used := 0
+	for _, r := range value {
+		next := runeWidth(r)
+		if used+next > width {
+			break
+		}
+		output.WriteRune(r)
+		used += next
+	}
+	return output.String()
+}
+
+// UpdateMessage replaces the live region with a hanging-indented message.
+func (r *LiveRenderer) UpdateMessage(prefix, text string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	rows := r.messageRows(prefix, text)
+	if len(rows) > r.maxRows {
+		rows = rows[len(rows)-r.maxRows:]
+	}
+	if !r.tty {
+		return r.writePlain(rows)
+	}
+	row, col := lastPosition(rows)
+	return r.redraw(rows, row, col)
+}
+
+// CommitMessage appends a permanent hanging-indented message. When divider is
+// true, a dim rule is committed beneath it before the live response begins.
+func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	rows := r.messageRows(prefix, text)
+	if divider {
+		rows = append(rows, strings.Repeat("─", max(3, r.columns-1)))
+	}
+	return r.commitRows(rows)
+}
+
+// CommitDivider appends one permanent input-boundary rule.
+func (r *LiveRenderer) CommitDivider() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("terminal: renderer is closed")
+	}
+	r.syncColumns()
+	return r.commitRows([]string{strings.Repeat("─", max(3, r.columns-1))})
+}
+
 // Clear erases only the renderer-owned live region.
 func (r *LiveRenderer) Clear() error {
 	r.mu.Lock()
@@ -148,12 +358,19 @@ func (r *LiveRenderer) Commit(text string) error {
 	if r.closed {
 		return errors.New("terminal: renderer is closed")
 	}
+	r.syncColumns()
 	clean := Sanitize(text)
 	var output strings.Builder
 	if r.tty && len(r.rows) > 0 {
 		r.buildRedraw(&output, nil, 0, 0)
 	}
-	output.WriteString(clean)
+	parts := strings.Split(clean, "\n")
+	for i, part := range parts {
+		if i > 0 {
+			output.WriteByte('\n')
+		}
+		output.WriteString(r.decorate(part))
+	}
 	if !strings.HasSuffix(clean, "\n") {
 		output.WriteByte('\n')
 	}
@@ -162,6 +379,7 @@ func (r *LiveRenderer) Commit(text string) error {
 	}
 	r.rows = nil
 	r.cursorRow = 0
+	r.cursorCol = 0
 	return nil
 }
 
@@ -193,6 +411,7 @@ func (r *LiveRenderer) redraw(rows []string, cursorRow, cursorCol int) error {
 	}
 	r.rows = append(r.rows[:0], rows...)
 	r.cursorRow = cursorRow
+	r.cursorCol = cursorCol
 	return nil
 }
 
@@ -201,13 +420,13 @@ func (r *LiveRenderer) buildRedraw(output *strings.Builder, rows []string, curso
 	output.WriteString("\x1b[?25l")
 	if len(r.rows) > 0 {
 		output.WriteByte('\r')
-		moveUp(output, r.cursorRow)
+		moveUp(output, physicalCursorRow(r.rows, r.cursorRow, r.cursorCol, r.columns))
 	}
-	count := max(len(r.rows), len(rows))
+	count := max(physicalRowCount(r.rows, r.columns), len(rows))
 	for i := 0; i < count; i++ {
 		output.WriteString("\x1b[2K")
 		if i < len(rows) {
-			output.WriteString(rows[i])
+			output.WriteString(r.decorate(rows[i]))
 		}
 		if i+1 < count {
 			output.WriteString("\r\n")
@@ -220,10 +439,86 @@ func (r *LiveRenderer) buildRedraw(output *strings.Builder, rows []string, curso
 		} else if cursorRow != count-1 || cursorCol != displayWidth(rows[cursorRow]) {
 			output.WriteByte('\r')
 			moveUp(output, count-1-cursorRow)
-			output.WriteString(prefixWidth(rows[cursorRow], cursorCol))
+			output.WriteString(r.decorate(prefixWidth(rows[cursorRow], cursorCol)))
 		}
 	}
 	output.WriteString("\x1b[?25h")
+}
+
+func (r *LiveRenderer) commitRows(rows []string) error {
+	var output strings.Builder
+	if r.tty && len(r.rows) > 0 {
+		r.buildRedraw(&output, nil, 0, 0)
+	}
+	for _, row := range rows {
+		output.WriteString(r.decorate(row))
+		output.WriteByte('\n')
+	}
+	if err := writeAtomic(r.w, output.String()); err != nil {
+		return err
+	}
+	r.rows = nil
+	r.cursorRow = 0
+	r.cursorCol = 0
+	return nil
+}
+
+func (r *LiveRenderer) messageRows(prefix, text string) []string {
+	prefix = Sanitize(prefix)
+	text = prefix + strings.TrimRight(Sanitize(text), "\r\n")
+	rows, _, _ := layoutTextHanging(text, runeCount(text), r.columns, strings.Repeat(" ", displayWidth(prefix)))
+	return rows
+}
+
+func (r *LiveRenderer) syncColumns() {
+	if r.columnsFn == nil {
+		return
+	}
+	if columns := r.columnsFn(); columns > 0 {
+		r.columns = columns
+	}
+}
+
+func (r *LiveRenderer) decorate(row string) string {
+	if !r.color || row == "" {
+		return row
+	}
+	color := func(code, value string) string { return "\x1b[" + code + "m" + value + "\x1b[0m" }
+	switch {
+	case hasSpinnerPrefix(row):
+		spinner, rest := firstRune(row)
+		if strings.HasPrefix(rest, " $ ") {
+			return color("36", spinner) + " " + color("36", "$") + rest[2:]
+		}
+		return color("36", spinner) + rest
+	case strings.HasPrefix(row, "$ "):
+		return color("36", "$") + row[1:]
+	case strings.HasPrefix(row, "- "):
+		return color("32", "-") + row[1:]
+	case strings.Trim(row, "─") == "":
+		return color("2;90", row)
+	case strings.HasPrefix(row, "error:"):
+		return color("31", row)
+	case strings.HasPrefix(row, "status:") || strings.HasPrefix(row, "tool:"):
+		return color("2", row)
+	case strings.HasPrefix(row, "> "):
+		return color("36", ">") + row[1:]
+	default:
+		return row
+	}
+}
+
+func hasSpinnerPrefix(value string) bool {
+	if value == "" {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(value)
+	return strings.ContainsRune("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏", r)
+}
+
+func firstRune(value string) (string, string) {
+	_, size := utf8.DecodeRuneInString(value)
+	return value[:size], value[size:]
 }
 
 func (r *LiveRenderer) writePlain(rows []string) error {
@@ -268,26 +563,34 @@ func (r *LiveRenderer) layoutLines(lines []string) []string {
 }
 
 func layoutText(text string, cursor, columns int) ([]string, int, int) {
+	return layoutTextHanging(text, cursor, columns, "")
+}
+
+func layoutTextHanging(text string, cursor, columns int, indent string) ([]string, int, int) {
 	rows := []string{""}
 	row, col, seen := 0, 0, 0
 	cursorRow, cursorCol := 0, 0
+	indentWidth := displayWidth(indent)
+	if indentWidth >= columns {
+		indent, indentWidth = "", 0
+	}
 	for _, rawRune := range text {
 		if seen == cursor {
 			cursorRow, cursorCol = row, col
 		}
 		seen++
 		if rawRune == '\n' {
-			rows = append(rows, "")
+			rows = append(rows, indent)
 			row++
-			col = 0
+			col = indentWidth
 			continue
 		}
 		for _, value := range expandRune(rawRune) {
 			width := runeWidth(value)
 			if col > 0 && col+width > columns {
-				rows = append(rows, "")
+				rows = append(rows, indent)
 				row++
-				col = 0
+				col = indentWidth
 			}
 			rows[row] += string(value)
 			col += width
@@ -345,6 +648,27 @@ func lastPosition(rows []string) (int, int) {
 		return 0, 0
 	}
 	return len(rows) - 1, displayWidth(rows[len(rows)-1])
+}
+
+func physicalRowCount(rows []string, columns int) int {
+	count := 0
+	for _, row := range rows {
+		count += len(wrapLine(row, columns))
+	}
+	return count
+}
+
+func physicalCursorRow(rows []string, cursorRow, cursorCol, columns int) int {
+	if len(rows) == 0 {
+		return 0
+	}
+	cursorRow = clamp(cursorRow, 0, len(rows)-1)
+	physical := 0
+	for i := 0; i < cursorRow; i++ {
+		physical += len(wrapLine(rows[i], columns))
+	}
+	prefix := prefixWidth(rows[cursorRow], cursorCol)
+	return physical + len(wrapLine(prefix, columns)) - 1
 }
 
 func displayWidth(value string) int {

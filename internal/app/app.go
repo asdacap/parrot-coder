@@ -210,6 +210,19 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	repository := event.NewRepository(db)
 	live := event.NewBroker()
 	sessions := session.NewService(db, repository)
+	if providerID == "" && options.AllowNoModel {
+		selected, selectionErr := sessions.LatestSelection(ctx, info.ID)
+		switch {
+		case selectionErr == nil:
+			if _, _, resolveErr := providerRegistry.Resolve(selected.Provider, selected.Model); resolveErr == nil {
+				providerID, modelID = selected.Provider, selected.Model
+				defaultSelection.Provider, defaultSelection.Model = providerID, modelID
+				result.DefaultSelection.Provider, result.DefaultSelection.Model = providerID, modelID
+			}
+		case !errors.Is(selectionErr, session.ErrNotFound):
+			return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
+		}
+	}
 	todos := session.NewTodoService(db)
 	ws, err := workspace.New(info.Root)
 	if err != nil {
@@ -344,7 +357,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: runner: %w", err)
 	}
-	coordinator := agent.NewCoordinator(statusDrainer{runner: runner, live: live})
+	drainer := statusDrainer{runner: runner, live: live}
+	coordinator := agent.NewCoordinator(drainer, drainer)
 	subagentExecutor.coordinator = coordinator
 	result.coordinator = coordinator
 	backend := &httpapi.DomainBackend{
@@ -546,26 +560,33 @@ type compositionBackend struct {
 }
 
 func (b *compositionBackend) Wake(sessionID string) {
-	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
-	b.Live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
 	b.Coordinator.Wake(sessionID)
 }
 
 type statusDrainer struct {
-	runner *agent.Runner
+	runner agent.Drainer
 	live   *event.Broker
 }
 
 func (d statusDrainer) Drain(ctx context.Context, sessionID string) error {
-	err := d.runner.Drain(ctx, sessionID)
+	return d.runner.Drain(ctx, sessionID)
+}
+
+func (d statusDrainer) LifecycleStarted(sessionID string) {
+	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
+	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
+}
+
+func (d statusDrainer) LifecycleComplete(sessionID string, err error) {
 	status := v1.SessionStatus{Kind: "idle"}
-	if err != nil && !errors.Is(err, context.Canceled) {
+	if err == context.Canceled {
+		status.Kind = "interrupted"
+	} else if err != nil {
 		status.Kind = "error"
 		status.ErrorCode = "runner_error"
 	}
 	data, _ := json.Marshal(status)
 	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
-	return err
 }
 
 type questionPrompter struct{}
@@ -606,8 +627,6 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
-		h.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})
 		h.coordinator.Wake(id)
 		w.WriteHeader(http.StatusNoContent)
 		return

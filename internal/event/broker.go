@@ -57,25 +57,25 @@ func (b *Broker) Publish(sessionID string, item protocol.Event) {
 	var payload any
 	switch item.Type {
 	case protocol.EventTextDelta:
-		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{Kind: "text", Delta: item.Text}
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "text", Delta: item.Text}
 	case protocol.EventReasoningDelta:
-		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{Kind: "reasoning", Delta: item.Text}
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "reasoning", Delta: item.Text}
 	case protocol.EventToolInputDelta:
 		if item.ToolInput == nil {
 			return
 		}
-		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{Kind: "tool_input", Delta: item.ToolInput.Delta, ToolCallID: item.ToolInput.ID, ToolName: item.ToolInput.Name}
+		eventType, payload = v1.EventMessagePartDelta, v1.MessagePartDelta{MessageID: item.MessageID, Kind: "tool_input", Delta: item.ToolInput.Delta, ToolCallID: item.ToolInput.ID, ToolName: item.ToolInput.Name}
 	case protocol.EventToolCallComplete:
-		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{Kind: "tool_call_complete"}
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "tool_call_complete"}
 	case protocol.EventUsage:
 		if item.Usage == nil {
 			return
 		}
-		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{Kind: "usage", Usage: &v1.Usage{InputTokens: item.Usage.InputTokens, OutputTokens: item.Usage.OutputTokens, TotalTokens: item.Usage.TotalTokens, ReasoningTokens: item.Usage.ReasoningTokens, CachedInputTokens: item.Usage.CachedInputTokens}}
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "usage", Usage: &v1.Usage{InputTokens: item.Usage.InputTokens, OutputTokens: item.Usage.OutputTokens, TotalTokens: item.Usage.TotalTokens, ReasoningTokens: item.Usage.ReasoningTokens, CachedInputTokens: item.Usage.CachedInputTokens}}
 	case protocol.EventFinish:
-		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{Kind: "finish", FinishReason: string(item.FinishReason)}
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "finish", FinishReason: string(item.FinishReason)}
 	case protocol.EventProviderError:
-		status := v1.SessionStatus{Kind: "provider_error"}
+		status := v1.SessionStatus{MessageID: item.MessageID, Kind: "provider_error"}
 		if item.ProviderError != nil {
 			status.ErrorCode = item.ProviderError.Code
 		}

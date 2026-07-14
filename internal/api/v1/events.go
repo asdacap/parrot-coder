@@ -9,13 +9,15 @@ import (
 )
 
 const (
-	EventServerConnected  = "server.connected"
-	EventMessagePartDelta = "message.part.delta"
-	EventSessionStatus    = "session.status"
-	EventPermission       = "permission.pending"
-	EventPermissionReply  = "permission.resolved"
-	EventQuestion         = "question.pending"
-	EventQuestionReply    = "question.resolved"
+	EventServerConnected      = "server.connected"
+	EventMessagePartDelta     = "message.part.delta"
+	EventSessionStatus        = "session.status"
+	EventPermission           = "permission.pending"
+	EventPermissionReply      = "permission.resolved"
+	EventQuestion             = "question.pending"
+	EventQuestionReply        = "question.resolved"
+	EventSessionInputAdmitted = "session.input.admitted"
+	EventSessionInputPromoted = "session.input.promoted"
 )
 
 // Event is used for both durable and disposable live events. Sequence and
@@ -30,6 +32,7 @@ type Event struct {
 }
 
 type MessagePartDelta struct {
+	MessageID  string `json:"message_id,omitempty"`
 	Kind       string `json:"kind"`
 	Delta      string `json:"delta"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
@@ -45,6 +48,7 @@ type Usage struct {
 }
 
 type SessionStatus struct {
+	MessageID    string `json:"message_id,omitempty"`
 	Kind         string `json:"kind"`
 	FinishReason string `json:"finish_reason,omitempty"`
 	ErrorCode    string `json:"error_code,omitempty"`
@@ -59,6 +63,18 @@ type PermissionResolved struct {
 type QuestionResolved struct {
 	RequestID string `json:"request_id"`
 	Rejected  bool   `json:"rejected"`
+}
+
+type SessionInputAdmitted struct {
+	InputID   string `json:"input_id"`
+	MessageID string `json:"message_id"`
+	Content   string `json:"content"`
+	Delivery  string `json:"delivery"`
+}
+
+type SessionInputPromoted struct {
+	InputID   string `json:"input_id"`
+	MessageID string `json:"message_id"`
 }
 
 type EventDefinition struct {
@@ -77,8 +93,8 @@ var EventManifest = []EventDefinition{
 	{Name: EventPermissionReply, Payload: "PermissionResolved"},
 	{Name: EventQuestion, Payload: "QuestionRequest"},
 	{Name: EventQuestionReply, Payload: "QuestionResolved"},
-	{Name: "session.input.admitted", Durable: true, Payload: "object"},
-	{Name: "session.input.promoted", Durable: true, Payload: "object"},
+	{Name: EventSessionInputAdmitted, Durable: true, Payload: "SessionInputAdmitted"},
+	{Name: EventSessionInputPromoted, Durable: true, Payload: "SessionInputPromoted"},
 	{Name: "session.selection.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.initialized", Durable: true, Payload: "object"},
 	{Name: "session.context.observed", Durable: true, Payload: "object"},
@@ -109,8 +125,8 @@ func KnownEvent(name string) bool {
 }
 
 // DecodeEventData decodes a manifest event into its stable payload DTO.
-// Durable event payloads remain JSON objects because their authoritative state
-// is exposed by resource queries rather than event-specific projections.
+// Durable event payloads without a stable DTO remain JSON objects because their
+// authoritative state is exposed by resource queries.
 func DecodeEventData(event Event) (any, error) {
 	var target any
 	switch event.Type {
@@ -128,6 +144,10 @@ func DecodeEventData(event Event) (any, error) {
 		target = &QuestionRequest{}
 	case EventQuestionReply:
 		target = &QuestionResolved{}
+	case EventSessionInputAdmitted:
+		target = &SessionInputAdmitted{}
+	case EventSessionInputPromoted:
+		target = &SessionInputPromoted{}
 	default:
 		if !KnownEvent(event.Type) {
 			return nil, errors.New("v1: unknown event type")

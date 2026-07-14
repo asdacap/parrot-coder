@@ -28,6 +28,63 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
+type appDrainerFunc func(context.Context, string) error
+
+func (f appDrainerFunc) Drain(ctx context.Context, sessionID string) error {
+	return f(ctx, sessionID)
+}
+
+func TestStatusDrainerPublishesOnlyLifecycleCompletion(t *testing.T) {
+	live := event.NewBroker()
+	events, unsubscribe := live.Subscribe("session", 2)
+	defer unsubscribe()
+	drainer := statusDrainer{
+		runner: appDrainerFunc(func(context.Context, string) error { return nil }),
+		live:   live,
+	}
+
+	if err := drainer.Drain(context.Background(), "session"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case item := <-events:
+		t.Fatalf("Drain published completion event: %#v", item)
+	default:
+	}
+
+	drainer.LifecycleComplete("session", nil)
+	select {
+	case item := <-events:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if status := payload.(*v1.SessionStatus); status.Kind != "idle" {
+			t.Fatalf("completion status = %#v", status)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle completion event was not published")
+	}
+}
+
+func TestStatusDrainerPublishesLifecycleError(t *testing.T) {
+	live := event.NewBroker()
+	events, unsubscribe := live.Subscribe("session", 1)
+	defer unsubscribe()
+	drainer := statusDrainer{runner: appDrainerFunc(func(context.Context, string) error { return nil }), live: live}
+	drainer.LifecycleComplete("session", errors.New("failed"))
+
+	item := <-events
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := payload.(*v1.SessionStatus)
+	if status.Kind != "error" || status.ErrorCode != "runner_error" {
+		t.Fatalf("completion status = %#v", status)
+	}
+}
+
 func TestCompositionEndToEndInProcess(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/responses" {
@@ -220,6 +277,40 @@ func TestOpenModelLessCatalogsAndExplicitSessionSelection(t *testing.T) {
 	}
 	_, err = runtime.Client.Prompt(context.Background(), legacy.ID, v1.PromptRequest{MessageID: "msg_legacy", Content: "hello", Delivery: "steer"})
 	assertAppProblem(t, err, "model_required")
+}
+
+func TestOpenRestoresLatestProjectModelSelection(t *testing.T) {
+	root := t.TempDir()
+	paths := appdirs.Overrides{
+		Home: root, ConfigHome: filepath.Join(root, "config"), DataHome: filepath.Join(root, "data"),
+		StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache"),
+	}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := runtime.Client.Models(context.Background())
+	if err != nil || len(models.Items) == 0 {
+		t.Fatalf("Models = %#v, %v", models, err)
+	}
+	model := models.Items[0]
+	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
+		ProjectID: runtime.Project.ID, Title: "remember", Agent: "build", Model: model.Provider + "/" + model.ID,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.DefaultSelection.Provider != model.Provider || reopened.DefaultSelection.Model != model.ID {
+		t.Fatalf("restored selection = %#v, want %s/%s", reopened.DefaultSelection, model.Provider, model.ID)
+	}
 }
 
 func assertAppProblem(t *testing.T, err error, code string) {

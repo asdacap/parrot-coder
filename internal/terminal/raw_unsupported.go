@@ -15,3 +15,7 @@ func setTerminalState(uintptr, terminalState) error {
 }
 
 func makeRawState(state terminalState) terminalState { return state }
+
+func terminalColumns(uintptr) int { return 0 }
+
+func terminalEchoEnabled(uintptr) bool { return false }
