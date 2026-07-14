@@ -241,6 +241,15 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	inputRows = append(inputRows, promptRows...)
 	remaining := max(0, r.maxRows-len(inputRows))
 
+	// Keep the unfinished streaming row at the top of the live region. A row
+	// promoted on the next frame is written at this same boundary before the
+	// region is redrawn, so it moves into scrollback without jumping past
+	// context or activity rows.
+	if len(streamRows) > remaining {
+		streamRows = streamRows[len(streamRows)-remaining:]
+	}
+	remaining -= len(streamRows)
+
 	contextRows := make([]string, 0, len(frame.Context))
 	for _, item := range frame.Context {
 		contextRows = append(contextRows, r.layoutLines([]string{item})...)
@@ -257,13 +266,13 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	if frame.Message != "" || frame.MessagePrefix != "" {
 		activity = append(activity, r.messageRows(frame.MessagePrefix, frame.Message)...)
 	}
-	activity = append(activity, streamRows...)
 	if len(activity) > remaining {
 		activity = activity[len(activity)-remaining:]
 	}
-	rows := append(contextRows, activity...)
+	rows := append(streamRows, contextRows...)
+	rows = append(rows, activity...)
 	rows = append(rows, inputRows...)
-	cursorRow := len(contextRows) + len(activity) + dividerRows + barRows + len(pendingRows) + promptCursorRow
+	cursorRow := len(streamRows) + len(contextRows) + len(activity) + dividerRows + barRows + len(pendingRows) + promptCursorRow
 	if !r.tty {
 		if err := r.writePlain(append(promoted, rows...)); err != nil {
 			r.stream = streamBefore
