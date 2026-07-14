@@ -152,9 +152,11 @@ picker and preserves the draft until a model is selected. Explicit non-TTY
 `parrot chat` retains the same role markers in a deterministic, ANSI-free line
 REPL. `/status` shows the active agent, model, session, and project.
 
-Interactive chat supports `/help`, `/models`, `/usage`, `/model`, `/modes`, `/mode`,
+Interactive chat supports `/help`, `/models`, `/usage`, `/model`, `/effort`, `/modes`, `/mode`,
 `/sessions`, `/session`, `/resume`, `/new`, `/compact`, `/connect`, `/thinking`,
 `/undo`, `/redo`, `/status`, custom commands, and `/exit`.
+Use `/effort` to pick from the active model's reasoning levels, or pass one
+directly, for example `/effort high`.
 
 Keybindings: Enter submits, Ctrl-J inserts a newline, arrows edit/navigate
 history and choices, Tab completes slash commands, Shift-Tab switches modes,

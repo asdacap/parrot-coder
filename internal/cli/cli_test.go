@@ -219,6 +219,37 @@ func TestCreateChatSessionIncludesSelectionAtomically(t *testing.T) {
 	}
 }
 
+func TestEffortSlashCommandUpdatesActiveSession(t *testing.T) {
+	api := &effortSwitchAPI{models: v1.ModelList{Items: []v1.Model{{
+		Provider: "chatgpt", ID: "gpt", Variants: map[string]v1.ModelVariant{
+			"low": {ReasoningEffort: "low"}, "high": {ReasoningEffort: "high"},
+		},
+	}}}}
+	var stdout, stderr bytes.Buffer
+	shell := chatShell{
+		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Provider: "chatgpt", Model: "gpt"},
+		selection: chatSelection{provider: "chatgpt", model: "gpt"}, stdout: &stdout, stderr: &stderr,
+	}
+	exit, code := shell.slash("/effort", "high")
+	if exit || code != exitOK {
+		t.Fatalf("slash exit=%t code=%d", exit, code)
+	}
+	if shell.selection.variant != "high" || shell.current.Variant != "high" {
+		t.Fatalf("selection = %#v, session variant = %q", shell.selection, shell.current.Variant)
+	}
+	if len(api.updates) != 1 || api.updates[0].Variant == nil || *api.updates[0].Variant != "high" {
+		t.Fatalf("updates = %#v", api.updates)
+	}
+	if !strings.Contains(stderr.String(), "✓ Model effort selected: high") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+
+	shell.slash("/effort", "missing")
+	if !strings.Contains(stderr.String(), `unknown effort "missing"`) || len(api.updates) != 1 {
+		t.Fatalf("invalid effort: stderr=%q updates=%#v", stderr.String(), api.updates)
+	}
+}
+
 type recordingSessionCreator struct{ request v1.CreateSessionRequest }
 
 func (r *recordingSessionCreator) CreateSession(_ context.Context, request v1.CreateSessionRequest) (v1.Session, error) {
@@ -979,6 +1010,19 @@ type catalogOnlyAPI struct {
 }
 
 func (a catalogOnlyAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
+
+type effortSwitchAPI struct {
+	apiClient
+	models  v1.ModelList
+	updates []v1.UpdateSessionSelectionRequest
+}
+
+func (a *effortSwitchAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
+
+func (a *effortSwitchAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
+	a.updates = append(a.updates, request)
+	return v1.SessionSelection{Variant: *request.Variant}, nil
+}
 
 type modeSwitchAPI struct {
 	apiClient
