@@ -24,13 +24,22 @@ func main() {
 }
 
 func run() (exitCode int) {
+	// Abort with a core dump on unrecovered panics and fatal errors instead
+	// of a plain exit(2). SetTraceback can only raise the level, so a
+	// GOTRACEBACK environment override stays in effect.
+	debug.SetTraceback("crash")
 	enableCoreDumps()
+	// GOTRACEBACK=crash means the user wants cores from every panic, so the
+	// main goroutine must not recover either.
+	crashOnPanic := os.Getenv("GOTRACEBACK") == "crash"
 	run := startDiagnostics()
 	defer func() {
-		if recovered := recover(); recovered != nil {
-			diagnostics.Panic("main", recovered)
-			fmt.Fprintf(os.Stderr, "parrot: panic in main; see the diagnostics log\n%s", debug.Stack())
-			exitCode = 2
+		if !crashOnPanic {
+			if recovered := recover(); recovered != nil {
+				diagnostics.Panic("main", recovered)
+				fmt.Fprintf(os.Stderr, "parrot: panic in main; see the diagnostics log\n%s", debug.Stack())
+				exitCode = 2
+			}
 		}
 		if run != nil {
 			run.Finish(exitCode)

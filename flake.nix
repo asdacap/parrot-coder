@@ -28,10 +28,10 @@
             vendorHash = "sha256-IjEJqtZfn/iEhxTu/KSelcqoIwQ4T584nqv9+ikGNcs=";
             subPackages = [ "cmd/parrot" ];
             ldflags = [
-              "-s"
-              "-w"
               "-X main.version=0.0.0-dev"
             ];
+            # Keep DWARF so core dumps are usable with dlv/gdb.
+            dontStrip = true;
             meta.mainProgram = "parrot";
           };
         }
