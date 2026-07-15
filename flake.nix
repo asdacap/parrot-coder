@@ -25,7 +25,7 @@
             pname = "parrot";
             version = "0.0.0-dev";
             src = ./.;
-            vendorHash = "sha256-jzXEmb3u8rEjT3E9z2srlUKVe5iMRi30CxaSptV/vvQ=";
+            vendorHash = "sha256-IjEJqtZfn/iEhxTu/KSelcqoIwQ4T584nqv9+ikGNcs=";
             subPackages = [ "cmd/parrot" ];
             ldflags = [
               "-s"
