@@ -48,6 +48,34 @@ func TestResponseLimit(t *testing.T) {
 	}
 }
 
+func TestMessagesAggregatesEveryPage(t *testing.T) {
+	// The active assistant sits at the tail of a long session; a truncated first
+	// page would hide it and desync the terminal's stream handoff. Serve two
+	// pages and require the client to follow the cursor and return both.
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.RawQuery)
+		w.Header().Set("Content-Type", v1.MediaTypeJSON)
+		if r.URL.Query().Get("cursor") == "" {
+			_, _ = io.WriteString(w, `{"items":[{"id":"first","role":"assistant","status":"complete"}],"next_cursor":"c2"}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"items":[{"id":"active","role":"assistant","status":"active"}]}`)
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, nil)
+	list, err := client.Messages(context.Background(), "session")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 2 || list.Items[0].ID != "first" || list.Items[1].ID != "active" || list.NextCursor != "" {
+		t.Fatalf("aggregated = %#v", list)
+	}
+	if len(paths) != 2 || strings.Contains(paths[0], "cursor") || !strings.Contains(paths[1], "cursor=c2") {
+		t.Fatalf("requested pages = %#v", paths)
+	}
+}
+
 func TestSSEDecoderMultilineHeartbeatAndEOF(t *testing.T) {
 	input := ": heartbeat\n\nid: evt_1\nevent: message.part.delta\ndata: {\"id\":\"evt_1\",\ndata: \"type\":\"message.part.delta\",\"data\":{}}"
 	decoder := NewSSEDecoder(strings.NewReader(input), 1024)

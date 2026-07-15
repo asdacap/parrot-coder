@@ -91,8 +91,23 @@ func (c *Client) DeleteSession(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodDelete, sessionPath(id), nil, http.StatusNoContent, nil)
 }
 
+// Messages returns the session's complete message history. The server caps each
+// page (100 items), and callers treat the result as authoritative — a truncated
+// first page hides the active tail of a long session — so follow the cursor and
+// aggregate every page before returning.
 func (c *Client) Messages(ctx context.Context, id string) (v1.MessageList, error) {
-	return c.MessagesPage(ctx, id, "", 0)
+	var out v1.MessageList
+	for cursor := ""; ; {
+		page, err := c.MessagesPage(ctx, id, cursor, 0)
+		if err != nil {
+			return v1.MessageList{}, err
+		}
+		out.Items = append(out.Items, page.Items...)
+		if page.NextCursor == "" {
+			return out, nil
+		}
+		cursor = page.NextCursor
+	}
 }
 
 func (c *Client) MessagesPage(ctx context.Context, id, cursor string, limit int) (v1.MessageList, error) {
