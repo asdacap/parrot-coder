@@ -202,7 +202,7 @@ func (s *chatShell) runEnhanced(first string) int {
 	state, err := s.editor.Start("")
 	if err != nil {
 		s.commitError(err.Error())
-		return exitError
+		return exitWithReason(s.ctx, exitError, "enhanced_editor_start_failed", err)
 	}
 	runtime := &enhancedChatRuntime{
 		shell: s, state: state, knownMessages: make(map[string]bool),
@@ -216,12 +216,11 @@ func (s *chatShell) runEnhanced(first string) int {
 			_ = state.Reset(first)
 		}
 		if outcome.exit {
-			return outcome.code
+			return exitWithReason(s.ctx, outcome.code, chatExitReason(outcome.code), nil)
 		}
 	}
 	if err := runtime.render(); err != nil {
-		s.commitError(err.Error())
-		return exitError
+		return s.enhancedRenderError(err)
 	}
 
 	pump := startEnhancedKeyPump(s.ctx, s.decoder, &runtime.inputMode)
@@ -234,23 +233,23 @@ func (s *chatShell) runEnhanced(first string) int {
 	for {
 		select {
 		case <-s.ctx.Done():
-			return exitInterrupt
+			return exitWithReason(s.ctx, exitInterrupt, "chat_context_canceled", s.ctx.Err())
 		case <-interrupts:
 			if err := runtime.requestInterrupt(); errors.Is(err, errSecondInterrupt) {
-				return exitInterrupt
+				return exitWithReason(s.ctx, exitInterrupt, "second_interrupt", err)
 			}
 			_ = runtime.render()
 		case result, ok := <-pump.events:
 			pumpStopped := false
 			if !ok {
-				return exitInterrupt
+				return exitWithReason(s.ctx, exitInterrupt, "chat_input_stopped", nil)
 			}
 			if result.err != nil {
 				if errors.Is(result.err, context.Canceled) {
 					continue
 				}
 				runtime.commitError(result.err.Error())
-				return exitError
+				return exitWithReason(s.ctx, exitError, "chat_input_failed", result.err)
 			}
 			if result.key.Kind == terminal.KeyModeSwitch {
 				close(result.ack)
@@ -258,7 +257,7 @@ func (s *chatShell) runEnhanced(first string) int {
 					runtime.status = err.Error()
 				}
 				if err := runtime.render(); err != nil {
-					return exitError
+					return s.enhancedRenderError(err)
 				}
 				continue
 			}
@@ -266,10 +265,10 @@ func (s *chatShell) runEnhanced(first string) int {
 				close(result.ack)
 				runtime.cancelModal()
 				if err := runtime.requestInterrupt(); errors.Is(err, errSecondInterrupt) {
-					return exitInterrupt
+					return exitWithReason(s.ctx, exitInterrupt, "second_interrupt", err)
 				}
 				if err := runtime.render(); err != nil {
-					return exitError
+					return s.enhancedRenderError(err)
 				}
 				continue
 			}
@@ -289,7 +288,7 @@ func (s *chatShell) runEnhanced(first string) int {
 				}
 				if err != nil {
 					if errors.Is(err, errSecondInterrupt) {
-						return exitInterrupt
+						return exitWithReason(s.ctx, exitInterrupt, "second_interrupt", err)
 					}
 					runtime.commitError(err.Error())
 					runtime.cancelModal()
@@ -298,7 +297,7 @@ func (s *chatShell) runEnhanced(first string) int {
 					// Ignore text-editing keys; the permission prompt is a selection.
 				}
 				if err := runtime.render(); err != nil {
-					return exitError
+					return s.enhancedRenderError(err)
 				}
 				if pumpStopped {
 					pump = startEnhancedKeyPump(s.ctx, s.decoder, &runtime.inputMode)
@@ -318,7 +317,7 @@ func (s *chatShell) runEnhanced(first string) int {
 						}
 					}
 					if err := runtime.render(); err != nil {
-						return exitError
+						return s.enhancedRenderError(err)
 					}
 					continue
 				}
@@ -327,7 +326,7 @@ func (s *chatShell) runEnhanced(first string) int {
 			if !action.Done {
 				close(result.ack)
 				if err := runtime.render(); err != nil {
-					return exitError
+					return s.enhancedRenderError(err)
 				}
 				continue
 			}
@@ -339,7 +338,7 @@ func (s *chatShell) runEnhanced(first string) int {
 				case errors.Is(action.Err, terminal.ErrInterrupted):
 					runtime.cancelModal()
 					if err := runtime.requestInterrupt(); errors.Is(err, errSecondInterrupt) {
-						return exitInterrupt
+						return exitWithReason(s.ctx, exitInterrupt, "second_interrupt", err)
 					}
 				case errors.Is(action.Err, terminal.ErrCanceled), errors.Is(action.Err, io.EOF):
 					runtime.cancelModal()
@@ -364,14 +363,14 @@ func (s *chatShell) runEnhanced(first string) int {
 						_ = state.Reset("")
 					} else if runtime.busy {
 						if err := runtime.requestInterrupt(); errors.Is(err, errSecondInterrupt) {
-							return exitInterrupt
+							return exitWithReason(s.ctx, exitInterrupt, "second_interrupt", err)
 						}
 					}
 				case errors.Is(action.Err, terminal.ErrCanceled):
 					_ = state.Reset("")
 				case errors.Is(action.Err, io.EOF):
 					if !runtime.busy {
-						return exitOK
+						return exitWithReason(s.ctx, exitOK, "chat_input_closed", nil)
 					}
 					runtime.status = "agent is still working"
 				case action.Err != nil:
@@ -388,11 +387,11 @@ func (s *chatShell) runEnhanced(first string) int {
 				}
 			}
 			if outcome.exit {
-				return outcome.code
+				return exitWithReason(s.ctx, outcome.code, chatExitReason(outcome.code), nil)
 			}
 			pump = startEnhancedKeyPump(s.ctx, s.decoder, &runtime.inputMode)
 			if err := runtime.render(); err != nil {
-				return exitError
+				return s.enhancedRenderError(err)
 			}
 		case result := <-runtime.events:
 			if result.generation != runtime.streamGeneration {
@@ -409,7 +408,7 @@ func (s *chatShell) runEnhanced(first string) int {
 				runtime.eventAfter = *result.event.Sequence
 			}
 			if err := runtime.render(); err != nil {
-				return exitError
+				return s.enhancedRenderError(err)
 			}
 		case <-ticker.C:
 			ticks++
@@ -431,10 +430,17 @@ func (s *chatShell) runEnhanced(first string) int {
 				}
 			}
 			if err := runtime.render(); err != nil {
-				return exitError
+				return s.enhancedRenderError(err)
 			}
 		}
 	}
+}
+
+func (s *chatShell) enhancedRenderError(err error) int {
+	// The renderer is the normal enhanced-chat error surface. If it failed,
+	// write directly to stderr so this exit cannot disappear with the frame.
+	fmt.Fprintln(s.stderr, "parrot: enhanced chat render failed:", terminal.Sanitize(err.Error()))
+	return exitWithReason(s.ctx, exitError, "enhanced_render_failed", err)
 }
 
 func (r *enhancedChatRuntime) render() error {

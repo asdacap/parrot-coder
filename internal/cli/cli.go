@@ -19,6 +19,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -51,6 +52,23 @@ type App struct {
 	open  func(context.Context, app.Options) (*app.App, error)
 }
 
+// ExitResult describes a controlled CLI exit without including potentially
+// private error text. Reason is a stable, machine-readable explanation for the
+// exit code; ErrorType is populated when an error caused the exit.
+type ExitResult struct {
+	Code      int
+	Reason    string
+	ErrorType string
+}
+
+type exitState struct {
+	mu        sync.Mutex
+	reason    string
+	errorType string
+}
+
+type exitStateKey struct{}
+
 var (
 	enableRawMode     = terminal.EnableRawMode
 	setBracketedPaste = terminal.SetBracketedPaste
@@ -58,7 +76,27 @@ var (
 
 func New(build BuildInfo) *App { return &App{build: build, open: app.Open} }
 
+// Run executes the CLI and returns its conventional process exit code.
 func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
+	return a.RunResult(ctx, args, stdin, stdout, stderr).Code
+}
+
+// RunResult executes the CLI and returns both the code and a structured reason
+// suitable for diagnostics. Error strings are deliberately not retained.
+func (a *App) RunResult(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) ExitResult {
+	state := &exitState{}
+	ctx = context.WithValue(ctx, exitStateKey{}, state)
+	code := a.run(ctx, args, stdin, stdout, stderr)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	reason := state.reason
+	if reason == "" {
+		reason = defaultExitReason(args, code)
+	}
+	return ExitResult{Code: code, Reason: reason, ErrorType: state.errorType}
+}
+
+func (a *App) run(ctx context.Context, args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 	interrupts := make(chan os.Signal, 2)
 	signal.Notify(interrupts, os.Interrupt)
 	defer signal.Stop(interrupts)
@@ -82,17 +120,17 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	if len(args) == 0 {
 		if !terminal.IsTTY(stdin) {
 			printHelp(out)
-			return exitOK
+			return exitWithReason(ctx, exitOK, "help_displayed", nil)
 		}
 		args = []string{"chat"}
 	}
 	switch args[0] {
 	case "help", "-h", "--help":
 		printHelp(out)
-		return exitOK
+		return exitWithReason(ctx, exitOK, "help_displayed", nil)
 	case "version", "-v", "--version":
 		fmt.Fprintf(out, "parrot %s\ncommit: %s\nbuilt: %s\n", a.build.Version, a.build.Commit, a.build.Date)
-		return exitOK
+		return exitWithReason(ctx, exitOK, "version_displayed", nil)
 	case "run":
 		return a.runCommand(ctx, args[1:], stdin, out, errout)
 	case "chat":
@@ -116,7 +154,69 @@ func (a *App) Run(ctx context.Context, args []string, stdin io.Reader, stdout, s
 	default:
 		fmt.Fprintf(errout, "unknown command %q\n\n", args[0])
 		printHelp(errout)
-		return exitUsage
+		return exitWithReason(ctx, exitUsage, "unknown_command", nil)
+	}
+}
+
+func exitWithReason(ctx context.Context, code int, reason string, err error) int {
+	if state, ok := ctx.Value(exitStateKey{}).(*exitState); ok && state != nil {
+		state.mu.Lock()
+		state.reason = reason
+		state.errorType = exitErrorType(err)
+		state.mu.Unlock()
+	}
+	return code
+}
+
+func exitErrorType(err error) string {
+	if err == nil {
+		return ""
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context_canceled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "context_deadline_exceeded"
+	}
+	return fmt.Sprintf("%T", err)
+}
+
+func appOpenReason(err error) string {
+	// Keep the logged value coarse and content-free while making the most
+	// common multi-process failure distinguishable from other startup errors.
+	text := strings.ToLower(err.Error())
+	if strings.Contains(text, "database is locked") || strings.Contains(text, "sqlite_busy") || strings.Contains(text, "database table is locked") {
+		return "app_open_database_busy"
+	}
+	return "app_open_failed"
+}
+
+func defaultExitReason(args []string, code int) string {
+	command := "chat"
+	if len(args) > 0 {
+		command = args[0]
+	}
+	switch code {
+	case exitOK:
+		switch command {
+		case "help", "-h", "--help":
+			return "help_displayed"
+		case "version", "-v", "--version":
+			return "version_displayed"
+		default:
+			return "command_completed"
+		}
+	case exitError:
+		return command + "_failed"
+	case exitUsage:
+		if command != "run" && command != "chat" && command != "models" && command != "usage" && command != "agents" && command != "modes" && command != "session" && command != "auth" && command != "serve" {
+			return "unknown_command"
+		}
+		return "invalid_arguments"
+	case exitInterrupt:
+		return "interrupted"
+	default:
+		return "command_returned_exit_code"
 	}
 }
 
@@ -150,27 +250,27 @@ func (a *App) runCommand(ctx context.Context, args []string, stdin io.Reader, st
 	fs.StringVar(&permissionMode, "permission", "deny", "mutating tool policy: deny or ask")
 	fs.BoolVar(&interactive, "interactive-prompts", false, "answer prompts from the controlling terminal")
 	if err := fs.Parse(args); err != nil {
-		return flagCode(err)
+		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
 	if options.continued && options.session != "" || fs.NArg() > 1 || format != "text" && format != "jsonl" || permissionMode != "deny" && permissionMode != "ask" {
 		fmt.Fprintln(stderr, "invalid run flags; see parrot run --help")
-		return exitUsage
+		return exitWithReason(ctx, exitUsage, "invalid_run_arguments", nil)
 	}
 	prompt, err := promptInput(stdin, fs.Args())
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "prompt_read_failed", err)
 	}
 	if strings.TrimSpace(prompt) == "" {
 		fmt.Fprintln(stderr, "run requires a prompt argument or stdin data")
-		return exitUsage
+		return exitWithReason(ctx, exitUsage, "prompt_required", nil)
 	}
 	var tty io.ReadCloser
 	if interactive {
 		file, openErr := terminal.OpenInput()
 		if openErr != nil {
 			fmt.Fprintln(stderr, "interactive prompts require /dev/tty:", openErr)
-			return exitError
+			return exitWithReason(ctx, exitError, "interactive_terminal_open_failed", openErr)
 		}
 		tty = file
 		defer tty.Close()
@@ -178,27 +278,27 @@ func (a *App) runCommand(ctx context.Context, args []string, stdin io.Reader, st
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, Model: options.model, Agent: options.agent, Permission: permission.Decision(permissionMode), NonInteractive: !interactive})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
 	sessionItem, err := chooseSession(ctx, runtime.Client, runtime.Project.ID, options.continued, options.session, prompt)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "session_selection_failed", err)
 	}
 	if err := applySelection(ctx, runtime.Client, sessionItem.ID, options.agent, options.model, options.variant); err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "selection_update_failed", err)
 	}
 	result := streamTurn(ctx, runtime.Client, sessionItem.ID, prompt, streamOptions{format: format, stdout: stdout, stderr: stderr, promptInput: tty, thinking: options.thinking})
 	if result.err != nil {
 		if errors.Is(result.err, context.Canceled) {
-			return exitInterrupt
+			return exitWithReason(ctx, exitInterrupt, "turn_interrupted", result.err)
 		}
 		fmt.Fprintln(stderr, result.err)
-		return exitError
+		return exitWithReason(ctx, exitError, "session_turn_failed", result.err)
 	}
-	return exitOK
+	return exitWithReason(ctx, exitOK, "turn_completed", nil)
 }
 
 func promptInput(stdin io.Reader, arguments []string) (string, error) {
@@ -897,40 +997,40 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 	var options codingFlags
 	addCodingFlags(fs, &options)
 	if err := fs.Parse(args); err != nil {
-		return flagCode(err)
+		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
 	if options.continued && options.session != "" || fs.NArg() > 1 {
 		fmt.Fprintln(stderr, "invalid chat flags; see parrot chat --help")
-		return exitUsage
+		return exitWithReason(ctx, exitUsage, "invalid_chat_arguments", nil)
 	}
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, Model: options.model, Agent: options.agent, Permission: permission.Ask, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
 	api := apiClient(runtime.Client)
 	models, err := api.Models(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "model_list_failed", err)
 	}
 	var current v1.Session
 	if options.continued || options.session != "" {
 		current, err = chooseSession(ctx, api, runtime.Project.ID, options.continued, options.session, "")
 		if err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "session_selection_failed", err)
 		}
 		if err := applySelection(ctx, api, current.ID, options.agent, options.model, options.variant); err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "selection_update_failed", err)
 		}
 		if options.agent != "" || options.model != "" || options.variant != "" {
 			current, err = api.Session(ctx, current.ID)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
-				return exitError
+				return exitWithReason(ctx, exitError, "session_refresh_failed", err)
 			}
 		}
 	}
@@ -1073,7 +1173,7 @@ func (s *chatShell) run(first string) int {
 		if readDraft {
 			line, err := s.readPrompt(draft)
 			if errors.Is(err, io.EOF) {
-				return exitOK
+				return exitWithReason(s.ctx, exitOK, "chat_input_closed", nil)
 			}
 			if errors.Is(err, terminal.ErrInterrupted) || errors.Is(err, terminal.ErrCanceled) {
 				draft = ""
@@ -1082,10 +1182,10 @@ func (s *chatShell) run(first string) int {
 			}
 			if err != nil {
 				if errors.Is(err, context.Canceled) {
-					return exitInterrupt
+					return exitWithReason(s.ctx, exitInterrupt, "chat_input_interrupted", err)
 				}
 				s.commitError(err.Error())
-				return exitError
+				return exitWithReason(s.ctx, exitError, "chat_input_failed", err)
 			}
 			draft = line
 		}
@@ -1110,7 +1210,7 @@ func (s *chatShell) run(first string) int {
 				exit, code := s.slash(name, arguments)
 				draft = ""
 				if exit {
-					return code
+					return exitWithReason(s.ctx, code, chatExitReason(code), nil)
 				}
 				continue
 			}
@@ -1173,13 +1273,13 @@ func (s *chatShell) run(first string) int {
 		}
 		if err := s.commitUser(line); err != nil {
 			s.commitError(err.Error())
-			return exitError
+			return exitWithReason(s.ctx, exitError, "chat_output_failed", err)
 		}
 		result := streamTurn(s.ctx, s.api, s.current.ID, line, s.streamOptions(false))
 		draft = ""
 		if result.err != nil {
 			if errors.Is(result.err, errSecondInterrupt) || errors.Is(result.err, context.Canceled) {
-				return exitInterrupt
+				return exitWithReason(s.ctx, exitInterrupt, "turn_interrupted", result.err)
 			}
 			s.commitError(result.err.Error())
 		}
@@ -1469,7 +1569,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		if command == "/resume" {
 			result := streamTurn(s.ctx, s.api, item.ID, "", s.streamOptions(true))
 			if errors.Is(result.err, errSecondInterrupt) || errors.Is(result.err, context.Canceled) {
-				return true, exitInterrupt
+				return true, exitWithReason(s.ctx, exitInterrupt, "turn_interrupted", result.err)
 			}
 			if result.err != nil {
 				s.commitError(result.err.Error())
@@ -1584,7 +1684,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		s.commit(fmt.Sprintf("project: %s\nsession: %s\nagent: %s\nmodel: %s\neffort: %s\nthinking: %t",
 			s.projectRoot, sessionID, s.selection.agent, model, effort, s.options.thinking))
 	case "/exit":
-		return true, exitOK
+		return true, exitWithReason(s.ctx, exitOK, "chat_exited", nil)
 	default:
 		s.commitError(fmt.Sprintf("unknown slash command %q", command))
 	}
@@ -2119,24 +2219,24 @@ func (a *App) modelsCommand(ctx context.Context, args []string, stdout, stderr i
 	fs := newFlagSet("models", stderr)
 	format := fs.String("format", "lines", "output format: lines or json")
 	if err := fs.Parse(args); err != nil {
-		return flagCode(err)
+		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
 	if fs.NArg() != 0 || *format != "lines" && *format != "json" {
-		return usageError(stderr, "models accepts --format lines|json")
+		return usageError(ctx, stderr, "invalid_models_arguments", "models accepts --format lines|json")
 	}
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
 	items, err := runtime.Client.Models(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "model_list_failed", err)
 	}
 	if *format == "json" {
-		return encodeOutput(stdout, stderr, items.Items)
+		return encodeOutput(ctx, stdout, stderr, items.Items)
 	}
 	for _, item := range items.Items {
 		fmt.Fprintf(stdout, "%s/%s\t%s\n", item.Provider, item.ID, item.Name)
@@ -2148,24 +2248,24 @@ func (a *App) usageCommand(ctx context.Context, args []string, stdout, stderr io
 	fs := newFlagSet("usage", stderr)
 	format := fs.String("format", "lines", "output format: lines or json")
 	if err := fs.Parse(args); err != nil {
-		return flagCode(err)
+		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
 	if fs.NArg() != 0 || *format != "lines" && *format != "json" {
-		return usageError(stderr, "usage accepts --format lines|json")
+		return usageError(ctx, stderr, "invalid_usage_arguments", "usage accepts --format lines|json")
 	}
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
 	usage, err := runtime.Client.SubscriptionUsage(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "subscription_usage_failed", err)
 	}
 	if *format == "json" {
-		return encodeOutput(stdout, stderr, usage)
+		return encodeOutput(ctx, stdout, stderr, usage)
 	}
 	fmt.Fprintln(stdout, formatSubscriptionUsage(usage, time.Now()))
 	return exitOK
@@ -2214,21 +2314,21 @@ func formatResetDuration(duration time.Duration) string {
 func (a *App) agentsCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("agents", stderr)
 	if err := fs.Parse(args); err != nil {
-		return flagCode(err)
+		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
 	if fs.NArg() != 0 {
-		return usageError(stderr, "agents takes no arguments")
+		return usageError(ctx, stderr, "invalid_agents_arguments", "agents takes no arguments")
 	}
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
 	items, err := runtime.Client.Agents(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "agent_list_failed", err)
 	}
 	for _, item := range items.Items {
 		fmt.Fprintf(stdout, "%s\tread_only=%t\tmax_turns=%d\n", item.ID, item.ReadOnly, item.MaxTurns)
@@ -2239,21 +2339,21 @@ func (a *App) agentsCommand(ctx context.Context, args []string, stdout, stderr i
 func (a *App) modesCommand(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	fs := newFlagSet("modes", stderr)
 	if err := fs.Parse(args); err != nil {
-		return flagCode(err)
+		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
 	if fs.NArg() != 0 {
-		return usageError(stderr, "modes takes no arguments")
+		return usageError(ctx, stderr, "invalid_modes_arguments", "modes takes no arguments")
 	}
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
 	items, err := runtime.Client.Modes(ctx)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "mode_list_failed", err)
 	}
 	for _, item := range items.Items {
 		fmt.Fprintf(stdout, "%s\tread_only=%t\tmax_turns=%d\n", item.ID, item.ReadOnly, item.MaxTurns)
@@ -2269,60 +2369,60 @@ func (a *App) sessionCommand(ctx context.Context, args []string, stdout, stderr 
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
 	switch args[0] {
 	case "list":
 		if len(args) != 1 {
-			return usageError(stderr, "session list takes no arguments")
+			return usageError(ctx, stderr, "invalid_session_arguments", "session list takes no arguments")
 		}
 		items, err := runtime.Client.Sessions(ctx)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "session_list_failed", err)
 		}
 		for _, item := range items.Items {
 			fmt.Fprintf(stdout, "%s\t%s\t%s/%s\t%s\n", item.ID, item.Agent, item.Provider, item.Model, item.Title)
 		}
 	case "show":
 		if len(args) != 2 {
-			return usageError(stderr, "session show requires one ID")
+			return usageError(ctx, stderr, "invalid_session_arguments", "session show requires one ID")
 		}
 		item, err := runtime.Client.Session(ctx, args[1])
 		if err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "session_lookup_failed", err)
 		}
 		messages, err := runtime.Client.Messages(ctx, args[1])
 		if err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "message_list_failed", err)
 		}
-		return encodeOutput(stdout, stderr, struct {
+		return encodeOutput(ctx, stdout, stderr, struct {
 			Session  v1.Session   `json:"session"`
 			Messages []v1.Message `json:"messages"`
 		}{item, messages.Items})
 	case "delete":
 		if len(args) != 2 {
-			return usageError(stderr, "session delete requires one ID")
+			return usageError(ctx, stderr, "invalid_session_arguments", "session delete requires one ID")
 		}
 		if err := runtime.Client.DeleteSession(ctx, args[1]); err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "session_delete_failed", err)
 		}
 	case "compact":
 		if len(args) != 2 {
-			return usageError(stderr, "session compact requires one ID")
+			return usageError(ctx, stderr, "invalid_session_arguments", "session compact requires one ID")
 		}
 		result, err := runtime.Client.Compact(ctx, args[1])
 		if err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "session_compaction_failed", err)
 		}
 		fmt.Fprintln(stdout, "compaction", result.Status)
 	default:
-		return usageError(stderr, "unknown session command")
+		return usageError(ctx, stderr, "unknown_session_command", "unknown session command")
 	}
 	return exitOK
 }
@@ -2335,40 +2435,40 @@ func (a *App) authCommand(ctx context.Context, args []string, stdin io.Reader, s
 	paths, err := appdirs.ResolveAndEnsure(appdirs.Overrides{})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "app_directories_failed", err)
 	}
 	store := auth.NewFileStore(filepath.Join(paths.Data, app.CredentialFile))
 	switch args[0] {
 	case "list":
 		if len(args) != 1 {
-			return usageError(stderr, "auth list takes no arguments")
+			return usageError(ctx, stderr, "invalid_auth_arguments", "auth list takes no arguments")
 		}
 		names, err := store.List(ctx)
 		if err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "credential_list_failed", err)
 		}
 		for _, name := range names {
 			credential, getErr := store.Get(ctx, name)
 			if getErr != nil {
 				fmt.Fprintln(stderr, getErr)
-				return exitError
+				return exitWithReason(ctx, exitError, "credential_read_failed", getErr)
 			}
 			fmt.Fprintf(stdout, "%s\t%s\n", name, credential.Type)
 		}
 	case "logout":
 		if len(args) != 2 {
-			return usageError(stderr, "auth logout requires one provider")
+			return usageError(ctx, stderr, "invalid_auth_arguments", "auth logout requires one provider")
 		}
 		if err := store.Delete(ctx, credentialName(args[1])); err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "credential_delete_failed", err)
 		}
 		fmt.Fprintln(stdout, "credential removed")
 	case "login":
 		return authLogin(ctx, store, args[1:], stdin, stdout, stderr)
 	default:
-		return usageError(stderr, "unknown auth command")
+		return usageError(ctx, stderr, "unknown_auth_command", "unknown auth command")
 	}
 	return exitOK
 }
@@ -2381,38 +2481,38 @@ func authLogin(ctx context.Context, store auth.Store, args []string, stdin io.Re
 		args = append(append([]string(nil), args[1:]...), args[0])
 	}
 	if err := fs.Parse(args); err != nil {
-		return flagCode(err)
+		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
 	if fs.NArg() != 1 {
-		return usageError(stderr, "auth login requires one provider")
+		return usageError(ctx, stderr, "invalid_auth_arguments", "auth login requires one provider")
 	}
 	name := fs.Arg(0)
 	if name != "openai" && name != "chatgpt" {
 		if *noBrowser {
-			return usageError(stderr, "--no-browser is only valid for OpenAI")
+			return usageError(ctx, stderr, "invalid_auth_arguments", "--no-browser is only valid for OpenAI")
 		}
 		key := os.Getenv("PARROT_API_KEY")
 		if *apiKeyStdin {
 			data, err := io.ReadAll(io.LimitReader(stdin, 1<<20))
 			if err != nil {
 				fmt.Fprintln(stderr, err)
-				return exitError
+				return exitWithReason(ctx, exitError, "credential_input_failed", err)
 			}
 			key = strings.TrimSpace(string(data))
 		}
 		if key == "" {
 			fmt.Fprintln(stderr, "compatible provider login requires --api-key-stdin or PARROT_API_KEY; command-line key arguments are not accepted")
-			return exitUsage
+			return exitWithReason(ctx, exitUsage, "credential_required", nil)
 		}
 		if err := store.Put(ctx, name, auth.NewAPIKeyCredential(key)); err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "credential_write_failed", err)
 		}
 		fmt.Fprintln(stdout, "API key stored")
 		return exitOK
 	}
 	if *apiKeyStdin {
-		return usageError(stderr, "--api-key-stdin is not valid for OpenAI OAuth")
+		return usageError(ctx, stderr, "invalid_auth_arguments", "--api-key-stdin is not valid for OpenAI OAuth")
 	}
 	openAI := &auth.OpenAI{OpenBrowser: terminal.OpenBrowser}
 	var credential auth.OAuthCredential
@@ -2430,11 +2530,11 @@ func authLogin(ctx context.Context, store auth.Store, args []string, stdin io.Re
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "authentication_failed", err)
 	}
 	if err := store.Put(ctx, "chatgpt", auth.NewOAuthCredential(credential)); err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "credential_write_failed", err)
 	}
 	fmt.Fprintln(stdout, "OpenAI OAuth credential stored")
 	return exitOK
@@ -2452,25 +2552,25 @@ func (a *App) serveCommand(ctx context.Context, args []string, stdout, stderr io
 	host := fs.String("host", "127.0.0.1", "listen host")
 	port := fs.Int("port", 4096, "listen port")
 	if err := fs.Parse(args); err != nil {
-		return flagCode(err)
+		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
 	if fs.NArg() != 0 || *port < 1 || *port > 65535 {
-		return usageError(stderr, "serve requires a port from 1 to 65535")
+		return usageError(ctx, stderr, "invalid_serve_arguments", "serve requires a port from 1 to 65535")
 	}
 	if !loopbackHost(*host) {
 		fmt.Fprintln(stderr, "refusing unauthenticated non-loopback binding")
-		return exitUsage
+		return exitWithReason(ctx, exitUsage, "non_loopback_binding_refused", nil)
 	}
 	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, Permission: permission.Ask})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
 	listener, err := net.Listen("tcp", net.JoinHostPort(*host, strconv.Itoa(*port)))
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "listen_failed", err)
 	}
 	server := &http.Server{Handler: runtime.Handler, ReadHeaderTimeout: 10 * time.Second}
 	done := make(chan error, 1)
@@ -2480,14 +2580,14 @@ func (a *App) serveCommand(ctx context.Context, args []string, stdout, stderr io
 	case err := <-done:
 		if !errors.Is(err, http.ErrServerClosed) {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "server_failed", err)
 		}
 	case <-ctx.Done():
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := server.Shutdown(shutdown); err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "server_shutdown_failed", err)
 		}
 		<-done
 	case <-interruptChannel(ctx):
@@ -2495,7 +2595,7 @@ func (a *App) serveCommand(ctx context.Context, args []string, stdout, stderr io
 		defer cancel()
 		if err := server.Shutdown(shutdown); err != nil {
 			fmt.Fprintln(stderr, err)
-			return exitError
+			return exitWithReason(ctx, exitError, "server_shutdown_failed", err)
 		}
 		<-done
 	}
@@ -2523,15 +2623,29 @@ func flagCode(err error) int {
 	return exitUsage
 }
 
-func usageError(output io.Writer, message string) int {
-	fmt.Fprintln(output, message)
-	return exitUsage
+func flagReason(err error) string {
+	if errors.Is(err, flag.ErrHelp) {
+		return "help_displayed"
+	}
+	return "invalid_arguments"
 }
 
-func encodeOutput(stdout, stderr io.Writer, value any) int {
+func usageError(ctx context.Context, output io.Writer, reason, message string) int {
+	fmt.Fprintln(output, message)
+	return exitWithReason(ctx, exitUsage, reason, nil)
+}
+
+func chatExitReason(code int) string {
+	if code == exitInterrupt {
+		return "turn_interrupted"
+	}
+	return "chat_exited"
+}
+
+func encodeOutput(ctx context.Context, stdout, stderr io.Writer, value any) int {
 	if err := json.NewEncoder(stdout).Encode(value); err != nil {
 		fmt.Fprintln(stderr, err)
-		return exitError
+		return exitWithReason(ctx, exitError, "output_write_failed", err)
 	}
 	return exitOK
 }

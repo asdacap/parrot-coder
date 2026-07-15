@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -45,9 +46,20 @@ func TestBuiltBinaryHelpAndVersionAreTerminalSafe(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read diagnostics log: %v", err)
 	}
-	for _, event := range []string{`"event":"process_started"`, `"event":"command_started"`, `"event":"process_exited"`} {
+	for _, event := range []string{`"event":"process_started"`, `"event":"command_started"`, `"event":"command_finished"`, `"event":"process_exited"`, `"exit_reason":"help_displayed"`, `"exit_reason":"version_displayed"`} {
 		if !bytes.Contains(logData, []byte(event)) {
 			t.Fatalf("diagnostics log does not contain %s: %s", event, logData)
+		}
+	}
+	for _, line := range bytes.Split(bytes.TrimSpace(logData), []byte("\n")) {
+		var record map[string]any
+		if err := json.Unmarshal(line, &record); err != nil {
+			t.Fatalf("decode diagnostics record: %v", err)
+		}
+		if record["event"] == "command_finished" || record["event"] == "process_exited" {
+			if reason, ok := record["exit_reason"].(string); !ok || reason == "" {
+				t.Fatalf("exit record has no reason: %#v", record)
+			}
 		}
 	}
 	runs, err := os.ReadDir(filepath.Join(stateHome, "parrot", "diagnostics", "runs"))

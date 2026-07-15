@@ -17,6 +17,7 @@ import (
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	application "github.com/amirulashraf/parrot-coder/internal/app"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
@@ -63,6 +64,82 @@ func TestUnknownCommand(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), `unknown command "missing"`) {
 		t.Fatalf("stderr = %q", stderr.String())
+	}
+}
+
+func TestRunResultAlwaysExplainsControlledExit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		args   []string
+		code   int
+		reason string
+	}{
+		{name: "help", args: []string{"help"}, code: exitOK, reason: "help_displayed"},
+		{name: "version", args: []string{"version"}, code: exitOK, reason: "version_displayed"},
+		{name: "unknown", args: []string{"missing"}, code: exitUsage, reason: "unknown_command"},
+		{name: "missing prompt", args: []string{"run"}, code: exitUsage, reason: "prompt_required"},
+		{name: "invalid flag", args: []string{"run", "--missing"}, code: exitUsage, reason: "invalid_arguments"},
+		{name: "invalid models arguments", args: []string{"models", "extra"}, code: exitUsage, reason: "invalid_models_arguments"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			result := New(BuildInfo{}).RunResult(context.Background(), test.args, strings.NewReader(""), &stdout, &stderr)
+			if result.Code != test.code || result.Reason != test.reason {
+				t.Fatalf("RunResult() = %#v, want code=%d reason=%q", result, test.code, test.reason)
+			}
+		})
+	}
+}
+
+func TestRunResultClassifiesAppOpenFailureWithoutLoggingErrorText(t *testing.T) {
+	const privateText = "database is locked secret-path"
+	applicationCLI := New(BuildInfo{})
+	applicationCLI.open = func(context.Context, application.Options) (*application.App, error) {
+		return nil, errors.New(privateText)
+	}
+	var stdout, stderr bytes.Buffer
+	result := applicationCLI.RunResult(context.Background(), []string{"run", "hello"}, strings.NewReader(""), &stdout, &stderr)
+	if result.Code != exitError || result.Reason != "app_open_database_busy" || result.ErrorType != "*errors.errorString" {
+		t.Fatalf("RunResult() = %#v", result)
+	}
+	if strings.Contains(result.Reason, privateText) || strings.Contains(result.ErrorType, privateText) {
+		t.Fatalf("structured result leaked private error text: %#v", result)
+	}
+}
+
+func TestEncodeOutputRecordsWriteFailureReason(t *testing.T) {
+	state := &exitState{}
+	ctx := context.WithValue(context.Background(), exitStateKey{}, state)
+	var stderr bytes.Buffer
+	code := encodeOutput(ctx, failingWriter{}, &stderr, map[string]string{"ok": "yes"})
+	if code != exitError || state.reason != "output_write_failed" || state.errorType != "*errors.errorString" {
+		t.Fatalf("encodeOutput() code=%d state=%#v", code, state)
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
+
+func TestEnhancedRenderFailureIsPrintedAndClassified(t *testing.T) {
+	state := &exitState{}
+	ctx := context.WithValue(context.Background(), exitStateKey{}, state)
+	var stderr bytes.Buffer
+	shell := &chatShell{
+		ctx:      ctx,
+		stderr:   &stderr,
+		editor:   terminal.NewEditorIO(strings.NewReader(""), io.Discard, terminal.WithEditorRenderer(nil)),
+		renderer: terminal.NewLiveRenderer(failingWriter{}, terminal.RendererConfig{TTY: true}),
+	}
+	code := shell.runEnhanced("")
+	if code != exitError || state.reason != "enhanced_render_failed" || state.errorType != "*errors.errorString" {
+		t.Fatalf("runEnhanced() code=%d state=%#v", code, state)
+	}
+	if !strings.Contains(stderr.String(), "enhanced chat render failed") || !strings.Contains(stderr.String(), "write failed") {
+		t.Fatalf("stderr did not explain enhanced render failure: %q", stderr.String())
 	}
 }
 
@@ -1870,10 +1947,10 @@ func TestRunCancellationInterruptsActiveSession(t *testing.T) {
 	configureCLIEnvironment(t, provider.URL)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	result := make(chan int, 1)
+	result := make(chan ExitResult, 1)
 	go func() {
 		var stdout, stderr bytes.Buffer
-		result <- New(BuildInfo{}).Run(ctx, []string{"run", "wait"}, strings.NewReader(""), &stdout, &stderr)
+		result <- New(BuildInfo{}).RunResult(ctx, []string{"run", "wait"}, strings.NewReader(""), &stdout, &stderr)
 	}()
 	select {
 	case <-started:
@@ -1882,9 +1959,9 @@ func TestRunCancellationInterruptsActiveSession(t *testing.T) {
 	}
 	cancel()
 	select {
-	case code := <-result:
-		if code != exitInterrupt {
-			t.Fatalf("code = %d, want %d", code, exitInterrupt)
+	case got := <-result:
+		if got.Code != exitInterrupt || got.Reason != "turn_interrupted" || got.ErrorType != "context_canceled" {
+			t.Fatalf("result = %#v", got)
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("run did not stop after cancellation")

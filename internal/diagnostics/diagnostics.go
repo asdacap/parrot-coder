@@ -229,12 +229,29 @@ func boundedString(value string, limit int) string {
 	return value[:limit] + "\n...[truncated]"
 }
 
-// Finish records an orderly process exit and removes its run marker.
-func (r *Run) Finish(exitCode int) {
+// Finish records an orderly process exit and removes its run marker. The first
+// detail is the machine-readable exit reason and the optional second detail is
+// a content-free error type. The variadic form preserves compatibility for
+// internal callers while ensuring even legacy calls receive a reason.
+func (r *Run) Finish(exitCode int, details ...string) {
 	if r == nil {
 		return
 	}
-	r.log("info", "process_exited", true, "exit_code", exitCode, "runtime_ms", time.Since(r.started).Milliseconds())
+	reason := "exit_code_returned"
+	if len(details) > 0 && details[0] != "" {
+		reason = details[0]
+	}
+	attributes := []any{"exit_code", exitCode, "exit_reason", reason, "runtime_ms", time.Since(r.started).Milliseconds()}
+	if len(details) > 1 && details[1] != "" {
+		attributes = append(attributes, "error_type", details[1])
+	}
+	// A failing exit must be discoverable as an error in the log; an interrupt
+	// (130) is a user-requested stop, not a failure.
+	level := "info"
+	if exitCode != 0 && exitCode != 130 {
+		level = "error"
+	}
+	r.log(level, "process_exited", true, attributes...)
 	if r.marker != "" {
 		if err := os.Remove(r.marker); err != nil && !errors.Is(err, os.ErrNotExist) {
 			r.log("error", "run_marker_remove_failed", true, "error", err.Error())

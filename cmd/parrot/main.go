@@ -33,40 +33,57 @@ func run() (exitCode int) {
 	// main goroutine must not recover either.
 	crashOnPanic := os.Getenv("GOTRACEBACK") == "crash"
 	run := startDiagnostics()
-	defer func() {
-		if !crashOnPanic {
-			if recovered := recover(); recovered != nil {
-				diagnostics.Panic("main", recovered)
-				fmt.Fprintf(os.Stderr, "parrot: panic in main; see the diagnostics log\n%s", debug.Stack())
-				exitCode = 2
-			}
-		}
-		if run != nil {
-			run.Finish(exitCode)
-		}
-	}()
 	stopSignals := logSignals()
 	defer stopSignals()
-
 	ctx, stop := cli.SignalContext(context.Background())
 	defer stop()
 
+	command := "chat"
+	if len(os.Args) > 1 {
+		command = os.Args[1]
+	}
+	exitReason := "command_not_completed"
+	errorType := ""
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			if crashOnPanic {
+				// Keep the run marker and crash output open so the runtime records
+				// this as an unclean crash rather than an orderly exit.
+				panic(recovered)
+			}
+			diagnostics.Panic("main", recovered)
+			fmt.Fprintf(os.Stderr, "parrot: panic in main; see the diagnostics log\n%s", debug.Stack())
+			exitCode = 2
+			exitReason = "panic_recovered"
+			errorType = fmt.Sprintf("%T", recovered)
+		}
+		contextError := diagnostics.ErrorType(ctx.Err())
+		if contextError == "" && exitCode == 130 {
+			contextError = "interrupted"
+		}
+		attributes := []any{"command", command, "exit_code", exitCode, "exit_reason", exitReason, "context_error", contextError}
+		if errorType != "" {
+			attributes = append(attributes, "error_type", errorType)
+		}
+		// A failing command must be discoverable as an error in the log; an
+		// interrupt (130) is a user-requested stop, not a failure.
+		logExit := diagnostics.Event
+		if exitCode != 0 && exitCode != 130 {
+			logExit = diagnostics.Error
+		}
+		logExit("command_finished", attributes...)
+		if run != nil {
+			run.Finish(exitCode, exitReason, errorType)
+		}
+	}()
 	app := cli.New(cli.BuildInfo{
 		Version: version,
 		Commit:  commit,
 		Date:    date,
 	})
-	command := "chat"
-	if len(os.Args) > 1 {
-		command = os.Args[1]
-	}
 	diagnostics.Event("command_started", "command", command, "argument_count", max(0, len(os.Args)-1))
-	exitCode = app.Run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
-	contextError := ""
-	if ctx.Err() != nil {
-		contextError = ctx.Err().Error()
-	}
-	diagnostics.Event("command_finished", "command", command, "exit_code", exitCode, "context_error", contextError)
+	result := app.RunResult(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
+	exitCode, exitReason, errorType = result.Code, result.Reason, result.ErrorType
 	return exitCode
 }
 

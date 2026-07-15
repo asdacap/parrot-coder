@@ -32,7 +32,7 @@ func TestLifecyclePanicAndStaleMarkerLogging(t *testing.T) {
 	Warn("test_warning", "retry", true)
 	Error("test_error", "error_type", ErrorType(errors.New("private error text")))
 	panicForTest("where-test")
-	run.Finish(7)
+	run.Finish(7, "test_failure", "*errors.errorString")
 
 	records := readRecords(t, filepath.Join(state, directoryName, logName))
 	for _, expected := range []string{"unclean_previous_exit", "process_started", "test_event", "test_warning", "test_error", "panic_recovered", "process_exited"} {
@@ -55,7 +55,7 @@ func TestLifecyclePanicAndStaleMarkerLogging(t *testing.T) {
 		t.Fatalf("panic record does not identify its source: %#v", panicRecord)
 	}
 	exited := findRecord(records, "process_exited")
-	if exited["exit_code"] != float64(7) {
+	if exited["exit_code"] != float64(7) || exited["exit_reason"] != "test_failure" || exited["error_type"] != "*errors.errorString" || exited["level"] != "error" {
 		t.Fatalf("process_exited = %#v", exited)
 	}
 	entries, err := os.ReadDir(runs)
@@ -81,6 +81,32 @@ func TestLifecyclePanicAndStaleMarkerLogging(t *testing.T) {
 		if info.Mode().Perm() != check.mode {
 			t.Errorf("mode of %s = %o, want %o", check.path, info.Mode().Perm(), check.mode)
 		}
+	}
+}
+
+func TestFinishLevelReflectsFailure(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		exitCode int
+		level    string
+	}{
+		{name: "success", exitCode: 0, level: "info"},
+		{name: "error", exitCode: 1, level: "error"},
+		{name: "usage", exitCode: 2, level: "error"},
+		{name: "interrupt", exitCode: 130, level: "info"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state := t.TempDir()
+			run, err := Start(state, Build{Version: "test-version"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			run.Finish(test.exitCode, "some_reason")
+			exited := findRecord(readRecords(t, filepath.Join(state, directoryName, logName)), "process_exited")
+			if exited["exit_code"] != float64(test.exitCode) || exited["level"] != test.level {
+				t.Fatalf("process_exited = %#v, want level %q", exited, test.level)
+			}
+		})
 	}
 }
 
