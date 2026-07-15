@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
@@ -16,6 +17,7 @@ func TestBuiltBinaryHelpAndVersionAreTerminalSafe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	binary := filepath.Join(t.TempDir(), "parrot")
+	stateHome := filepath.Join(t.TempDir(), "state")
 	if runtime.GOOS == "windows" {
 		binary += ".exe"
 	}
@@ -25,6 +27,7 @@ func TestBuiltBinaryHelpAndVersionAreTerminalSafe(t *testing.T) {
 	}
 	for _, argument := range []string{"help", "version"} {
 		command := exec.CommandContext(ctx, binary, argument)
+		command.Env = append(os.Environ(), "XDG_STATE_HOME="+stateHome)
 		output, err := command.CombinedOutput()
 		if err != nil {
 			t.Fatalf("parrot %s: %v\n%s", argument, err, output)
@@ -37,5 +40,21 @@ func TestBuiltBinaryHelpAndVersionAreTerminalSafe(t *testing.T) {
 		}) >= 0 {
 			t.Fatalf("parrot %s emitted terminal controls: %q", argument, output)
 		}
+	}
+	logData, err := os.ReadFile(filepath.Join(stateHome, "parrot", "diagnostics", "parrot.jsonl"))
+	if err != nil {
+		t.Fatalf("read diagnostics log: %v", err)
+	}
+	for _, event := range []string{`"event":"process_started"`, `"event":"command_started"`, `"event":"process_exited"`} {
+		if !bytes.Contains(logData, []byte(event)) {
+			t.Fatalf("diagnostics log does not contain %s: %s", event, logData)
+		}
+	}
+	runs, err := os.ReadDir(filepath.Join(stateHome, "parrot", "diagnostics", "runs"))
+	if err != nil {
+		t.Fatalf("read run markers: %v", err)
+	}
+	if len(runs) != 0 {
+		t.Fatalf("orderly commands left run markers: %#v", runs)
 	}
 }

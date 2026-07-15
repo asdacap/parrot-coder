@@ -15,6 +15,8 @@ import (
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 )
 
 const (
@@ -158,7 +160,23 @@ func sameOrigin(left, right *url.URL) bool {
 	return strings.EqualFold(left.Scheme, right.Scheme) && strings.EqualFold(left.Host, right.Host)
 }
 
-func startStream(ctx context.Context, client *http.Client, endpoint *url.URL, body []byte, headers http.Header, secrets []string, headerTimeout time.Duration, parser streamParser) (Stream, error) {
+func startStream(ctx context.Context, client *http.Client, endpoint *url.URL, body []byte, headers http.Header, secrets []string, headerTimeout time.Duration, parser streamParser) (stream Stream, err error) {
+	started := time.Now()
+	responseStatus := 0
+	diagnostics.Event("provider_http_headers_started",
+		"host", endpoint.Hostname(), "path", endpoint.EscapedPath(), "request_bytes", len(body), "header_timeout_ms", headerTimeout.Milliseconds(),
+	)
+	defer func() {
+		attributes := []any{
+			"host", endpoint.Hostname(), "path", endpoint.EscapedPath(), "status", responseStatus,
+			"duration_ms", time.Since(started).Milliseconds(),
+		}
+		if err != nil {
+			diagnostics.Error("provider_http_headers_finished", append(attributes, "result", "error", "error_type", diagnostics.ErrorType(err))...)
+		} else {
+			diagnostics.Event("provider_http_headers_finished", append(attributes, "result", "success")...)
+		}
+	}()
 	if len(body) > maxRequestBytes {
 		return nil, fmt.Errorf("provider: request exceeds %d bytes", maxRequestBytes)
 	}
@@ -201,6 +219,7 @@ func startStream(ctx context.Context, client *http.Client, endpoint *url.URL, bo
 		}
 		return nil, errors.New("provider: send request: " + redact(err.Error(), secrets))
 	}
+	responseStatus = response.StatusCode
 	if ctx.Err() != nil {
 		response.Body.Close()
 		cancelHeaderContext()

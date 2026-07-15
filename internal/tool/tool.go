@@ -11,9 +11,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/change"
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/question"
@@ -168,7 +170,32 @@ type Executor struct {
 	MaxOutputBytes int
 }
 
-func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, call CallContext) (Result, error) {
+func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, call CallContext) (result Result, err error) {
+	started := time.Now()
+	diagnostics.Event("tool_execution_started",
+		"session_id", call.SessionID, "tool_call_id", call.ToolCallID, "tool", id, "input_bytes", len(raw),
+	)
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			diagnostics.Panic("tool_executor", recovered)
+			panic(recovered)
+		}
+		status := "success"
+		if ctx.Err() != nil {
+			status = "interrupted"
+		} else if err != nil {
+			status = "error"
+		}
+		attributes := []any{
+			"session_id", call.SessionID, "tool_call_id", call.ToolCallID, "tool", id,
+			"status", status, "duration_ms", time.Since(started).Milliseconds(), "output_bytes", len(result.Text),
+		}
+		if err != nil {
+			diagnostics.Error("tool_execution_finished", append(attributes, "error_type", diagnostics.ErrorType(err))...)
+		} else {
+			diagnostics.Event("tool_execution_finished", attributes...)
+		}
+	}()
 	t, ok := e.Snapshot.tools[id]
 	if !ok {
 		return Result{}, fmt.Errorf("unknown tool %q", id)
@@ -240,7 +267,7 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 			return Result{}, errors.New("tool permission denied")
 		}
 	}
-	result, err := t.Execute(ctx, p, call)
+	result, err = t.Execute(ctx, p, call)
 	if err != nil {
 		return Result{}, err
 	}

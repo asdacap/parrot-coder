@@ -17,6 +17,7 @@ import (
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 )
 
 const defaultMaxBodyBytes int64 = 1 << 20
@@ -128,6 +129,7 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	started := time.Now()
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			diagnostics.Panic("httpapi", recovered)
 			if !tracker.wroteHeader {
 				s.writeProblem(tracker, r, internalProblem(requestID))
 			}

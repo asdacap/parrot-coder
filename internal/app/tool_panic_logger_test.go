@@ -6,34 +6,31 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 )
 
-func TestToolPanicLoggerNilSink(t *testing.T) {
-	if toolPanicLogger(nil) != nil {
-		t.Fatal("expected nil hook when no diagnostics sink is available")
-	}
-}
-
-func TestToolPanicLoggerWritesRecord(t *testing.T) {
-	path := filepath.Join(t.TempDir(), DiagnosticsFile)
-	sink, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+func TestToolPanicLoggerWritesStructuredRecord(t *testing.T) {
+	state := t.TempDir()
+	run, err := diagnostics.Start(state, diagnostics.Build{Version: "test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer sink.Close()
 
-	hook := toolPanicLogger(sink)
-	if hook == nil {
-		t.Fatal("expected a hook for a valid sink")
-	}
+	hook := toolPanicLogger()
 	hook(context.Background(), "ses_123", "apply_patch", "boom", []byte("goroutine 1 [running]:\nmain.x()"))
+	run.Finish(0)
 
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Join(state, "diagnostics", "parrot.jsonl"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	record := string(data)
-	for _, want := range []string{"recovered tool panic", "session=ses_123", "tool=apply_patch", "value=boom", "goroutine 1 [running]"} {
+	for _, want := range []string{
+		`"event":"panic_recovered"`, `"component":"agent_tool_call"`,
+		`"session_id":"ses_123"`, `"tool":"apply_patch"`,
+		`"panic":"boom"`, `goroutine 1 [running]`,
+	} {
 		if !strings.Contains(record, want) {
 			t.Fatalf("diagnostics record missing %q, got: %s", want, record)
 		}

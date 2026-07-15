@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 )
 
@@ -62,7 +64,30 @@ func NewService(store Store, summarizer Summarizer, contexts ContextObserver, co
 	return &Service{store: store, summarizer: summarizer, contexts: contexts, config: config}, nil
 }
 
-func (s *Service) Compact(ctx context.Context, request Request) (Result, error) {
+func (s *Service) Compact(ctx context.Context, request Request) (result Result, err error) {
+	started := time.Now()
+	diagnostics.Event("compaction_started",
+		"session_id", request.SessionID, "provider", request.ProviderID, "model", request.Model.ID, "forced", request.Force,
+	)
+	defer func() {
+		status := result.Status
+		if status == "" {
+			status = "error"
+		}
+		attributes := []any{
+			"session_id", request.SessionID, "provider", request.ProviderID, "model", request.Model.ID,
+			"forced", request.Force, "status", status, "duration_ms", time.Since(started).Milliseconds(),
+			"attempt_id", result.AttemptID, "source_epoch_id", result.SourceEpochID, "target_epoch_id", result.TargetEpochID,
+		}
+		if result.Reason != "" {
+			attributes = append(attributes, "reason", result.Reason)
+		}
+		if err != nil {
+			diagnostics.Error("compaction_finished", append(attributes, "error_type", diagnostics.ErrorType(err))...)
+		} else {
+			diagnostics.Event("compaction_finished", attributes...)
+		}
+	}()
 	if request.SessionID == "" || request.ProviderID == "" || request.Model.ID == "" {
 		return Result{}, errors.New("compaction: session, provider, and model are required")
 	}
