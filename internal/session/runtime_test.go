@@ -50,6 +50,56 @@ func TestModelHistoryOmitsContentlessTerminalAssistant(t *testing.T) {
 	}
 }
 
+func TestModelHistoryRepairsInterruptedToolWithoutOutput(t *testing.T) {
+	ctx, _, _, service, sessionID := newService(t)
+	assistant, err := service.StartAssistant(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := protocol.ToolCall{ID: "call", Name: "shell", Input: json.RawMessage(`{}`)}
+	if err := service.FinishAssistant(ctx, sessionID, assistant.ID, session.AssistantFinal{Status: "complete", FinishReason: protocol.FinishToolCalls, Parts: []protocol.ContentPart{{Type: protocol.ContentToolCall, ToolCall: &call}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.AddToolCall(ctx, sessionID, assistant.ID, call); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.SettleTool(ctx, sessionID, call.ID, "interrupted", "", "context canceled"); err != nil {
+		t.Fatal(err)
+	}
+
+	history, err := service.ListModelHistory(ctx, sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 2 || history[0].Content[0].Type != protocol.ContentToolCall || history[1].Content[0].Type != protocol.ContentToolResult {
+		t.Fatalf("repaired history = %#v", history)
+	}
+	result := history[1].Content[0]
+	if result.ToolCallID != call.ID || result.Text != "Error: tool execution interrupted: context canceled" {
+		t.Fatalf("repaired tool result = %#v", result)
+	}
+}
+
+func TestModelHistoryDropsUnregisteredToolCall(t *testing.T) {
+	ctx, _, _, service, sessionID := newService(t)
+	assistant, err := service.StartAssistant(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := protocol.ToolCall{ID: "orphan", Name: "shell", Input: json.RawMessage(`{}`)}
+	if err := service.FinishAssistant(ctx, sessionID, assistant.ID, session.AssistantFinal{Status: "interrupted", FinishReason: protocol.FinishError, Parts: []protocol.ContentPart{{Type: protocol.ContentText, Text: "partial"}, {Type: protocol.ContentToolCall, ToolCall: &call}}}); err != nil {
+		t.Fatal(err)
+	}
+
+	history, err := service.ListModelHistory(ctx, sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || len(history[0].Content) != 1 || history[0].Content[0].Text != "partial" {
+		t.Fatalf("history retained orphaned call: %#v", history)
+	}
+}
+
 func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "repair.db")

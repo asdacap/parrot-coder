@@ -395,7 +395,7 @@ func (s *Service) ListModelHistory(ctx context.Context, sessionID string, cutoff
 		return nil, err
 	}
 	defer rows.Close()
-	var result []protocol.Message
+	var messages []protocol.Message
 	for rows.Next() {
 		var role, content string
 		var raw []byte
@@ -414,9 +414,92 @@ func (s *Service) ListModelHistory(ctx context.Context, sessionID string, cutoff
 		if len(parts) == 0 {
 			continue
 		}
-		result = append(result, protocol.Message{Role: protocol.Role(role), Content: parts})
+		messages = append(messages, protocol.Message{Role: protocol.Role(role), Content: parts})
 	}
-	return result, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	return s.repairToolHistory(ctx, sessionID, cutoff, messages)
+}
+
+type historyToolState struct {
+	status string
+	result string
+	err    string
+}
+
+// repairToolHistory enforces the provider invariant that every function call
+// in history has a corresponding output. Normally the runner appends that
+// output directly. This fallback also repairs sessions created before that
+// behavior existed, and calls interrupted by a process crash between settling
+// the tool and appending its result message.
+func (s *Service) repairToolHistory(ctx context.Context, sessionID string, cutoff int64, messages []protocol.Message) ([]protocol.Message, error) {
+	states := make(map[string]historyToolState)
+	rows, err := s.db.SQL().QueryContext(ctx, `SELECT id,status,result_text,error_text FROM session_tool_call WHERE session_id=? AND sequence>=?`, sessionID, cutoff)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		var state historyToolState
+		if err := rows.Scan(&id, &state.status, &state.result, &state.err); err != nil {
+			return nil, err
+		}
+		states[id] = state
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	outputs := make(map[string]bool)
+	for _, message := range messages {
+		for _, part := range message.Content {
+			if part.Type == protocol.ContentToolResult && part.ToolCallID != "" {
+				outputs[part.ToolCallID] = true
+			}
+		}
+	}
+
+	repaired := make([]protocol.Message, 0, len(messages))
+	for _, message := range messages {
+		parts := make([]protocol.ContentPart, 0, len(message.Content))
+		var missing []protocol.Message
+		for _, part := range message.Content {
+			if part.Type != protocol.ContentToolCall || part.ToolCall == nil {
+				parts = append(parts, part)
+				continue
+			}
+			state, known := states[part.ToolCall.ID]
+			if outputs[part.ToolCall.ID] {
+				parts = append(parts, part)
+				continue
+			}
+			if !known || state.status == "pending" || state.status == "running" {
+				// The call was never made executable, so retaining it would create
+				// an unanswerable function call in the provider request.
+				continue
+			}
+			parts = append(parts, part)
+			text := state.result
+			if state.status != "success" {
+				text = "Error: tool execution " + state.status
+				if state.err != "" {
+					text += ": " + state.err
+				}
+			}
+			missing = append(missing, protocol.Message{Role: protocol.RoleTool, Content: []protocol.ContentPart{{Type: protocol.ContentToolResult, Text: text, ToolCallID: part.ToolCall.ID}}})
+		}
+		if len(parts) > 0 {
+			message.Content = parts
+			repaired = append(repaired, message)
+		}
+		repaired = append(repaired, missing...)
+	}
+	return repaired, nil
 }
 
 func textContent(parts []protocol.ContentPart) string {
