@@ -98,6 +98,7 @@ const (
 	EventTextDelta             EventType = "text_delta"
 	EventReasoningDelta        EventType = "reasoning_delta"
 	EventReasoningSummaryDelta EventType = "reasoning_summary_delta"
+	EventReasoningSummaryDone  EventType = "reasoning_summary_done"
 	EventToolInputDelta        EventType = "tool_input_delta"
 	EventToolCallComplete      EventType = "tool_call_complete"
 	EventUsage                 EventType = "usage"

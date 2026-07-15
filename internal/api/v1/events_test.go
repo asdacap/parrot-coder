@@ -45,6 +45,11 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			event: v1.Event{Type: v1.EventMessagePartDelta, Data: json.RawMessage(`{"message_id":"msg_1","part_id":"reasoning_1:2","kind":"reasoning_summary","delta":"Checking tests"}`)},
 			want:  &v1.MessagePartDelta{MessageID: "msg_1", PartID: "reasoning_1:2", Kind: "reasoning_summary", Delta: "Checking tests"},
 		},
+		{
+			name:  "message part done",
+			event: v1.Event{Type: v1.EventMessagePartDelta, Data: json.RawMessage(`{"message_id":"msg_1","part_id":"reasoning_1:2","kind":"reasoning_summary","delta":"","done":true}`)},
+			want:  &v1.MessagePartDelta{MessageID: "msg_1", PartID: "reasoning_1:2", Kind: "reasoning_summary", Done: true},
+		},
 	}
 
 	for _, test := range tests {

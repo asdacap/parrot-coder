@@ -339,6 +339,10 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			reasoning.WriteString(item.Text)
 		case protocol.EventReasoningSummaryDelta:
 			reasoningSummary.Write(item.PartID, item.Text)
+		case protocol.EventReasoningSummaryDone:
+			if item.Text != "" {
+				reasoningSummary.Set(item.PartID, item.Text)
+			}
 		case protocol.EventToolCallComplete:
 			if item.ToolCall == nil {
 				continue
@@ -462,6 +466,23 @@ func (a *reasoningSummaryAccumulator) Write(partID, text string) {
 		part = &strings.Builder{}
 		a.parts[partID] = part
 		a.order = append(a.order, partID)
+	}
+	part.WriteString(text)
+	a.bytes += len(text)
+}
+
+func (a *reasoningSummaryAccumulator) Set(partID, text string) {
+	if a.parts == nil {
+		a.parts = make(map[string]*strings.Builder)
+	}
+	part := a.parts[partID]
+	if part == nil {
+		part = &strings.Builder{}
+		a.parts[partID] = part
+		a.order = append(a.order, partID)
+	} else {
+		a.bytes -= part.Len()
+		part.Reset()
 	}
 	part.WriteString(text)
 	a.bytes += len(text)

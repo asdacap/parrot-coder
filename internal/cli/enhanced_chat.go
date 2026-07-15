@@ -643,6 +643,12 @@ func (r *enhancedChatRuntime) startAssistantActivity(messageID string) {
 	if messageID == "" {
 		messageID = "assistant"
 	}
+	// A disposable summary delta (and even its done event) can arrive before the
+	// durable assistant-started event. Do not recreate a generic Thinking row
+	// after that summary has already established this message's activity.
+	if r.reasoningSummary && messageID == r.streamMessageID {
+		return
+	}
 	// Live deltas and durable assistant lifecycle events are delivered on
 	// separate channels. If a delta arrived first, it already created the
 	// message's activity row and the delayed started event must not add another.
@@ -681,29 +687,9 @@ func (r *enhancedChatRuntime) startReasoningActivity(messageID, partID, label st
 			}
 		}
 	}
-	r.settleOtherReasoningActivities(messageID, activityID)
 	r.upsertActivity(activityID, cleanReasoningActivityLabel(label), "thinking", false, true, summary)
 	r.markActivityMessage(activityID, messageID)
 	r.syncAssistantActivityUsageByID(activityID)
-}
-
-// Providers can stream a reasoning summary as several independently identified
-// parts. Those parts are sequential progress updates, not concurrent assistant
-// work. Preserve each row, but keep only the most recently updated part active.
-func (r *enhancedChatRuntime) settleOtherReasoningActivities(messageID, activeID string) {
-	now := time.Now()
-	for i := range r.activity {
-		item := &r.activity[i]
-		if !item.reasoning || item.id == activeID || item.status != "thinking" {
-			continue
-		}
-		if item.messageID != messageID && item.id != messageID {
-			continue
-		}
-		item.status = "success"
-		item.terminal = true
-		item.ended = now
-	}
 }
 
 func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) {
@@ -713,6 +699,41 @@ func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) 
 			return
 		}
 	}
+}
+
+// finishReasoningSummaryPart commits a provider-finalized summary immediately.
+// Another part merely receiving a delta is not enough to produce a checkmark;
+// explicit completion (or the later answer/assistant boundary fallback) is.
+func (r *enhancedChatRuntime) finishReasoningSummaryPart(messageID, partID string) error {
+	if messageID == "" {
+		messageID = "assistant"
+	}
+	activityID := messageID
+	if partID != "" {
+		activityID += "\x00" + partID
+	}
+	now := time.Now()
+	for i := 0; i < len(r.activity); i++ {
+		item := &r.activity[i]
+		if item.id != activityID || !item.reasoningSummary {
+			continue
+		}
+		item.status = "success"
+		item.terminal = true
+		item.ended = now
+		if r.shell == nil || r.shell.renderer == nil {
+			return nil
+		}
+		if singleLineReasoningSummary(item.label) != "" {
+			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Text: formatActivity(*item, now), Style: item.style}); err != nil {
+				return err
+			}
+			r.borderCommitted = false
+		}
+		r.activity = append(r.activity[:i], r.activity[i+1:]...)
+		return nil
+	}
+	return nil
 }
 
 func cleanReasoningActivityLabel(label string) string {
@@ -1704,7 +1725,26 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 				r.reasoningText.Reset()
 				r.reasoningSummary = true
 			}
-			if delta.PartID == "" {
+			if delta.Done {
+				// The done event carries the provider's authoritative complete text.
+				// Use it when present rather than appending it to prior deltas.
+				if delta.Delta != "" {
+					if delta.PartID == "" {
+						r.reasoningText.Reset()
+						r.reasoningText.WriteString(delta.Delta)
+						r.startReasoningActivity(delta.MessageID, "", delta.Delta, true)
+					} else {
+						if r.reasoningParts == nil {
+							r.reasoningParts = make(map[string]string)
+						}
+						r.reasoningParts[delta.PartID] = delta.Delta
+						r.startReasoningActivity(delta.MessageID, delta.PartID, delta.Delta, true)
+					}
+				}
+				if err := r.finishReasoningSummaryPart(delta.MessageID, delta.PartID); err != nil {
+					return err
+				}
+			} else if delta.PartID == "" {
 				r.reasoningText.WriteString(delta.Delta)
 				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String(), true)
 			} else {

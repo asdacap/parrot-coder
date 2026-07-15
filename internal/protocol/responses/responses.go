@@ -143,6 +143,7 @@ func (p *Parser) consume(data []byte) error {
 	var event struct {
 		Type         string `json:"type"`
 		Delta        string `json:"delta"`
+		Text         string `json:"text"`
 		ItemID       string `json:"item_id"`
 		SummaryIndex *int   `json:"summary_index"`
 		CallID       string `json:"call_id"`
@@ -178,15 +179,13 @@ func (p *Parser) consume(data []byte) error {
 		}
 	case "response.reasoning_summary_text.delta":
 		if event.Delta != "" {
-			partID := ""
-			if event.SummaryIndex != nil {
-				partID = fmt.Sprintf("reasoning:%d", *event.SummaryIndex)
-				if event.ItemID != "" {
-					partID = fmt.Sprintf("%s:reasoning:%d", event.ItemID, *event.SummaryIndex)
-				}
-			}
+			partID := reasoningSummaryPartID(event.ItemID, event.SummaryIndex)
 			p.pending = append(p.pending, protocol.Event{Type: protocol.EventReasoningSummaryDelta, PartID: partID, Text: event.Delta})
 		}
+	case "response.reasoning_summary_text.done":
+		p.pending = append(p.pending, protocol.Event{
+			Type: protocol.EventReasoningSummaryDone, PartID: reasoningSummaryPartID(event.ItemID, event.SummaryIndex), Text: event.Text,
+		})
 	case "response.reasoning_text.delta", "response.output_text.annotation.added":
 		if event.Delta != "" {
 			p.pending = append(p.pending, protocol.Event{Type: protocol.EventReasoningDelta, Text: event.Delta})
@@ -258,6 +257,16 @@ func (p *Parser) consume(data []byte) error {
 		p.appendError(failure)
 	}
 	return nil
+}
+
+func reasoningSummaryPartID(itemID string, summaryIndex *int) string {
+	if summaryIndex == nil {
+		return ""
+	}
+	if itemID != "" {
+		return fmt.Sprintf("%s:reasoning:%d", itemID, *summaryIndex)
+	}
+	return fmt.Sprintf("reasoning:%d", *summaryIndex)
 }
 
 type wireError struct {

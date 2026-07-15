@@ -82,3 +82,23 @@ func TestLiveBrokerPreservesReasoningSummaryPartID(t *testing.T) {
 		t.Fatalf("payload = %#v", delta)
 	}
 }
+
+func TestLiveBrokerPublishesReasoningSummaryDone(t *testing.T) {
+	broker := event.NewBroker()
+	events, closeSubscription := broker.Subscribe("ses_test", 1)
+	defer closeSubscription()
+
+	broker.Publish("ses_test", protocol.Event{
+		Type: protocol.EventReasoningSummaryDone, MessageID: "msg_test", PartID: "reasoning_item:2", Text: "Checking tests",
+	})
+
+	item := <-events
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := payload.(*v1.MessagePartDelta)
+	if done.MessageID != "msg_test" || done.PartID != "reasoning_item:2" || done.Kind != "reasoning_summary" || !done.Done || done.Delta != "Checking tests" {
+		t.Fatalf("payload = %#v", done)
+	}
+}

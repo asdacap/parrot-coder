@@ -38,6 +38,7 @@ type MessagePartDelta struct {
 	PartID     string `json:"part_id,omitempty"`
 	Kind       string `json:"kind"`
 	Delta      string `json:"delta"`
+	Done       bool   `json:"done,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	ToolName   string `json:"tool_name,omitempty"`
 }

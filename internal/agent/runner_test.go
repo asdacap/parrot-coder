@@ -67,10 +67,11 @@ func TestReasoningSummaryAccumulatorPreservesPartOrder(t *testing.T) {
 	summary.Write("reasoning:0", "First")
 	summary.Write("reasoning:1", "Second item")
 	summary.Write("reasoning:0", " item")
-	if got, want := summary.String(), "First itemSecond item"; got != want {
+	summary.Set("reasoning:1", "Final second item")
+	if got, want := summary.String(), "First itemFinal second item"; got != want {
 		t.Fatalf("summary = %q, want %q", got, want)
 	}
-	if summary.Len() != len("First itemSecond item") {
+	if summary.Len() != len("First itemFinal second item") {
 		t.Fatalf("summary length = %d", summary.Len())
 	}
 }

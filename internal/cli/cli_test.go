@@ -711,10 +711,10 @@ func TestEnhancedReasoningSummaryPartsShowAsSeparateActivityRows(t *testing.T) {
 		t.Fatalf("activity = %#v", runtime.activity)
 	}
 	rows := runtime.activityRows(runtime.activity[0].started, 100)
-	if len(rows) != 2 || !strings.Contains(rows[0], "✓ Inspecting the implementation") || !strings.Contains(rows[1], "Thought: Running tests") {
+	if len(rows) != 2 || !strings.Contains(rows[0], "Thought: Inspecting the implementation") || !strings.Contains(rows[1], "Thought: Running tests") {
 		t.Fatalf("activity rows = %#v", rows)
 	}
-	if runtime.activity[0].status != "success" || !runtime.activity[0].terminal || runtime.activity[1].status != "thinking" || runtime.activity[1].terminal {
+	if runtime.activity[0].status != "thinking" || runtime.activity[0].terminal || runtime.activity[1].status != "thinking" || runtime.activity[1].terminal {
 		t.Fatalf("summary activity states = %#v", runtime.activity)
 	}
 
@@ -779,8 +779,59 @@ func TestEnhancedReasoningSummaryPartsUpdateIndependently(t *testing.T) {
 			active++
 		}
 	}
-	if active != 1 || runtime.activity[0].status != "thinking" || runtime.activity[1].status != "success" {
+	if active != 2 || runtime.activity[0].status != "thinking" || runtime.activity[1].status != "thinking" {
 		t.Fatalf("interleaved summary parts have %d active thoughts: rows=%#v activity=%#v", active, rows, runtime.activity)
+	}
+}
+
+func TestEnhancedReasoningSummaryDoneCommitsOnlyFinalizedPart(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{renderer: renderer}, knownMessages: map[string]bool{},
+	}
+
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "First item"},
+		{MessageID: "assistant", PartID: "reasoning:1", Kind: "reasoning_summary", Delta: "Second item"},
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "Final first item", Done: true},
+	} {
+		data, _ := json.Marshal(delta)
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if len(runtime.activity) != 1 || runtime.activity[0].label != "Second item" || runtime.activity[0].status != "thinking" {
+		t.Fatalf("live activity = %#v", runtime.activity)
+	}
+	if got := output.String(); !strings.Contains(got, "✓ Final first item") {
+		t.Fatalf("finalized summary was not committed: %q", got)
+	}
+}
+
+func TestEnhancedLateAssistantStartDoesNotRecreateFinalizedSummary(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{renderer: renderer}, knownMessages: map[string]bool{},
+	}
+
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "Finished item"},
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Done: true},
+	} {
+		data, _ := json.Marshal(delta)
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started, _ := json.Marshal(map[string]string{"message_id": "assistant"})
+	if err := runtime.handleEvent(v1.Event{Type: "session.assistant.started", Data: started}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 {
+		t.Fatalf("late assistant start recreated activity: %#v", runtime.activity)
 	}
 }
 
