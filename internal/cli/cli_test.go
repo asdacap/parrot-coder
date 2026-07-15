@@ -1282,29 +1282,27 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 	}
 }
 
-func TestPermissionContextUsesOnlyToolDescriptionAndResources(t *testing.T) {
+func TestPermissionContextUsesOnlySingleLineToolDescription(t *testing.T) {
 	lines := permissionContextLines(v1.Permission{
 		ToolID:         "shell",
 		Reason:         "default policy",
-		Description:    "Run shell command:\nrm -rf build\nWorking directory: /tmp",
+		Description:    "Run shell command:\r\nprintf 'a  b'\nWorking directory: /tmp",
 		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"do not render this canonical JSON","env":{"SECRET":"hidden"}}`),
 		Review:         json.RawMessage(`{"review_secret":"do not render this review JSON","diff":"--- a/file.go\n+++ b/file.go\n-old\n+new\n"}`),
 		Resources:      []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
 	})
-	want := []string{
-		"permission: shell",
-		"reason: default policy",
-		"request:",
-		"  Run shell command:",
-		"  rm -rf build",
-		"  Working directory: /tmp",
-		"resource: process execute /bin/bash",
-	}
+	want := []string{"Run shell command: printf 'a  b' Working directory: /tmp"}
 	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
 		t.Fatalf("permission context:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
 	}
-	if got := strings.Join(lines, "\n"); strings.Contains(got, "canonical JSON") || strings.Contains(got, "SECRET") || strings.Contains(got, "review JSON") || strings.Contains(got, "review:") {
+	if got := strings.Join(lines, "\n"); strings.Contains(got, "permission:") || strings.Contains(got, "reason:") || strings.Contains(got, "resource:") || strings.Contains(got, "canonical JSON") || strings.Contains(got, "SECRET") || strings.Contains(got, "review JSON") || strings.Contains(got, "review:") {
 		t.Fatalf("authorization JSON leaked into permission context: %s", got)
+	}
+}
+
+func TestPermissionContextOmitsEmptyDescription(t *testing.T) {
+	if got := permissionContextLines(v1.Permission{ToolID: "shell", Reason: "default policy", Resources: []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}}}); len(got) != 0 {
+		t.Fatalf("permission context = %#v, want none", got)
 	}
 }
 
@@ -1358,15 +1356,16 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 	if strings.Contains(frame, "⠋ permission decision:") || strings.Contains(frame, "⠋ $") {
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
-	if !strings.Contains(frame, "permission: shell") || !strings.Contains(frame, "reason: default policy") ||
-		!strings.Contains(frame, "request:") || !strings.Contains(frame, "  rm -rf build") ||
-		!strings.Contains(frame, "resource: process execute /bin/bash") ||
+	if !strings.Contains(frame, "Run shell command: rm -rf build") ||
 		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
 		!strings.Contains(frame, "enable yolo") {
 		t.Fatalf("permission choices missing from frame: %q", frame)
 	}
-	if contextIndex, selectorIndex := strings.Index(frame, "permission: shell"), strings.Index(frame, "permission decision:"); contextIndex < 0 || selectorIndex <= contextIndex {
+	if contextIndex, selectorIndex := strings.Index(frame, "Run shell command: rm -rf build"), strings.Index(frame, "permission decision:"); contextIndex < 0 || selectorIndex <= contextIndex {
 		t.Fatalf("permission context was not rendered before its selector: %q", frame)
+	}
+	if strings.Contains(frame, "permission: shell") || strings.Contains(frame, "reason: default policy") || strings.Contains(frame, "request:") || strings.Contains(frame, "resource: process execute /bin/bash") {
+		t.Fatalf("permission metadata rendered in frame: %q", frame)
 	}
 	if strings.Contains(frame, "review_secret") || strings.Contains(frame, "not for the dialog") || strings.Contains(frame, "review:") {
 		t.Fatalf("permission review JSON leaked into frame: %q", frame)
@@ -1441,7 +1440,7 @@ func TestSettlePromptsDoesNotRenderAuthorizationJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := output.String()
-	if !strings.Contains(got, "Run shell command:") || !strings.Contains(got, "printf ok") {
+	if !strings.Contains(got, "Run shell command: printf ok") {
 		t.Fatalf("tool description missing from permission prompt: %q", got)
 	}
 	if strings.Contains(got, "CANONICAL_SECRET") || strings.Contains(got, "REVIEW_SECRET") || strings.Contains(got, "review:") {

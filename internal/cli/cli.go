@@ -703,21 +703,16 @@ func writeAll(w io.Writer, value string) error {
 	return err
 }
 
-// permissionContextLines presents only tool-provided, human-readable request
-// context. Canonical input and structured review data remain hash-bound
-// authorization data and are deliberately not dumped into the dialog.
+// permissionContextLines presents only the tool-provided, human-readable
+// description. Descriptions are flattened so permission context occupies one
+// line. Policy metadata, resources, canonical input, and structured review data
+// remain authorization data and are deliberately not dumped into the dialog.
 func permissionContextLines(item v1.Permission) []string {
-	lines := []string{"permission: " + item.ToolID, "reason: " + item.Reason}
-	if item.Description != "" {
-		lines = append(lines, "request:")
-		for _, line := range strings.Split(item.Description, "\n") {
-			lines = append(lines, "  "+line)
-		}
+	description := strings.TrimSpace(strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(item.Description))
+	if description == "" {
+		return nil
 	}
-	for _, resource := range item.Resources {
-		lines = append(lines, fmt.Sprintf("resource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier))
-	}
-	return lines
+	return []string{description}
 }
 
 // formatJSONAsYAML follows the terminal presentation rule that human-facing

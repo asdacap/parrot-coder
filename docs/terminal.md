@@ -92,11 +92,11 @@ Longer blocks end with the number of omitted lines.
 
 Human-facing terminal output must display structured JSON data as block-style
 YAML for readability. This includes tool requests and failed-request details.
-Permission dialogs are an exception: each tool describes its own parameters in
-human-readable text, while canonical input and structured review data remain
-internal authorization data and are not rendered. JSON remains the format for
-APIs, JSONL output, configuration examples, and other explicitly
-machine-readable interfaces.
+Permission dialogs are an exception: they render only the tool's human-readable
+description, flattened to one line. Policy metadata, resource records,
+canonical input, and structured review data remain internal authorization data
+and are not rendered. JSON remains the format for APIs, JSONL output,
+configuration examples, and other explicitly machine-readable interfaces.
 
 Ctrl-C clears a nonempty draft. With an empty busy editor, the first Ctrl-C
 requests cancellation and remains in the session; a second interrupt before
