@@ -1742,8 +1742,12 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		if delta.MessageID != "" && r.knownMessages[delta.MessageID] {
 			return r.settleIdle()
 		}
-		if err := r.beginAssistantMessage(delta.MessageID); err != nil {
+		accepted, err := r.beginAssistantMessage(delta.MessageID)
+		if err != nil {
 			return err
+		}
+		if !accepted {
+			return r.settleIdle()
 		}
 		if delta.Kind == "text" {
 			if delta.Delta != "" && r.streamed.Len() == 0 {
@@ -1872,8 +1876,12 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		if err := json.Unmarshal(item.Data, &payload); err != nil {
 			return err
 		}
-		if err := r.beginAssistantMessage(payload.MessageID); err != nil {
+		accepted, err := r.beginAssistantMessage(payload.MessageID)
+		if err != nil {
 			return err
+		}
+		if !accepted {
+			return r.settleIdle()
 		}
 		r.startAssistantActivity(payload.MessageID)
 		r.status = "working"
@@ -2429,25 +2437,31 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 
 // beginAssistantMessage synchronizes the CLI's cumulative buffer with the
 // renderer before accepting a different message ID. Durable lifecycle events
-// and disposable provider deltas travel through separate queues, so a newer
-// delta can be observed while the prior renderer stream is still open. The
-// repository is authoritative at this boundary: settle the prior assistant
-// from its stored final message instead of discarding the local prefix.
-func (r *enhancedChatRuntime) beginAssistantMessage(messageID string) error {
+// and disposable provider deltas travel through separate queues, so events for
+// different assistants can be observed out of order. The repository is
+// authoritative at this boundary: settle the prior assistant from its stored
+// final message instead of discarding the local prefix.
+//
+// If the repository still considers the current assistant active, the
+// conflicting event is stale or has raced persistence. Ignore it and retain
+// the current stream. Returning an error here used to close and reconnect the
+// event stream; the same conflicting event could then produce an endless row
+// of "previous assistant message is still active" errors.
+func (r *enhancedChatRuntime) beginAssistantMessage(messageID string) (bool, error) {
 	if messageID == "" || messageID == r.streamMessageID {
-		return nil
+		return true, nil
 	}
 	if r.streamMessageID != "" {
 		previousID := r.streamMessageID
 		if err := r.commitCompletedAssistants(previousID); err != nil {
-			return err
+			return false, err
 		}
 		if r.streamMessageID == previousID {
-			return errors.New("enhanced chat: previous assistant message is still active")
+			return false, nil
 		}
 	}
 	r.streamed.Reset()
 	r.resetReasoning()
 	r.streamMessageID = messageID
-	return nil
+	return true, nil
 }

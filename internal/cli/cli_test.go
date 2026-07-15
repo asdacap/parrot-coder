@@ -1361,6 +1361,40 @@ func TestEnhancedNextAssistantDeltaSettlesPriorRendererStream(t *testing.T) {
 	}
 }
 
+func TestEnhancedConflictingAssistantDeltaDoesNotCloseActiveStream(t *testing.T) {
+	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{
+		{ID: "current", Role: "assistant", Status: "active"},
+	}}}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{
+			ctx:      context.Background(),
+			api:      api,
+			current:  v1.Session{ID: "session"},
+			renderer: terminal.NewLiveRenderer(io.Discard, terminal.RendererConfig{}),
+		},
+		state:           state,
+		busy:            true,
+		knownMessages:   map[string]bool{},
+		streamMessageID: "current",
+	}
+	runtime.streamed.WriteString("current answer")
+
+	// Disposable provider deltas and durable assistant lifecycle events use
+	// separate queues. A stale delta can therefore arrive after another
+	// assistant has taken ownership of the renderer stream.
+	stale, _ := json.Marshal(v1.MessagePartDelta{MessageID: "stale", Kind: "text", Delta: "stale answer"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: stale}); err != nil {
+		t.Fatalf("stale assistant delta returned an error: %v", err)
+	}
+	if runtime.streamMessageID != "current" || runtime.streamed.String() != "current answer" {
+		t.Fatalf("stale delta replaced active stream: id=%q text=%q", runtime.streamMessageID, runtime.streamed.String())
+	}
+}
+
 func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{
