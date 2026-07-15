@@ -882,6 +882,25 @@ func TestStreamToolStatusUsesAccessibleIcons(t *testing.T) {
 	}
 }
 
+func TestToolActivityStyleMutesReadOnlyRetrievalTools(t *testing.T) {
+	tests := []struct {
+		name string
+		want terminal.TextStyle
+	}{
+		{name: "read", want: terminal.TextStyleMuted},
+		{name: "grep", want: terminal.TextStyleMuted},
+		{name: "glob", want: terminal.TextStyleMuted},
+		{name: "web_fetch", want: terminal.TextStyleMuted},
+		{name: "shell", want: terminal.TextStyleDefault},
+		{name: "todowrite", want: terminal.TextStyleDefault},
+	}
+	for _, test := range tests {
+		if got := toolActivityStyle(test.name); got != test.want {
+			t.Errorf("toolActivityStyle(%q) = %v, want %v", test.name, got, test.want)
+		}
+	}
+}
+
 func TestStreamToolTrackerCommitsEditAndFailureBlocks(t *testing.T) {
 	var output bytes.Buffer
 	options := streamOptions{stderr: &output}

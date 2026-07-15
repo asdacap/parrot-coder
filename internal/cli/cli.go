@@ -319,6 +319,18 @@ type streamToolReport struct {
 	style    terminal.TextStyle
 }
 
+// toolActivityStyle returns the transcript style shared by the standard and
+// enhanced chat renderers. Read-only discovery and retrieval tools are muted
+// so they remain visible without competing with actions that change state.
+func toolActivityStyle(name string) terminal.TextStyle {
+	switch name {
+	case "read", "grep", "glob", "web_fetch":
+		return terminal.TextStyleMuted
+	default:
+		return terminal.TextStyleDefault
+	}
+}
+
 // describe returns the human-facing status and any permanent detail block for
 // a tool event. Pending input is retained until the terminal event because
 // failure and some success payloads contain only the call ID.
@@ -335,11 +347,7 @@ func (t *streamToolTracker) describeReport(item v1.Event) streamToolReport {
 	call := t.calls[callID]
 	if name != "" {
 		call.name = name
-		if name == "read" || name == "grep" {
-			call.style = terminal.TextStyleMuted
-		} else {
-			call.style = terminal.TextStyleDefault
-		}
+		call.style = toolActivityStyle(name)
 	}
 	if input != nil {
 		call.input = input

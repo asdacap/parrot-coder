@@ -1751,10 +1751,8 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		}
 		if status == "failure" || status == "interrupted" {
 			r.activity[i].style = terminal.TextStyleDefault
-		} else if r.activity[i].toolName == "read" || r.activity[i].toolName == "grep" {
-			r.activity[i].style = terminal.TextStyleMuted
 		} else {
-			r.activity[i].style = terminal.TextStyleDefault
+			r.activity[i].style = toolActivityStyle(r.activity[i].toolName)
 		}
 		break
 	}
