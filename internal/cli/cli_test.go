@@ -1551,18 +1551,22 @@ func TestSettleStreamPromptsStopsReplyingAfterEnableYolo(t *testing.T) {
 	}
 }
 
-func TestEnhancedQuestionOptionsUseInputMenuAndCollapseToSelection(t *testing.T) {
+func TestEnhancedQuestionOptionEnterSubmitsSelection(t *testing.T) {
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 	state, err := editor.Start("")
 	if err != nil {
 		t.Fatal(err)
 	}
-	request := &v1.QuestionRequest{Questions: []v1.Question{{
+	request := &v1.QuestionRequest{ID: "request", Questions: []v1.Question{{
 		ID: "question", Prompt: "Choose", Options: []v1.Option{
 			{ID: "one", Label: "First"}, {ID: "two", Label: "Second", Description: "preferred"},
 		},
 	}}}
-	runtime := &enhancedChatRuntime{modal: &enhancedModal{kind: "question", state: state, question: request}}
+	api := &promptReplyAPI{}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}},
+		modal: &enhancedModal{kind: "question", state: state, question: request},
+	}
 	runtime.updateQuestionPrompt()
 	runtime.showQuestionContext(request.Questions[0])
 	if len(runtime.modal.context) != 1 || len(runtime.modal.choices) != 2 {
@@ -1583,8 +1587,101 @@ func TestEnhancedQuestionOptionsUseInputMenuAndCollapseToSelection(t *testing.T)
 	if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyEnter}); !handled || err != nil {
 		t.Fatalf("Enter handled=%t err=%v", handled, err)
 	}
-	if state.Value() != "two" || len(runtime.modal.choices) != 0 {
-		t.Fatalf("selection=%q choices=%#v", state.Value(), runtime.modal.choices)
+	if runtime.modal != nil {
+		t.Fatalf("question modal remained open after selection: %#v", runtime.modal)
+	}
+	if len(api.questionReplies) != 1 || len(api.questionReplies[0].Answers) != 1 {
+		t.Fatalf("question replies = %#v", api.questionReplies)
+	}
+	answer := api.questionReplies[0].Answers[0]
+	if answer.QuestionID != "question" || len(answer.OptionIDs) != 1 || answer.OptionIDs[0] != "two" || answer.Custom != "" {
+		t.Fatalf("answer = %#v", answer)
+	}
+}
+
+func TestEnhancedQuestionCustomAnswerHasSeparateInputRow(t *testing.T) {
+	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
+	state, err := editor.Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &v1.QuestionRequest{ID: "request", Questions: []v1.Question{{
+		ID: "question", Prompt: "Choose", Custom: true,
+		Options: []v1.Option{{ID: "one", Label: "First"}, {ID: "two", Label: "Second"}},
+	}}}
+	api := &promptReplyAPI{}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}},
+		modal: &enhancedModal{kind: "question", state: state, question: request},
+	}
+	runtime.updateQuestionPrompt()
+	if len(runtime.modal.choices) != 3 {
+		t.Fatalf("choices = %#v", runtime.modal.choices)
+	}
+	custom := runtime.modal.choices[2]
+	if custom.Value != "Custom input" || custom.Description != "Type another answer" {
+		t.Fatalf("custom choice = %#v", custom)
+	}
+	if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyRune, Rune: 'x'}); !handled || err != nil || state.Value() != "" {
+		t.Fatalf("option menu accepted text: handled=%t err=%v value=%q", handled, err, state.Value())
+	}
+	for range 2 {
+		if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyDown}); !handled || err != nil {
+			t.Fatalf("Down handled=%t err=%v", handled, err)
+		}
+	}
+	if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyEnter}); !handled || err != nil {
+		t.Fatalf("Enter handled=%t err=%v", handled, err)
+	}
+	if runtime.modal == nil || len(runtime.modal.choices) != 0 || runtime.modal.prompt != "custom answer: " || state.Value() != "" {
+		t.Fatalf("custom input modal = %#v, value = %q", runtime.modal, state.Value())
+	}
+	// Even text equal to an option ID remains a custom answer after explicitly
+	// choosing the custom-input row.
+	if err := runtime.answerModal("one"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.questionReplies) != 1 || len(api.questionReplies[0].Answers) != 1 || api.questionReplies[0].Answers[0].Custom != "one" || len(api.questionReplies[0].Answers[0].OptionIDs) != 0 {
+		t.Fatalf("question replies = %#v", api.questionReplies)
+	}
+}
+
+func TestEnhancedMultipleQuestionEnterSubmitsStagedSelections(t *testing.T) {
+	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
+	state, err := editor.Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := &v1.QuestionRequest{ID: "request", Questions: []v1.Question{{
+		ID: "question", Prompt: "Choose", Multiple: true,
+		Options: []v1.Option{{ID: "one", Label: "First"}, {ID: "two", Label: "Second"}, {ID: "three", Label: "Third"}},
+	}}}
+	api := &promptReplyAPI{}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}},
+		modal: &enhancedModal{kind: "question", state: state, question: request},
+	}
+	runtime.updateQuestionPrompt()
+	if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyRune, Rune: ' '}); !handled || err != nil {
+		t.Fatalf("Space handled=%t err=%v", handled, err)
+	}
+	if !strings.HasPrefix(runtime.modal.choices[0].Description, "selected · ") {
+		t.Fatalf("staged choice description = %q", runtime.modal.choices[0].Description)
+	}
+	for range 2 {
+		if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyDown}); !handled || err != nil {
+			t.Fatalf("Down handled=%t err=%v", handled, err)
+		}
+	}
+	if handled, err := runtime.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyEnter}); !handled || err != nil {
+		t.Fatalf("Enter handled=%t err=%v", handled, err)
+	}
+	if runtime.modal != nil || len(api.questionReplies) != 1 || len(api.questionReplies[0].Answers) != 1 {
+		t.Fatalf("modal=%#v replies=%#v", runtime.modal, api.questionReplies)
+	}
+	answer := api.questionReplies[0].Answers[0]
+	if len(answer.OptionIDs) != 2 || answer.OptionIDs[0] != "one" || answer.OptionIDs[1] != "three" {
+		t.Fatalf("answer = %#v", answer)
 	}
 }
 
@@ -1622,6 +1719,7 @@ type promptReplyAPI struct {
 	apiClient
 	permissions       v1.PermissionList
 	permissionReplies []v1.PermissionReply
+	questionReplies   []v1.QuestionReply
 }
 
 func (a *promptReplyAPI) Permissions(context.Context, string) (v1.PermissionList, error) {
@@ -1634,6 +1732,11 @@ func (a *promptReplyAPI) Questions(context.Context, string) (v1.QuestionList, er
 
 func (a *promptReplyAPI) ReplyPermission(_ context.Context, _, _ string, reply v1.PermissionReply) error {
 	a.permissionReplies = append(a.permissionReplies, reply)
+	return nil
+}
+
+func (a *promptReplyAPI) ReplyQuestion(_ context.Context, _, _ string, reply v1.QuestionReply) error {
+	a.questionReplies = append(a.questionReplies, reply)
 	return nil
 }
 

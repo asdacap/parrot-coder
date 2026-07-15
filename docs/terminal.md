@@ -51,9 +51,12 @@ ordinary message draft is preserved and the surrounding transcript remains
 immutable. Picker and dialog choices use the expandable input region rather
 than consuming the six live-status rows. A moving viewport keeps the selected
 choice visible. When not every choice fits, a written `Showing … of … options;
-… hidden` row reports the omitted choices. Accepting a choice copies it into
-the input, closes the menu, and collapses the input region back to its ordinary
-height (one physical row when the selected text fits the terminal width).
+… hidden` row reports the omitted choices. Enter submits a selected question
+option immediately. Questions that also accept free-form answers show a
+separate `Custom input` row; choosing it switches the question prompt to text
+editing, where Enter submits the typed answer. For multiple-choice questions,
+Space stages additional options and Enter submits the staged options together
+with the highlighted one.
 
 Shift-Tab switches modes; Ctrl-X is the portable fallback for terminals that do
 not send the Shift-Tab sequence. Unbound control keys and malformed keyboard
