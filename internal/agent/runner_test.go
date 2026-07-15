@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -93,6 +94,24 @@ func (s *blockingStream) Next(ctx context.Context) (protocol.Event, error) {
 	}
 }
 func (*blockingStream) Close() error { return nil }
+
+type callThenBlockingStream struct {
+	call    protocol.ToolCall
+	started chan struct{}
+	emitted bool
+}
+
+func (s *callThenBlockingStream) Next(ctx context.Context) (protocol.Event, error) {
+	if !s.emitted {
+		s.emitted = true
+		return protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &s.call}, nil
+	}
+	close(s.started)
+	<-ctx.Done()
+	return protocol.Event{}, ctx.Err()
+}
+
+func (*callThenBlockingStream) Close() error { return nil }
 
 type fakeTool struct {
 	id      string
@@ -424,6 +443,86 @@ func TestRunnerCancellationSettlesAssistantAndTools(t *testing.T) {
 			t.Fatalf("tool status = %s", status)
 		}
 	})
+}
+
+func TestRunnerCancellationPersistsToolOutputBeforeNextProviderTurn(t *testing.T) {
+	started := make(chan struct{})
+	item := &fakeTool{id: "block", execute: func(ctx context.Context) (tool.Result, error) {
+		close(started)
+		<-ctx.Done()
+		return tool.Result{}, ctx.Err()
+	}}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			call := protocol.ToolCall{ID: "call_cancelled", Name: "block", Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}
+		var callSeen, outputSeen bool
+		for _, message := range request.Messages {
+			for _, part := range message.Content {
+				if part.Type == protocol.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == "call_cancelled" {
+					callSeen = true
+				}
+				if part.Type == protocol.ContentToolResult && part.ToolCallID == "call_cancelled" {
+					outputSeen = true
+					if !strings.Contains(part.Text, "interrupted") {
+						return nil, errors.New("interrupted tool output did not explain cancellation")
+					}
+				}
+			}
+		}
+		if !callSeen || !outputSeen {
+			return nil, errors.New("resumed provider request contains an orphaned tool call")
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil, item)
+	h.admit(t, "first", "run", session.DeliverySteer)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.runner.Drain(ctx, h.sessionID) }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled Drain error = %v", err)
+	}
+
+	h.admit(t, "second", "try something else", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatalf("resumed Drain error = %v", err)
+	}
+}
+
+func TestRunnerCancellationDuringProviderStreamDropsUnexecutedToolCalls(t *testing.T) {
+	started := make(chan struct{})
+	call := protocol.ToolCall{ID: "partial_call", Name: "read", Input: json.RawMessage(`{}`)}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			return &callThenBlockingStream{call: call, started: started}, nil
+		}
+		for _, message := range request.Messages {
+			for _, part := range message.Content {
+				if part.Type == protocol.ContentToolCall && part.ToolCall != nil && part.ToolCall.ID == call.ID {
+					return nil, errors.New("unexecuted tool call survived interrupted provider stream")
+				}
+			}
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil, &fakeTool{id: "read"})
+	h.admit(t, "first", "read", session.DeliverySteer)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- h.runner.Drain(ctx, h.sessionID) }()
+	<-started
+	cancel()
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled Drain error = %v", err)
+	}
+	h.admit(t, "second", "continue", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatalf("resumed Drain error = %v", err)
+	}
 }
 
 func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {

@@ -324,7 +324,11 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			if ctx.Err() != nil {
 				status = "interrupted"
 			}
-			parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), calls)
+			// A call is only part of valid model history once the provider turn
+			// completes and AddToolCall has made it executable. Keeping calls from
+			// an interrupted or failed stream would replay a function_call without
+			// a matching function_call_output on the next request.
+			parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), nil)
 			_ = r.finishOnCleanup(sessionID, assistant.ID, parts, protocol.FinishError, nextErr.Error(), status)
 			return nil, "", nextErr
 		}
@@ -361,7 +365,9 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 				message = item.ProviderError.Message
 				code = item.ProviderError.Code
 			}
-			parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), calls)
+			// Tool calls from a failed provider turn are not executed, so they must
+			// not be retained without corresponding tool results.
+			parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), nil)
 			finishErr := r.finishAssistantOnCleanup(sessionID, assistant.ID, session.AssistantFinal{Parts: parts, Usage: usage, FinishReason: protocol.FinishError, Error: message, Status: "error"})
 			overflow := item.ProviderError != nil && canonicalOverflow(item.ProviderError.Type, item.ProviderError.Code)
 			return nil, protocol.FinishError, &providerTurnFailure{err: errors.Join(errors.New(message), finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil && text.Len() == 0 && reasoning.Len() == 0 && reasoningSummary.Len() == 0 && len(calls) == 0}
@@ -536,6 +542,9 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 		wg.Add(1)
 		go func(i int, call completedCall) {
 			defer wg.Done()
+			// Record the call before any cancellable operation. This lets cleanup
+			// settle and answer calls that were still waiting for the semaphore.
+			outcomes[i].call = call
 			if !profile.AllowsTool(call.call.Name) {
 				err := fmt.Errorf("tool %q denied by agent %q", call.call.Name, profile.ID)
 				settleErr := r.config.Sessions.SettleTool(ctx, sessionID, call.call.ID, "failure", "", err.Error())
@@ -585,6 +594,10 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 		defer cancel()
 		for i := range outcomes {
 			if !outcomes[i].settled {
+				outcomes[i].interrupted = true
+				if outcomes[i].err == nil {
+					outcomes[i].err = ctx.Err()
+				}
 				if err := r.config.Sessions.SettleTool(cleanup, sessionID, outcomes[i].call.call.ID, "interrupted", "", ctx.Err().Error()); err != nil {
 					outcomes[i].persistErr = err
 				} else {
@@ -593,12 +606,20 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 				}
 			}
 		}
+		resultErr := error(ctx.Err())
 		for _, outcome := range outcomes {
 			if outcome.persistErr != nil {
-				return errors.Join(ctx.Err(), outcome.persistErr)
+				resultErr = errors.Join(resultErr, outcome.persistErr)
+			}
+			// Provider protocols require one result for every completed call. Use
+			// the cleanup context so Ctrl-C cannot leave an orphaned function_call
+			// that makes the provider reject the user's next prompt.
+			_, err := r.config.Sessions.AppendMessage(cleanup, sessionID, toolResultMessage(outcome))
+			if err != nil {
+				resultErr = errors.Join(resultErr, err)
 			}
 		}
-		return ctx.Err()
+		return resultErr
 	}
 	for _, outcome := range outcomes {
 		if outcome.persistErr != nil {
@@ -609,16 +630,26 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 		}
 	}
 	for _, outcome := range outcomes {
-		text := outcome.text
-		if outcome.err != nil {
-			text = "Error: " + outcome.err.Error()
-		}
-		_, err := r.config.Sessions.AppendMessage(ctx, sessionID, protocol.Message{Role: protocol.RoleTool, Content: []protocol.ContentPart{{Type: protocol.ContentToolResult, Text: text, ToolCallID: outcome.call.call.ID}}})
+		_, err := r.config.Sessions.AppendMessage(ctx, sessionID, toolResultMessage(outcome))
 		if err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func toolResultMessage(outcome toolOutcome) protocol.Message {
+	text := outcome.text
+	if outcome.interrupted {
+		reason := "tool execution interrupted"
+		if outcome.err != nil {
+			reason += ": " + outcome.err.Error()
+		}
+		text = "Error: " + reason
+	} else if outcome.err != nil {
+		text = "Error: " + outcome.err.Error()
+	}
+	return protocol.Message{Role: protocol.RoleTool, Content: []protocol.ContentPart{{Type: protocol.ContentToolResult, Text: text, ToolCallID: outcome.call.call.ID}}}
 }
 
 func (r *Runner) finishOnCleanup(sessionID, messageID string, parts []protocol.ContentPart, finish protocol.FinishReason, errorText, status string) error {
