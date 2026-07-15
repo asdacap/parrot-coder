@@ -24,6 +24,79 @@ func TestLiveRendererExactBytesAndClear(t *testing.T) {
 	}
 }
 
+func TestLiveRendererDoesNotWriteUnchangedFrame(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80})
+	frame := LiveFrame{
+		StyledActivity: []StyledText{MutedText("working")},
+		Prompt:         PromptState{Prefix: "$ ", Text: "draft", Cursor: 5},
+	}
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	before := output.Len()
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != before {
+		t.Fatalf("unchanged frame wrote %d additional bytes: %q", output.Len()-before, output.String()[before:])
+	}
+}
+
+func TestLiveRendererRedrawsForCursorStyleAndWidthChanges(t *testing.T) {
+	var output bytes.Buffer
+	columns := 80
+	renderer := NewLiveRenderer(&output, RendererConfig{
+		TTY: true, Color: true, Columns: columns, ColumnsFunc: func() int { return columns },
+	})
+	if err := renderer.Prompt(PromptState{Prefix: "$ ", Text: "draft", Cursor: 5}); err != nil {
+		t.Fatal(err)
+	}
+
+	before := output.Len()
+	if err := renderer.Prompt(PromptState{Prefix: "$ ", Text: "draft", Cursor: 4}); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() == before {
+		t.Fatal("cursor-only change did not redraw")
+	}
+
+	if err := renderer.Prompt(PromptState{Prefix: "$ ", Text: "draft", Cursor: 5}); err != nil {
+		t.Fatal(err)
+	}
+	before = output.Len()
+	if err := renderer.UpdateStyled([]StyledText{MutedText("$ draft")}); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() == before {
+		t.Fatal("style-only change did not redraw")
+	}
+
+	before = output.Len()
+	columns = 79
+	if err := renderer.UpdateStyled([]StyledText{MutedText("$ draft")}); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() == before {
+		t.Fatal("terminal width change did not redraw")
+	}
+}
+
+func TestLiveRendererDoesNotRedrawInvisibleStyleChangeWithoutColor(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: false, Columns: 80})
+	if err := renderer.Update([]string{"working"}); err != nil {
+		t.Fatal(err)
+	}
+	before := output.Len()
+	if err := renderer.UpdateStyled([]StyledText{MutedText("working")}); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != before {
+		t.Fatalf("invisible style change wrote %d additional bytes", output.Len()-before)
+	}
+}
+
 func TestLiveRendererAllowedEscapesAndSanitization(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 4, MaxRows: 3})
@@ -283,6 +356,24 @@ func TestLiveRendererCompositeFrameShowsInputStatusBar(t *testing.T) {
 	}
 }
 
+func TestLiveRendererIndentsOnlyRowsAboveModeline(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20, MaxRows: 6})
+	if err := renderer.Frame(LiveFrame{
+		MessagePrefix: "- ", Message: "response", Context: []string{"context"}, Activity: []string{"✓ activity"},
+		InputLeft: "mode: build", Prompt: PromptState{Prefix: "$ ", Text: "draft", Cursor: 5},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.rows) != 5 || renderer.rows[0] != "  context" || renderer.rows[1] != "  ✓ activity" ||
+		renderer.rows[2] != "  - response" || !strings.HasPrefix(renderer.rows[3], "─ mode: build ") || renderer.rows[4] != "$ draft" {
+		t.Fatalf("live rows, modeline, and input are not aligned as expected: %#v", renderer.rows)
+	}
+	if got := output.String(); !strings.Contains(got, "  \x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "  \x1b[32m-\x1b[0m response") {
+		t.Fatalf("indented live rows lost semantic color: %q", got)
+	}
+}
+
 func TestLiveRendererKeepsModelineThinAfterTranscriptBoundaryWasCommitted(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 40, MaxRows: 6})
@@ -333,7 +424,7 @@ func TestLiveRendererSpacesWorkingActivityFromUserMessageImmediately(t *testing.
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(renderer.rows) < 4 || renderer.rows[0] != "" || renderer.rows[1] != "Thought: Working…" {
+	if len(renderer.rows) < 4 || renderer.rows[0] != "" || renderer.rows[1] != "  Thought: Working…" {
 		t.Fatalf("working activity is not spaced from user message: %#v", renderer.rows)
 	}
 	if renderer.cursorRow != len(renderer.rows)-1 {
@@ -364,7 +455,7 @@ func TestLiveRendererPromotesStreamingRowsAndCommitsOnlySuffix(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 10, MaxRows: 6})
 	frame := LiveFrame{
-		Stream:      &StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefgh"},
+		Stream:      &StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdef"},
 		Prompt:      PromptState{Prefix: "$ ", Text: "draft", Cursor: 5},
 		ShowDivider: true,
 	}
@@ -380,11 +471,14 @@ func TestLiveRendererPromotesStreamingRowsAndCommitsOnlySuffix(t *testing.T) {
 		t.Fatal(err)
 	}
 	promotion := output.String()[before:]
-	if !strings.Contains(promotion, "- abcdefgh\n") {
+	if !strings.Contains(promotion, "- abcdef\n") || !strings.Contains(promotion, "  ghijkl\n") {
 		t.Fatalf("stable row was not promoted to scrollback: %q", promotion)
 	}
-	if !renderer.stream.started || string(renderer.stream.pending) != "ijklmnop" {
+	if !renderer.stream.started || string(renderer.stream.pending) != "mnop" {
 		t.Fatalf("stream state = %#v", renderer.stream)
+	}
+	if len(renderer.rows) == 0 || renderer.rows[0] != "    mnop" {
+		t.Fatalf("unfinished streaming row was not indented: %#v", renderer.rows)
 	}
 	if renderer.cursorRow != len(renderer.rows)-1 || !strings.Contains(strings.Join(renderer.rows, "\n"), "$ draft") {
 		t.Fatalf("editor was not restored: rows=%#v cursor=%d", renderer.rows, renderer.cursorRow)
@@ -395,7 +489,7 @@ func TestLiveRendererPromotesStreamingRowsAndCommitsOnlySuffix(t *testing.T) {
 		t.Fatal(err)
 	}
 	completion := output.String()[before:]
-	if strings.Contains(completion, "abcdefgh") || !strings.Contains(completion, "  ijklmnop") || !strings.Contains(completion, "!") {
+	if strings.Contains(completion, "abcdef") || !strings.Contains(completion, "  mnop!") {
 		t.Fatalf("completion duplicated prefix or lost suffix: %q", completion)
 	}
 	if renderer.stream.id != "" {
@@ -416,10 +510,10 @@ func TestLiveRendererKeepsStreamingRowAtTopOfCompositeFrame(t *testing.T) {
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := renderer.rows[0], "- partial"; got != want {
+	if got, want := renderer.rows[0], "  - partial"; got != want {
 		t.Fatalf("highest live row = %q; want %q; rows=%#v", got, want, renderer.rows)
 	}
-	if context, activity := indexOf(renderer.rows, "question context"), indexOf(renderer.rows, "Tool: running"); context <= 0 || activity <= context {
+	if context, activity := indexOf(renderer.rows, "  question context"), indexOf(renderer.rows, "  Tool: running"); context <= 0 || activity <= context {
 		t.Fatalf("stream, context, and activity order is wrong: %#v", renderer.rows)
 	}
 
@@ -429,10 +523,10 @@ func TestLiveRendererKeepsStreamingRowAtTopOfCompositeFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	promotion := output.String()[before:]
-	if !strings.Contains(promotion, "- partial response t\n") {
+	if !strings.Contains(promotion, "- partial response\n") {
 		t.Fatalf("top streaming row was not promoted at the live boundary: %q", promotion)
 	}
-	if len(renderer.rows) == 0 || renderer.rows[0] != "  hat wraps" {
+	if len(renderer.rows) == 0 || renderer.rows[0] != "     that wraps" {
 		t.Fatalf("unfinished suffix is not the highest live row: %#v", renderer.rows)
 	}
 }
@@ -454,11 +548,15 @@ func TestLiveRendererStreamingFramesAreIdempotent(t *testing.T) {
 		t.Fatal(err)
 	}
 	pending := string(renderer.stream.pending)
+	before := output.Len()
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
 	if string(renderer.stream.pending) != pending {
 		t.Fatalf("repeated cumulative frame changed pending text: %q -> %q", pending, renderer.stream.pending)
+	}
+	if output.Len() != before {
+		t.Fatalf("repeated cumulative frame wrote %d additional bytes", output.Len()-before)
 	}
 }
 
@@ -498,7 +596,7 @@ func TestLiveRendererKeepsLiveBudgetSeparateFromInputMenu(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(renderer.rows, "\n"); !strings.Contains(got, "live one\nlive two\npick> \n> one\n  two\n  three") {
+	if got := strings.Join(renderer.rows, "\n"); !strings.Contains(got, "  live one\n  live two\npick> \n> one\n  two\n  three") {
 		t.Fatalf("live and input regions were not independently budgeted: %#v", renderer.rows)
 	}
 }
@@ -585,7 +683,7 @@ func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
 		t.Fatal(err)
 	}
 	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(output.String(), "")
-	if got := strings.Count(plain, "\n\n- abcdefgh\n"); got != 1 {
+	if got := strings.Count(plain, "\n\n- abcdef\n  ghijkl\n"); got != 1 {
 		t.Fatalf("stream block separator count = %d; output=%q", got, output.String())
 	}
 	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop!"}, false); err != nil {

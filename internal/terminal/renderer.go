@@ -14,6 +14,7 @@ const (
 	defaultLiveRows  = 10
 	defaultInputRows = 12
 	defaultColumns   = 80
+	liveIndentWidth  = 2
 )
 
 // RendererConfig configures a LiveRenderer.
@@ -49,6 +50,7 @@ const (
 	// TextStyleMuted renders an informational row in ANSI bright black (grey).
 	TextStyleMuted
 	textStyleWhite
+	textStyleIndentedLive
 )
 
 // StyledText is plain terminal text with a semantic renderer-owned style.
@@ -123,8 +125,10 @@ type LiveRenderer struct {
 	maxInputRows int
 	columnsFn    func() int
 	rows         []string
+	styles       []TextStyle
 	cursorRow    int
 	cursorCol    int
+	renderedCols int
 	plainSeen    map[string]struct{}
 	stream       liveStream
 	committed    bool
@@ -342,7 +346,8 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 
 	contextRows := make([]string, 0, len(frame.Context))
 	for _, item := range frame.Context {
-		contextRows = append(contextRows, r.layoutLines([]string{item})...)
+		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.liveColumns())
+		contextRows = append(contextRows, itemRows...)
 	}
 	if len(contextRows) > remaining {
 		contextRows = contextRows[:remaining]
@@ -352,17 +357,17 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	var activity []string
 	var activityStyles []TextStyle
 	for _, item := range frame.Activity {
-		itemRows := r.layoutLines([]string{item})
+		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.liveColumns())
 		activity = append(activity, itemRows...)
 		activityStyles = append(activityStyles, make([]TextStyle, len(itemRows))...)
 	}
 	for _, item := range frame.StyledActivity {
-		itemRows, itemStyles := r.layoutStyledLines([]StyledText{item})
+		itemRows, itemStyles := r.layoutStyledContentAtColumns([]StyledText{item}, r.liveColumns())
 		activity = append(activity, itemRows...)
 		activityStyles = append(activityStyles, itemStyles...)
 	}
 	if frame.Message != "" || frame.MessagePrefix != "" {
-		messageRows := r.messageRows(frame.MessagePrefix, frame.Message)
+		messageRows := r.messageRowsAtColumns(frame.MessagePrefix, frame.Message, r.liveColumns())
 		activity = append(activity, messageRows...)
 		activityStyles = append(activityStyles, make([]TextStyle, len(messageRows))...)
 	}
@@ -371,10 +376,15 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		activity = activity[start:]
 		activityStyles = activityStyles[start:]
 	}
-	rows := append(streamRows, contextRows...)
-	rows = append(rows, activity...)
+	rows := append(r.indentLiveRows(streamRows), r.indentLiveRows(contextRows)...)
+	rows = append(rows, r.indentLiveRows(activity)...)
 	styles := make([]TextStyle, len(streamRows)+len(contextRows))
 	styles = append(styles, activityStyles...)
+	for i := range styles {
+		if styles[i] == TextStyleDefault {
+			styles[i] = textStyleIndentedLive
+		}
+	}
 	// Permanent transcript blocks and transient output are separate visual
 	// regions. Keep their separator in the live region so it appears immediately
 	// both after a submitted user message and after a response settles.
@@ -756,6 +766,7 @@ func (r *LiveRenderer) Commit(text string) error {
 		return err
 	}
 	r.rows = nil
+	r.styles = nil
 	r.cursorRow = 0
 	r.cursorCol = 0
 	r.committed = true
@@ -777,6 +788,7 @@ func (r *LiveRenderer) Close() error {
 		err = writeAtomic(r.w, output.String())
 		if err == nil {
 			r.rows = nil
+			r.styles = nil
 		}
 	}
 	r.closed = true
@@ -788,15 +800,42 @@ func (r *LiveRenderer) redraw(rows []string, cursorRow, cursorCol int) error {
 }
 
 func (r *LiveRenderer) redrawStyled(rows []string, styles []TextStyle, cursorRow, cursorCol int) error {
+	if r.sameFrame(rows, styles, cursorRow, cursorCol) {
+		return nil
+	}
 	var output strings.Builder
 	r.buildRedrawStyled(&output, rows, styles, cursorRow, cursorCol)
 	if err := writeAtomic(r.w, output.String()); err != nil {
 		return err
 	}
 	r.rows = append(r.rows[:0], rows...)
+	r.styles = append(r.styles[:0], styles...)
 	r.cursorRow = cursorRow
 	r.cursorCol = cursorCol
+	r.renderedCols = r.columns
 	return nil
+}
+
+// sameFrame compares the complete terminal-visible state. Comparing only text
+// would incorrectly suppress cursor moves, style changes, or redraws after a
+// terminal resize.
+func (r *LiveRenderer) sameFrame(rows []string, styles []TextStyle, cursorRow, cursorCol int) bool {
+	if r.renderedCols != r.columns || r.cursorRow != cursorRow || r.cursorCol != cursorCol || len(r.rows) != len(rows) {
+		return false
+	}
+	for i := range rows {
+		if r.rows[i] != rows[i] || r.visibleStyleAt(r.styles, i) != r.visibleStyleAt(styles, i) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *LiveRenderer) visibleStyleAt(styles []TextStyle, index int) TextStyle {
+	if !r.color {
+		return TextStyleDefault
+	}
+	return styleAt(styles, index)
 }
 
 func (r *LiveRenderer) buildRedraw(output *strings.Builder, rows []string, cursorRow, cursorCol int) {
@@ -850,6 +889,7 @@ func (r *LiveRenderer) commitRowsStyled(rows []string, styles []TextStyle) error
 		return err
 	}
 	r.rows = nil
+	r.styles = nil
 	r.cursorRow = 0
 	r.cursorCol = 0
 	return nil
@@ -908,7 +948,7 @@ func (r *LiveRenderer) advanceStream(message StreamMessage, complete bool) ([]st
 	if r.stream.started {
 		prefix = strings.Repeat(" ", displayWidth(r.stream.prefix))
 	}
-	rows, boundaries := layoutStreamingRows(prefix, r.stream.pending, r.columns)
+	rows, boundaries := layoutStreamingRows(prefix, r.stream.pending, r.liveColumns())
 	commitCount := len(rows) - 1
 	if complete {
 		commitCount = len(rows)
@@ -980,25 +1020,47 @@ func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, styles []TextSt
 		output.WriteString(r.decorate(row))
 		output.WriteByte('\n')
 	}
-	oldRows, oldCursorRow, oldCursorCol := r.rows, r.cursorRow, r.cursorCol
+	oldRows, oldStyles, oldCursorRow, oldCursorCol, oldRenderedCols := r.rows, r.styles, r.cursorRow, r.cursorCol, r.renderedCols
 	r.rows, r.cursorRow, r.cursorCol = nil, 0, 0
 	r.buildRedrawStyled(&output, rows, styles, cursorRow, cursorCol)
-	r.rows, r.cursorRow, r.cursorCol = oldRows, oldCursorRow, oldCursorCol
+	r.rows, r.styles, r.cursorRow, r.cursorCol, r.renderedCols = oldRows, oldStyles, oldCursorRow, oldCursorCol, oldRenderedCols
 	if err := writeAtomic(r.w, output.String()); err != nil {
 		return err
 	}
 	r.rows = append(r.rows[:0], rows...)
+	r.styles = append(r.styles[:0], styles...)
 	r.cursorRow = cursorRow
 	r.cursorCol = cursorCol
+	r.renderedCols = r.columns
 	r.streamBlock = true
 	return nil
 }
 
 func (r *LiveRenderer) messageRows(prefix, text string) []string {
+	return r.messageRowsAtColumns(prefix, text, r.columns)
+}
+
+func (r *LiveRenderer) messageRowsAtColumns(prefix, text string, columns int) []string {
 	prefix = Sanitize(prefix)
 	text = prefix + strings.TrimRight(Sanitize(text), "\r\n")
-	rows, _, _ := layoutTextHanging(text, runeCount(text), r.columns, strings.Repeat(" ", displayWidth(prefix)))
+	rows, _, _ := layoutTextHanging(text, runeCount(text), columns, strings.Repeat(" ", displayWidth(prefix)))
 	return rows
+}
+
+func (r *LiveRenderer) liveColumns() int {
+	return max(1, r.columns-liveIndentWidth)
+}
+
+func (r *LiveRenderer) indentLiveRows(rows []string) []string {
+	if len(rows) == 0 {
+		return nil
+	}
+	indent := strings.Repeat(" ", min(liveIndentWidth, max(0, r.columns-1)))
+	indented := make([]string, len(rows))
+	for i, row := range rows {
+		indented[i] = indent + row
+	}
+	return indented
 }
 
 func (r *LiveRenderer) syncColumns() {
@@ -1024,6 +1086,9 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 		return color("90", row)
 	case textStyleWhite:
 		return color("37", row)
+	case textStyleIndentedLive:
+		indent := min(liveIndentWidth, len(row)-len(strings.TrimLeft(row, " ")))
+		return row[:indent] + r.decorateStyled(row[indent:], TextStyleDefault)
 	}
 	switch {
 	case hasSpinnerPrefix(row):
@@ -1116,11 +1181,15 @@ func (r *LiveRenderer) layoutStyledLines(lines []StyledText) ([]string, []TextSt
 }
 
 func (r *LiveRenderer) layoutStyledContent(lines []StyledText) ([]string, []TextStyle) {
+	return r.layoutStyledContentAtColumns(lines, r.columns)
+}
+
+func (r *LiveRenderer) layoutStyledContentAtColumns(lines []StyledText, columns int) ([]string, []TextStyle) {
 	rows := make([]string, 0, len(lines))
 	styles := make([]TextStyle, 0, len(lines))
 	for _, line := range lines {
 		for _, part := range strings.Split(Sanitize(line.Text), "\n") {
-			wrapped := wrapLine(part, r.columns)
+			wrapped := wrapLine(part, columns)
 			rows = append(rows, wrapped...)
 			for range wrapped {
 				styles = append(styles, line.Style)
