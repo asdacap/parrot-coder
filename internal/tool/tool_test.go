@@ -308,3 +308,13 @@ func TestGlobAndGrepDeterministicAndCancellation(t *testing.T) {
 		t.Fatalf("got %v", err)
 	}
 }
+
+func TestGrepDefaultLimits(t *testing.T) {
+	grep := NewGrepTool(GrepConfig{})
+	if grep.Config.MaxFiles != 100000 {
+		t.Fatalf("MaxFiles = %d, want 100000", grep.Config.MaxFiles)
+	}
+	if grep.Config.MaxVisited != 1000000 {
+		t.Fatalf("MaxVisited = %d, want 1000000", grep.Config.MaxVisited)
+	}
+}

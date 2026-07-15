@@ -306,7 +306,7 @@ type GrepTool struct{ Config GrepConfig }
 
 func NewGrepTool(c GrepConfig) *GrepTool {
 	if c.MaxFiles <= 0 {
-		c.MaxFiles = 10000
+		c.MaxFiles = 100000
 	}
 	if c.MaxMatches <= 0 {
 		c.MaxMatches = 1000
@@ -315,7 +315,7 @@ func NewGrepTool(c GrepConfig) *GrepTool {
 		c.MaxLineBytes = 1 << 20
 	}
 	if c.MaxVisited <= 0 {
-		c.MaxVisited = 100000
+		c.MaxVisited = 1000000
 	}
 	if c.Timeout <= 0 {
 		c.Timeout = 5 * time.Second
