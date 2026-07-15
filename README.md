@@ -170,9 +170,18 @@ picker and preserves the draft until a model is selected. Explicit non-TTY
 `parrot chat` retains the same role markers in a deterministic, ANSI-free line
 REPL. `/status` shows the active agent, model, session, and project.
 
-Interactive chat supports `/help`, `/models`, `/usage`, `/model`, `/effort`, `/modes`, `/mode`,
-`/sessions`, `/session`, `/resume`, `/new`, `/compact`, `/connect`, `/thinking`,
+Interactive chat has an equivalent for every top-level CLI action: `/help`,
+`/version`, `/run PROMPT`, `/chat`, `/models`, `/usage`, `/modes`, `/agents`,
+`/session`, `/auth`, and `/serve`. It also supports `/model`, `/effort`,
+`/mode`, `/sessions`, `/resume`, `/new`, `/compact`, `/connect`, `/thinking`,
 `/undo`, `/redo`, `/status`, custom commands, and `/exit`.
+
+The management namespaces mirror their CLI forms: `/session list`, `/session
+show ID`, `/session compact [ID]`, `/session delete ID`, `/auth list`, `/auth
+login PROVIDER [--no-browser]`, and `/auth logout PROVIDER`. Compatible-provider
+slash login reads `PARROT_API_KEY`; secrets are never accepted in slash-command
+text. `/serve` starts the existing local runtime in the background and supports
+`/serve status` and `/serve stop`. Credential changes take effect in a new chat.
 Use `/effort` to pick from the active model's reasoning levels, or pass one
 directly, for example `/effort high`.
 

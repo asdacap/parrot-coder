@@ -285,12 +285,44 @@ func TestChatCompletionCandidatesIncludeBuiltinsAndCustomCommands(t *testing.T) 
 	for _, item := range items {
 		seen[item.Value] = item.Description
 	}
-	for _, name := range []string{"/help", "/models", "/model", "/agents", "/agent", "/sessions", "/session", "/status", "/exit", "/review"} {
+	for _, name := range []string{"/help", "/version", "/run", "/chat", "/models", "/model", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/status", "/exit", "/review"} {
 		if seen[name] == "" {
 			t.Errorf("missing completion %s in %#v", name, items)
 		}
 	}
+	for _, item := range builtinChatCommands {
+		if !isBuiltinSlash(item.Value) {
+			t.Errorf("advertised command %s is not dispatched as a builtin", item.Value)
+		}
+	}
 }
+
+func TestSlashVersionAndAgentModeActionsMatchCLIConcepts(t *testing.T) {
+	api := &agentModeAPI{
+		agents: v1.AgentList{Items: []v1.Agent{{ID: "explore", MaxTurns: 12}}},
+		modes:  v1.ModeList{Items: []v1.Mode{{ID: "build", MaxTurns: 64}}},
+	}
+	var stdout bytes.Buffer
+	shell := &chatShell{ctx: context.Background(), api: api, stdout: &stdout, stderr: io.Discard, build: BuildInfo{Version: "1.2.3", Commit: "abc", Date: "today"}}
+	shell.slash("/version", "")
+	shell.slash("/agents", "")
+	shell.slash("/modes", "")
+	output := stdout.String()
+	for _, want := range []string{"parrot 1.2.3", "commit: abc", "explore", "build"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("slash output missing %q: %q", want, output)
+		}
+	}
+}
+
+type agentModeAPI struct {
+	apiClient
+	agents v1.AgentList
+	modes  v1.ModeList
+}
+
+func (a *agentModeAPI) Agents(context.Context) (v1.AgentList, error) { return a.agents, nil }
+func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error)   { return a.modes, nil }
 
 func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	var output bytes.Buffer

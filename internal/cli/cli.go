@@ -939,10 +939,12 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 	shell := &chatShell{
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
 		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, commands: runtime.Commands,
+		build: a.build, credentials: runtime.Credentials, handler: runtime.Handler,
 		models: models.Items,
 		stdout: plainOut, stderr: stderr, inputTTY: terminal.IsTTY(stdin), outputTTY: terminal.IsTTY(stdout),
 		inputEcho: terminal.InputEchoed(stdin, stdout), columns: terminal.Columns(stdout),
 	}
+	defer shell.close()
 	if inputFile, ok := stdin.(*os.File); ok && terminal.IsTTY(inputFile) && terminal.IsTTY(stdout) && os.Getenv("TERM") != "dumb" {
 		raw, rawErr := enableRawMode(inputFile)
 		if rawErr != nil {
@@ -1041,6 +1043,11 @@ type chatShell struct {
 	projectID   string
 	projectRoot string
 	commands    *customcommand.Registry
+	build       BuildInfo
+	credentials auth.Store
+	handler     http.Handler
+	server      *http.Server
+	listener    net.Listener
 	models      []v1.Model
 	stdout      io.Writer
 	stderr      io.Writer
@@ -1089,7 +1096,14 @@ func (s *chatShell) run(first string) int {
 		if strings.HasPrefix(strings.TrimSpace(line), "/") {
 			trimmed := strings.TrimSpace(line)
 			name, arguments := slashParts(trimmed)
-			if isBuiltinSlash(name) {
+			if name == "/run" {
+				if arguments == "" {
+					s.commitError("run requires a prompt")
+					draft = ""
+					continue
+				}
+				line = arguments
+			} else if isBuiltinSlash(name) {
 				exit, code := s.slash(name, arguments)
 				draft = ""
 				if exit {
@@ -1270,16 +1284,21 @@ func createChatSession(ctx context.Context, api sessionCreator, projectID, title
 
 var builtinChatCommands = []terminal.Candidate{
 	{Value: "/help", Description: "show commands and keybindings"},
+	{Value: "/version", Description: "print build information"},
+	{Value: "/run", Description: "execute a prompt in this chat"},
+	{Value: "/chat", Description: "show interactive chat status"},
 	{Value: "/models", Description: "list available models"},
 	{Value: "/usage", Description: "show ChatGPT subscription usage"},
 	{Value: "/model", Description: "select a model"},
 	{Value: "/effort", Description: "select model reasoning effort"},
 	{Value: "/modes", Description: "list available modes"},
 	{Value: "/mode", Description: "select a mode"},
-	{Value: "/agents", Description: "deprecated alias for /modes"},
+	{Value: "/agents", Description: "list task subagents"},
 	{Value: "/agent", Description: "deprecated alias for /mode"},
 	{Value: "/sessions", Description: "list sessions"},
-	{Value: "/session", Description: "switch sessions"},
+	{Value: "/session", Description: "list, show, switch, compact, or delete sessions"},
+	{Value: "/auth", Description: "list, login, or logout provider credentials"},
+	{Value: "/serve", Description: "start, stop, or inspect the local API server"},
 	{Value: "/resume", Description: "resume an interrupted session"},
 	{Value: "/new", Description: "start a new session"},
 	{Value: "/compact", Description: "compact the current conversation"},
@@ -1311,6 +1330,10 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 			fmt.Fprintf(&text, "%s\t%s\n", item.Value, item.Description)
 		}
 		s.commit(strings.TrimSuffix(text.String(), "\n"))
+	case "/version":
+		s.commit(fmt.Sprintf("parrot %s\ncommit: %s\nbuilt: %s", s.build.Version, s.build.Commit, s.build.Date))
+	case "/chat":
+		s.commitStatus("✓ Interactive chat is already active")
 	case "/models":
 		items, err := s.api.Models(s.ctx)
 		if err != nil {
@@ -1360,14 +1383,26 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		if err := s.selectEffort(argument); err != nil {
 			s.commitError(err.Error())
 		}
-	case "/agents", "/modes":
-		items, err := s.modes()
+	case "/agents":
+		items, err := s.api.Agents(s.ctx)
 		if err != nil {
 			s.commitError(err.Error())
 			break
 		}
 		if len(items.Items) == 0 {
 			s.commit("no agents available")
+		}
+		for _, item := range items.Items {
+			s.commit(fmt.Sprintf("%s\tread_only=%t\tmax_turns=%d", item.ID, item.ReadOnly, item.MaxTurns))
+		}
+	case "/modes":
+		items, err := s.modes()
+		if err != nil {
+			s.commitError(err.Error())
+			break
+		}
+		if len(items.Items) == 0 {
+			s.commit("no modes available")
 		}
 		for _, item := range items.Items {
 			s.commit(fmt.Sprintf("%s\tread_only=%t\tmax_turns=%d", item.ID, item.ReadOnly, item.MaxTurns))
@@ -1412,7 +1447,12 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 			}
 			s.commit(fmt.Sprintf("%s\t%s\t%s\t%s", item.ID, item.Agent, model, item.Title))
 		}
-	case "/session", "/resume":
+	case "/session":
+		if s.sessionAction(argument) {
+			break
+		}
+		fallthrough
+	case "/resume":
 		item, err := s.chooseSession(argument)
 		if err != nil {
 			if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
@@ -1432,6 +1472,10 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 				s.commitError(result.err.Error())
 			}
 		}
+	case "/auth":
+		s.authAction(argument)
+	case "/serve":
+		s.serveAction(argument)
 	case "/new":
 		s.current = v1.Session{}
 		s.commitStatus("✓ New session")
@@ -1479,7 +1523,15 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		}
 		s.commitStatus("✓ Thinking: " + state)
 	case "/compact":
-		if s.current.ID == "" {
+		id := s.current.ID
+		if argument != "" {
+			if strings.ContainsAny(argument, " \t\r\n") {
+				s.commitError("usage: /compact [ID]")
+				break
+			}
+			id = argument
+		}
+		if id == "" {
 			s.commitError("no active session")
 			break
 		}
@@ -1490,7 +1542,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 			s.commitError("connected server does not support compaction")
 			break
 		}
-		result, err := compactor.Compact(s.ctx, s.current.ID)
+		result, err := compactor.Compact(s.ctx, id)
 		if err != nil {
 			s.commitError(err.Error())
 		} else {
@@ -1534,6 +1586,253 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		s.commitError(fmt.Sprintf("unknown slash command %q", command))
 	}
 	return false, exitOK
+}
+
+// sessionAction implements the management forms of the CLI session command.
+// It returns false for the legacy `/session [ID]` switch form.
+func (s *chatShell) sessionAction(argument string) bool {
+	fields := strings.Fields(argument)
+	if len(fields) == 0 {
+		return false
+	}
+	switch fields[0] {
+	case "list":
+		if len(fields) != 1 {
+			s.commitError("usage: /session list")
+			return true
+		}
+		s.slash("/sessions", "")
+	case "show":
+		if len(fields) != 2 {
+			s.commitError("usage: /session show ID")
+			return true
+		}
+		item, err := s.api.Session(s.ctx, fields[1])
+		if err != nil {
+			s.commitError(err.Error())
+			return true
+		}
+		messages, err := s.api.Messages(s.ctx, fields[1])
+		if err != nil {
+			s.commitError(err.Error())
+			return true
+		}
+		data, err := json.MarshalIndent(struct {
+			Session  v1.Session   `json:"session"`
+			Messages []v1.Message `json:"messages"`
+		}{item, messages.Items}, "", "  ")
+		if err != nil {
+			s.commitError(err.Error())
+		} else {
+			s.commit(string(data))
+		}
+	case "compact":
+		if len(fields) > 2 {
+			s.commitError("usage: /session compact [ID]")
+			return true
+		}
+		id := s.current.ID
+		if len(fields) == 2 {
+			id = fields[1]
+		}
+		if id == "" {
+			s.commitError("no active session")
+			return true
+		}
+		compactor, ok := s.api.(interface {
+			Compact(context.Context, string) (v1.Compaction, error)
+		})
+		if !ok {
+			s.commitError("connected server does not support compaction")
+			return true
+		}
+		result, err := compactor.Compact(s.ctx, id)
+		if err != nil {
+			s.commitError(err.Error())
+		} else {
+			s.commitStatus("✓ Compaction: " + result.Status)
+		}
+	case "delete":
+		if len(fields) != 2 {
+			s.commitError("usage: /session delete ID")
+			return true
+		}
+		if err := s.api.DeleteSession(s.ctx, fields[1]); err != nil {
+			s.commitError(err.Error())
+			return true
+		}
+		if s.current.ID == fields[1] {
+			s.current = v1.Session{}
+		}
+		s.commitStatus("✓ Session deleted: " + fields[1])
+	default:
+		return false
+	}
+	return true
+}
+
+func (s *chatShell) authAction(argument string) {
+	fields := strings.Fields(argument)
+	if s.credentials == nil {
+		s.commitError("local credential store is unavailable")
+		return
+	}
+	if len(fields) == 0 {
+		s.commitError("usage: /auth list|login PROVIDER [--no-browser]|logout PROVIDER")
+		return
+	}
+	switch fields[0] {
+	case "list":
+		if len(fields) != 1 {
+			s.commitError("usage: /auth list")
+			return
+		}
+		names, err := s.credentials.List(s.ctx)
+		if err != nil {
+			s.commitError(err.Error())
+			return
+		}
+		if len(names) == 0 {
+			s.commit("no credentials stored")
+			return
+		}
+		for _, name := range names {
+			value, err := s.credentials.Get(s.ctx, name)
+			if err != nil {
+				s.commitError(err.Error())
+				return
+			}
+			s.commit(fmt.Sprintf("%s\t%s", name, value.Type))
+		}
+	case "logout":
+		if len(fields) != 2 {
+			s.commitError("usage: /auth logout PROVIDER")
+			return
+		}
+		if err := s.credentials.Delete(s.ctx, credentialName(fields[1])); err != nil {
+			s.commitError(err.Error())
+			return
+		}
+		s.commitStatus("✓ Credential removed; restart chat to reload providers")
+	case "login":
+		if len(fields) < 2 || len(fields) > 3 {
+			s.commitError("usage: /auth login PROVIDER [--no-browser]")
+			return
+		}
+		name := fields[1]
+		if name != "openai" && name != "chatgpt" {
+			if len(fields) != 2 {
+				s.commitError("--no-browser is only valid for OpenAI")
+				return
+			}
+			key := os.Getenv("PARROT_API_KEY")
+			if key == "" {
+				s.commitError("compatible provider login requires PARROT_API_KEY; secrets are not accepted in slash-command text")
+				return
+			}
+			if err := s.credentials.Put(s.ctx, name, auth.NewAPIKeyCredential(key)); err != nil {
+				s.commitError(err.Error())
+				return
+			}
+			s.commitStatus("✓ API key stored; restart chat to reload providers")
+			return
+		}
+		noBrowser := len(fields) == 3 && fields[2] == "--no-browser"
+		if len(fields) == 3 && !noBrowser {
+			s.commitError("usage: /auth login openai [--no-browser]")
+			return
+		}
+		openAI := &auth.OpenAI{OpenBrowser: terminal.OpenBrowser}
+		var credential auth.OAuthCredential
+		var err error
+		if noBrowser {
+			device, startErr := openAI.StartDeviceAuthorization(s.ctx)
+			if startErr != nil {
+				err = startErr
+			} else {
+				s.commit(fmt.Sprintf("Open %s and enter code %s", device.VerificationURL, device.UserCode.Value()))
+				credential, err = openAI.AwaitDeviceAuthorization(s.ctx, device)
+			}
+		} else {
+			credential, err = openAI.BrowserLogin(s.ctx)
+		}
+		if err != nil {
+			s.commitError(err.Error())
+			return
+		}
+		if err := s.credentials.Put(s.ctx, "chatgpt", auth.NewOAuthCredential(credential)); err != nil {
+			s.commitError(err.Error())
+			return
+		}
+		s.commitStatus("✓ OpenAI OAuth credential stored; restart chat to reload providers")
+	default:
+		s.commitError("usage: /auth list|login PROVIDER [--no-browser]|logout PROVIDER")
+	}
+}
+
+func (s *chatShell) serveAction(argument string) {
+	fields := strings.Fields(argument)
+	if len(fields) == 1 && fields[0] == "status" {
+		if s.listener == nil {
+			s.commit("API server: stopped")
+		} else {
+			s.commit("API server: http://" + s.listener.Addr().String())
+		}
+		return
+	}
+	if len(fields) == 1 && fields[0] == "stop" {
+		if s.server == nil {
+			s.commit("API server is not running")
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := s.server.Shutdown(ctx); err != nil {
+			s.commitError(err.Error())
+			return
+		}
+		s.server, s.listener = nil, nil
+		s.commitStatus("✓ API server stopped")
+		return
+	}
+	if s.server != nil {
+		s.commitError("API server is already running")
+		return
+	}
+	if s.handler == nil {
+		s.commitError("local API handler is unavailable")
+		return
+	}
+	fs := newFlagSet("serve", io.Discard)
+	host := fs.String("host", "127.0.0.1", "listen host")
+	port := fs.Int("port", 4096, "listen port")
+	if err := fs.Parse(fields); err != nil || fs.NArg() != 0 || *port < 1 || *port > 65535 {
+		s.commitError("usage: /serve [--host 127.0.0.1] [--port 4096]|status|stop")
+		return
+	}
+	if !loopbackHost(*host) {
+		s.commitError("refusing unauthenticated non-loopback binding")
+		return
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort(*host, strconv.Itoa(*port)))
+	if err != nil {
+		s.commitError(err.Error())
+		return
+	}
+	server := &http.Server{Handler: s.handler, ReadHeaderTimeout: 10 * time.Second}
+	s.listener, s.server = listener, server
+	go func() { _ = server.Serve(listener) }()
+	s.commitStatus("✓ Listening on http://" + listener.Addr().String())
+}
+
+func (s *chatShell) close() {
+	if s.server == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_ = s.server.Shutdown(ctx)
+	s.server, s.listener = nil, nil
 }
 
 func (s *chatShell) selectModel(argument string) error {
@@ -1792,7 +2091,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/models", "/usage", "/model", "/effort", "/agents", "/agent", "/sessions", "/session", "/resume", "/new", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
+	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
 		return true
 	default:
 		return false

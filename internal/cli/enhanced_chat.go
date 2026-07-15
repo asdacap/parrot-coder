@@ -1229,42 +1229,50 @@ func (r *enhancedChatRuntime) handleInput(value string) enhancedInputOutcome {
 	}
 	if strings.HasPrefix(trimmed, "/") {
 		name, arguments := slashParts(trimmed)
-		if isBuiltinSlash(name) {
+		if name == "/run" {
+			if arguments == "" {
+				r.commitError("run requires a prompt")
+				_ = r.ensureInputBorder()
+				return enhancedInputOutcome{}
+			}
+			value = arguments
+		} else if isBuiltinSlash(name) {
 			return r.handleBuiltin(name, arguments)
-		}
-		expansion, err := r.shell.commands.Expand(strings.TrimPrefix(name, "/"), arguments)
-		if err != nil {
-			r.commitError(fmt.Sprintf("unknown slash command %q: %v", name, err))
-			_ = r.ensureInputBorder()
-			return enhancedInputOutcome{}
-		}
-		if r.busy && !expansion.Subtask && (expansion.Agent != "" || expansion.Model != "") {
-			r.commitError("custom command changes model or agent while the session is active")
-			_ = r.ensureInputBorder()
-			return enhancedInputOutcome{}
-		}
-		if !r.busy && !expansion.Subtask {
-			if expansion.Agent != "" {
-				if err := r.shell.selectAgent(expansion.Agent); err != nil {
-					r.commitError(err.Error())
-					_ = r.ensureInputBorder()
-					return enhancedInputOutcome{}
-				}
-				r.borderCommitted = false
-			}
-			if expansion.Model != "" {
-				if err := r.shell.selectModel(expansion.Model); err != nil {
-					r.commitError(err.Error())
-					_ = r.ensureInputBorder()
-					return enhancedInputOutcome{}
-				}
-				r.borderCommitted = false
-			}
-		}
-		if expansion.Subtask {
-			value = subtaskPrompt(expansion)
 		} else {
-			value = expansion.Prompt
+			expansion, err := r.shell.commands.Expand(strings.TrimPrefix(name, "/"), arguments)
+			if err != nil {
+				r.commitError(fmt.Sprintf("unknown slash command %q: %v", name, err))
+				_ = r.ensureInputBorder()
+				return enhancedInputOutcome{}
+			}
+			if r.busy && !expansion.Subtask && (expansion.Agent != "" || expansion.Model != "") {
+				r.commitError("custom command changes model or agent while the session is active")
+				_ = r.ensureInputBorder()
+				return enhancedInputOutcome{}
+			}
+			if !r.busy && !expansion.Subtask {
+				if expansion.Agent != "" {
+					if err := r.shell.selectAgent(expansion.Agent); err != nil {
+						r.commitError(err.Error())
+						_ = r.ensureInputBorder()
+						return enhancedInputOutcome{}
+					}
+					r.borderCommitted = false
+				}
+				if expansion.Model != "" {
+					if err := r.shell.selectModel(expansion.Model); err != nil {
+						r.commitError(err.Error())
+						_ = r.ensureInputBorder()
+						return enhancedInputOutcome{}
+					}
+					r.borderCommitted = false
+				}
+			}
+			if expansion.Subtask {
+				value = subtaskPrompt(expansion)
+			} else {
+				value = expansion.Prompt
+			}
 		}
 	}
 	if err := r.submitPrompt(value); err != nil {
@@ -1332,7 +1340,7 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 
 func safeBusySlash(name string) bool {
 	switch name {
-	case "/help", "/models", "/usage", "/agents", "/sessions", "/status", "/thinking", "/exit":
+	case "/help", "/version", "/chat", "/models", "/usage", "/modes", "/agents", "/sessions", "/status", "/thinking", "/exit":
 		return true
 	default:
 		return false
