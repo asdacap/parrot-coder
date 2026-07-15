@@ -14,7 +14,6 @@ const (
 	defaultLiveRows  = 10
 	defaultInputRows = 12
 	defaultColumns   = 80
-	liveIndentWidth  = 2
 )
 
 // RendererConfig configures a LiveRenderer.
@@ -50,7 +49,6 @@ const (
 	// TextStyleMuted renders an informational row in ANSI bright black (grey).
 	TextStyleMuted
 	textStyleWhite
-	textStyleIndentedLive
 )
 
 // StyledText is plain terminal text with a semantic renderer-owned style.
@@ -346,7 +344,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 
 	contextRows := make([]string, 0, len(frame.Context))
 	for _, item := range frame.Context {
-		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.liveColumns())
+		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.columns)
 		contextRows = append(contextRows, itemRows...)
 	}
 	if len(contextRows) > remaining {
@@ -357,17 +355,17 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	var activity []string
 	var activityStyles []TextStyle
 	for _, item := range frame.Activity {
-		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.liveColumns())
+		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.columns)
 		activity = append(activity, itemRows...)
 		activityStyles = append(activityStyles, make([]TextStyle, len(itemRows))...)
 	}
 	for _, item := range frame.StyledActivity {
-		itemRows, itemStyles := r.layoutStyledContentAtColumns([]StyledText{item}, r.liveColumns())
+		itemRows, itemStyles := r.layoutStyledContentAtColumns([]StyledText{item}, r.columns)
 		activity = append(activity, itemRows...)
 		activityStyles = append(activityStyles, itemStyles...)
 	}
 	if frame.Message != "" || frame.MessagePrefix != "" {
-		messageRows := r.messageRowsAtColumns(frame.MessagePrefix, frame.Message, r.liveColumns())
+		messageRows := r.messageRowsAtColumns(frame.MessagePrefix, frame.Message, r.columns)
 		activity = append(activity, messageRows...)
 		activityStyles = append(activityStyles, make([]TextStyle, len(messageRows))...)
 	}
@@ -376,15 +374,10 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		activity = activity[start:]
 		activityStyles = activityStyles[start:]
 	}
-	rows := append(r.indentLiveRows(streamRows), r.indentLiveRows(contextRows)...)
-	rows = append(rows, r.indentLiveRows(activity)...)
+	rows := append(streamRows, contextRows...)
+	rows = append(rows, activity...)
 	styles := make([]TextStyle, len(streamRows)+len(contextRows))
 	styles = append(styles, activityStyles...)
-	for i := range styles {
-		if styles[i] == TextStyleDefault {
-			styles[i] = textStyleIndentedLive
-		}
-	}
 	// Permanent transcript blocks and transient output are separate visual
 	// regions. Keep their separator in the live region so it appears immediately
 	// both after a submitted user message and after a response settles. A new
@@ -951,7 +944,7 @@ func (r *LiveRenderer) advanceStream(message StreamMessage, complete bool) ([]st
 	if r.stream.started {
 		prefix = strings.Repeat(" ", displayWidth(r.stream.prefix))
 	}
-	rows, boundaries := layoutStreamingRows(prefix, r.stream.pending, r.liveColumns())
+	rows, boundaries := layoutStreamingRows(prefix, r.stream.pending, r.columns)
 	commitCount := len(rows) - 1
 	if complete {
 		commitCount = len(rows)
@@ -1050,22 +1043,6 @@ func (r *LiveRenderer) messageRowsAtColumns(prefix, text string, columns int) []
 	return rows
 }
 
-func (r *LiveRenderer) liveColumns() int {
-	return max(1, r.columns-liveIndentWidth)
-}
-
-func (r *LiveRenderer) indentLiveRows(rows []string) []string {
-	if len(rows) == 0 {
-		return nil
-	}
-	indent := strings.Repeat(" ", min(liveIndentWidth, max(0, r.columns-1)))
-	indented := make([]string, len(rows))
-	for i, row := range rows {
-		indented[i] = indent + row
-	}
-	return indented
-}
-
 func (r *LiveRenderer) syncColumns() {
 	if r.columnsFn == nil {
 		return
@@ -1089,9 +1066,6 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 		return color("90", row)
 	case textStyleWhite:
 		return color("37", row)
-	case textStyleIndentedLive:
-		indent := min(liveIndentWidth, len(row)-len(strings.TrimLeft(row, " ")))
-		return row[:indent] + r.decorateStyled(row[indent:], TextStyleDefault)
 	}
 	switch {
 	case hasSpinnerPrefix(row):
