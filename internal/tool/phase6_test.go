@@ -207,6 +207,23 @@ func TestRegisterPhase6Definitions(t *testing.T) {
 	}
 }
 
+func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
+	_, ws, changes, _, _ := phase6Harness(t)
+	tool := NewApplyPatchTool(changes, nil)
+	schema := string(tool.JSONSchema())
+	if !strings.Contains(schema, `"required":["patchText"]`) || strings.Contains(schema, `"required":["patch"]`) {
+		t.Fatalf("apply_patch schema is not OpenCode-compatible: %s", schema)
+	}
+	raw := json.RawMessage(`{"patchText":"*** Begin Patch\n*** Add File: file\n+content\n*** End Patch"}`)
+	planned, err := tool.Plan(context.Background(), raw, CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Permissions) != 1 {
+		t.Fatalf("plan = %#v", planned)
+	}
+}
+
 func TestTodoToolSchemaUsesOpenCodeEnums(t *testing.T) {
 	schema := string(NewTodoWriteTool(nil).JSONSchema())
 	for _, expected := range []string{`"enum":["pending","in_progress","completed","cancelled"]`, `"enum":["high","medium","low"]`} {

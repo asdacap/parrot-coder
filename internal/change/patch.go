@@ -28,6 +28,7 @@ type PatchLine struct {
 
 type PatchHunk struct {
 	Lines     []PatchLine
+	Context   string
 	EndOfFile bool
 }
 
@@ -68,18 +69,13 @@ func ParsePatch(text string) (Patch, error) {
 		switch kind {
 		case PatchAdd:
 			var data strings.Builder
-			count := 0
 			for i < len(lines)-1 && !isOperationHeader(lines[i]) {
 				if !strings.HasPrefix(lines[i], "+") {
 					return Patch{}, fmt.Errorf("%w at line %d: add lines must start with +", ErrInvalidPatch, i+1)
 				}
 				data.WriteString(lines[i][1:])
 				data.WriteByte('\n')
-				count++
 				i++
-			}
-			if count == 0 {
-				return Patch{}, fmt.Errorf("%w: add operation has no content", ErrInvalidPatch)
 			}
 			op.Data = data.String()
 		case PatchDelete:
@@ -98,8 +94,9 @@ func ParsePatch(text string) (Patch, error) {
 				if !strings.HasPrefix(lines[i], "@@") {
 					return Patch{}, fmt.Errorf("%w at line %d: expected hunk header", ErrInvalidPatch, i+1)
 				}
+				context := strings.TrimSpace(strings.TrimPrefix(lines[i], "@@"))
 				i++
-				hunk := PatchHunk{}
+				hunk := PatchHunk{Context: context}
 				for i < len(lines)-1 && !isOperationHeader(lines[i]) && !strings.HasPrefix(lines[i], "@@") {
 					line := lines[i]
 					if line == "*** End of File" {
@@ -113,7 +110,7 @@ func ParsePatch(text string) (Patch, error) {
 					hunk.Lines = append(hunk.Lines, PatchLine{line[0], line[1:]})
 					i++
 				}
-				if len(hunk.Lines) == 0 {
+				if len(hunk.Lines) == 0 && hunk.Context == "" {
 					return Patch{}, fmt.Errorf("%w: empty update hunk", ErrInvalidPatch)
 				}
 				op.Hunks = append(op.Hunks, hunk)
@@ -192,6 +189,7 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 		return Plan{}, errors.New("change: workspace is required")
 	}
 	var mutations []Mutation
+	var directories []string
 	var diff strings.Builder
 	for _, operation := range patch.Operations {
 		if err := ctx.Err(); err != nil {
@@ -208,9 +206,11 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return Plan{}, err
 			}
-			if err := requireExistingParent(path); err != nil {
+			parents, err := missingParentDirectories(path)
+			if err != nil {
 				return Plan{}, err
 			}
+			directories = append(directories, parents...)
 			if int64(len(operation.Data)) > s.config.MaxFileBytes {
 				return Plan{}, errors.New("change: file byte limit exceeded")
 			}
@@ -258,9 +258,11 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 			} else if !errors.Is(err, os.ErrNotExist) {
 				return Plan{}, err
 			}
-			if err := requireExistingParent(destination); err != nil {
+			parents, err := missingParentDirectories(destination)
+			if err != nil {
 				return Plan{}, err
 			}
+			directories = append(directories, parents...)
 			sourceAfter := absentState(path)
 			destinationBefore := absentState(destination)
 			destinationAfter := regularState(destination, data, before.Mode)
@@ -272,49 +274,166 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 		}
 	}
 	sort.Slice(mutations, func(i, j int) bool { return mutations[i].Path < mutations[j].Path })
-	return Plan{Mutations: mutations, Diff: diff.String()}, nil
+	directories = uniquePaths(directories)
+	return Plan{Mutations: mutations, Directories: directories, Diff: diff.String()}, nil
 }
 
 func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
-	result := append([]byte(nil), data...)
+	bom := []byte(nil)
+	if bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
+		bom = []byte{0xef, 0xbb, 0xbf}
+		data = data[len(bom):]
+	}
+	lineEnding := "\n"
+	if bytes.Contains(data, []byte("\r\n")) && !bytes.Contains(bytes.ReplaceAll(data, []byte("\r\n"), nil), []byte("\n")) {
+		lineEnding = "\r\n"
+	}
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
+	lines := strings.Split(text, "\n")
+	if len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	type replacement struct {
+		start int
+		old   int
+		lines []string
+	}
+	var replacements []replacement
+	lineIndex := 0
 	for _, hunk := range hunks {
-		var old, replacement strings.Builder
+		if hunk.Context != "" {
+			contextIndex := seekPatchSequence(lines, []string{hunk.Context}, lineIndex, false)
+			if contextIndex < 0 {
+				return nil, fmt.Errorf("%w: failed to find hunk context %q", ErrConflict, hunk.Context)
+			}
+			lineIndex = contextIndex + 1
+		}
+		var oldLines, newLines []string
 		for _, line := range hunk.Lines {
 			if line.Kind != '+' {
-				old.WriteString(line.Text)
-				old.WriteByte('\n')
+				oldLines = append(oldLines, line.Text)
 			}
 			if line.Kind != '-' {
-				replacement.WriteString(line.Text)
-				replacement.WriteByte('\n')
+				newLines = append(newLines, line.Text)
 			}
 		}
-		oldText, replacementText := normalizeEditNewlines(result, old.String(), replacement.String())
-		needle, value := []byte(oldText), []byte(replacementText)
-		count := bytes.Count(result, needle)
-		if (count == 0 || hunk.EndOfFile && !bytes.HasSuffix(result, needle)) && len(needle) > 0 && needle[len(needle)-1] == '\n' {
-			lineEnding := []byte("\n")
-			if bytes.HasSuffix(needle, []byte("\r\n")) {
-				lineEnding = []byte("\r\n")
-			}
-			trimmedNeedle := bytes.TrimSuffix(needle, lineEnding)
-			trimmedValue := bytes.TrimSuffix(value, lineEnding)
-			trimmedCount := bytes.Count(result, trimmedNeedle)
-			if bytes.HasSuffix(result, trimmedNeedle) && (hunk.EndOfFile || trimmedCount == 1) {
-				needle, value, count = trimmedNeedle, trimmedValue, trimmedCount
-			}
-		}
-		if hunk.EndOfFile {
-			if len(needle) == 0 || !bytes.HasSuffix(result, needle) {
-				return nil, fmt.Errorf("%w: hunk does not match end of file", ErrConflict)
-			}
-			result = append(append([]byte(nil), result[:len(result)-len(needle)]...), value...)
+		if len(oldLines) == 0 {
+			replacements = append(replacements, replacement{start: len(lines), lines: newLines})
 			continue
 		}
-		if len(needle) == 0 || count != 1 {
-			return nil, fmt.Errorf("%w: hunk preimage found %d times", ErrConflict, count)
+		found := seekPatchSequence(lines, oldLines, lineIndex, hunk.EndOfFile)
+		if found < 0 {
+			return nil, fmt.Errorf("%w: failed to find expected hunk lines", ErrConflict)
 		}
-		result = bytes.Replace(result, needle, value, 1)
+		replacements = append(replacements, replacement{start: found, old: len(oldLines), lines: newLines})
+		lineIndex = found + len(oldLines)
 	}
-	return result, nil
+	sort.SliceStable(replacements, func(i, j int) bool {
+		return replacements[i].start < replacements[j].start
+	})
+	result := append([]string(nil), lines...)
+	for i := len(replacements) - 1; i >= 0; i-- {
+		replacement := replacements[i]
+		tail := append([]string(nil), result[replacement.start+replacement.old:]...)
+		result = append(result[:replacement.start], replacement.lines...)
+		result = append(result, tail...)
+	}
+	var output string
+	if len(result) > 0 {
+		output = strings.Join(result, lineEnding) + lineEnding
+	}
+	return append(bom, []byte(output)...), nil
+}
+
+func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) int {
+	if len(pattern) == 0 || start < 0 || start > len(lines) {
+		return -1
+	}
+	comparators := []func(string, string) bool{
+		func(a, b string) bool { return a == b },
+		func(a, b string) bool {
+			return strings.TrimRightFunc(a, isPatchSpace) == strings.TrimRightFunc(b, isPatchSpace)
+		},
+		func(a, b string) bool { return strings.TrimSpace(a) == strings.TrimSpace(b) },
+		func(a, b string) bool {
+			return normalizePatchUnicode(strings.TrimSpace(a)) == normalizePatchUnicode(strings.TrimSpace(b))
+		},
+	}
+	for _, equal := range comparators {
+		if endOfFile {
+			candidate := len(lines) - len(pattern)
+			if candidate >= start && patchSequenceEqual(lines[candidate:], pattern, equal) {
+				return candidate
+			}
+		}
+		for i := start; i <= len(lines)-len(pattern); i++ {
+			if patchSequenceEqual(lines[i:], pattern, equal) {
+				return i
+			}
+		}
+	}
+	return -1
+}
+
+func patchSequenceEqual(lines, pattern []string, equal func(string, string) bool) bool {
+	if len(lines) < len(pattern) {
+		return false
+	}
+	for i := range pattern {
+		if !equal(lines[i], pattern[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isPatchSpace(r rune) bool { return r == ' ' || r == '\t' || r == '\r' || r == '\n' }
+
+func normalizePatchUnicode(value string) string {
+	replacer := strings.NewReplacer(
+		"‘", "'", "’", "'", "‚", "'", "‛", "'",
+		"“", "\"", "”", "\"", "„", "\"", "‟", "\"",
+		"‐", "-", "‑", "-", "‒", "-", "–", "-", "—", "-", "―", "-",
+		"…", "...", "\u00a0", " ",
+	)
+	return replacer.Replace(value)
+}
+
+func missingParentDirectories(path string) ([]string, error) {
+	var reversed []string
+	for parent := filepath.Dir(path); ; parent = filepath.Dir(parent) {
+		info, err := os.Stat(parent)
+		if err == nil {
+			if !info.IsDir() {
+				return nil, errors.New("change: destination parent is not a directory")
+			}
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, err
+		}
+		reversed = append(reversed, parent)
+		next := filepath.Dir(parent)
+		if next == parent {
+			return nil, errors.New("change: destination has no existing parent")
+		}
+	}
+	directories := make([]string, len(reversed))
+	for i := range reversed {
+		directories[len(reversed)-1-i] = reversed[i]
+	}
+	return directories, nil
+}
+
+func uniquePaths(paths []string) []string {
+	seen := make(map[string]struct{}, len(paths))
+	result := make([]string, 0, len(paths))
+	for _, path := range paths {
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		result = append(result, path)
+	}
+	return result
 }

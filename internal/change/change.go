@@ -70,8 +70,9 @@ type Mutation struct {
 }
 
 type Plan struct {
-	Mutations []Mutation
-	Diff      string
+	Mutations   []Mutation
+	Directories []string
+	Diff        string
 }
 
 func (p Plan) Before() []FileState {
@@ -125,7 +126,7 @@ func (s *Service) PlanEdit(ctx context.Context, ws *workspace.Workspace, edit Ed
 		before := absentState(path)
 		after := regularState(path, data, 0o600)
 		mutation := Mutation{edit.Path, path, before, after}
-		return Plan{[]Mutation{mutation}, unifiedDiff(ws.Root(), before, after)}, nil
+		return Plan{Mutations: []Mutation{mutation}, Diff: unifiedDiff(ws.Root(), before, after)}, nil
 	}
 
 	path, err := ws.ResolveRead(edit.Path)
@@ -160,7 +161,7 @@ func (s *Service) PlanEdit(ctx context.Context, ws *workspace.Workspace, edit Ed
 	}
 	after := regularState(path, data, before.Mode)
 	mutation := Mutation{edit.Path, path, before, after}
-	return Plan{[]Mutation{mutation}, unifiedDiff(ws.Root(), before, after)}, nil
+	return Plan{Mutations: []Mutation{mutation}, Diff: unifiedDiff(ws.Root(), before, after)}, nil
 }
 
 func normalizeEditNewlines(data []byte, old, replacement string) (string, string) {
@@ -248,9 +249,9 @@ func sameState(a, b FileState) bool {
 	return a.Path == b.Path && a.Exists == b.Exists && (!a.Exists || a.Mode == b.Mode && a.SymlinkTarget == b.SymlinkTarget && a.SHA256 == b.SHA256)
 }
 
-// Commit revalidates all paths and preimages, stages every regular output in
-// its destination directory, then applies mutations in path order. Any failure
-// triggers a reverse rollback to the complete preimage.
+// Commit revalidates all paths and preimages, creates planned parent
+// directories, stages every regular output, then applies mutations in path
+// order. Any failure removes created directories and restores the preimage.
 func (s *Service) Commit(ctx context.Context, ws *workspace.Workspace, plan Plan) error {
 	if ws == nil || len(plan.Mutations) == 0 {
 		return errors.New("change: non-empty plan and workspace are required")
@@ -270,20 +271,50 @@ func (s *Service) Commit(ctx context.Context, ws *workspace.Workspace, plan Plan
 			return errors.New("change: multiple operations resolve to the same canonical path")
 		}
 	}
+	directories := append([]string(nil), plan.Directories...)
+	sort.Slice(directories, func(i, j int) bool {
+		return pathDepth(directories[i]) < pathDepth(directories[j])
+	})
+	for _, directory := range directories {
+		relative, err := filepath.Rel(ws.Root(), directory)
+		if err != nil {
+			return ErrStale
+		}
+		resolved, err := ws.ResolveCreate(relative)
+		if err != nil || resolved != directory {
+			return ErrStale
+		}
+		if _, err := os.Lstat(directory); !errors.Is(err, os.ErrNotExist) {
+			return ErrStale
+		}
+	}
+	createdDirectories := make([]string, 0, len(directories))
+	for _, directory := range directories {
+		if err := os.Mkdir(directory, 0o700); err != nil {
+			return errors.Join(err, removeDirectories(createdDirectories))
+		}
+		createdDirectories = append(createdDirectories, directory)
+	}
 
 	temps := make(map[string]string)
-	defer func() {
-		for _, path := range temps {
-			_ = os.Remove(path)
+	discardTemps := func() error {
+		var result error
+		for mutationPath, tempPath := range temps {
+			if err := os.Remove(tempPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				result = errors.Join(result, err)
+			}
+			delete(temps, mutationPath)
 		}
-	}()
+		return result
+	}
+	defer func() { _ = discardTemps() }()
 	for _, mutation := range mutations {
 		if !mutation.After.Exists || mutation.After.SymlinkTarget != "" {
 			continue
 		}
 		temp, err := stageFile(mutation.Path, mutation.After.Data, mutation.After.Mode)
 		if err != nil {
-			return err
+			return errors.Join(err, discardTemps(), removeDirectories(createdDirectories))
 		}
 		temps[mutation.Path] = temp
 	}
@@ -291,21 +322,21 @@ func (s *Service) Commit(ctx context.Context, ws *workspace.Workspace, plan Plan
 	applied := make([]Mutation, 0, len(mutations))
 	for i, mutation := range mutations {
 		if err := ctx.Err(); err != nil {
-			return errors.Join(err, s.rollback(applied))
+			return errors.Join(err, s.rollback(applied), discardTemps(), removeDirectories(createdDirectories))
 		}
 		if err := applyState(mutation.After, temps[mutation.Path]); err != nil {
-			return errors.Join(err, s.rollback(applied))
+			return errors.Join(err, s.rollback(applied), discardTemps(), removeDirectories(createdDirectories))
 		}
 		delete(temps, mutation.Path)
 		applied = append(applied, mutation)
 		if s.config.InjectFailure != nil {
 			if err := s.config.InjectFailure(i+1, mutation.Path); err != nil {
-				return errors.Join(err, s.rollback(applied))
+				return errors.Join(err, s.rollback(applied), discardTemps(), removeDirectories(createdDirectories))
 			}
 		}
 	}
 	if err := syncDirectories(mutations); err != nil {
-		return errors.Join(err, s.rollback(applied))
+		return errors.Join(err, s.rollback(applied), discardTemps(), removeDirectories(createdDirectories))
 	}
 	return nil
 }
@@ -322,7 +353,28 @@ func (s *Service) Rollback(ctx context.Context, ws *workspace.Workspace, plan Pl
 			After:         mutation.Before.clone(),
 		}
 	}
-	return s.Commit(ctx, ws, reverse)
+	if err := s.Commit(ctx, ws, reverse); err != nil {
+		return err
+	}
+	return removeDirectories(plan.Directories)
+}
+
+func pathDepth(path string) int {
+	return strings.Count(filepath.Clean(path), string(filepath.Separator))
+}
+
+func removeDirectories(directories []string) error {
+	ordered := append([]string(nil), directories...)
+	sort.Slice(ordered, func(i, j int) bool {
+		return pathDepth(ordered[i]) > pathDepth(ordered[j])
+	})
+	var result error
+	for _, directory := range ordered {
+		if err := os.Remove(directory); err != nil && !errors.Is(err, os.ErrNotExist) {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
 }
 
 func (s *Service) revalidate(ws *workspace.Workspace, mutation Mutation) error {

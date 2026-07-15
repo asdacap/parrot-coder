@@ -75,10 +75,10 @@ func NewApplyPatchTool(changes *change.Service, snapshots *snapshot.Service) *Ap
 
 func (*ApplyPatchTool) ID() string { return "apply_patch" }
 func (*ApplyPatchTool) Description() string {
-	return "Apply a strict OpenCode Begin Patch containing reviewed add, update, delete, or move operations."
+	return "Apply an OpenCode Begin Patch containing reviewed add, update, delete, or move operations."
 }
 func (*ApplyPatchTool) JSONSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string","description":"The full patch text that describes all changes to be made"}},"required":["patchText"],"additionalProperties":false}`)
 }
 
 func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
@@ -90,12 +90,12 @@ func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call Cal
 		return Plan{}, errors.New("apply_patch: change service and workspace are required")
 	}
 	var input struct {
-		Patch string `json:"patch"`
+		PatchText string `json:"patchText"`
 	}
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	planned, err := service.PlanPatch(ctx, call.Workspace, input.Patch)
+	planned, err := service.PlanPatch(ctx, call.Workspace, input.PatchText)
 	if err != nil {
 		return Plan{}, err
 	}
