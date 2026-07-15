@@ -614,6 +614,28 @@ func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	}
 }
 
+func TestEnhancedUntitledThinkingMovesToModeline(t *testing.T) {
+	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
+	runtime.startAssistantActivity("assistant")
+	started := runtime.activity[0].started
+
+	if rows := runtime.activityRows(started, 100); len(rows) != 0 {
+		t.Fatalf("untitled thinking remained in activity rows: %#v", rows)
+	}
+	if got := runtime.modelineThinking(started); got != "⠋ Thinking… · 0.0s" {
+		t.Fatalf("modeline thinking = %q", got)
+	}
+
+	runtime.startReasoningActivity("assistant", "", "Inspecting the implementation", true)
+	if got := runtime.modelineThinking(started); got != "" {
+		t.Fatalf("titled thought remained in modeline: %q", got)
+	}
+	rows := runtime.activityRows(started, 100)
+	if len(rows) != 1 || !strings.Contains(rows[0], "Thought: Inspecting the implementation") {
+		t.Fatalf("titled thought was not kept in activity rows: %#v", rows)
+	}
+}
+
 func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
 	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")

@@ -418,7 +418,7 @@ func TestLiveRendererSpacesWorkingActivityFromUserMessageImmediately(t *testing.
 		t.Fatal(err)
 	}
 	if err := renderer.Frame(LiveFrame{
-		Activity: []string{"Thought: Working…"}, Status: "working",
+		Activity: []string{"Thought: Working…"}, InputCenter: "⠋ Thinking…",
 		InputLeft: "mode: build", InputRight: "local/test",
 		Prompt: PromptState{Prefix: "$ "}, ShowDivider: true,
 	}); err != nil {
@@ -432,22 +432,21 @@ func TestLiveRendererSpacesWorkingActivityFromUserMessageImmediately(t *testing.
 	}
 }
 
-func TestLiveRendererCompositeFrameShowsStatusInModeline(t *testing.T) {
+func TestLiveRendererCompositeFrameShowsTransientContentInModeline(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: 6})
 	err := renderer.Frame(LiveFrame{
-		InputLeft: "mode: build", Status: "tool running", InputRight: "local/test",
+		InputLeft: "mode: build", InputCenter: "⠋ Thinking…", InputRight: "local/test",
 		Prompt: PromptState{Prefix: "$ "}, ShowDivider: true,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(renderer.rows, "\n")
-	if got := renderer.rows[0]; !strings.HasPrefix(got, "─ mode: build ─ status: tool running ") || !strings.HasSuffix(got, " local/test ") {
-		t.Fatalf("status is not in modeline: %#v", renderer.rows)
+	if got := renderer.rows[0]; !strings.HasPrefix(got, "─ mode: build ─ ⠋ Thinking… ") || !strings.HasSuffix(got, " local/test ") {
+		t.Fatalf("transient content is not in modeline: %#v", renderer.rows)
 	}
-	if strings.Contains(joined, "\nstatus: tool running\n") {
-		t.Fatalf("status was also rendered as an activity row: %#v", renderer.rows)
+	if strings.Contains(renderer.rows[0], "status:") {
+		t.Fatalf("modeline retained the obsolete status label: %#v", renderer.rows)
 	}
 }
 

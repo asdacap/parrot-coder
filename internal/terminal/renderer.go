@@ -74,15 +74,17 @@ type LiveFrame struct {
 	PromptContext  []string
 	Activity       []string
 	StyledActivity []StyledText
-	Status         string
 	InputLeft      string
-	InputRight     string
-	Pending        []string
-	Prompt         PromptState
-	Busy           bool
-	Spinner        string
-	ShowDivider    bool
-	Stream         *StreamMessage
+	// InputCenter is transient modeline content between the persistent left and
+	// right labels. It is presented as-is rather than as a generic status.
+	InputCenter string
+	InputRight  string
+	Pending     []string
+	Prompt      PromptState
+	Busy        bool
+	Spinner     string
+	ShowDivider bool
+	Stream      *StreamMessage
 }
 
 // StreamMessage is the cumulative text of one in-progress assistant message.
@@ -320,13 +322,13 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 
 	inputRows := make([]string, 0, dividerRows+barRows+len(pendingRows)+len(promptContextRows)+len(promptRows))
 	if frame.ShowDivider {
-		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
+		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.InputCenter, frame.InputRight, r.columns))
 	}
 	if barRows > 0 {
 		// The labels are the modeline, not a separate status row. Keep its thin
 		// rule even when the transcript boundary was already committed (notably
 		// immediately after an assistant response).
-		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.Status, frame.InputRight, r.columns))
+		inputRows = append(inputRows, dividerStatusBar(frame.InputLeft, frame.InputCenter, frame.InputRight, r.columns))
 	}
 	inputRows = append(inputRows, pendingRows...)
 	inputRows = append(inputRows, promptContextRows...)
@@ -554,7 +556,7 @@ func statusBar(left, right string, columns int) string {
 	return left + " " + right
 }
 
-func dividerStatusBar(left, status, right string, columns int) string {
+func dividerStatusBar(left, center, right string, columns int) string {
 	width := max(1, columns-1)
 	if width < 3 {
 		return strings.Repeat("─", width)
@@ -563,8 +565,8 @@ func dividerStatusBar(left, status, right string, columns int) string {
 	if left = Sanitize(left); left != "" {
 		values = append(values, left)
 	}
-	if status = Sanitize(status); status != "" {
-		values = append(values, "status: "+status)
+	if center = Sanitize(center); center != "" {
+		values = append(values, center)
 	}
 	right = Sanitize(right)
 	if len(values) == 0 && right == "" {
@@ -583,7 +585,7 @@ func dividerStatusBar(left, status, right string, columns int) string {
 	}
 
 	// The model label belongs to the right edge of the modeline, independently
-	// of the mode and status labels grouped at the left edge.
+	// of the mode and transient center content grouped at the left edge.
 	rightPart := " " + right + " "
 	if displayWidth(rightPart) >= width {
 		return "─" + truncateWidth(rightPart, width-1)

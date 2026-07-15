@@ -444,6 +444,7 @@ func (s *chatShell) enhancedRenderError(err error) int {
 }
 
 func (r *enhancedChatRuntime) render() error {
+	now := time.Now()
 	pending := make([]string, len(r.pending))
 	for i, item := range r.pending {
 		pending[i] = item.content
@@ -471,10 +472,10 @@ func (r *enhancedChatRuntime) render() error {
 		busy = false
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
-		Stream: stream, PromptContext: r.modalContext(), StyledActivity: r.styledActivityRows(time.Now(), r.shell.renderer.Columns()), Status: r.status, Pending: pending,
-		InputLeft: r.inputModeLabel(), InputRight: r.shell.modelineModelLabel(r.contextTokens),
+		Stream: stream, PromptContext: r.modalContext(), StyledActivity: r.styledActivityRows(now, r.shell.renderer.Columns()), Pending: pending,
+		InputLeft: r.inputModeLabel(), InputCenter: r.modelineThinking(now), InputRight: r.shell.modelineModelLabel(r.contextTokens),
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
-		ShowDivider: r.modal != nil || message != "" || r.status != "" || len(r.activity) > 0 || !r.borderCommitted,
+		ShowDivider: r.modal != nil || message != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})
 }
 
@@ -498,12 +499,19 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 	if len(r.activity) == 0 {
 		return nil
 	}
-	rows := make([]terminal.StyledText, 0, len(r.activity))
-	start := 0
-	if len(r.activity) > 4 {
-		start = len(r.activity) - 4
+	visible := make([]enhancedActivityItem, 0, len(r.activity))
+	for _, item := range r.activity {
+		if isModelineThinkingActivity(item) {
+			continue
+		}
+		visible = append(visible, item)
 	}
-	for _, item := range r.activity[start:] {
+	rows := make([]terminal.StyledText, 0, len(visible))
+	start := 0
+	if len(visible) > 4 {
+		start = len(visible) - 4
+	}
+	for _, item := range visible[start:] {
 		line := formatActivity(item, now)
 		if item.reasoning && item.status == "thinking" {
 			line = formatReasoningActivity(item, now, columns)
@@ -511,6 +519,34 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 		rows = append(rows, terminal.StyledText{Text: line, Style: item.style})
 	}
 	return rows
+}
+
+// modelineThinking moves the one untitled thinking placeholder out of the
+// activity list. Provider-supplied reasoning summaries still have titles and
+// remain as ordinary Thought rows above the modeline.
+func (r *enhancedChatRuntime) modelineThinking(now time.Time) string {
+	for i := len(r.activity) - 1; i >= 0; i-- {
+		if isModelineThinkingActivity(r.activity[i]) {
+			return formatModelineThinking(r.activity[i], now)
+		}
+	}
+	return ""
+}
+
+func formatModelineThinking(item enhancedActivityItem, now time.Time) string {
+	elapsed := now.Sub(item.started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
+	return fmt.Sprintf("%s Thinking…%s · %.1fs", spinnerFrames[frame], formatActivityUsage(item), elapsed.Seconds())
+}
+
+func isModelineThinkingActivity(item enhancedActivityItem) bool {
+	// The initial assistant placeholder is the only thinking item that has not
+	// been identified as reasoning. Raw reasoning and titled summaries retain
+	// their existing activity-row behavior.
+	return item.status == "thinking" && !item.terminal && !item.reasoning
 }
 
 func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns int) string {
