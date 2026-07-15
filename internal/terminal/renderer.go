@@ -387,9 +387,12 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	}
 	// Permanent transcript blocks and transient output are separate visual
 	// regions. Keep their separator in the live region so it appears immediately
-	// both after a submitted user message and after a response settles.
+	// both after a submitted user message and after a response settles. A new
+	// assistant stream is itself a block, so it also needs this gap after compact
+	// output such as a committed reasoning summary, before its first row is old
+	// enough to be promoted to scrollback.
 	blockGap := 0
-	if r.committed && r.lastCommit == commitBlock && !r.streamBlock && len(promoted) == 0 {
+	if r.committed && !r.streamBlock && len(promoted) == 0 && (r.lastCommit == commitBlock || len(streamRows) > 0) {
 		rows = append([]string{""}, rows...)
 		styles = append([]TextStyle{TextStyleDefault}, styles...)
 		blockGap = 1

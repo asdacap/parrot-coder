@@ -675,14 +675,22 @@ func TestLiveRendererSpacesBlockAndCompactCommits(t *testing.T) {
 func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 10, MaxRows: 6})
-	if err := renderer.Commit("tool"); err != nil {
+	if err := renderer.CommitStyled(MutedText("✓ summary")); err != nil {
 		t.Fatal(err)
 	}
-	frame := LiveFrame{Stream: &StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop"}, Prompt: PromptState{Prefix: "$ "}}
+	frame := LiveFrame{Stream: &StreamMessage{ID: "answer", Prefix: "- ", Text: "abc"}, Prompt: PromptState{Prefix: "$ "}}
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	if len(renderer.rows) < 2 || renderer.rows[0] != "" || renderer.rows[1] != "  - abc" {
+		t.Fatalf("live stream is not spaced from compact summary: %#v", renderer.rows)
+	}
+	frame.Stream.Text = "abcdefghijklmnop"
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
 	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(output.String(), "")
+	plain = strings.ReplaceAll(plain, "\r", "")
 	if got := strings.Count(plain, "\n\n- abcdef\n  ghijkl\n"); got != 1 {
 		t.Fatalf("stream block separator count = %d; output=%q", got, output.String())
 	}
