@@ -2028,7 +2028,7 @@ func toolActivityLabel(name string, input map[string]any) string {
 	case "read_output":
 		add(firstString(input, "id"))
 	case "apply_patch":
-		details = append(details, patchActivityTargets(firstString(input, "patch"))...)
+		details = append(details, patchActivityTargets(firstString(input, "patchText", "patch"))...)
 	case "shell":
 		add(firstString(input, "command"))
 	case "todowrite", "todo_write":

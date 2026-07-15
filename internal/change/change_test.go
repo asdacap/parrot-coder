@@ -141,7 +141,7 @@ func TestPatchAllOperationsAndStrictRejections(t *testing.T) {
 	}
 }
 
-func TestPatchEndOfFileAnchorsDuplicateAndPreservesNoFinalNewline(t *testing.T) {
+func TestPatchEndOfFileAnchorsDuplicateAndNormalizesFinalNewline(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
 	data := []byte("same\r\nsame")
@@ -154,8 +154,133 @@ func TestPatchEndOfFileAnchorsDuplicateAndPreservesNoFinalNewline(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := string(plan.Mutations[0].After.Data); got != "same\r\nlast" {
+	if got := string(plan.Mutations[0].After.Data); got != "same\r\nlast\r\n" {
 		t.Fatalf("after = %q", got)
+	}
+}
+
+func TestPatchOpenCodeUpdateSemantics(t *testing.T) {
+	ctx := context.Background()
+	ws := testWorkspace(t)
+	service := NewService(Config{})
+	tests := []struct {
+		name   string
+		before []byte
+		patch  string
+		want   []byte
+	}{
+		{
+			name:   "pure addition to empty file",
+			before: nil,
+			patch:  "@@\n+First line",
+			want:   []byte("First line\n"),
+		},
+		{
+			name:   "multiple chunks seek forward",
+			before: []byte("same\nfirst\nsame\nsecond\n"),
+			patch:  "@@\n same\n-first\n+FIRST\n@@\n same\n-second\n+SECOND",
+			want:   []byte("same\nFIRST\nsame\nSECOND\n"),
+		},
+		{
+			name:   "hunk header context",
+			before: []byte("before\nfunc greet():\n    old()\nafter\n"),
+			patch:  "@@ func greet():\n-    old()\n+    new()",
+			want:   []byte("before\nfunc greet():\n    new()\nafter\n"),
+		},
+		{
+			name:   "trailing whitespace fallback",
+			before: []byte("value   \n"),
+			patch:  "@@\n-value\n+changed",
+			want:   []byte("changed\n"),
+		},
+		{
+			name:   "preserve BOM and CRLF",
+			before: append([]byte{0xef, 0xbb, 0xbf}, []byte("old\r\n")...),
+			patch:  "@@\n-old\n+new",
+			want:   append([]byte{0xef, 0xbb, 0xbf}, []byte("new\r\n")...),
+		},
+		{
+			name:   "sort pure addition before earlier replacement",
+			before: []byte("one\ntwo\nthree\n"),
+			patch:  "@@\n+last\n@@\n-one\n-two\n-three\n+first",
+			want:   []byte("first\nlast\n"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(ws.Root(), strings.ReplaceAll(tc.name, " ", "_"))
+			if err := os.WriteFile(path, tc.before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			input := "*** Begin Patch\n*** Update File: " + filepath.Base(path) + "\n" + tc.patch + "\n*** End Patch"
+			plan, err := service.PlanPatch(ctx, ws, input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := plan.Mutations[0].After.Data; !bytes.Equal(got, tc.want) {
+				t.Fatalf("after = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPatchAllowsEmptyAddedFile(t *testing.T) {
+	ws := testWorkspace(t)
+	service := NewService(Config{})
+	plan, err := service.PlanPatch(context.Background(), ws, "*** Begin Patch\n*** Add File: empty\n*** End Patch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Mutations) != 1 || len(plan.Mutations[0].After.Data) != 0 {
+		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPatchCreatesAndRollsBackMissingParentDirectories(t *testing.T) {
+	ctx := context.Background()
+	ws := testWorkspace(t)
+	service := NewService(Config{})
+	patch := "*** Begin Patch\n*** Add File: deep/nested/file.txt\n+content\n*** End Patch"
+	plan, err := service.PlanPatch(ctx, ws, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Directories) != 2 {
+		t.Fatalf("directories = %#v", plan.Directories)
+	}
+	if err := service.Commit(ctx, ws, plan); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(ws.Root(), "deep", "nested", "file.txt"))
+	if err != nil || string(data) != "content\n" {
+		t.Fatalf("nested file = %q, %v", data, err)
+	}
+	if err := service.Rollback(ctx, ws, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(ws.Root(), "deep")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("created directories survived rollback: %v", err)
+	}
+}
+
+func TestPatchCommitFailureRemovesCreatedParentDirectories(t *testing.T) {
+	ctx := context.Background()
+	ws := testWorkspace(t)
+	planner := NewService(Config{})
+	patch := "*** Begin Patch\n" +
+		"*** Add File: deep/nested/a.txt\n+first\n" +
+		"*** Add File: deep/nested/b.txt\n+second\n" +
+		"*** End Patch"
+	plan, err := planner.PlanPatch(ctx, ws, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	failing := NewService(Config{InjectFailure: func(int, string) error { return errors.New("injected") }})
+	if err := failing.Commit(ctx, ws, plan); err == nil {
+		t.Fatal("injected failure succeeded")
+	}
+	if _, err := os.Lstat(filepath.Join(ws.Root(), "deep")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("created directories survived failed commit: %v", err)
 	}
 }
 
