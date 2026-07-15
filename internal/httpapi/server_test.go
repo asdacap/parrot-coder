@@ -552,6 +552,70 @@ func TestSSEWritesReadyLiveEventsBeforeDurableCompletion(t *testing.T) {
 	}
 }
 
+func TestSSEDefersNextAssistantDeltaUntilPriorAssistantCompletes(t *testing.T) {
+	durable := make(chan v1.Event, 2)
+	live := make(chan v1.Event, 2)
+	backend := &stubBackend{stream: &EventStream{
+		Replay: []v1.Event{{
+			ID: "evt_first_started", Type: "session.assistant.started", SessionID: "ses_test",
+			Data: json.RawMessage(`{"message_id":"msg_first"}`),
+		}},
+		Durable: durable,
+		Live:    live,
+		Close:   func() {},
+	}}
+	server := httptest.NewServer(New(backend, Config{HeartbeatInterval: time.Second}))
+	defer server.Close()
+
+	response, err := http.Get(server.URL + "/api/v1/sessions/ses_test/events")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	reader := bufio.NewReader(response.Body)
+	if _, err := readSSEBlock(reader); err != nil { // server.connected
+		t.Fatal(err)
+	}
+	if replay, err := readSSEBlock(reader); err != nil || !strings.Contains(replay, "id: evt_first_started\n") {
+		t.Fatalf("assistant-start replay = %q, %v", replay, err)
+	}
+
+	// Establish the first live renderer stream before making both queues ready.
+	live <- v1.Event{
+		ID: "evt_first_delta", Type: v1.EventMessagePartDelta, SessionID: "ses_test",
+		Data: json.RawMessage(`{"message_id":"msg_first","kind":"text","delta":"first"}`),
+	}
+	if delta, err := readSSEBlock(reader); err != nil || !strings.Contains(delta, "id: evt_first_delta\n") {
+		t.Fatalf("first assistant delta = %q, %v", delta, err)
+	}
+
+	// Live and durable events are deliberately ready together. Regardless of
+	// which select case wins, the next assistant's delta must remain behind the
+	// prior completion and its own durable start event.
+	live <- v1.Event{
+		ID: "evt_second_delta", Type: v1.EventMessagePartDelta, SessionID: "ses_test",
+		Data: json.RawMessage(`{"message_id":"msg_second","kind":"text","delta":"second"}`),
+	}
+	durable <- v1.Event{
+		ID: "evt_first_complete", Type: "session.assistant.complete", SessionID: "ses_test",
+		Data: json.RawMessage(`{"message_id":"msg_first"}`),
+	}
+	durable <- v1.Event{
+		ID: "evt_second_started", Type: "session.assistant.started", SessionID: "ses_test",
+		Data: json.RawMessage(`{"message_id":"msg_second"}`),
+	}
+
+	for i, want := range []string{"evt_first_complete", "evt_second_started", "evt_second_delta"} {
+		block, err := readSSEBlock(reader)
+		if err != nil {
+			t.Fatalf("event %d: %v", i, err)
+		}
+		if !strings.Contains(block, "id: "+want+"\n") {
+			t.Fatalf("event %d = %q; want %s", i, block, want)
+		}
+	}
+}
+
 func TestClientParityNetworkAndInProcess(t *testing.T) {
 	for _, transport := range []string{"network", "inproc"} {
 		t.Run(transport, func(t *testing.T) {

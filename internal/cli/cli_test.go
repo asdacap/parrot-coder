@@ -1316,6 +1316,51 @@ func TestEnhancedErrorStopsSpinnerAndLateDeltaIsIgnored(t *testing.T) {
 	}
 }
 
+func TestEnhancedNextAssistantDeltaSettlesPriorRendererStream(t *testing.T) {
+	var output bytes.Buffer
+	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{
+		{ID: "first", Role: "assistant", Content: "first answer", Status: "complete"},
+		{ID: "second", Role: "assistant", Status: "active"},
+	}}}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{
+			ctx:      context.Background(),
+			api:      api,
+			current:  v1.Session{ID: "session"},
+			renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80}),
+		},
+		state:         state,
+		busy:          true,
+		knownMessages: map[string]bool{},
+	}
+
+	first, _ := json.Marshal(v1.MessagePartDelta{MessageID: "first", Kind: "text", Delta: "first"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: first}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.render(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Disposable events use a separate queue from durable lifecycle events. A
+	// delta for the next tool-turn assistant can therefore arrive before the
+	// prior assistant-complete event, while the renderer still owns its stream.
+	second, _ := json.Marshal(v1.MessagePartDelta{MessageID: "second", Kind: "text", Delta: "second"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: second}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.render(); err != nil {
+		t.Fatalf("next assistant raced the prior renderer stream: %v", err)
+	}
+	if !runtime.knownMessages["first"] || runtime.streamMessageID != "second" || runtime.streamed.String() != "second" {
+		t.Fatalf("stream handoff = known %#v, id %q, text %q", runtime.knownMessages, runtime.streamMessageID, runtime.streamed.String())
+	}
+}
+
 func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{

@@ -441,7 +441,11 @@ func (s *chatShell) enhancedRenderError(err error) int {
 	// preserve its last live frame and write the failure directly to stderr.
 	// chatCommand deliberately skips live-buffer cleanup for this error exit.
 	fmt.Fprintln(s.stderr, "parrot: enhanced chat render failed:", terminal.Sanitize(err.Error()))
-	return exitWithReason(s.ctx, exitError, "enhanced_render_failed", err)
+	reason := "enhanced_render_failed"
+	if class := terminal.RenderErrorClass(err); class != "" {
+		reason += "_" + class
+	}
+	return exitWithReason(s.ctx, exitError, reason, err)
 }
 
 func (r *enhancedChatRuntime) render() error {
@@ -1738,10 +1742,8 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		if delta.MessageID != "" && r.knownMessages[delta.MessageID] {
 			return r.settleIdle()
 		}
-		if delta.MessageID != "" && delta.MessageID != r.streamMessageID {
-			r.streamed.Reset()
-			r.resetReasoning()
-			r.streamMessageID = delta.MessageID
+		if err := r.beginAssistantMessage(delta.MessageID); err != nil {
+			return err
 		}
 		if delta.Kind == "text" {
 			if delta.Delta != "" && r.streamed.Len() == 0 {
@@ -1870,10 +1872,8 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		if err := json.Unmarshal(item.Data, &payload); err != nil {
 			return err
 		}
-		if payload.MessageID != "" && payload.MessageID != r.streamMessageID {
-			r.streamed.Reset()
-			r.resetReasoning()
-			r.streamMessageID = payload.MessageID
+		if err := r.beginAssistantMessage(payload.MessageID); err != nil {
+			return err
 		}
 		r.startAssistantActivity(payload.MessageID)
 		r.status = "working"
@@ -2383,7 +2383,11 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 	if err != nil {
 		return err
 	}
+	currentStreamSettled := r.streamMessageID == ""
 	for _, item := range messages.Items {
+		if item.ID == r.streamMessageID {
+			currentStreamSettled = item.Status != "active"
+		}
 		if item.Role != "assistant" || item.Status == "active" || r.knownMessages[item.ID] || messageID != "" && item.ID != messageID {
 			continue
 		}
@@ -2411,7 +2415,7 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		}
 		r.knownMessages[item.ID] = true
 	}
-	if messageID == "" || messageID == r.streamMessageID {
+	if currentStreamSettled && (messageID == "" || messageID == r.streamMessageID) {
 		r.streamed.Reset()
 		r.resetReasoning()
 		r.streamMessageID = ""
@@ -2420,5 +2424,30 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		return err
 	}
 	r.status = ""
+	return nil
+}
+
+// beginAssistantMessage synchronizes the CLI's cumulative buffer with the
+// renderer before accepting a different message ID. Durable lifecycle events
+// and disposable provider deltas travel through separate queues, so a newer
+// delta can be observed while the prior renderer stream is still open. The
+// repository is authoritative at this boundary: settle the prior assistant
+// from its stored final message instead of discarding the local prefix.
+func (r *enhancedChatRuntime) beginAssistantMessage(messageID string) error {
+	if messageID == "" || messageID == r.streamMessageID {
+		return nil
+	}
+	if r.streamMessageID != "" {
+		previousID := r.streamMessageID
+		if err := r.commitCompletedAssistants(previousID); err != nil {
+			return err
+		}
+		if r.streamMessageID == previousID {
+			return errors.New("enhanced chat: previous assistant message is still active")
+		}
+	}
+	r.streamed.Reset()
+	r.resetReasoning()
+	r.streamMessageID = messageID
 	return nil
 }

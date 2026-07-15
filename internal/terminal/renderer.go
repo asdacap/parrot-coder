@@ -16,6 +16,34 @@ const (
 	defaultColumns   = 80
 )
 
+var (
+	errRendererClosed        = errors.New("terminal: renderer is closed")
+	errStreamMessageIDEmpty  = errors.New("terminal: stream message ID is empty")
+	errStreamMessageConflict = errors.New("terminal: another assistant message is still streaming")
+	errStreamPrefixChanged   = errors.New("terminal: stream message prefix changed")
+	errStreamTextChanged     = errors.New("terminal: streamed assistant text changed")
+)
+
+// RenderErrorClass returns a content-free classification for renderer-owned
+// invariant errors. Writer errors are deliberately left unclassified because
+// their concrete type is already recorded by the CLI diagnostics layer.
+func RenderErrorClass(err error) string {
+	switch {
+	case errors.Is(err, errRendererClosed):
+		return "renderer_closed"
+	case errors.Is(err, errStreamMessageIDEmpty):
+		return "stream_message_id_empty"
+	case errors.Is(err, errStreamMessageConflict):
+		return "stream_message_conflict"
+	case errors.Is(err, errStreamPrefixChanged):
+		return "stream_prefix_changed"
+	case errors.Is(err, errStreamTextChanged):
+		return "stream_text_changed"
+	default:
+		return ""
+	}
+}
+
 // RendererConfig configures a LiveRenderer.
 type RendererConfig struct {
 	TTY     bool
@@ -218,7 +246,7 @@ func (r *LiveRenderer) Update(lines []string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	rows := r.layoutLines(lines)
@@ -234,7 +262,7 @@ func (r *LiveRenderer) UpdateStyled(lines []StyledText) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	rows, styles := r.layoutStyledLines(lines)
@@ -250,7 +278,7 @@ func (r *LiveRenderer) Prompt(state PromptState) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 
@@ -268,7 +296,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	streamBefore := cloneLiveStream(r.stream)
@@ -426,7 +454,7 @@ func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	before := cloneLiveStream(r.stream)
@@ -627,7 +655,7 @@ func (r *LiveRenderer) UpdateMessage(prefix, text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	rows := r.messageRows(prefix, text)
@@ -647,7 +675,7 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	rows := r.messageRows(prefix, text)
@@ -663,7 +691,7 @@ func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	rows := []string{strings.Repeat("─", max(1, r.columns-1))}
@@ -678,7 +706,7 @@ func (r *LiveRenderer) CommitBlock(text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	clean := strings.TrimRight(Sanitize(text), "\r\n")
@@ -694,7 +722,7 @@ func (r *LiveRenderer) CommitStyled(text StyledText) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	rows, styles := r.layoutStyledContent([]StyledText{text})
@@ -706,7 +734,7 @@ func (r *LiveRenderer) CommitStyledBlock(text StyledText) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	rows, styles := r.layoutStyledContent([]StyledText{text})
@@ -718,7 +746,7 @@ func (r *LiveRenderer) CommitDivider() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	return r.commitRowsStyled([]string{strings.Repeat("─", max(1, r.columns-1))}, []TextStyle{textStyleWhite})
@@ -739,7 +767,7 @@ func (r *LiveRenderer) Commit(text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return errors.New("terminal: renderer is closed")
+		return errRendererClosed
 	}
 	r.syncColumns()
 	clean := Sanitize(text)
@@ -927,17 +955,17 @@ func (r *LiveRenderer) advanceStream(message StreamMessage, complete bool) ([]st
 	message.Prefix = Sanitize(message.Prefix)
 	clean := Sanitize(message.Text)
 	if message.ID == "" {
-		return nil, nil, errors.New("terminal: stream message ID is empty")
+		return nil, nil, errStreamMessageIDEmpty
 	}
 	if r.stream.id == "" {
 		r.stream = liveStream{id: message.ID, prefix: message.Prefix}
 	} else if r.stream.id != message.ID {
-		return nil, nil, errors.New("terminal: another assistant message is still streaming")
+		return nil, nil, errStreamMessageConflict
 	} else if r.stream.prefix != message.Prefix {
-		return nil, nil, errors.New("terminal: stream message prefix changed")
+		return nil, nil, errStreamPrefixChanged
 	}
 	if !strings.HasPrefix(clean, r.stream.text) {
-		return nil, nil, errors.New("terminal: streamed assistant text changed")
+		return nil, nil, errStreamTextChanged
 	}
 	r.stream.pending = append(r.stream.pending, []rune(clean[len(r.stream.text):])...)
 	r.stream.text = clean

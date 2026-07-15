@@ -427,6 +427,60 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	activeAssistant, lifecycleKnown := replayAssistantState(stream.Replay)
+	var deferredLive []v1.Event
+	writeLive := func(item v1.Event) error {
+		return writeSSE(w, flusher, item)
+	}
+	deferOrWriteLive := func(item v1.Event) error {
+		messageID := liveEventMessageID(item)
+		if messageID == "" || messageID == activeAssistant {
+			return writeLive(item)
+		}
+		if activeAssistant == "" && !lifecycleKnown {
+			// A client may resume after session.assistant.started. Adopt the first
+			// scoped live event until a durable lifecycle event catches up.
+			activeAssistant = messageID
+			lifecycleKnown = true
+			return writeLive(item)
+		}
+		deferredLive = append(deferredLive, item)
+		return nil
+	}
+	flushDeferred := func() error {
+		for i := 0; i < len(deferredLive); {
+			if liveEventMessageID(deferredLive[i]) != activeAssistant {
+				i++
+				continue
+			}
+			item := deferredLive[i]
+			deferredLive = append(deferredLive[:i], deferredLive[i+1:]...)
+			if err := writeLive(item); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	drainLiveFor := func(messageID string) error {
+		for {
+			select {
+			case item, ok := <-stream.Live:
+				if !ok {
+					return io.EOF
+				}
+				itemMessageID := liveEventMessageID(item)
+				if itemMessageID == "" || itemMessageID == messageID {
+					if err := writeLive(item); err != nil {
+						return err
+					}
+				} else {
+					deferredLive = append(deferredLive, item)
+				}
+			default:
+				return nil
+			}
+		}
+	}
 	heartbeat := time.NewTicker(s.config.HeartbeatInterval)
 	defer heartbeat.Stop()
 	for {
@@ -435,29 +489,35 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			// Live deltas are published before the durable event they lead to, but
-			// both sources reach this multiplexer through buffered channels. Drain
-			// ready live events before writing a durable completion so select does
-			// not invert their causal order.
-			for {
-				select {
-				case liveItem, liveOK := <-stream.Live:
-					if !liveOK || writeSSE(w, flusher, liveItem) != nil {
-						return
-					}
-				default:
-					goto liveDrained
+			// Live deltas are published before the durable completion they lead
+			// to. Drain only that assistant's ready events: blindly draining the
+			// shared queue can pull the next tool-turn assistant ahead of this
+			// completion and make the terminal switch streams prematurely.
+			if settledID := settledAssistantID(item); settledID != "" {
+				if err := drainLiveFor(settledID); err != nil {
+					return
 				}
 			}
-		liveDrained:
 			if writeSSE(w, flusher, item) != nil {
 				return
+			}
+			if messageID := startedAssistantID(item); messageID != "" {
+				activeAssistant = messageID
+				lifecycleKnown = true
+				if err := flushDeferred(); err != nil {
+					return
+				}
+			} else if messageID := settledAssistantID(item); messageID != "" {
+				if activeAssistant == messageID {
+					activeAssistant = ""
+				}
+				lifecycleKnown = true
 			}
 		case item, ok := <-stream.Live:
 			if !ok {
 				return
 			}
-			if writeSSE(w, flusher, item) != nil {
+			if deferOrWriteLive(item) != nil {
 				return
 			}
 		case <-heartbeat.C:
@@ -469,6 +529,57 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+}
+
+func replayAssistantState(events []v1.Event) (string, bool) {
+	active := ""
+	known := false
+	for _, item := range events {
+		if messageID := startedAssistantID(item); messageID != "" {
+			active, known = messageID, true
+		} else if messageID := settledAssistantID(item); messageID != "" {
+			if active == messageID {
+				active = ""
+			}
+			known = true
+		}
+	}
+	return active, known
+}
+
+func startedAssistantID(item v1.Event) string {
+	if item.Type != "session.assistant.started" {
+		return ""
+	}
+	return eventMessageID(item)
+}
+
+func settledAssistantID(item v1.Event) string {
+	switch item.Type {
+	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
+		return eventMessageID(item)
+	default:
+		return ""
+	}
+}
+
+func liveEventMessageID(item v1.Event) string {
+	switch item.Type {
+	case v1.EventMessagePartDelta, v1.EventSessionStatus:
+		return eventMessageID(item)
+	default:
+		return ""
+	}
+}
+
+func eventMessageID(item v1.Event) string {
+	var payload struct {
+		MessageID string `json:"message_id"`
+	}
+	if json.Unmarshal(item.Data, &payload) != nil {
+		return ""
+	}
+	return payload.MessageID
 }
 
 func writeSSE(w io.Writer, flusher http.Flusher, event v1.Event) error {
