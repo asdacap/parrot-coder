@@ -43,6 +43,17 @@ func (*ReadTool) ID() string { return "read" }
 func (*ReadTool) Description() string {
 	return "Read a bounded line range from a workspace file or list a directory."
 }
+func (*ReadTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input readInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	description := fmt.Sprintf("Read %q", input.Path)
+	if input.Offset > 0 || input.Limit > 0 {
+		description += fmt.Sprintf(" (offset %d, limit %d)", input.Offset, input.Limit)
+	}
+	return description, nil
+}
 func (*ReadTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"],"additionalProperties":false}`)
 }
@@ -195,6 +206,13 @@ func (*GlobTool) ID() string { return "glob" }
 func (*GlobTool) Description() string {
 	return "Find workspace paths with deterministic glob matching, including **."
 }
+func (*GlobTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input globInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Find workspace paths matching %q", input.Pattern), nil
+}
 func (*GlobTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"}},"required":["pattern"],"additionalProperties":false}`)
 }
@@ -307,6 +325,17 @@ func NewGrepTool(c GrepConfig) *GrepTool {
 func (*GrepTool) ID() string { return "grep" }
 func (*GrepTool) Description() string {
 	return "Search workspace text files with Go RE2 regular expressions."
+}
+func (*GrepTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input grepInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	path := input.Path
+	if path == "" {
+		path = "."
+	}
+	return fmt.Sprintf("Search %q for pattern %q", path, input.Pattern), nil
 }
 func (*GrepTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"],"additionalProperties":false}`)
@@ -463,6 +492,13 @@ func NewReadOutputTool(max int64) *ReadOutputTool {
 func (*ReadOutputTool) ID() string { return "read_output" }
 func (*ReadOutputTool) Description() string {
 	return "Read a bounded byte range from an opaque managed output ID."
+}
+func (*ReadOutputTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input readOutputInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Read %d bytes at offset %d from managed output %q", input.Limit, input.Offset, input.ID), nil
 }
 func (*ReadOutputTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["id","offset","limit"],"additionalProperties":false}`)

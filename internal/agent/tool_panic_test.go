@@ -14,9 +14,10 @@ import (
 // unexpected defect at runtime (for example a bad apply_patch edge case).
 type panicTool struct{ inExecute bool }
 
-func (*panicTool) ID() string                  { return "boom" }
-func (*panicTool) Description() string         { return "panics for testing" }
-func (*panicTool) JSONSchema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (*panicTool) ID() string                                      { return "boom" }
+func (*panicTool) Description() string                             { return "panics for testing" }
+func (*panicTool) DescribeRequest(json.RawMessage) (string, error) { return "Panic", nil }
+func (*panicTool) JSONSchema() json.RawMessage                     { return json.RawMessage(`{"type":"object"}`) }
 
 func (p *panicTool) Plan(context.Context, json.RawMessage, tool.CallContext) (tool.Plan, error) {
 	if !p.inExecute {

@@ -58,6 +58,15 @@ func (t *SkillTool) Description() string {
 	}
 	return "Load the exact body and execution metadata of a discovered skill. Available skills: " + strings.Join(names, "; ")
 }
+func (*SkillTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input struct {
+		Name string `json:"name"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Load skill %q", input.Name), nil
+}
 func (*SkillTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"name":{"type":"string"}},"required":["name"],"additionalProperties":false}`)
 }
@@ -115,6 +124,9 @@ func (t *MCPTool) ID() string { return t.definition.Name }
 func (t *MCPTool) Description() string {
 	return fmt.Sprintf("MCP tool %s/%s. %s", t.definition.Server, t.definition.Tool, t.definition.Description)
 }
+func (t *MCPTool) DescribeRequest(json.RawMessage) (string, error) {
+	return fmt.Sprintf("Call MCP tool %s/%s", t.definition.Server, t.definition.Tool), nil
+}
 func (t *MCPTool) JSONSchema() json.RawMessage { return append(json.RawMessage(nil), t.schema...) }
 func (t *MCPTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
 	canonical, err := permission.CanonicalJSON(raw)
@@ -123,7 +135,7 @@ func (t *MCPTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (P
 	}
 	digest := sha256.Sum256(canonical)
 	hash := hex.EncodeToString(digest[:])
-	review, _ := json.Marshal(map[string]any{"server": t.definition.Server, "tool": t.definition.Tool, "arguments_sha256": hash, "arguments": json.RawMessage(canonical)})
+	review, _ := json.Marshal(map[string]any{"server": t.definition.Server, "tool": t.definition.Tool, "arguments_sha256": hash})
 	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: "mcp", Identifier: t.definition.Server + "/" + t.definition.Tool, Operation: "call", Attributes: map[string]string{"arguments_sha256": hash}}}, review)
 	if err != nil {
 		return Plan{}, err
@@ -172,6 +184,17 @@ func NewWebFetchTool(service *webfetch.Service) *WebFetchTool { return &WebFetch
 func (*WebFetchTool) ID() string                              { return "web_fetch" }
 func (*WebFetchTool) Description() string {
 	return "Fetch bounded HTTP or HTTPS text with GET or HEAD after exact network permission review."
+}
+func (*WebFetchTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input webFetchInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	normalized, err := normalizeFetch(input)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Fetch %s with %s", normalized.URL, normalized.Method), nil
 }
 func (*WebFetchTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"url":{"type":"string"},"method":{"type":"string"}},"required":["url"],"additionalProperties":false}`)
@@ -278,6 +301,17 @@ func NewLSPTools(config LSPToolConfig) []Tool {
 func (t *LSPTool) ID() string { return "lsp_" + t.kind }
 func (t *LSPTool) Description() string {
 	return "Read-only Language Server Protocol " + t.kind + " query within the workspace."
+}
+func (t *LSPTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input lspInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	target := input.Path
+	if target == "" {
+		target = input.Query
+	}
+	return fmt.Sprintf("Run LSP %s query with %q on %q", t.kind, input.Server, target), nil
 }
 func (t *LSPTool) JSONSchema() json.RawMessage {
 	switch t.kind {
@@ -415,6 +449,15 @@ func (*FormatTool) ID() string { return "format" }
 func (*FormatTool) Description() string {
 	return "Run the configured formatter during planning, review its command and exact proposed diff, then commit those bytes without rerunning it."
 }
+func (*FormatTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Format workspace file %q", input.Path), nil
+}
 func (*FormatTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"expected_sha256":{"type":"string"}},"required":["path","expected_sha256"],"additionalProperties":false}`)
 }
@@ -512,6 +555,20 @@ func (t *TaskTool) Description() string {
 		return "Read the status of a child task owned by this session."
 	default:
 		return "Cancel a child task owned by this session."
+	}
+}
+func (t *TaskTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input taskInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	switch t.Kind {
+	case "task":
+		return fmt.Sprintf("Launch %q subagent", input.Agent), nil
+	case "task_status":
+		return fmt.Sprintf("Read status of task %q", input.TaskID), nil
+	default:
+		return fmt.Sprintf("Cancel task %q", input.TaskID), nil
 	}
 }
 func (t *TaskTool) JSONSchema() json.RawMessage {

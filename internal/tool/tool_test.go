@@ -22,8 +22,9 @@ type testTool struct {
 	stale bool
 }
 
-func (t testTool) ID() string        { return t.id }
-func (testTool) Description() string { return "test" }
+func (t testTool) ID() string                                    { return t.id }
+func (testTool) Description() string                             { return "test" }
+func (testTool) DescribeRequest(json.RawMessage) (string, error) { return "Test request", nil }
 func (testTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}`)
 }
@@ -128,6 +129,9 @@ type outputTestTool struct{}
 
 func (outputTestTool) ID() string          { return "output_test" }
 func (outputTestTool) Description() string { return "output test" }
+func (outputTestTool) DescribeRequest(json.RawMessage) (string, error) {
+	return "Produce test output", nil
+}
 func (outputTestTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":false}`)
 }

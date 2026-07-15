@@ -364,7 +364,10 @@ func TestEnhancedPermissionEscapeDeniesAndInterruptPropagates(t *testing.T) {
 		{name: "control c interrupts", input: "\x03", wantInterrupt: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "shell", Reason: "test"}}}}
+			api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
+				ID: "permission", ToolID: "shell", Reason: "test", Description: "Run shell command:\nprintf ok",
+				CanonicalInput: json.RawMessage(`{"command":"CANONICAL_SECRET"}`), Review: json.RawMessage(`{"secret":"REVIEW_SECRET"}`),
+			}}}}
 			decoder := terminal.NewKeyDecoder(bytes.NewBufferString(test.input))
 			var output bytes.Buffer
 			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
@@ -377,6 +380,9 @@ func TestEnhancedPermissionEscapeDeniesAndInterruptPropagates(t *testing.T) {
 			}
 			if test.wantReplies == 1 && api.permissionReplies[0].Decision != "deny" {
 				t.Fatalf("reply = %#v", api.permissionReplies[0])
+			}
+			if got := output.String(); strings.Contains(got, "CANONICAL_SECRET") || strings.Contains(got, "REVIEW_SECRET") || strings.Contains(got, "review:") {
+				t.Fatalf("authorization JSON leaked into picker output: %q", got)
 			}
 		})
 	}
@@ -1225,44 +1231,50 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 	}
 }
 
-func TestPermissionContextFormatsAndIndentsInputAsYAML(t *testing.T) {
+func TestPermissionContextUsesOnlyToolDescriptionAndResources(t *testing.T) {
 	lines := permissionContextLines(v1.Permission{
 		ToolID:         "shell",
 		Reason:         "default policy",
-		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build","options":{"cwd":"/tmp","env":["CI=1","COLOR=0"]}}`),
-		Review:         json.RawMessage(`{"diff":"--- a/file.go\n+++ b/file.go\n-old\n+new\n","files":[{"path":"file.go","before_sha256":"abc","after_sha256":"def"}]}`),
+		Description:    "Run shell command:\nrm -rf build\nWorking directory: /tmp",
+		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"do not render this canonical JSON","env":{"SECRET":"hidden"}}`),
+		Review:         json.RawMessage(`{"review_secret":"do not render this review JSON","diff":"--- a/file.go\n+++ b/file.go\n-old\n+new\n"}`),
+		Resources:      []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
 	})
 	want := []string{
 		"permission: shell",
 		"reason: default policy",
-		"tool request:",
-		"  shell: bash",
-		"  command: rm -rf build",
-		"  options:",
-		"    cwd: /tmp",
-		"    env:",
-		"      - CI=1",
-		"      - COLOR=0",
-		"review:",
-		"  diff: |",
-		"    --- a/file.go",
-		"    +++ b/file.go",
-		"    -old",
-		"    +new",
-		"  files:",
-		"    - path: file.go",
-		"      before_sha256: abc",
-		"      after_sha256: def",
+		"request:",
+		"  Run shell command:",
+		"  rm -rf build",
+		"  Working directory: /tmp",
+		"resource: process execute /bin/bash",
 	}
 	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
 		t.Fatalf("permission context:\n%s\nwant:\n%s", got, strings.Join(want, "\n"))
+	}
+	if got := strings.Join(lines, "\n"); strings.Contains(got, "canonical JSON") || strings.Contains(got, "SECRET") || strings.Contains(got, "review JSON") || strings.Contains(got, "review:") {
+		t.Fatalf("authorization JSON leaked into permission context: %s", got)
+	}
+}
+
+func TestPermissionContextIgnoresMalformedReview(t *testing.T) {
+	got := strings.Join(permissionContextLines(v1.Permission{
+		ToolID:      "edit",
+		Reason:      "default policy",
+		Description: "Edit workspace file \"main.go\"",
+		Review:      json.RawMessage(`REVIEW_SECRET: [unterminated`),
+	}), "\n")
+	if strings.Contains(got, "REVIEW_SECRET") || strings.Contains(got, "review:") {
+		t.Fatalf("malformed review leaked into permission context: %s", got)
 	}
 }
 
 func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
 		ID: "permission", ToolID: "shell", Reason: "default policy",
+		Description:    "Run shell command:\nrm -rf build",
 		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build"}`),
+		Review:         json.RawMessage(`{"review_secret":"not for the dialog"}`),
 		Resources:      []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
 	}}}}
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
@@ -1296,7 +1308,7 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
 	if !strings.Contains(frame, "permission: shell") || !strings.Contains(frame, "reason: default policy") ||
-		!strings.Contains(frame, "tool request:") || !strings.Contains(frame, "  command: rm -rf build") ||
+		!strings.Contains(frame, "request:") || !strings.Contains(frame, "  rm -rf build") ||
 		!strings.Contains(frame, "resource: process execute /bin/bash") ||
 		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
 		!strings.Contains(frame, "enable yolo") {
@@ -1304,6 +1316,9 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 	}
 	if contextIndex, selectorIndex := strings.Index(frame, "permission: shell"), strings.Index(frame, "permission decision:"); contextIndex < 0 || selectorIndex <= contextIndex {
 		t.Fatalf("permission context was not rendered before its selector: %q", frame)
+	}
+	if strings.Contains(frame, "review_secret") || strings.Contains(frame, "not for the dialog") || strings.Contains(frame, "review:") {
+		t.Fatalf("permission review JSON leaked into frame: %q", frame)
 	}
 
 	for i := 0; i < 3; i++ {
@@ -1362,6 +1377,24 @@ func TestSettlePromptsStopsReplyingAfterEnableYolo(t *testing.T) {
 	}
 	if reply := api.permissionReplies[0]; reply.Decision != "allow" || reply.Scope != "yolo" {
 		t.Fatalf("reply = %#v", reply)
+	}
+}
+
+func TestSettlePromptsDoesNotRenderAuthorizationJSON(t *testing.T) {
+	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
+		ID: "permission", ToolID: "shell", Reason: "test", Description: "Run shell command:\nprintf ok",
+		CanonicalInput: json.RawMessage(`{"command":"CANONICAL_SECRET"}`), Review: json.RawMessage(`{"secret":"REVIEW_SECRET"}`),
+	}}}}
+	var output bytes.Buffer
+	if err := settlePrompts(context.Background(), api, "session", strings.NewReader("no\n"), &output); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	if !strings.Contains(got, "Run shell command:") || !strings.Contains(got, "printf ok") {
+		t.Fatalf("tool description missing from permission prompt: %q", got)
+	}
+	if strings.Contains(got, "CANONICAL_SECRET") || strings.Contains(got, "REVIEW_SECRET") || strings.Contains(got, "review:") {
+		t.Fatalf("authorization JSON leaked into line prompt: %q", got)
 	}
 }
 

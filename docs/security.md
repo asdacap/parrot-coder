@@ -39,6 +39,10 @@ An approval is bound to an operation hash containing tool input, resolved
 resources, and review data. Changed arguments, paths, commands, or file hashes
 invalidate the approval.
 
+Permission dialogs do not dump canonical input or structured review JSON. Each
+tool decodes and describes its own parameters for the human-facing prompt;
+canonical input and review data remain part of the verified operation hash.
+
 Hard denies cannot be overridden by remembered grants. A reply may allow once
 or explicitly remember an in-memory process, session, or workspace grant; grants
 are not persisted across process restarts. Questions and security permissions

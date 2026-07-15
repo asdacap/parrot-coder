@@ -147,6 +147,7 @@ type PermissionResource struct {
 type Permission struct {
 	ID             string               `json:"id"`
 	ToolID         string               `json:"tool_id"`
+	Description    string               `json:"description"`
 	CanonicalInput json.RawMessage      `json:"canonical_input"`
 	Resources      []PermissionResource `json:"resources"`
 	Review         json.RawMessage      `json:"review,omitempty"`

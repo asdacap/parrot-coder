@@ -52,6 +52,11 @@ type Result struct {
 type Tool interface {
 	ID() string
 	Description() string
+	// DescribeRequest decodes this tool's parameters and returns concise,
+	// human-readable permission context for the invocation. Implementations must
+	// not generically serialize the JSON input or expose credentials and secret
+	// values merely because they occur in it.
+	DescribeRequest(json.RawMessage) (string, error)
 	JSONSchema() json.RawMessage
 	Plan(context.Context, json.RawMessage, CallContext) (Plan, error)
 	Execute(context.Context, Plan, CallContext) (Result, error)
@@ -191,6 +196,30 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	hash, err := planHash(p)
 	if err != nil || hash != p.OperationHash {
 		return Result{}, errors.New("stale plan operation hash")
+	}
+	if len(p.Permissions) > 0 {
+		description, err := t.DescribeRequest(p.CanonicalInput)
+		if err != nil {
+			return Result{}, fmt.Errorf("describe tool request: %w", err)
+		}
+		description = strings.TrimSpace(description)
+		if description == "" {
+			return Result{}, errors.New("tool request description is required for permission")
+		}
+		for i := range p.Permissions {
+			if err := p.Permissions[i].Verify(); err != nil {
+				return Result{}, err
+			}
+			p.Permissions[i].Description = description
+			p.Permissions[i].OperationHash, err = permission.Hash(p.Permissions[i])
+			if err != nil {
+				return Result{}, err
+			}
+		}
+		p.OperationHash, err = planHash(p)
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	for _, request := range p.Permissions {
 		if err := request.Verify(); err != nil {
