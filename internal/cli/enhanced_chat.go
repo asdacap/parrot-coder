@@ -867,7 +867,7 @@ func (r *enhancedChatRuntime) queueCompletedTool(id string) {
 // flushCompletedTools commits terminal tool statuses only between assistant
 // messages. This keeps an activity line from splitting a streaming response.
 func (r *enhancedChatRuntime) flushCompletedTools() error {
-	if r.streamMessageID != "" || r.streamed.Len() != 0 || r.shell == nil || r.shell.renderer == nil {
+	if r.assistantMessageOpen() || r.shell == nil || r.shell.renderer == nil {
 		return nil
 	}
 	for len(r.completedTools) > 0 {
@@ -886,6 +886,54 @@ func (r *enhancedChatRuntime) flushCompletedTools() error {
 		}
 		r.completedTools = r.completedTools[1:]
 		r.borderCommitted = false
+	}
+	return nil
+}
+
+// assistantMessageOpen reports whether committing an unrelated transcript row
+// could split an assistant response. The message ID is the normal signal. The
+// buffered-text check is deliberately retained as a defensive guard in case a
+// provider omits or reorders lifecycle metadata.
+func (r *enhancedChatRuntime) assistantMessageOpen() bool {
+	return r.streamMessageID != "" || r.streamed.Len() != 0
+}
+
+// flushReasoningBeforeAnswer settles visible reasoning summaries at the first
+// answer-text boundary. Frame may promote complete wrapped answer rows to
+// scrollback before the assistant-complete event, so waiting for completion can
+// put the summaries after part of the answer. Committing them before buffering
+// the first text delta guarantees the transcript order:
+//
+//	reasoning summaries -> assistant answer -> deferred tool reports
+//
+// Raw reasoning is removed rather than committed. If no renderer is available,
+// leave the activity untouched so the normal completion path can settle it.
+func (r *enhancedChatRuntime) flushReasoningBeforeAnswer(messageID string) error {
+	if r.streamed.Len() != 0 || r.shell == nil || r.shell.renderer == nil {
+		return nil
+	}
+	if messageID == "" {
+		messageID = "assistant"
+	}
+	now := time.Now()
+	for i := 0; i < len(r.activity); {
+		item := &r.activity[i]
+		if !item.reasoning || (item.messageID != messageID && item.id != messageID) {
+			i++
+			continue
+		}
+		if item.reasoningSummary && singleLineReasoningSummary(item.label) != "" {
+			item.status = "success"
+			item.terminal = true
+			item.ended = now
+			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Text: formatActivity(*item, now), Style: item.style}); err != nil {
+				return err
+			}
+			r.borderCommitted = false
+		}
+		// Summary rows are now permanent; raw chain-of-thought is intentionally
+		// dropped. Either way, neither row remains in the mutable live region.
+		r.activity = append(r.activity[:i], r.activity[i+1:]...)
 	}
 	return nil
 }
@@ -1569,9 +1617,20 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			r.streamMessageID = delta.MessageID
 		}
 		if delta.Kind == "text" {
+			if delta.Delta != "" && r.streamed.Len() == 0 {
+				if err := r.flushReasoningBeforeAnswer(delta.MessageID); err != nil {
+					return err
+				}
+			}
 			r.streamed.WriteString(delta.Delta)
 			r.status = ""
 		} else if delta.Kind == "reasoning_summary" {
+			// Once answer text has started, complete rows may already be permanent
+			// scrollback. A delayed summary can no longer be placed before them, so
+			// discard it rather than rendering a misleading transcript order.
+			if r.streamed.Len() != 0 {
+				break
+			}
 			if !r.reasoningSummary {
 				r.reasoningText.Reset()
 				r.reasoningSummary = true

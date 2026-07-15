@@ -804,6 +804,86 @@ func TestEnhancedReasoningSummaryIsPlainSingleLineAndRetainedBeforeAnswer(t *tes
 	}
 }
 
+func TestEnhancedReasoningSummariesFlushBeforeFirstAnswerRow(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 20, MaxRows: 6})
+	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &enhancedChatRuntime{
+		shell:         &chatShell{renderer: renderer},
+		state:         state,
+		knownMessages: map[string]bool{},
+	}
+
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "assistant", PartID: "reasoning:0", Kind: "reasoning_summary", Delta: "Inspecting code"},
+		{MessageID: "assistant", PartID: "reasoning:1", Kind: "reasoning_summary", Delta: "Running tests"},
+	} {
+		data, _ := json.Marshal(delta)
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if output.Len() != 0 {
+		t.Fatalf("reasoning was committed before the answer boundary: %q", output.String())
+	}
+
+	answer, _ := json.Marshal(v1.MessagePartDelta{
+		MessageID: "assistant", Kind: "text", Delta: "A sufficiently long answer to promote a wrapped row.",
+	})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: answer}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 {
+		t.Fatalf("reasoning remained in the live region at the answer boundary: %#v", runtime.activity)
+	}
+	if err := runtime.render(); err != nil {
+		t.Fatal(err)
+	}
+
+	got := output.String()
+	first := strings.Index(got, "Inspecting code")
+	second := strings.Index(got, "Running tests")
+	answerRow := strings.Index(got, "A sufficiently")
+	if first < 0 || second < first || answerRow < second {
+		t.Fatalf("flush order first=%d second=%d answer=%d; output=%q", first, second, answerRow, got)
+	}
+}
+
+func TestEnhancedRawReasoningIsDroppedAtAnswerBoundary(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{
+		shell:         &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{})},
+		knownMessages: map[string]bool{},
+	}
+	runtime.startReasoningActivity("assistant", "", "private chain of thought", false)
+
+	answer, _ := json.Marshal(v1.MessagePartDelta{MessageID: "assistant", Kind: "text", Delta: "answer"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: answer}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "private chain of thought") || len(runtime.activity) != 0 {
+		t.Fatalf("raw reasoning crossed the answer boundary: output=%q activity=%#v", output.String(), runtime.activity)
+	}
+}
+
+func TestEnhancedLateReasoningSummaryDoesNotCrossAnswerBoundary(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	answer, _ := json.Marshal(v1.MessagePartDelta{MessageID: "assistant", Kind: "text", Delta: "answer started"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: answer}); err != nil {
+		t.Fatal(err)
+	}
+	late, _ := json.Marshal(v1.MessagePartDelta{MessageID: "assistant", Kind: "reasoning_summary", Delta: "too late"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: late}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 || runtime.reasoningText.Len() != 0 {
+		t.Fatalf("late reasoning crossed the answer boundary: activity=%#v reasoning=%q", runtime.activity, runtime.reasoningText.String())
+	}
+}
+
 func TestSingleLineReasoningSummaryRemovesMarkdownWithoutCorruptingText(t *testing.T) {
 	tests := map[string]string{
 		"**one** **two**":        "one two",

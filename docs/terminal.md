@@ -88,6 +88,22 @@ the first 10 lines of the reviewed unified before/after diff; no empty line spli
 that status and diff. Failed tool request blocks use the same 10-line limit.
 Longer blocks end with the number of omitted lines.
 
+### Flush boundaries
+
+The live region and permanent scrollback have explicit ownership boundaries:
+
+1. Reasoning summaries remain redrawable while they are being updated. At the
+   first nonempty answer-text delta, they are committed in provider order before
+   any answer text can enter scrollback. Raw chain-of-thought is never committed.
+2. During an answer, each complete newline- or width-wrapped row is promoted to
+   scrollback immediately. Only the unfinished final row remains redrawable.
+3. Completed tool reports are queued while an assistant message is open. After
+   the answer suffix is committed, reports are flushed in completion order. This
+   prevents a tool status from splitting the assistant response.
+
+Thus the permanent order for a turn is reasoning summaries, assistant answer,
+then any tool reports that completed while that answer was open.
+
 ## Structured Data Presentation
 
 Human-facing terminal output must display structured JSON data as block-style
