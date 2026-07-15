@@ -39,10 +39,12 @@ type Resource struct {
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
-// Request contains only authorization data. Callers must not put credentials or
-// file contents in Review or resource attributes.
+// Request contains authorization data and a human-facing description. Callers
+// must not put credentials or file contents in Description, Review, or resource
+// attributes.
 type Request struct {
 	ToolID         string          `json:"tool_id"`
+	Description    string          `json:"description,omitempty"`
 	CanonicalInput json.RawMessage `json:"canonical_input"`
 	Resources      []Resource      `json:"resources"`
 	Review         json.RawMessage `json:"review,omitempty"`
@@ -84,6 +86,7 @@ func (r Request) Verify() error {
 func Hash(r Request) (string, error) {
 	type operation struct {
 		ToolID         string          `json:"tool_id"`
+		Description    string          `json:"description,omitempty"`
 		CanonicalInput json.RawMessage `json:"canonical_input"`
 		Resources      []Resource      `json:"resources"`
 		Review         json.RawMessage `json:"review,omitempty"`
@@ -94,7 +97,7 @@ func Hash(r Request) (string, error) {
 		b, _ := json.Marshal(resources[j])
 		return bytes.Compare(a, b) < 0
 	})
-	b, err := json.Marshal(operation{r.ToolID, r.CanonicalInput, resources, r.Review})
+	b, err := json.Marshal(operation{r.ToolID, r.Description, r.CanonicalInput, resources, r.Review})
 	if err != nil {
 		return "", err
 	}

@@ -78,6 +78,9 @@ func TestMCPToolPermissionArgumentsAndApplicationError(t *testing.T) {
 	if string(caller.arguments) != `{"value":"ok"}` || result.Text != "ok" || authorizer.request.Resources[0].Kind != "mcp" || authorizer.request.Resources[0].Attributes["arguments_sha256"] == "" {
 		t.Fatalf("call/result/request = %s / %#v / %#v", caller.arguments, result, authorizer.request)
 	}
+	if authorizer.request.Description != "Call MCP tool fixture/echo" || strings.Contains(authorizer.request.Description, `{"value"`) {
+		t.Fatalf("MCP permission description = %q", authorizer.request.Description)
+	}
 	caller.err = &mcp.ApplicationError{Server: "fixture", Tool: "echo", Result: mcp.ToolResult{IsError: true}}
 	registry = NewRegistry()
 	_ = registry.Register(item)

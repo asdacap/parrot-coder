@@ -91,6 +91,12 @@ func TestEditPermissionReviewHashAndSnapshotIntegration(t *testing.T) {
 	if result.Metadata["transaction_id"] == "" || authorizer.request.OperationHash == "" {
 		t.Fatalf("result/request = %#v / %#v", result, authorizer.request)
 	}
+	if authorizer.request.Description != `Edit workspace file "file"` {
+		t.Fatalf("permission description = %q", authorizer.request.Description)
+	}
+	if authorizer.request.Verify() != nil {
+		t.Fatal("permission description was not bound to the operation hash")
+	}
 	if !strings.Contains(result.Text, "--- a/file") || !strings.Contains(result.Text, "+++ b/file") ||
 		!strings.Contains(result.Text, "-before") || !strings.Contains(result.Text, "+after") {
 		t.Fatalf("edit result lacks before/after diff: %q", result.Text)
@@ -170,6 +176,13 @@ func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T
 	}
 	if len(planned.Permissions) != 1 || planned.Permissions[0].Resources[0].Identifier == "" || planned.Permissions[0].Resources[0].Attributes["command_sha256"] == "" {
 		t.Fatalf("shell resources = %#v", planned.Permissions)
+	}
+	description, err := NewShellTool(nil).DescribeRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(description, "top-secret") || !strings.Contains(description, "printf ok") || !strings.Contains(description, "API_TOKEN") {
+		t.Fatalf("unsafe or incomplete request description: %q", description)
 	}
 }
 

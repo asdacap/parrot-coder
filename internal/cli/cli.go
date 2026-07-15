@@ -668,26 +668,19 @@ func writeAll(w io.Writer, value string) error {
 	return err
 }
 
-// permissionContextLines describes the exact, hash-bound tool invocation being
-// approved instead of asking the user to decide from only a tool name.
+// permissionContextLines presents only tool-provided, human-readable request
+// context. Canonical input and structured review data remain hash-bound
+// authorization data and are deliberately not dumped into the dialog.
 func permissionContextLines(item v1.Permission) []string {
 	lines := []string{"permission: " + item.ToolID, "reason: " + item.Reason}
-	if len(item.CanonicalInput) > 0 {
-		lines = appendYAMLContext(lines, "tool request:", item.CanonicalInput)
-	}
-	if len(item.Review) > 0 {
-		lines = appendYAMLContext(lines, "review:", item.Review)
+	if item.Description != "" {
+		lines = append(lines, "request:")
+		for _, line := range strings.Split(item.Description, "\n") {
+			lines = append(lines, "  "+line)
+		}
 	}
 	for _, resource := range item.Resources {
 		lines = append(lines, fmt.Sprintf("resource: %s %s %s", resource.Kind, resource.Operation, resource.Identifier))
-	}
-	return lines
-}
-
-func appendYAMLContext(lines []string, heading string, value json.RawMessage) []string {
-	lines = append(lines, heading)
-	for _, line := range strings.Split(formatJSONAsYAML(value), "\n") {
-		lines = append(lines, "  "+line)
 	}
 	return lines
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/change"
@@ -32,6 +33,17 @@ func NewEditTool(changes *change.Service, snapshots *snapshot.Service) *EditTool
 func (*EditTool) ID() string { return "edit" }
 func (*EditTool) Description() string {
 	return "Replace exact text in a workspace file after hash-bound diff review; creation must be explicit."
+}
+func (*EditTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input change.Edit
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	operation := "Edit"
+	if input.Create {
+		operation = "Create"
+	}
+	return fmt.Sprintf("%s workspace file %q", operation, input.Path), nil
 }
 func (*EditTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"expected_sha256":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"replace_all":{"type":"boolean"},"create":{"type":"boolean"}},"required":["path","new"],"additionalProperties":false}`)
@@ -76,6 +88,15 @@ func NewApplyPatchTool(changes *change.Service, snapshots *snapshot.Service) *Ap
 func (*ApplyPatchTool) ID() string { return "apply_patch" }
 func (*ApplyPatchTool) Description() string {
 	return "Apply a strict OpenCode Begin Patch containing reviewed add, update, delete, or move operations."
+}
+func (*ApplyPatchTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input struct {
+		Patch string `json:"patch"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return "Apply the reviewed workspace patch", nil
 }
 func (*ApplyPatchTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"patch":{"type":"string"}},"required":["patch"],"additionalProperties":false}`)
@@ -174,6 +195,25 @@ func NewShellTool(runner *process.Runner) *ShellTool { return &ShellTool{Runner:
 func (*ShellTool) ID() string { return "shell" }
 func (*ShellTool) Description() string {
 	return "Execute an arbitrary process through a shell in the workspace. The shell and working directory are detected from the environment and workspace when omitted. Shell permission permits arbitrary process execution."
+}
+func (*ShellTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input shellInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	description := "Run shell command:\n" + input.Command
+	if input.Cwd != "" {
+		description += "\nWorking directory: " + input.Cwd
+	}
+	if len(input.Env) > 0 {
+		names := make([]string, 0, len(input.Env))
+		for name := range input.Env {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		description += "\nEnvironment variables: " + strings.Join(names, ", ")
+	}
+	return description, nil
 }
 func (*ShellTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"shell":{"type":"string","description":"Absolute shell path; automatically detected when omitted"},"command":{"type":"string"},"cwd":{"type":"string","description":"Working directory; defaults to the workspace root"},"env":{"type":"object","additionalProperties":true},"timeout_ms":{"type":"integer","minimum":0}},"required":["command"],"additionalProperties":false}`)
@@ -282,6 +322,9 @@ func NewTodoReadTool(service *session.TodoService) *TodoReadTool {
 }
 func (*TodoReadTool) ID() string          { return "todoread" }
 func (*TodoReadTool) Description() string { return "Read the current session's ordered todo list." }
+func (*TodoReadTool) DescribeRequest(json.RawMessage) (string, error) {
+	return "Read the current todo list", nil
+}
 func (*TodoReadTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":false}`)
 }
@@ -312,6 +355,13 @@ func NewTodoWriteTool(service *session.TodoService) *TodoWriteTool {
 func (*TodoWriteTool) ID() string { return "todowrite" }
 func (*TodoWriteTool) Description() string {
 	return "Transactionally replace the current session's ordered todo list."
+}
+func (*TodoWriteTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input todoWriteInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Replace the todo list with %d items", len(input.Todos)), nil
 }
 func (*TodoWriteTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string","minLength":1},"status":{"type":"string","enum":["pending","in_progress","completed","cancelled"]},"priority":{"type":"string","enum":["high","medium","low"]}},"required":["content","status","priority"],"additionalProperties":false}}},"required":["todos"],"additionalProperties":false}`)
@@ -350,6 +400,13 @@ func NewQuestionTool(broker *question.Broker) *QuestionTool { return &QuestionTo
 func (*QuestionTool) ID() string                            { return "question" }
 func (*QuestionTool) Description() string {
 	return "Ask typed questions and block until the user replies or rejects them."
+}
+func (*QuestionTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input question.Request
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Ask %d question(s)", len(input.Questions)), nil
 }
 func (*QuestionTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"header":{"type":"string"},"prompt":{"type":"string"},"options":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"}},"required":["id","label"],"additionalProperties":false}},"multiple":{"type":"boolean"},"custom":{"type":"boolean"}},"required":["id","prompt"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}`)

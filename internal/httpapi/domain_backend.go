@@ -313,7 +313,7 @@ func (b *DomainBackend) ListPermissions(ctx context.Context, id string) (v1.Perm
 		for i, resource := range item.Request.Resources {
 			resources[i] = v1.PermissionResource{Kind: resource.Kind, Identifier: resource.Identifier, Operation: resource.Operation, Attributes: resource.Attributes}
 		}
-		out.Items = append(out.Items, v1.Permission{ID: item.ID, ToolID: item.Request.ToolID, CanonicalInput: item.Request.CanonicalInput, Resources: resources, Review: item.Request.Review, OperationHash: item.Request.OperationHash, Reason: item.Reason})
+		out.Items = append(out.Items, v1.Permission{ID: item.ID, ToolID: item.Request.ToolID, Description: item.Request.Description, CanonicalInput: item.Request.CanonicalInput, Resources: resources, Review: item.Request.Review, OperationHash: item.Request.OperationHash, Reason: item.Reason})
 	}
 	return out, nil
 }

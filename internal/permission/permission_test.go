@@ -28,6 +28,11 @@ func TestCanonicalHashAndTamper(t *testing.T) {
 	if a.Verify() == nil {
 		t.Fatal("tampered request verified")
 	}
+	a = request(t)
+	a.Description = "different request description"
+	if a.Verify() == nil {
+		t.Fatal("tampered request description verified")
+	}
 }
 
 func TestBrokerCancellationAndSingleUse(t *testing.T) {
