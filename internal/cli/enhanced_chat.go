@@ -438,7 +438,8 @@ func (s *chatShell) runEnhanced(first string) int {
 
 func (s *chatShell) enhancedRenderError(err error) int {
 	// The renderer is the normal enhanced-chat error surface. If it failed,
-	// write directly to stderr so this exit cannot disappear with the frame.
+	// preserve its last live frame and write the failure directly to stderr.
+	// chatCommand deliberately skips live-buffer cleanup for this error exit.
 	fmt.Fprintln(s.stderr, "parrot: enhanced chat render failed:", terminal.Sanitize(err.Error()))
 	return exitWithReason(s.ctx, exitError, "enhanced_render_failed", err)
 }

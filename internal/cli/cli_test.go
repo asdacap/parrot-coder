@@ -143,6 +143,50 @@ func TestEnhancedRenderFailureIsPrintedAndClassified(t *testing.T) {
 	}
 }
 
+func TestEnhancedRendererCleanupIsSkippedOnError(t *testing.T) {
+	for _, code := range []int{exitError, exitUsage} {
+		t.Run(fmt.Sprintf("error_%d", code), func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+			if err := renderer.Update([]string{"diagnostic context"}); err != nil {
+				t.Fatal(err)
+			}
+			output.Reset()
+
+			if code == exitError {
+				shell := &chatShell{ctx: context.Background(), stderr: io.Discard, renderer: renderer}
+				code = shell.enhancedRenderError(errors.New("render failure"))
+			}
+			cleanupEnhancedRenderer(renderer, code)
+			if output.Len() != 0 {
+				t.Fatalf("error cleanup wrote %q", output.String())
+			}
+			if err := renderer.Update([]string{"renderer remains open"}); err != nil {
+				t.Fatalf("renderer was closed after an error: %v", err)
+			}
+		})
+	}
+
+	for _, code := range []int{exitOK, exitInterrupt} {
+		t.Run(fmt.Sprintf("exit_%d", code), func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+			if err := renderer.Update([]string{"temporary frame"}); err != nil {
+				t.Fatal(err)
+			}
+			output.Reset()
+
+			cleanupEnhancedRenderer(renderer, code)
+			if output.Len() == 0 {
+				t.Fatal("ordinary cleanup did not clear the live frame")
+			}
+			if err := renderer.Update([]string{"unexpected"}); err == nil {
+				t.Fatal("renderer remained open after ordinary cleanup")
+			}
+		})
+	}
+}
+
 func TestChatHelpListsCustomCommandsAndSubtaskUsesNormalPrompt(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, ".parrot", "commands", "review.md")

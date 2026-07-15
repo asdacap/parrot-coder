@@ -1065,7 +1065,6 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 					TTY: true, Color: terminal.ColorEnabled(stdout, noColor), Columns: terminal.Columns(stdout), MaxRows: 10, MaxInputRows: 12,
 					ColumnsFunc: func() int { return terminal.Columns(stdout) },
 				})
-				defer shell.renderer.Close()
 				shell.decoder = terminal.NewKeyDecoder(inputFile)
 				shell.editor = terminal.NewEditorDecoder(shell.decoder, stdout,
 					terminal.WithCompletions(chatCompletionCandidates(runtime.Commands)),
@@ -1081,9 +1080,21 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 		first = fs.Arg(0)
 	}
 	if shell.enhanced {
-		return shell.runEnhanced(first)
+		code := shell.runEnhanced(first)
+		cleanupEnhancedRenderer(shell.renderer, code)
+		return code
 	}
 	return shell.run(first)
+}
+
+// cleanupEnhancedRenderer clears terminal-owned live rows after ordinary and
+// interrupted exits. On an error, retain the last frame: it can contain the
+// response prefix and activity that explain the failure.
+func cleanupEnhancedRenderer(renderer *terminal.LiveRenderer, code int) {
+	if renderer == nil || code != exitOK && code != exitInterrupt {
+		return
+	}
+	_ = renderer.Close()
 }
 
 type chatSelection struct {
