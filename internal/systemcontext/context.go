@@ -22,6 +22,7 @@ type Source interface {
 type Observation struct {
 	Available bool            `json:"available"`
 	Value     json.RawMessage `json:"value,omitempty"`
+	Path      string          `json:"path,omitempty"`
 	Baseline  string          `json:"-"`
 	Update    string          `json:"-"`
 	Removal   string          `json:"removal,omitempty"`

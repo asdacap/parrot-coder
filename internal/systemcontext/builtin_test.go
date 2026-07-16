@@ -48,6 +48,9 @@ func TestBuiltinsDiscoverAgentsFromGlobalAndRootToWorkingDirectory(t *testing.T)
 		if !ok || !observation.Available {
 			t.Fatalf("missing %s: %#v", key, observation)
 		}
+		if observation.Path == "" || filepath.Base(observation.Path) != "AGENTS.md" {
+			t.Fatalf("%s path = %q", key, observation.Path)
+		}
 		got = append(got, string(observation.Value))
 	}
 	want := []string{`"global"`, `"root"`, `"a"`, `"b"`}

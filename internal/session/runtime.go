@@ -1,11 +1,14 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/event"
@@ -157,7 +160,7 @@ func (s *Service) InitializeContext(ctx context.Context, sessionID, baseline str
 	if err != nil {
 		return ContextEpoch{}, err
 	}
-	payload, _ := json.Marshal(map[string]any{"epoch_id": epochID, "history_cutoff": cutoff})
+	payload, _ := json.Marshal(map[string]any{"epoch_id": epochID, "history_cutoff": cutoff, "agents_files": loadedAgentsFiles(nil, sources)})
 	var out ContextEpoch
 	_, err = s.events.Append(ctx, sessionID, []event.NewEvent{{Type: "session.context.initialized", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		var count int
@@ -199,7 +202,7 @@ func (s *Service) ReconcileContext(ctx context.Context, sessionID, text string, 
 				return nil, nil, err
 			}
 			messageID = generated
-			data, _ := json.Marshal(map[string]string{"message_id": messageID, "content": text})
+			data, _ := json.Marshal(map[string]any{"message_id": messageID, "content": text, "agents_files": loadedAgentsFiles(current, sources)})
 			pending = event.NewEvent{Type: "session.context.changed", Data: data}
 		}
 		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
@@ -217,12 +220,48 @@ func (s *Service) ReconcileContext(ctx context.Context, sessionID, text string, 
 	return err
 }
 
+// loadedAgentsFiles returns AGENTS.md sources that are present in the next
+// snapshot and are new or changed relative to the previous snapshot. Paths are
+// explicit context metadata so clients can accurately report global and nested
+// project files without parsing human-facing labels.
+func loadedAgentsFiles(previous, next json.RawMessage) []string {
+	type source struct {
+		Available bool            `json:"available"`
+		Value     json.RawMessage `json:"value"`
+		Path      string          `json:"path"`
+	}
+	decode := func(raw json.RawMessage) map[string]source {
+		values := map[string]source{}
+		_ = json.Unmarshal(raw, &values)
+		return values
+	}
+	before, after := decode(previous), decode(next)
+	keys := make([]string, 0, len(after))
+	for key := range after {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	paths := make([]string, 0)
+	for _, key := range keys {
+		item := after[key]
+		if !strings.HasPrefix(key, "agents:") || !item.Available || len(item.Value) == 0 || item.Path == "" {
+			continue
+		}
+		old, existed := before[key]
+		if existed && old.Available && old.Path == item.Path && bytes.Equal(old.Value, item.Value) {
+			continue
+		}
+		paths = append(paths, item.Path)
+	}
+	return paths
+}
+
 func (s *Service) ReplaceContext(ctx context.Context, sessionID, baseline string, sources json.RawMessage, cutoff int64) (ContextEpoch, error) {
 	if !json.Valid(sources) || cutoff < 0 {
 		return ContextEpoch{}, errors.New("session: invalid replacement context")
 	}
 	epochID, _ := id.New("ctx")
-	payload, _ := json.Marshal(map[string]any{"epoch_id": epochID, "history_cutoff": cutoff})
+	payload, _ := json.Marshal(map[string]any{"epoch_id": epochID, "history_cutoff": cutoff, "agents_files": loadedAgentsFiles(nil, sources)})
 	var out ContextEpoch
 	_, err := s.events.Append(ctx, sessionID, []event.NewEvent{{Type: "session.context.replaced", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		var ordinal int

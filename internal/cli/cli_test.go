@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -1134,6 +1135,17 @@ func TestActivityStatusUsesAccessibleIcons(t *testing.T) {
 		if got := formatActivity(item, started.Add(1200*time.Millisecond)); got != test.want {
 			t.Errorf("formatActivity(%q) = %q, want %q", test.status, got, test.want)
 		}
+	}
+}
+
+func TestAgentsLoadedActivityMentionsSourcePath(t *testing.T) {
+	item := v1.Event{Type: "session.context.initialized", Data: json.RawMessage(`{"agents_files":["/work/AGENTS.md","/work/nested/AGENTS.md"]}`)}
+	want := []string{"/work/AGENTS.md", "/work/nested/AGENTS.md"}
+	if got := agentsLoadedPaths(item); !reflect.DeepEqual(got, want) {
+		t.Fatalf("agentsLoadedPaths() = %#v, want %#v", got, want)
+	}
+	if got := agentsLoadedActivity(want[1]); got != "✓ Loaded AGENTS.md from /work/nested/AGENTS.md" {
+		t.Fatalf("agentsLoadedActivity() = %q", got)
 	}
 }
 

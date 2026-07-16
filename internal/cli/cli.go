@@ -630,6 +630,11 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					return streamResult{err: err}
 				}
 			}
+			if options.format != "jsonl" && (item.Type == "session.context.initialized" || item.Type == "session.context.changed" || item.Type == "session.context.replaced") {
+				if err := writeAgentsLoadedActivity(options, item); err != nil {
+					return streamResult{err: err}
+				}
+			}
 			payload, decodeErr := v1.DecodeEventData(item)
 			if decodeErr != nil {
 				return streamResult{err: decodeErr}
@@ -680,6 +685,34 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 			}
 		}
 	}
+}
+
+func agentsLoadedPaths(item v1.Event) []string {
+	var payload struct {
+		Paths []string `json:"agents_files"`
+	}
+	if json.Unmarshal(item.Data, &payload) != nil {
+		return nil
+	}
+	return payload.Paths
+}
+
+func agentsLoadedActivity(path string) string {
+	return "✓ Loaded AGENTS.md from " + path
+}
+
+func writeAgentsLoadedActivity(options streamOptions, item v1.Event) error {
+	for _, path := range agentsLoadedPaths(item) {
+		line := agentsLoadedActivity(path)
+		if options.renderer != nil {
+			if err := options.renderer.Commit(line); err != nil {
+				return err
+			}
+		} else if _, err := fmt.Fprintln(options.stderr, terminal.Sanitize(line)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 type eventResult struct {

@@ -72,7 +72,7 @@ func (s FileSource) Observe(context.Context) (Observation, error) {
 	}
 	file, err := os.Open(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Observation{Available: true, Removal: s.Label + " was removed."}, nil
+		return Observation{Available: true, Path: s.Path, Removal: s.Label + " was removed."}, nil
 	}
 	if err != nil {
 		return Observation{Available: false}, err
@@ -90,7 +90,7 @@ func (s FileSource) Observe(context.Context) (Observation, error) {
 	}
 	raw, _ := json.Marshal(string(data))
 	text := s.Label + ":\n" + string(data)
-	return Observation{Available: true, Value: raw, Baseline: text, Update: s.Label + " changed:\n" + string(data), Removal: s.Label + " was removed."}, nil
+	return Observation{Available: true, Value: raw, Path: s.Path, Baseline: text, Update: s.Label + " changed:\n" + string(data), Removal: s.Label + " was removed."}, nil
 }
 
 type BuiltinOptions struct {

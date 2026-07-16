@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/event"
@@ -29,6 +30,54 @@ func TestModelHistoryCutoffIsInclusive(t *testing.T) {
 	history, err = service.ListModelHistory(ctx, sessionID, 3)
 	if err != nil || len(history) != 0 {
 		t.Fatalf("history after end = %#v, %v", history, err)
+	}
+}
+
+func TestContextEventsReportLoadedAgentsFiles(t *testing.T) {
+	ctx, _, repository, service, sessionID := newService(t)
+	sources := json.RawMessage(`{
+		"agents:global":{"available":true,"value":"global","path":"/home/test/.config/parrot/AGENTS.md"},
+		"agents:project-0000":{"available":true,"value":"root","path":"/work/AGENTS.md"},
+		"runtime:date":{"available":true,"value":"2026-07-16"}
+	}`)
+	if _, err := service.InitializeContext(ctx, sessionID, "baseline", sources, 0); err != nil {
+		t.Fatal(err)
+	}
+	events, err := repository.List(ctx, sessionID, -1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var initialized struct {
+		AgentsFiles []string `json:"agents_files"`
+	}
+	if err := json.Unmarshal(events[len(events)-1].Data, &initialized); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"/home/test/.config/parrot/AGENTS.md", "/work/AGENTS.md"}
+	if !reflect.DeepEqual(initialized.AgentsFiles, want) {
+		t.Fatalf("initialized agents_files = %#v, want %#v", initialized.AgentsFiles, want)
+	}
+
+	changed := json.RawMessage(`{
+		"agents:global":{"available":true,"value":"global","path":"/home/test/.config/parrot/AGENTS.md"},
+		"agents:project-0000":{"available":true,"value":"changed","path":"/work/AGENTS.md"},
+		"runtime:date":{"available":true,"value":"2026-07-16"}
+	}`)
+	if err := service.ReconcileContext(ctx, sessionID, "changed", changed); err != nil {
+		t.Fatal(err)
+	}
+	events, err = repository.List(ctx, sessionID, -1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reconciled struct {
+		AgentsFiles []string `json:"agents_files"`
+	}
+	if err := json.Unmarshal(events[len(events)-1].Data, &reconciled); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"/work/AGENTS.md"}; !reflect.DeepEqual(reconciled.AgentsFiles, want) {
+		t.Fatalf("changed agents_files = %#v, want %#v", reconciled.AgentsFiles, want)
 	}
 }
 
