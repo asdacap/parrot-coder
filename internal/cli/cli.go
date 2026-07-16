@@ -474,7 +474,8 @@ func prefixSubagentText(prefix, text string) string {
 
 func prefixSubagentActivity(prefix, text string) string {
 	lines := strings.Split(text, "\n")
-	for _, icon := range []string{"○", "◌", "✓", "✗", "■"} {
+	icons := append([]string{"○", "◌", "✓", "✗", "■"}, spinnerFrames...)
+	for _, icon := range icons {
 		if rest, ok := strings.CutPrefix(lines[0], icon+" "); ok {
 			indent := prefix[:len(prefix)-len(strings.TrimLeft(prefix, " "))]
 			lines[0] = indent + icon + " " + strings.TrimSpace(prefix) + " " + rest
@@ -548,15 +549,21 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 			} else {
 				state.reasoning.WriteString(delta.Delta)
 			}
-			line := prefixSubagentText(prefix, "thought: "+singleLineReasoningSummary(state.reasoning.String()))
+			icon := spinnerFrames[0]
+			if delta.Done {
+				icon = "✓"
+			}
+			line := prefixSubagentActivity(prefix, icon+" Thought: "+singleLineReasoningSummary(state.reasoning.String()))
 			return []subagentReport{{id: key + ":reasoning", line: line, terminal: delta.Done, emitPlain: delta.Done, style: terminal.TextStyleMuted}}, nil
 		case "reasoning":
 			if !thinking || state.reasoningSummary {
 				return nil, nil
 			}
 			state.reasoning.WriteString(delta.Delta)
-			line := prefixSubagentText(prefix, "reasoning: "+singleLineReasoningSummary(state.reasoning.String()))
+			line := prefixSubagentActivity(prefix, spinnerFrames[0]+" Reasoning: "+singleLineReasoningSummary(state.reasoning.String()))
 			return []subagentReport{{id: key + ":reasoning", line: line, style: terminal.TextStyleMuted}}, nil
+		case "tool_input":
+			return nil, nil
 		default:
 			return []subagentReport{{id: key + ":status", line: prefix + "status: " + delta.Kind, style: terminal.TextStyleMuted}}, nil
 		}

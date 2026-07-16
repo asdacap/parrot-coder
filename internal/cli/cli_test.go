@@ -1332,6 +1332,38 @@ func TestStreamSubagentEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	}
 }
 
+func TestSubagentDeltaPresentation(t *testing.T) {
+	var tracker subagentStreamTracker
+	item := &v1.SubagentEvent{TaskID: "task-explore", TaskName: "explore", Depth: 1}
+
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "child-message", Kind: "tool_input", Delta: `{"path":"file.go"}`},
+		{MessageID: "child-message", Kind: "reasoning_summary", Delta: "Inspecting the UI"},
+		{MessageID: "child-message", Kind: "reasoning_summary", Done: true},
+	} {
+		data, _ := json.Marshal(delta)
+		item.Event = v1.Event{Type: v1.EventMessagePartDelta, Data: data}
+		reports, err := tracker.describe(item, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch delta.Kind {
+		case "tool_input":
+			if len(reports) != 0 {
+				t.Fatalf("tool input reports = %#v, want none", reports)
+			}
+		case "reasoning_summary":
+			want := "  ⠋ [explore] Thought: Inspecting the UI"
+			if delta.Done {
+				want = "  ✓ [explore] Thought: Inspecting the UI"
+			}
+			if len(reports) != 1 || reports[0].line != want || reports[0].terminal != delta.Done {
+				t.Fatalf("reasoning summary reports = %#v, want line %q terminal %t", reports, want, delta.Done)
+			}
+		}
+	}
+}
+
 func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
 	var tracker subagentStreamTracker
 	pending := json.RawMessage(`{"call_id":"shell-call","name":"shell","input":{"command":"exit 1"}}`)
