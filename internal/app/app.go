@@ -333,24 +333,17 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, Data: data})
 	}})
 	tools := tool.NewRegistry()
-	for _, builtin := range []tool.Tool{tool.NewReadTool(tool.ReadConfig{}), tool.NewGlobTool(tool.GlobConfig{}), tool.NewGrepTool(tool.GrepConfig{}), tool.NewReadOutputTool(1 << 20)} {
-		if err := tools.Register(builtin); err != nil {
-			return nil, fmt.Errorf("app: register tool: %w", err)
-		}
-	}
-	if err := tool.RegisterPhase6(tools, tool.Phase6Services{Changes: changes, Snapshots: snapshots, Processes: processes, Todos: todos, Questions: questions}); err != nil {
-		return nil, fmt.Errorf("app: register tools: %w", err)
-	}
 	agentLookup := func(id string) (bool, error) {
 		profile, err := combinedProfileResolver{modes: modes, agents: taskAgents}.GetProfile(id)
 		return profile.ReadOnly, err
 	}
-	if err := tool.RegisterPhase9(tools, tool.Phase9Services{
+	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
+		Changes: changes, Snapshots: snapshots, Processes: processes, Todos: todos, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages}, Formatters: formatterRegistry,
-		Changes: changes, Snapshots: snapshots, Subagents: subagents, Agents: agentLookup,
+		Subagents: subagents, Agents: agentLookup,
 	}); err != nil {
-		return nil, fmt.Errorf("app: register phase 9 tools: %w", err)
+		return nil, fmt.Errorf("app: register built-in tools: %w", err)
 	}
 	toolSnapshot := tools.Materialize()
 	guidance, _ := json.Marshal(toolSnapshot.Definitions())

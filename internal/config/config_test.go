@@ -130,7 +130,7 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 	}
 }
 
-func TestLoadPhase9MapsMergeAndDecode(t *testing.T) {
+func TestLoadToolIntegrationMapsMergeAndDecode(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
 	project := filepath.Join(root, "project")

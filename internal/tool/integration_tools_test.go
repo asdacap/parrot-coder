@@ -383,7 +383,7 @@ func TestTaskStatusAndCancelToolsAreParentScoped(t *testing.T) {
 	}
 }
 
-func TestPhase9FormatterHelper(t *testing.T) {
+func TestFormatterHelper(t *testing.T) {
 	if os.Getenv("PARROT_TOOL_FORMAT_HELPER") != "1" {
 		return
 	}
@@ -393,7 +393,7 @@ func TestPhase9FormatterHelper(t *testing.T) {
 }
 
 func TestFormatToolCommitsReviewedBytesAndSnapshot(t *testing.T) {
-	ctx, ws, changes, snapshots, sessionID := phase6Harness(t)
+	ctx, ws, changes, snapshots, sessionID := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), "source.go")
 	before := []byte("package p\n")
 	if err := os.WriteFile(path, before, 0o600); err != nil {
@@ -403,7 +403,7 @@ func TestFormatToolCommitsReviewedBytesAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	formatters, err := formatter.NewRegistry(formatter.Config{Workspace: ws.Root(), Environment: map[string]string{"PARROT_TOOL_FORMAT_HELPER": "1"}}, formatter.Formatter{Name: "upper", Extensions: []string{".go"}, Command: []string{executable, "-test.run=TestPhase9FormatterHelper"}, Mode: formatter.ModeStdin})
+	formatters, err := formatter.NewRegistry(formatter.Config{Workspace: ws.Root(), Environment: map[string]string{"PARROT_TOOL_FORMAT_HELPER": "1"}}, formatter.Formatter{Name: "upper", Extensions: []string{".go"}, Command: []string{executable, "-test.run=TestFormatterHelper"}, Mode: formatter.ModeStdin})
 	if err != nil {
 		t.Fatal(err)
 	}
