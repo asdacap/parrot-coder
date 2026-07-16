@@ -87,7 +87,7 @@ func NewApplyPatchTool(changes *change.Service, snapshots *snapshot.Service) *Ap
 
 func (*ApplyPatchTool) ID() string { return "apply_patch" }
 func (*ApplyPatchTool) Description() string {
-	return "Apply an OpenCode Begin Patch containing reviewed add, update, delete, or move operations."
+	return "Apply a Begin Patch containing reviewed add, update, delete, or move operations. Use '*** Update File: OLD' followed by '*** Move to: NEW' for Codex-style moves; '*** Move File: OLD -> NEW' is also accepted."
 }
 func (*ApplyPatchTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input struct {
@@ -99,7 +99,7 @@ func (*ApplyPatchTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	return "Apply the reviewed workspace patch", nil
 }
 func (*ApplyPatchTool) JSONSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string","description":"The full patch text that describes all changes to be made"}},"required":["patchText"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string","description":"The full Begin Patch text. Operations are *** Add File, *** Update File, and *** Delete File. For a move, put *** Move to: NEW immediately after *** Update File: OLD; *** Move File: OLD -> NEW is accepted as an alias."}},"required":["patchText"],"additionalProperties":false}`)
 }
 
 func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
