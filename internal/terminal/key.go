@@ -81,6 +81,11 @@ func (d *KeyDecoder) ReadKey(ctx context.Context) (Key, error) {
 		return Key{}, err
 	}
 	switch b {
+	case 0x01:
+		// Ctrl-A and Ctrl-E are the conventional Emacs/Readline bindings for
+		// beginning/end of line. Normalize them here so every terminal editor
+		// gets the same behavior as the corresponding Home/End sequences.
+		return Key{Kind: KeyHome}, nil
 	case 0x03:
 		return Key{Kind: KeyInterrupt}, nil
 	case 0x18, 0x1e:
@@ -89,6 +94,8 @@ func (d *KeyDecoder) ReadKey(ctx context.Context) (Key, error) {
 		return Key{Kind: KeyModeSwitch}, nil
 	case 0x04:
 		return Key{Kind: KeyEOF}, nil
+	case 0x05:
+		return Key{Kind: KeyEnd}, nil
 	case '\t':
 		return Key{Kind: KeyTab}, nil
 	case '\n':

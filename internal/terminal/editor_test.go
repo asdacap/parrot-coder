@@ -30,6 +30,11 @@ func TestEditorEditingAndCursor(t *testing.T) {
 	if err != nil || value != "first\n>second<" {
 		t.Fatalf("multiline Read() = %q, %v", value, err)
 	}
+
+	value, err = readEditor(t, "first\x0asecond\x01>\x05<\r")
+	if err != nil || value != "first\n>second<" {
+		t.Fatalf("Ctrl-A/Ctrl-E Read() = %q, %v", value, err)
+	}
 }
 
 func TestEditorHistory(t *testing.T) {
@@ -120,7 +125,7 @@ func TestEditorBoundsAndInvalidInput(t *testing.T) {
 }
 
 func TestKeyDecoderIgnoresUnboundControls(t *testing.T) {
-	bound := map[byte]bool{0x03: true, 0x04: true, 0x08: true, 0x09: true, 0x0a: true, 0x0d: true, 0x18: true, 0x1b: true, 0x1e: true}
+	bound := map[byte]bool{0x01: true, 0x03: true, 0x04: true, 0x05: true, 0x08: true, 0x09: true, 0x0a: true, 0x0d: true, 0x18: true, 0x1b: true, 0x1e: true}
 	for b := byte(0); b < 0x20; b++ {
 		if bound[b] {
 			continue
@@ -128,6 +133,21 @@ func TestKeyDecoderIgnoresUnboundControls(t *testing.T) {
 		key, err := NewKeyDecoder(bytes.NewReader([]byte{b})).ReadKey(context.Background())
 		if err != nil || key.Kind != KeyIgnored {
 			t.Fatalf("control byte 0x%02x: key=%#v err=%v", b, key, err)
+		}
+	}
+}
+
+func TestKeyDecoderReadlineLineMovement(t *testing.T) {
+	for _, test := range []struct {
+		input byte
+		want  KeyKind
+	}{
+		{input: 0x01, want: KeyHome}, // Ctrl-A
+		{input: 0x05, want: KeyEnd},  // Ctrl-E
+	} {
+		key, err := NewKeyDecoder(bytes.NewReader([]byte{test.input})).ReadKey(context.Background())
+		if err != nil || key.Kind != test.want {
+			t.Fatalf("control byte 0x%02x: key=%#v err=%v; want kind %v", test.input, key, err, test.want)
 		}
 	}
 }
