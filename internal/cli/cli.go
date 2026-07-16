@@ -433,6 +433,7 @@ type subagentMessageState struct {
 	text             strings.Builder
 	reasoning        strings.Builder
 	reasoningSummary bool
+	reasoningDone    bool
 }
 
 type subagentReport struct {
@@ -441,6 +442,7 @@ type subagentReport struct {
 	block     string
 	terminal  bool
 	emitPlain bool
+	skip      bool
 	style     terminal.TextStyle
 }
 
@@ -513,7 +515,7 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 		if t.messages[key] == nil {
 			t.messages[key] = &subagentMessageState{}
 		}
-		return []subagentReport{{id: key + ":response", line: prefixSubagentActivity(prefix, "○ working…"), emitPlain: true, style: terminal.TextStyleMuted}}, nil
+		return nil, nil
 	case v1.EventMessagePartDelta:
 		payload, err := v1.DecodeEventData(item.Event)
 		if err != nil {
@@ -536,6 +538,9 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 		switch delta.Kind {
 		case "text":
 			state.text.WriteString(delta.Delta)
+			if strings.TrimSpace(state.text.String()) == "" {
+				return nil, nil
+			}
 			line := prefixSubagentActivity(prefix, "○ response: "+state.text.String())
 			return []subagentReport{{id: key + ":response", line: line, style: terminal.TextStyleMuted}}, nil
 		case "reasoning_summary":
@@ -549,6 +554,10 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 			} else {
 				state.reasoning.WriteString(delta.Delta)
 			}
+			state.reasoningDone = delta.Done
+			if strings.TrimSpace(state.reasoning.String()) == "" {
+				return nil, nil
+			}
 			icon := spinnerFrames[0]
 			if delta.Done {
 				icon = "✓"
@@ -560,6 +569,9 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 				return nil, nil
 			}
 			state.reasoning.WriteString(delta.Delta)
+			if strings.TrimSpace(state.reasoning.String()) == "" {
+				return nil, nil
+			}
 			line := prefixSubagentActivity(prefix, spinnerFrames[0]+" Reasoning: "+singleLineReasoningSummary(state.reasoning.String()))
 			return []subagentReport{{id: key + ":reasoning", line: line, style: terminal.TextStyleMuted}}, nil
 		case "tool_input":
@@ -587,14 +599,32 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 		} else if item.Event.Type == "session.assistant.interrupted" {
 			status = "■"
 		}
-		text := "response complete"
+		text := ""
 		if state != nil && strings.TrimSpace(state.text.String()) != "" {
 			text = "response: " + state.text.String()
 		}
 		if payload.Error != "" {
-			text += " · " + payload.Error
+			if text != "" {
+				text += " · "
+			}
+			text += payload.Error
+		}
+		if text == "" && item.Event.Type == "session.assistant.complete" && state != nil && !state.reasoningDone && strings.TrimSpace(state.reasoning.String()) != "" {
+			label := "Reasoning: "
+			if state.reasoningSummary {
+				label = "Thought: "
+			}
+			line := prefixSubagentActivity(prefix, "✓ "+label+singleLineReasoningSummary(state.reasoning.String()))
+			delete(t.messages, key)
+			return []subagentReport{{id: key + ":reasoning", line: line, terminal: true, emitPlain: true, style: terminal.TextStyleMuted}}, nil
 		}
 		delete(t.messages, key)
+		if text == "" && item.Event.Type == "session.assistant.complete" {
+			return []subagentReport{{id: key + ":response", terminal: true, skip: true}}, nil
+		}
+		if text == "" {
+			text = "response complete"
+		}
 		return []subagentReport{{id: key + ":response", line: prefixSubagentActivity(prefix, status+" "+text), terminal: true, emitPlain: true, style: terminal.TextStyleMuted}}, nil
 	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
 		if t.tools == nil {
@@ -671,6 +701,9 @@ func writeStreamSubagentEvent(options streamOptions, tracker *subagentStreamTrac
 		return err
 	}
 	for _, report := range reports {
+		if report.skip {
+			continue
+		}
 		text := report.line
 		if report.block != "" {
 			text += "\n" + report.block

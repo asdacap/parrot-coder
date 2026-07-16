@@ -1332,6 +1332,51 @@ func TestStreamSubagentEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	}
 }
 
+func TestStreamSubagentEventSkipsEmptyCompletedResponse(t *testing.T) {
+	var output bytes.Buffer
+	started, _ := json.Marshal(map[string]string{"message_id": "child-message"})
+	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
+	item := &v1.SubagentEvent{
+		TaskID: "task-review", TaskName: "review", Depth: 1,
+		Event: v1.Event{Type: "session.assistant.started", Data: started},
+	}
+	tracker := &subagentStreamTracker{}
+	if err := writeStreamSubagentEvent(streamOptions{stderr: &output}, tracker, item); err != nil {
+		t.Fatal(err)
+	}
+	item.Event = v1.Event{Type: "session.assistant.complete", Data: complete}
+	if err := writeStreamSubagentEvent(streamOptions{stderr: &output}, tracker, item); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != 0 {
+		t.Fatalf("empty completed response output = %q", output.String())
+	}
+}
+
+func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T) {
+	var tracker subagentStreamTracker
+	item := &v1.SubagentEvent{TaskID: "task-review", TaskName: "review", Depth: 1}
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "child-message", Kind: "text", Delta: "  "},
+		{MessageID: "child-message", Kind: "reasoning", Delta: "Checking the change"},
+	} {
+		data, _ := json.Marshal(delta)
+		item.Event = v1.Event{Type: v1.EventMessagePartDelta, Data: data}
+		if _, err := tracker.describe(item, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
+	item.Event = v1.Event{Type: "session.assistant.complete", Data: complete}
+	reports, err := tracker.describe(item, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || !reports[0].terminal || reports[0].skip || reports[0].line != "  ✓ [review] Reasoning: Checking the change" {
+		t.Fatalf("completion reports = %#v", reports)
+	}
+}
+
 func TestSubagentDeltaPresentation(t *testing.T) {
 	var tracker subagentStreamTracker
 	item := &v1.SubagentEvent{TaskID: "task-explore", TaskName: "explore", Depth: 1}
