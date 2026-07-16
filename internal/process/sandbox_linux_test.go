@@ -60,6 +60,37 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	}
 }
 
+func TestLinuxSandboxMountsExternalWorkingDirectory(t *testing.T) {
+	root := t.TempDir()
+	bin := t.TempDir()
+	bwrap := filepath.Join(bin, "bwrap")
+	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	external := t.TempDir()
+
+	_, args, err := (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "pwd", external, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSequence(args, []string{"--ro-bind", external, external}) {
+		t.Fatalf("external cwd is not mounted read-only: %q", args)
+	}
+	if indexSequence(args, []string{"--ro-bind", external, external}) > indexSequence(args, []string{"--bind", root, root}) {
+		t.Fatalf("workspace must be mounted after external cwd: %q", args)
+	}
+
+	_, args, err = (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "pwd", filepath.Dir(root), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ancestorMount := indexSequence(args, []string{"--ro-bind", filepath.Dir(root), filepath.Dir(root)})
+	if ancestorMount >= 0 && ancestorMount > indexSequence(args, []string{"--bind", root, root}) {
+		t.Fatalf("workspace must be mounted after its cwd ancestor: %q", args)
+	}
+}
+
 func TestLinuxSandboxAllowsLinkedWorktreeGitMetadata(t *testing.T) {
 	base := t.TempDir()
 	root := filepath.Join(base, "worktree")
@@ -96,10 +127,14 @@ func TestLinuxSandboxAllowsLinkedWorktreeGitMetadata(t *testing.T) {
 }
 
 func containsSequence(values, sequence []string) bool {
+	return indexSequence(values, sequence) >= 0
+}
+
+func indexSequence(values, sequence []string) int {
 	for i := 0; i+len(sequence) <= len(values); i++ {
 		if slices.Equal(values[i:i+len(sequence)], sequence) {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
 }
