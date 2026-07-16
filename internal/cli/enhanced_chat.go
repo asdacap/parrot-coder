@@ -1839,6 +1839,9 @@ func (r *enhancedChatRuntime) handleSubagentEvent(item *v1.SubagentEvent) error 
 					break
 				}
 			}
+			if report.skip {
+				continue
+			}
 			if r.shell == nil || r.shell.renderer == nil {
 				continue
 			}
