@@ -23,6 +23,9 @@ All notable changes to Parrot Coder will be documented in this file.
 - Sandboxed shell commands may write Git metadata, including the external
   common Git directory used by a linked worktree, so Git commits work from
   worktree-based workspaces.
+- Sandboxed shell commands may use readable directories outside the workspace
+  as their working directory; those directories remain read-only unless write
+  access is explicitly granted.
 
 ### Added
 
