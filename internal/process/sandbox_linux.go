@@ -37,8 +37,11 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string)
 		"--proc", "/proc",
 		"--tmpfs", "/tmp",
 		"--setenv", "TMPDIR", "/tmp",
-		"--bind", s.workspace, s.workspace,
 	}
+	if maskedBySandbox(cwd) {
+		args = append(args, "--ro-bind", cwd, cwd)
+	}
+	args = append(args, "--bind", s.workspace, s.workspace)
 	for _, path := range writablePaths {
 		args = append(args, "--bind", path, path)
 	}
@@ -50,6 +53,15 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string)
 	}
 	args = append(args, "--chdir", cwd, "--", shell, "-c", script)
 	return bwrap, args, nil
+}
+
+func maskedBySandbox(path string) bool {
+	for _, root := range []string{"/tmp", "/dev", "/proc"} {
+		if path != root && within(path, root) {
+			return true
+		}
+	}
+	return false
 }
 
 func executableOutsideWorkspace(name, root string) (string, error) {

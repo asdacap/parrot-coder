@@ -89,6 +89,32 @@ func DefaultShell() (string, error) {
 	return "", errors.New("process: could not detect an executable shell")
 }
 
+// ResolveWorkingDirectory canonicalizes an existing directory. Relative paths
+// remain workspace-relative, while absolute paths may point anywhere.
+func ResolveWorkingDirectory(path, workspaceRoot string) (string, error) {
+	if path == "" {
+		path = workspaceRoot
+	} else if !filepath.IsAbs(path) {
+		path = filepath.Join(workspaceRoot, path)
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.IsDir() {
+		return "", errors.New("working directory is not a directory")
+	}
+	return filepath.Clean(resolved), nil
+}
+
 func NewRunner(config Config) (*Runner, error) {
 	if config.Workspace == nil {
 		return nil, errors.New("process: workspace is required")
@@ -193,17 +219,9 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 	if err := ctx.Err(); err != nil {
 		return Result{ExitCode: -1, Cancelled: true}, err
 	}
-	cwd := request.Cwd
-	if cwd == "" {
-		cwd = "."
-	}
-	resolved, err := r.config.Workspace.ResolveRead(cwd)
+	resolved, err := ResolveWorkingDirectory(request.Cwd, r.config.Workspace.Root())
 	if err != nil {
 		return Result{}, fmt.Errorf("process: resolve cwd: %w", err)
-	}
-	info, err := os.Stat(resolved)
-	if err != nil || !info.IsDir() {
-		return Result{}, errors.New("process: cwd is not a workspace directory")
 	}
 	environment, err := r.environment(request.Env)
 	if err != nil {

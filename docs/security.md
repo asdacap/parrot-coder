@@ -91,8 +91,8 @@ not bypass that tool's sandbox.
 The separate `unrestricted_shell` tool remains at `ask` under the default
 workspace policy. Once approved, it executes directly with the invoking user's
 local filesystem and process authority. It retains process timeouts, bounded
-output, cancellation, deliberate environment construction, and workspace-bound
-working-directory validation, but it has no operating-system sandbox.
+output, cancellation, and deliberate environment construction, but it has no
+operating-system sandbox or workspace-bound working-directory restriction.
 
 The process runner also:
 
@@ -103,8 +103,9 @@ The process runner also:
 - constructs the environment deliberately;
 - separates nonzero exit status from infrastructure failure.
 
-Sandboxed shell subprocesses may read host files that are readable by the
-invoking user, but can write only the workspace, its linked-worktree Git
+Sandboxed shell subprocesses may use any existing directory as their working
+directory and read host files that are readable by the invoking user, but can
+write only the workspace, its linked-worktree Git
 metadata, and private temporary area. Parrot metadata inside the workspace is
 read-only to shell commands; use reviewed structured tools for intended changes.
 Network destinations are not restricted. Unrestricted shell, configured

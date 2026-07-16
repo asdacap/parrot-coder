@@ -36,7 +36,7 @@ func (t *ShellTool) Description() string {
 	if t.unrestricted {
 		return "Execute an arbitrary process through a shell without the OS sandbox. This requires permission and runs with the invoking user's local authority."
 	}
-	return "Execute an arbitrary process through a shell in the workspace. The shell and working directory are detected from the environment and workspace when omitted. Shell permission permits arbitrary process execution."
+	return "Execute an arbitrary process through a shell in the OS sandbox. The working directory may be anywhere; the workspace and approved external paths are writable."
 }
 func (t *ShellTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input shellInput
@@ -103,13 +103,11 @@ func (t *ShellTool) Plan(ctx context.Context, raw json.RawMessage, call CallCont
 	if err != nil || !shellInfo.Mode().IsRegular() || shellInfo.Mode().Perm()&0o111 == 0 {
 		return Plan{}, errors.New("shell: shell is not an executable regular file")
 	}
-	if input.Cwd == "" {
-		input.Cwd = call.Workspace.Root()
-	}
-	resolved, err := call.Workspace.ResolveRead(input.Cwd)
+	resolved, err := process.ResolveWorkingDirectory(input.Cwd, call.Workspace.Root())
 	if err != nil {
-		return Plan{}, err
+		return Plan{}, fmt.Errorf("shell: resolve cwd: %w", err)
 	}
+	input.Cwd = resolved
 	sum := sha256.Sum256([]byte(input.Command))
 	resource := permission.Resource{Kind: "process", Identifier: resolvedShell, Operation: "execute", Attributes: map[string]string{
 		"cwd": resolved, "command_sha256": hex.EncodeToString(sum[:]),
@@ -148,7 +146,7 @@ func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	if err != nil || resolvedShell != input.ResolvedShell {
 		return Result{}, errors.New("shell: executable changed after planning")
 	}
-	resolvedCwd, err := call.Workspace.ResolveRead(input.Cwd)
+	resolvedCwd, err := process.ResolveWorkingDirectory(input.Cwd, call.Workspace.Root())
 	if err != nil || resolvedCwd != input.ResolvedCwd {
 		return Result{}, errors.New("shell: cwd changed after planning")
 	}

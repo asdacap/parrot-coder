@@ -115,11 +115,34 @@ func TestRunnerRejectsWritablePathChangedAfterApproval(t *testing.T) {
 func TestRunUnrestrictedBypassesSandbox(t *testing.T) {
 	runner := testRunner(t, Config{})
 	runner.sandbox = unsupportedSandbox{platform: "test"}
-	result, err := runner.RunUnrestricted(context.Background(), Request{Shell: "/bin/sh", Command: "printf unrestricted"})
+	external := t.TempDir()
+	external, err := filepath.EvalSymlinks(external)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "unrestricted" {
+	result, err := runner.RunUnrestricted(context.Background(), Request{Shell: "/bin/sh", Command: "pwd", Cwd: external})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Output) != external {
+		t.Fatalf("output = %q", result.Output)
+	}
+}
+
+func TestRunSandboxAllowsExternalWorkingDirectory(t *testing.T) {
+	runner := testRunner(t, Config{})
+	sandbox := &recordingSandbox{}
+	runner.sandbox = sandbox
+	external := t.TempDir()
+	external, err := filepath.EvalSymlinks(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: "pwd", Cwd: external})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.TrimSpace(result.Output) != external {
 		t.Fatalf("output = %q", result.Output)
 	}
 }

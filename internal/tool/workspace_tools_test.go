@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,6 +254,25 @@ func TestShellDefaultsShellAndWorkingDirectory(t *testing.T) {
 	schema := string(NewShellTool(nil).JSONSchema())
 	if strings.Contains(schema, `"required":["shell"`) || !strings.Contains(schema, `"required":["command"]`) {
 		t.Fatalf("shell should be optional in schema: %s", schema)
+	}
+}
+
+func TestShellAllowsExternalWorkingDirectory(t *testing.T) {
+	_, ws, _, _, _ := workspaceToolHarness(t)
+	external := t.TempDir()
+	external, err := filepath.EvalSymlinks(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range []*ShellTool{NewShellTool(nil), NewUnrestrictedShellTool(nil)} {
+		planned, err := tool.Plan(context.Background(), json.RawMessage(fmt.Sprintf(`{"command":"pwd","cwd":%q}`, external)), CallContext{Workspace: ws})
+		if err != nil {
+			t.Fatalf("%s: %v", tool.ID(), err)
+		}
+		input := planned.Data.(shellInput)
+		if input.Cwd != external || input.ResolvedCwd != external {
+			t.Fatalf("%s cwd = %q, resolved = %q", tool.ID(), input.Cwd, input.ResolvedCwd)
+		}
 	}
 }
 
