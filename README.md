@@ -183,7 +183,8 @@ On a real terminal, chat uses a bounded inline editor without an alternate
 screen. User messages start with `$`, assistant messages start with `-`, and a
 dim rule replaces the empty gap before the final assistant message and forms
 the input area's top border. The editor remains active while the agent works:
-Enter queues a follow-up, safe slash commands run immediately, and a spinner
+Enter steers the active turn at the next safe provider-turn boundary, safe slash
+commands run immediately, and a spinner
 marks the busy prompt. Human-facing outcomes pair icons with text, such as
 `✓ Done`, `✗ Failed`, and `■ Interrupted`. Complete rows of a streaming assistant
 response are written directly to normal terminal scrollback while only its

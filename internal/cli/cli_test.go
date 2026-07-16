@@ -584,7 +584,7 @@ func TestEnhancedPermissionEscapeDeniesAndInterruptPropagates(t *testing.T) {
 	}
 }
 
-func TestEnhancedBusySubmissionQueuesAndPromotionCommits(t *testing.T) {
+func TestEnhancedBusySubmissionSteersAndPromotionCommits(t *testing.T) {
 	api := &enhancedQueueAPI{}
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 40, MaxRows: 6})
@@ -601,21 +601,21 @@ func TestEnhancedBusySubmissionQueuesAndPromotionCommits(t *testing.T) {
 	if err := runtime.submitPrompt("next task"); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.prompts) != 1 || api.prompts[0].Delivery != "queue" || len(runtime.pending) != 1 {
+	if len(api.prompts) != 1 || api.prompts[0].Delivery != "steer" || len(runtime.pending) != 1 {
 		t.Fatalf("prompts=%#v pending=%#v", api.prompts, runtime.pending)
 	}
 	if err := runtime.render(); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(output.String(), "next task") || !strings.Contains(output.String(), "⠋ $ ") {
-		t.Fatalf("queue frame = %q", output.String())
+	if !strings.Contains(output.String(), "$ next task  (○ pending)") || !strings.Contains(output.String(), "⠋ $ ") {
+		t.Fatalf("steer frame = %q", output.String())
 	}
 	payload, _ := json.Marshal(v1.SessionInputPromoted{InputID: "input", MessageID: "message"})
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionInputPromoted, Data: payload}); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.pending) != 0 || !strings.Contains(output.String(), "$ next task") {
-		t.Fatalf("promoted queue pending=%#v output=%q", runtime.pending, output.String())
+		t.Fatalf("promoted steer pending=%#v output=%q", runtime.pending, output.String())
 	}
 }
 

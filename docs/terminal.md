@@ -45,17 +45,18 @@ ANSI sequences.
 Enhanced chat keeps one editor active while the session is idle or running:
 
 ```text
-edit -> submit steer or queue -> continue editing while events stream
+edit -> submit steer -> continue editing while events stream
 ```
 
 The editor supports rune-aware movement, history, slash completion, bracketed
 paste, Ctrl-J multiline input, and the conventional Ctrl-A/Ctrl-E bindings for
 moving to the beginning/end of the current line. Ctrl-K clears from the cursor
 to the end of the current line. Enter starts a turn while idle
-and queues a follow-up while the agent is running. Safe informational slash commands execute
+and steers the active turn at the next safe provider-turn boundary while the
+agent is running. Safe informational slash commands execute
 immediately; commands that switch or mutate the active session are rejected
 until it is idle. Stable assistant rows are progressively committed to normal scrollback as they
-arrive; only the unfinished final row, queued-input previews, the working
+arrive; only the unfinished final row, pending-input previews, the working
 spinner, and transient tool/status activity may redraw in the bounded renderer
 region. Each assistant response and divider is committed exactly once. Permission
 and question prompts temporarily take keyboard focus in the same renderer; the
@@ -90,10 +91,10 @@ The `$` marker is the user accent, `-` is the assistant accent, and the divider
 is dim. A divider replaces the otherwise empty block gap before the final
 assistant message. The divider after an assistant response is also the input
 area's top border. Pending follow-ups appear below it with a written
-`(○ queued)` label.
+`(○ pending)` label.
 Human-oriented state uses an icon plus a written label where practical: the
 Braille spinner means working, `✓ Done` means success, `✗ Failed` or `✗ Error`
-means failure, `■ Interrupted` means execution stopped, and `○ Queued` means
+means failure, `■ Interrupted` means execution stopped, and `○ Pending` means
 pending. Status text is dim and errors are red when color is enabled. The words
 remain present without color, so meaning never depends on styling or symbols.
 

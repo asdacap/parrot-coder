@@ -254,12 +254,12 @@ func TestLiveRendererDecoratesIconStatuses(t *testing.T) {
 	}
 }
 
-func TestQueuedPreviewKeepsWrittenLabelAtNarrowWidths(t *testing.T) {
-	if got := queuedPreview("next task", 80); got != "$ next task  (○ queued)" {
-		t.Fatalf("queuedPreview() = %q", got)
+func TestPendingPreviewKeepsWrittenLabelAtNarrowWidths(t *testing.T) {
+	if got := pendingPreview("next task", 80); got != "$ next task  (○ pending)" {
+		t.Fatalf("pendingPreview() = %q", got)
 	}
-	if got := queuedPreview("next task", 10); !strings.Contains(got, "queued") {
-		t.Fatalf("narrow queued preview lost written label: %q", got)
+	if got := pendingPreview("next task", 10); !strings.Contains(got, "pending") {
+		t.Fatalf("narrow pending preview lost written label: %q", got)
 	}
 }
 
@@ -320,7 +320,7 @@ func TestLiveRendererCompositeFrameKeepsBusyEditorVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 	joined := strings.Join(renderer.rows, "\n")
-	for _, want := range []string{"- working response", "─", "$ next task  (○ queued)", "⠋ $ editable"} {
+	for _, want := range []string{"- working response", "─", "$ next task  (○ pending)", "⠋ $ editable"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("frame missing %q: %#v", want, renderer.rows)
 		}

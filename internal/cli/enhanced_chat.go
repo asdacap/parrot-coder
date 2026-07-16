@@ -1591,13 +1591,13 @@ func (r *enhancedChatRuntime) submitPrompt(content string) error {
 			return err
 		}
 		accepted, err := r.shell.api.Prompt(r.shell.ctx, r.shell.current.ID, v1.PromptRequest{
-			MessageID: messageID, Content: content, Delivery: "queue",
+			MessageID: messageID, Content: content, Delivery: "steer",
 		})
 		if err != nil {
 			return err
 		}
 		r.addPending(queuedChatInput{inputID: accepted.InputID, messageID: accepted.MessageID, content: content})
-		r.status = "queued"
+		r.status = "steering"
 		return nil
 	}
 
