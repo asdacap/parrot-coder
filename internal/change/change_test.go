@@ -127,6 +127,7 @@ func TestPatchAllOperationsAndStrictRejections(t *testing.T) {
 		"*** Begin Patch\n*** Delete File: absent\ntext\n*** End Patch",
 		"*** Begin Patch\n*** Update File: a\n*** Move to: b\n*** Update File: b\n*** Move to: a\n*** End Patch",
 		"*** Begin Patch\n*** Add File: dir\n+x\n*** Add File: dir/file\n+y\n*** End Patch",
+		"*** Begin Patch\n*** Move File: a -> b\n*** Move to: c\n*** Add File: d\n+x\n*** End Patch",
 	}
 	for _, input := range malformed {
 		if _, err := ParsePatch(input); err == nil {
@@ -233,6 +234,42 @@ func TestPatchAllowsEmptyAddedFile(t *testing.T) {
 	}
 	if len(plan.Mutations) != 1 || len(plan.Mutations[0].After.Data) != 0 {
 		t.Fatalf("plan = %#v", plan)
+	}
+}
+
+func TestPatchAcceptsMoveFileAliasWithUpdateHunks(t *testing.T) {
+	ctx := context.Background()
+	ws := testWorkspace(t)
+	if err := os.MkdirAll(filepath.Join(ws.Root(), "src", "renderer", "utils"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	oldPath := filepath.Join(ws.Root(), "src", "renderer", "utils", "workspaceFavourites.ts")
+	if err := os.WriteFile(oldPath, []byte("import type { Workspace } from '../types'\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	patch := "*** Begin Patch\n" +
+		"*** Move File: src/renderer/utils/workspaceFavourites.ts -> src/shared/workspaceFavourites.ts\n" +
+		"@@\n" +
+		"-import type { Workspace } from '../types'\n" +
+		"+import type { Workspace } from './workspaceFile'\n" +
+		"*** End Patch"
+	service := NewService(Config{})
+	plan, err := service.PlanPatch(ctx, ws, patch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Mutations) != 2 {
+		t.Fatalf("mutations = %#v", plan.Mutations)
+	}
+	if err := service.Commit(ctx, ws, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(oldPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("move source still exists: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(ws.Root(), "src", "shared", "workspaceFavourites.ts"))
+	if err != nil || string(data) != "import type { Workspace } from './workspaceFile'\n" {
+		t.Fatalf("move destination = %q, %v", data, err)
 	}
 }
 

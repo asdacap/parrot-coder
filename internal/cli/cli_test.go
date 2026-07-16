@@ -1604,6 +1604,7 @@ func TestToolActivityLabelDescribesInputs(t *testing.T) {
 		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}, map[string]any{}}}, want: "TODO · 2 items"},
 		{name: "todo_write", input: map[string]any{"todos": []any{}}, want: "TODO · 0 items"},
 		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}}}, want: "TODO · 1 item"},
+		{name: "apply_patch", input: map[string]any{"patchText": "*** Begin Patch\n*** Move File: old.go -> new.go\n*** End Patch"}, want: "apply_patch · old.go · new.go"},
 		{name: "custom", input: map[string]any{"token": "hidden", "path": "src/main.go"}, want: "custom · path=src/main.go"},
 	}
 	for _, test := range tests {

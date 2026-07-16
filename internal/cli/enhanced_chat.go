@@ -2328,6 +2328,19 @@ func patchActivityTargets(patch string) []string {
 	seen := make(map[string]bool)
 	var targets []string
 	for _, line := range strings.Split(patch, "\n") {
+		if move, ok := strings.CutPrefix(line, "*** Move File: "); ok {
+			source, destination, valid := strings.Cut(move, " -> ")
+			if valid {
+				for _, path := range []string{source, destination} {
+					path = cleanActivityDetail(path)
+					if path != "" && !seen[path] {
+						seen[path] = true
+						targets = append(targets, path)
+					}
+				}
+			}
+			continue
+		}
 		for _, prefix := range prefixes {
 			if !strings.HasPrefix(line, prefix) {
 				continue

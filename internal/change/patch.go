@@ -57,14 +57,19 @@ func ParsePatch(text string) (Patch, error) {
 	}
 	var patch Patch
 	for i := 1; i < len(lines)-1; {
-		kind, path, ok := parseOperationHeader(lines[i])
+		kind, path, moveTo, ok := parseOperationHeader(lines[i])
 		if !ok {
 			return Patch{}, fmt.Errorf("%w at line %d: expected operation header", ErrInvalidPatch, i+1)
 		}
 		if err := validPatchPath(path); err != nil {
 			return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+1, err)
 		}
-		op := PatchOperation{Kind: kind, Path: path}
+		if moveTo != "" {
+			if err := validPatchPath(moveTo); err != nil {
+				return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+1, err)
+			}
+		}
+		op := PatchOperation{Kind: kind, Path: path, MoveTo: moveTo}
 		i++
 		switch kind {
 		case PatchAdd:
@@ -84,6 +89,9 @@ func ParsePatch(text string) (Patch, error) {
 			}
 		case PatchUpdate:
 			if i < len(lines)-1 && strings.HasPrefix(lines[i], "*** Move to: ") {
+				if op.MoveTo != "" {
+					return Patch{}, fmt.Errorf("%w at line %d: move destination specified twice", ErrInvalidPatch, i+1)
+				}
 				op.MoveTo = strings.TrimPrefix(lines[i], "*** Move to: ")
 				if err := validPatchPath(op.MoveTo); err != nil {
 					return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+1, err)
@@ -133,20 +141,32 @@ func ParsePatch(text string) (Patch, error) {
 	return patch, nil
 }
 
-func parseOperationHeader(line string) (PatchOperationKind, string, bool) {
+func parseOperationHeader(line string) (PatchOperationKind, string, string, bool) {
+	// Codex represents a move as an Update File operation followed by a Move to
+	// directive. Accept the commonly generated one-line spelling as an alias so
+	// patches produced from the tool's "move operations" description remain
+	// interoperable. A Move File may also contain update hunks.
+	if strings.HasPrefix(line, "*** Move File: ") {
+		move := strings.TrimPrefix(line, "*** Move File: ")
+		path, moveTo, ok := strings.Cut(move, " -> ")
+		if !ok || path == "" || moveTo == "" {
+			return "", "", "", false
+		}
+		return PatchUpdate, path, moveTo, true
+	}
 	for prefix, kind := range map[string]PatchOperationKind{
 		"*** Add File: ": PatchAdd, "*** Update File: ": PatchUpdate, "*** Delete File: ": PatchDelete,
 	} {
 		if strings.HasPrefix(line, prefix) {
 			path := strings.TrimPrefix(line, prefix)
-			return kind, path, path != ""
+			return kind, path, "", path != ""
 		}
 	}
-	return "", "", false
+	return "", "", "", false
 }
 
 func isOperationHeader(line string) bool {
-	_, _, ok := parseOperationHeader(line)
+	_, _, _, ok := parseOperationHeader(line)
 	return ok
 }
 
