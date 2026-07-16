@@ -28,7 +28,7 @@ func TestStartupWarnsWhenExpectedCLIUtilitiesAreMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, utility := range []string{"bash", "bwrap", "git", "lstat", "rg", "stat"} {
+	for _, utility := range []string{"bash", "bwrap", "git", "rg", "stat"} {
 		if !bytes.Contains(data, []byte(utility)) {
 			t.Fatalf("warning %q does not contain %q", data, utility)
 		}

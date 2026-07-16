@@ -17,7 +17,6 @@ var ExpectedCLIUtilities = []string{
 	"git",
 	"grep",
 	"jq",
-	"lstat",
 	"rg",
 	"sed",
 	"stat",
