@@ -1865,10 +1865,22 @@ func (r *enhancedChatRuntime) handleSubagentEvent(item *v1.SubagentEvent) error 
 			break
 		}
 		if !found {
-			r.activity = append(r.activity, enhancedActivityItem{id: report.id, rendered: text, style: report.style, status: "running", started: time.Now()})
+			r.insertSubagentActivity(enhancedActivityItem{id: report.id, rendered: text, style: report.style, status: "running", started: time.Now()})
 		}
 	}
 	return nil
+}
+
+func (r *enhancedChatRuntime) insertSubagentActivity(item enhancedActivityItem) {
+	for i := range r.activity {
+		if r.activity[i].toolName == "task" {
+			r.activity = append(r.activity, enhancedActivityItem{})
+			copy(r.activity[i+1:], r.activity[i:])
+			r.activity[i] = item
+			return
+		}
+	}
+	r.activity = append(r.activity, item)
 }
 
 func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
