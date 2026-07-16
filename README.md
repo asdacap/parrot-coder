@@ -55,6 +55,17 @@ Without Nix, install Go 1.25 or newer and build directly:
 Tagged releases contain pure-Go binaries for macOS and Linux on amd64 and
 arm64. Windows is not currently supported.
 
+Parrot expects `awk`, `bash`, `curl`, `find`, `git`, `grep`, `jq`, `lstat`, `rg`,
+`sed`, `stat`, `tar`, and `xargs` to be available on `PATH` for Bash-based agent
+commands. It continues to start when one is absent, but prints a warning because
+shell tool calls that use the missing utility may fail. The utilities detected
+at startup are also included in a dedicated agent system-context source. Parrot
+also detects optional development utilities, including common language
+toolchains, build systems, package managers, and developer tools such as `go`,
+`nix`, `cargo`, `rustc`, `gcc`, `clang`, `cmake`, `ninja`, `node`, `npm`,
+`python3`, `java`, `docker`, and `kubectl`. Available optional utilities are
+listed in agent context without warnings for tools that are absent.
+
 ## Quick Start
 
 ### ChatGPT OAuth

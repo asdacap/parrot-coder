@@ -57,6 +57,38 @@ func (s EnvironmentSource) Observe(context.Context) (Observation, error) {
 	return Observation{Available: true, Value: raw, Baseline: text, Update: "Environment changed:\n" + text}, nil
 }
 
+type CLIUtilitiesSource struct {
+	Available []string
+}
+
+func (CLIUtilitiesSource) Key() string { return "runtime:cli-utilities" }
+func (s CLIUtilitiesSource) Observe(context.Context) (Observation, error) {
+	available := append([]string(nil), s.Available...)
+	raw, _ := json.Marshal(available)
+	utilities := "none"
+	if len(available) > 0 {
+		utilities = strings.Join(available, ", ")
+	}
+	text := "Available CLI utilities: " + utilities
+	return Observation{Available: true, Value: raw, Baseline: text, Update: text}, nil
+}
+
+type OptionalCLIUtilitiesSource struct {
+	Available []string
+}
+
+func (OptionalCLIUtilitiesSource) Key() string { return "runtime:optional-cli-utilities" }
+func (s OptionalCLIUtilitiesSource) Observe(context.Context) (Observation, error) {
+	available := append([]string(nil), s.Available...)
+	raw, _ := json.Marshal(available)
+	utilities := "none"
+	if len(available) > 0 {
+		utilities = strings.Join(available, ", ")
+	}
+	text := "Available optional CLI utilities: " + utilities
+	return Observation{Available: true, Value: raw, Baseline: text, Update: text}, nil
+}
+
 type FileSource struct {
 	SourceKey string
 	Path      string
@@ -94,14 +126,16 @@ func (s FileSource) Observe(context.Context) (Observation, error) {
 }
 
 type BuiltinOptions struct {
-	AgentPrompt      string
-	ToolGuidance     string
-	Skills           string
-	ConfigDir        string
-	ProjectRoot      string
-	WorkingDirectory string
-	ProjectID        string
-	Now              func() time.Time
+	AgentPrompt                   string
+	ToolGuidance                  string
+	Skills                        string
+	ConfigDir                     string
+	ProjectRoot                   string
+	WorkingDirectory              string
+	ProjectID                     string
+	AvailableCLIUtilities         []string
+	AvailableOptionalCLIUtilities []string
+	Now                           func() time.Time
 }
 
 func Builtins(options BuiltinOptions) ([]Source, error) {
@@ -112,7 +146,9 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 	sources := []Source{
 		StaticSource{"agent:prompt", options.AgentPrompt},
 		DateSource{options.Now},
-		EnvironmentSource{cwd, root, options.ProjectID},
+		EnvironmentSource{WorkingDirectory: cwd, ProjectRoot: root, ProjectID: options.ProjectID},
+		CLIUtilitiesSource{Available: options.AvailableCLIUtilities},
+		OptionalCLIUtilitiesSource{Available: options.AvailableOptionalCLIUtilities},
 	}
 	if options.Skills != "" {
 		sources = append(sources, StaticSource{"runtime:skills", options.Skills})

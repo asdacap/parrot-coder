@@ -5,8 +5,72 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
+
+func TestCLIUtilitiesSourceListsAvailableUtilities(t *testing.T) {
+	observation, err := (CLIUtilitiesSource{Available: []string{"bash", "git"}}).Observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(observation.Baseline, "Available CLI utilities: bash, git") {
+		t.Fatalf("baseline = %q", observation.Baseline)
+	}
+	if string(observation.Value) != `["bash","git"]` {
+		t.Fatalf("value = %s", observation.Value)
+	}
+}
+
+func TestCLIUtilitiesSourceReportsNoneAvailable(t *testing.T) {
+	observation, err := (CLIUtilitiesSource{}).Observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Baseline != "Available CLI utilities: none" {
+		t.Fatalf("baseline = %q", observation.Baseline)
+	}
+}
+
+func TestOptionalCLIUtilitiesSourceListsOnlyDetectedUtilities(t *testing.T) {
+	observation, err := (OptionalCLIUtilitiesSource{Available: []string{"bat", "python3"}}).Observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Baseline != "Available optional CLI utilities: bat, python3" {
+		t.Fatalf("baseline = %q", observation.Baseline)
+	}
+	if string(observation.Value) != `["bat","python3"]` {
+		t.Fatalf("value = %s", observation.Value)
+	}
+}
+
+func TestBuiltinsIncludeCLIUtilitiesSource(t *testing.T) {
+	root := t.TempDir()
+	sources, err := Builtins(BuiltinOptions{ProjectRoot: root, WorkingDirectory: root, AvailableCLIUtilities: []string{"bash", "stat"}, AvailableOptionalCLIUtilities: []string{"bat", "node"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(sources...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := registry.Observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, ok := snapshot["runtime:cli-utilities"]
+	if !ok || observation.Baseline != "Available CLI utilities: bash, stat" {
+		t.Fatalf("CLI utility observation = %#v", observation)
+	}
+	if strings.Contains(snapshot["runtime:environment"].Baseline, "CLI utilities") {
+		t.Fatalf("environment source contains CLI utility inventory: %q", snapshot["runtime:environment"].Baseline)
+	}
+	optional, ok := snapshot["runtime:optional-cli-utilities"]
+	if !ok || optional.Baseline != "Available optional CLI utilities: bat, node" {
+		t.Fatalf("optional CLI utility observation = %#v", optional)
+	}
+}
 
 func TestBuiltinsDiscoverAgentsFromGlobalAndRootToWorkingDirectory(t *testing.T) {
 	parent := t.TempDir()

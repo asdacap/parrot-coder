@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -13,6 +14,44 @@ import (
 	"time"
 	"unicode"
 )
+
+func TestStartupWarnsWhenExpectedCLIUtilitiesAreMissing(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "warning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnMissingCLIUtilities(output, func(string) (string, error) { return "", errors.New("not found") })
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, utility := range []string{"bash", "git", "lstat", "rg", "stat"} {
+		if !bytes.Contains(data, []byte(utility)) {
+			t.Fatalf("warning %q does not contain %q", data, utility)
+		}
+	}
+}
+
+func TestStartupDoesNotWarnWhenExpectedCLIUtilitiesAreAvailable(t *testing.T) {
+	output, err := os.CreateTemp(t.TempDir(), "warning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	warnMissingCLIUtilities(output, func(name string) (string, error) { return "/bin/" + name, nil })
+	if err := output.Close(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(output.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(data) != 0 {
+		t.Fatalf("unexpected warning %q", data)
+	}
+}
 
 func TestBuiltBinaryHelpAndVersionAreTerminalSafe(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

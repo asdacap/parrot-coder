@@ -4,13 +4,16 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"runtime/debug"
+	"strings"
 	"syscall"
 
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
 	"github.com/amirulashraf/parrot-coder/internal/cli"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
+	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
 var (
@@ -33,6 +36,7 @@ func run() (exitCode int) {
 	// main goroutine must not recover either.
 	crashOnPanic := os.Getenv("GOTRACEBACK") == "crash"
 	run := startDiagnostics()
+	warnMissingCLIUtilities(os.Stderr, exec.LookPath)
 	stopSignals := logSignals()
 	defer stopSignals()
 	ctx, stop := cli.SignalContext(context.Background())
@@ -85,6 +89,15 @@ func run() (exitCode int) {
 	result := app.RunResult(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr)
 	exitCode, exitReason, errorType = result.Code, result.Reason, result.ErrorType
 	return exitCode
+}
+
+func warnMissingCLIUtilities(stderr *os.File, lookPath func(string) (string, error)) {
+	_, missing := process.InspectCLIUtilities(lookPath)
+	if len(missing) == 0 {
+		return
+	}
+	fmt.Fprintf(stderr, "warning: expected CLI utilities are unavailable: %s; Bash shell commands may fail\n", strings.Join(missing, ", "))
+	diagnostics.Warn("cli_utilities_missing", "utilities", strings.Join(missing, ","), "count", len(missing))
 }
 
 func startDiagnostics() *diagnostics.Run {
