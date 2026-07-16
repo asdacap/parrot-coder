@@ -7,13 +7,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
-	"github.com/amirulashraf/parrot-coder/internal/process"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/permission"
+	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
 type ShellTool struct {
@@ -36,7 +37,7 @@ func (t *ShellTool) Description() string {
 	if t.unrestricted {
 		return "Execute an arbitrary process through a shell without the OS sandbox. This requires permission and runs with the invoking user's local authority."
 	}
-	return "Execute an arbitrary process through a shell in the OS sandbox. The working directory may be anywhere; the workspace and approved external paths are writable."
+	return "Execute an arbitrary process through a shell in the OS sandbox. The working directory defaults to the workspace; paths outside it are read-only unless explicitly granted write access."
 }
 func (t *ShellTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input shellInput
@@ -150,7 +151,7 @@ func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	if err != nil || resolvedCwd != input.ResolvedCwd {
 		return Result{}, errors.New("shell: cwd changed after planning")
 	}
-	request := process.Request{Shell: input.ResolvedShell, Command: input.Command, Cwd: input.Cwd, Env: input.Env, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond, Output: call.Output, SessionID: call.SessionID}
+	request := process.Request{Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedCwd, Env: input.Env, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond, Output: call.Output, SessionID: call.SessionID}
 	var result process.Result
 	if t.unrestricted {
 		result, err = runner.RunUnrestricted(ctx, request)

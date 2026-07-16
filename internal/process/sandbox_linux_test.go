@@ -33,9 +33,10 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	if err := os.WriteFile(writable, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
+	externalCwd := t.TempDir()
 
 	implementation := linuxSandbox{workspace: root, workingDirectory: nested}
-	program, args, err := implementation.command("/bin/sh", "printf ok", root, []string{writable})
+	program, args, err := implementation.command("/bin/sh", "printf ok", externalCwd, []string{writable})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -46,10 +47,11 @@ func TestLinuxSandboxCommand(t *testing.T) {
 		{"--unshare-user"}, {"--unshare-pid"}, {"--cap-drop", "ALL"},
 		{"--ro-bind", "/", "/"}, {"--bind", root, root}, {"--tmpfs", "/tmp"},
 		{"--bind", writable, writable},
+		{"--dir", externalCwd, "--ro-bind", externalCwd, externalCwd},
 		{"--ro-bind", filepath.Join(root, ".parrot"), filepath.Join(root, ".parrot")},
 		{"--ro-bind", filepath.Join(root, "parrot.jsonc"), filepath.Join(root, "parrot.jsonc")},
 		{"--ro-bind", filepath.Join(nested, "parrot.jsonc"), filepath.Join(nested, "parrot.jsonc")},
-		{"--chdir", root, "--", "/bin/sh", "-c", "printf ok"},
+		{"--chdir", externalCwd, "--", "/bin/sh", "-c", "printf ok"},
 	} {
 		if !containsSequence(args, expected) {
 			t.Fatalf("arguments do not contain %q: %q", expected, args)
@@ -126,6 +128,27 @@ func TestLinuxSandboxAllowsLinkedWorktreeGitMetadata(t *testing.T) {
 	}
 }
 
+func TestLinuxSandboxDoesNotShadowPrivateTmp(t *testing.T) {
+	bin := t.TempDir()
+	bwrap := filepath.Join(bin, "bwrap")
+	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	root := t.TempDir()
+	implementation := linuxSandbox{workspace: root, workingDirectory: root}
+	if _, _, err := implementation.command("/bin/sh", "true", "/tmp", nil); err == nil {
+		t.Fatal("host /tmp accepted as working directory")
+	}
+	_, args, err := implementation.command("/bin/sh", "true", "/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if containsSequence(args, []string{"--ro-bind", "/", "/"}) && countSequence(args, []string{"--ro-bind", "/", "/"}) != 1 {
+		t.Fatalf("host root remounted over synthetic mounts: %q", args)
+	}
+}
+
 func containsSequence(values, sequence []string) bool {
 	return indexSequence(values, sequence) >= 0
 }
@@ -137,4 +160,14 @@ func indexSequence(values, sequence []string) int {
 		}
 	}
 	return -1
+}
+
+func countSequence(values, sequence []string) int {
+	count := 0
+	for i := 0; i+len(sequence) <= len(values); i++ {
+		if slices.Equal(values[i:i+len(sequence)], sequence) {
+			count++
+		}
+	}
+	return count
 }

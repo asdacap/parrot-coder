@@ -26,6 +26,11 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string)
 	if err != nil {
 		return "", nil, errors.New("bubblewrap is required; install bwrap and ensure unprivileged user namespaces are enabled")
 	}
+	commonDirectory, linkedWorktree := linkedGitCommonDirectory(s.workspace)
+	if cwd == "/tmp" {
+		return "", nil, errors.New("the sandbox's private /tmp cannot be used as an external working directory")
+	}
+	externalTmpCwd := within(cwd, "/tmp") && !within(cwd, s.workspace)
 	args := []string{
 		"--die-with-parent",
 		"--new-session",
@@ -38,6 +43,9 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string)
 		"--tmpfs", "/tmp",
 		"--setenv", "TMPDIR", "/tmp",
 	}
+	if externalTmpCwd {
+		args = append(args, "--dir", cwd)
+	}
 	if maskedBySandbox(cwd) {
 		args = append(args, "--ro-bind", cwd, cwd)
 	}
@@ -45,7 +53,7 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string)
 	for _, path := range writablePaths {
 		args = append(args, "--bind", path, path)
 	}
-	if commonDirectory, ok := linkedGitCommonDirectory(s.workspace); ok {
+	if linkedWorktree {
 		args = append(args, "--bind", commonDirectory, commonDirectory)
 	}
 	for _, path := range protectedWorkspacePaths(s.workspace, s.workingDirectory) {
