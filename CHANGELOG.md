@@ -6,6 +6,8 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Changed
 
+- Final assistant messages now use a dim rule instead of an empty leading gap
+  in interactive chat.
 - Reviewed `edit` and `apply_patch` operations inside the current workspace are
   allowed by default; `run --permission deny|ask` remains available as an
   explicit override.
