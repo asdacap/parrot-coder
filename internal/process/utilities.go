@@ -11,6 +11,7 @@ import (
 var ExpectedCLIUtilities = []string{
 	"awk",
 	"bash",
+	"bwrap",
 	"curl",
 	"find",
 	"git",

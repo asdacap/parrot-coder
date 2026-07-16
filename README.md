@@ -55,8 +55,8 @@ Without Nix, install Go 1.25 or newer and build directly:
 Tagged releases contain pure-Go binaries for macOS and Linux on amd64 and
 arm64. Windows is not currently supported.
 
-Parrot expects `awk`, `bash`, `curl`, `find`, `git`, `grep`, `jq`, `lstat`, `rg`,
-`sed`, `stat`, `tar`, and `xargs` to be available on `PATH` for Bash-based agent
+Parrot expects `awk`, `bash`, `bwrap`, `curl`, `find`, `git`, `grep`, `jq`, `lstat`,
+`rg`, `sed`, `stat`, `tar`, and `xargs` to be available on `PATH` for Bash-based agent
 commands. It continues to start when one is absent, but prints a warning because
 shell tool calls that use the missing utility may fail. The utilities detected
 at startup are also included in a dedicated agent system-context source. Parrot
