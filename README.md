@@ -69,11 +69,12 @@ listed in agent context without warnings for tools that are absent.
 Agent shell commands are OS-sandboxed. Linux requires Bubblewrap and
 unprivileged user namespaces; the Nix package and development shell include
 Bubblewrap. macOS uses the system Seatbelt executable. The host filesystem is
-read-only, the workspace is writable except for existing `.git`, `.parrot`, and
-project configuration metadata along the startup working-directory path, and
-host network access is retained. Linux provides a private `/tmp`; macOS grants
-the sandboxed command a writable `/tmp`. Shell commands fail closed when the
-sandbox is unavailable.
+read-only, the workspace and its Git metadata are writable except for existing
+`.parrot` and project configuration metadata along the startup working-directory
+path, and host network access is retained. Linked-worktree Git metadata is also
+made writable outside the workspace. Linux provides a private `/tmp`; macOS
+grants the sandboxed command a writable `/tmp`. Shell commands fail closed when
+the sandbox is unavailable.
 
 ## Quick Start
 

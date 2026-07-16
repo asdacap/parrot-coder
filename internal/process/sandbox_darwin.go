@@ -43,12 +43,20 @@ func (s darwinSandbox) command(shell, script, cwd string) (string, []string, err
 (allow iokit-open)
 (allow pseudo-tty)
 `
+	commonDirectory, linkedWorktree := linkedGitCommonDirectory(s.workspace)
+	if linkedWorktree {
+		profile += `(allow file-write* (subpath (param "GIT_COMMON_DIRECTORY")))
+`
+	}
 	protected := protectedWorkspacePaths(s.workspace, s.workingDirectory)
 	for i := range protected {
 		name := fmt.Sprintf("PROTECTED_%d", i)
 		profile += fmt.Sprintf("(deny file-write* (subpath (param %q)))\n", name)
 	}
 	args := []string{"-p", profile, "-D", "WORKSPACE=" + s.workspace}
+	if linkedWorktree {
+		args = append(args, "-D", "GIT_COMMON_DIRECTORY="+commonDirectory)
+	}
 	for i, path := range protected {
 		args = append(args, "-D", fmt.Sprintf("PROTECTED_%d=%s", i, path))
 	}
