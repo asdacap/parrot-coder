@@ -134,9 +134,6 @@ func TestPatchAllOperationsAndStrictRejections(t *testing.T) {
 			t.Errorf("malformed patch accepted: %q", input)
 		}
 	}
-	if _, err := service.PlanPatch(ctx, ws, "*** Begin Patch\n*** Add File: added\n+x\n*** End Patch"); err == nil {
-		t.Fatal("existing add destination accepted")
-	}
 	if _, err := service.PlanPatch(ctx, ws, "*** Begin Patch\n*** Delete File: absent\n*** End Patch"); err == nil {
 		t.Fatal("missing delete accepted")
 	}
@@ -225,15 +222,91 @@ func TestPatchOpenCodeUpdateSemantics(t *testing.T) {
 	}
 }
 
-func TestPatchAllowsEmptyAddedFile(t *testing.T) {
+func TestPatchRejectsEmptyAddedFile(t *testing.T) {
+	if _, err := ParsePatch("*** Begin Patch\n*** Add File: empty\n*** End Patch"); err == nil {
+		t.Fatal("empty add hunk accepted")
+	}
+}
+
+func TestPatchCodexSyntaxCompatibility(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{
+			name:  "CRLF and marker whitespace",
+			input: " \r\n*** Begin Patch \r\n*** Update File: file\r\n@@\r\n-old\r\n+new\r\n*** End Patch\r\n ",
+			want:  "new\n",
+		},
+		{
+			name:  "legacy heredoc wrapper",
+			input: "<<'EOF'\n*** Begin Patch\n*** Update File: file\n@@\n-old\n+new\n*** End Patch\nEOF\n",
+			want:  "new\n",
+		},
+		{
+			name:  "headerless update",
+			input: "*** Begin Patch\n*** Update File: file\n-old\n+new\n*** End Patch",
+			want:  "new\n",
+		},
+		{
+			name:  "unprefixed blank context line",
+			input: "*** Begin Patch\n*** Update File: file\n@@\n old\n\n tail\n-old\n+new\n*** End Patch",
+			want:  "old\n\ntail\nnew\n",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := testWorkspace(t)
+			if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("old\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if tc.name == "unprefixed blank context line" {
+				if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("old\n\ntail\nold\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			plan, err := NewService(Config{}).PlanPatch(context.Background(), ws, tc.input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(plan.Mutations[0].After.Data); got != tc.want {
+				t.Fatalf("after = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPatchCodexOverwriteSemanticsRemainRollbackSafe(t *testing.T) {
+	ctx := context.Background()
 	ws := testWorkspace(t)
+	for path, data := range map[string]string{"added": "old add\n", "source": "source\n", "destination": "old destination\n"} {
+		if err := os.WriteFile(filepath.Join(ws.Root(), path), []byte(data), 0o640); err != nil {
+			t.Fatal(err)
+		}
+	}
 	service := NewService(Config{})
-	plan, err := service.PlanPatch(context.Background(), ws, "*** Begin Patch\n*** Add File: empty\n*** End Patch")
+	plan, err := service.PlanPatch(ctx, ws, "*** Begin Patch\n*** Add File: added\n+new add\n*** Update File: source\n*** Move to: destination\n@@\n-source\n+moved\n*** End Patch")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Mutations) != 1 || len(plan.Mutations[0].After.Data) != 0 {
-		t.Fatalf("plan = %#v", plan)
+	if err := service.Commit(ctx, ws, plan); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"added": "new add\n", "destination": "moved\n"} {
+		data, err := os.ReadFile(filepath.Join(ws.Root(), path))
+		if err != nil || string(data) != want {
+			t.Fatalf("%s = %q, %v", path, data, err)
+		}
+	}
+	if err := service.Rollback(ctx, ws, plan); err != nil {
+		t.Fatal(err)
+	}
+	for path, want := range map[string]string{"added": "old add\n", "source": "source\n", "destination": "old destination\n"} {
+		data, err := os.ReadFile(filepath.Join(ws.Root(), path))
+		if err != nil || string(data) != want {
+			t.Fatalf("restored %s = %q, %v", path, data, err)
+		}
 	}
 }
 
