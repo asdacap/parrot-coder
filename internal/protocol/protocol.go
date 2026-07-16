@@ -104,6 +104,7 @@ const (
 	EventUsage                 EventType = "usage"
 	EventFinish                EventType = "finish"
 	EventProviderError         EventType = "provider_error"
+	EventToolOutputDelta       EventType = "tool_output_delta"
 )
 
 // ToolInputDelta is an incremental fragment of a function's JSON arguments.
@@ -132,4 +133,5 @@ type Event struct {
 	Usage         *Usage
 	FinishReason  FinishReason
 	ProviderError *ProviderError
+	ToolCallID    string
 }

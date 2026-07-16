@@ -21,6 +21,7 @@ const (
 	EventTodoUpdated          = "todo.updated"
 	EventTaskProgress         = "task.progress"
 	EventSubagent             = "subagent.event"
+	EventToolOutputDelta      = "tool.output.delta"
 )
 
 // Event is used for both durable and disposable live events. Sequence and
@@ -59,6 +60,11 @@ type TaskProgress struct {
 	Status     string `json:"status"`
 	Usage      Usage  `json:"usage"`
 	ToolUses   int    `json:"tool_uses"`
+}
+
+type ToolOutputDelta struct {
+	ToolCallID string `json:"tool_call_id"`
+	Delta      string `json:"delta"`
 }
 
 // SubagentEvent projects an event from an isolated child session onto its
@@ -127,6 +133,7 @@ var EventManifest = []EventDefinition{
 	{Name: EventTodoUpdated, Durable: true, Payload: "TodoUpdated"},
 	{Name: EventTaskProgress, Payload: "TaskProgress"},
 	{Name: EventSubagent, Payload: "SubagentEvent"},
+	{Name: EventToolOutputDelta, Payload: "ToolOutputDelta"},
 	{Name: "session.selection.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.initialized", Durable: true, Payload: "object"},
 	{Name: "session.context.observed", Durable: true, Payload: "object"},
@@ -186,6 +193,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &TaskProgress{}
 	case EventSubagent:
 		target = &SubagentEvent{}
+	case EventToolOutputDelta:
+		target = &ToolOutputDelta{}
 	default:
 		if !KnownEvent(event.Type) {
 			return nil, errors.New("v1: unknown event type")

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
@@ -43,6 +44,35 @@ type ContextRuntime interface {
 
 type LivePublisher interface {
 	Publish(string, protocol.Event)
+}
+
+type toolOutputWriter struct {
+	live      LivePublisher
+	sessionID string
+	callID    string
+	mu        sync.Mutex
+	pending   []byte
+}
+
+func (w *toolOutputWriter) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.pending = append(w.pending, p...)
+	complete := len(w.pending)
+	if complete > 0 {
+		start := complete - 1
+		for start > 0 && !utf8.RuneStart(w.pending[start]) {
+			start--
+		}
+		if !utf8.FullRune(w.pending[start:]) {
+			complete = start
+		}
+	}
+	if complete > 0 && w.live != nil {
+		w.live.Publish(w.sessionID, protocol.Event{Type: protocol.EventToolOutputDelta, ToolCallID: w.callID, Text: string(w.pending[:complete])})
+	}
+	w.pending = append(w.pending[:0], w.pending[complete:]...)
+	return len(p), nil
 }
 
 type Compactor interface {
@@ -514,6 +544,16 @@ type toolOutcome struct {
 	persistErr  error
 }
 
+func settleTool(ctx context.Context, sessions SessionRuntime, sessionID, callID, status string, result tool.Result, errorText string) error {
+	if settler, ok := sessions.(interface {
+		SettleToolWithOutput(context.Context, string, string, string, string, string, string) error
+	}); ok {
+		tail, _ := result.Metadata["output_tail"].(string)
+		return settler.SettleToolWithOutput(ctx, sessionID, callID, status, result.Text, errorText, tail)
+	}
+	return sessions.SettleTool(ctx, sessionID, callID, status, result.Text, errorText)
+}
+
 // executeToolCall runs one tool and converts any panic in its Plan or Execute
 // into a normal error. A tool call executes in its own goroutine, so without
 // this recovery a single panicking tool would terminate the entire process
@@ -568,7 +608,7 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 					logger(ctx, sessionID, call.call.Name, recovered, stack)
 				}
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Agent: profile.ID, ToolCallID: call.call.ID}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {
@@ -582,7 +622,7 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 				settleCtx, cancel = context.WithTimeout(context.Background(), r.config.CleanupTimeout)
 				defer cancel()
 			}
-			settleErr := r.config.Sessions.SettleTool(settleCtx, sessionID, call.call.ID, status, result.Text, errorText)
+			settleErr := settleTool(settleCtx, r.config.Sessions, sessionID, call.call.ID, status, result, errorText)
 			outcome.settled = settleErr == nil
 			outcome.persistErr = settleErr
 			outcomes[i] = outcome

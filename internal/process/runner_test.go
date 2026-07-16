@@ -82,8 +82,9 @@ func TestRunDetectsShellWhenOmitted(t *testing.T) {
 
 func TestStreamsFullOutputToStoreWhileBoundingMemory(t *testing.T) {
 	store := &memoryOutputStore{}
+	var streamed bytes.Buffer
 	runner := testRunner(t, Config{MaxOutputBytes: 4, OutputStore: store})
-	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: `printf 12345; printf 67890 >&2`})
+	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: `printf 12345; printf 67890 >&2`, Output: &streamed})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,6 +93,30 @@ func TestStreamsFullOutputToStoreWhileBoundingMemory(t *testing.T) {
 	}
 	if !bytes.Equal(store.data, []byte("1234567890")) {
 		t.Fatalf("stored output = %q", store.data)
+	}
+	if streamed.String() != "1234567890" {
+		t.Fatalf("streamed output = %q", streamed.String())
+	}
+}
+
+func TestOutputTailKeepsLastThreeLinesAndCarriageReturnReplacement(t *testing.T) {
+	runner := testRunner(t, Config{MaxOutputBytes: 4})
+	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: `printf 'one\ntwo\n1%%\r2%%\rthree\nfour'`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "one\n" || !result.Truncated || result.OutputTail != "two\nthree\nfour" {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestOutputTailPreservesUTF8AcrossWrites(t *testing.T) {
+	var tail lineTail
+	value := []byte("one\ntwo\n世界")
+	tail.Write(value[:len(value)-1])
+	tail.Write(value[len(value)-1:])
+	if got := tail.String(); got != string(value) {
+		t.Fatalf("tail = %q", got)
 	}
 }
 

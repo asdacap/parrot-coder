@@ -409,13 +409,16 @@ type streamResult struct {
 }
 
 type streamToolCall struct {
-	name  string
-	input map[string]any
-	style terminal.TextStyle
+	name   string
+	input  map[string]any
+	style  terminal.TextStyle
+	output shellOutputTail
 }
 
 type streamToolTracker struct {
-	calls map[string]streamToolCall
+	calls   map[string]streamToolCall
+	pending map[string]shellOutputTail
+	done    map[string]bool
 }
 
 type streamToolReport struct {
@@ -606,6 +609,24 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 			block = prefixSubagentText(strings.Repeat("  ", max(1, item.Depth))+"  ", report.block)
 		}
 		return []subagentReport{{id: scope + "tool:" + callID, line: prefixSubagentActivity(prefix, line), block: block, terminal: report.terminal, emitPlain: true, style: report.style}}, nil
+	case v1.EventToolOutputDelta:
+		if t.tools == nil {
+			t.tools = make(map[string]*streamToolTracker)
+		}
+		if t.tools[scope] == nil {
+			t.tools[scope] = &streamToolTracker{}
+		}
+		payload, err := v1.DecodeEventData(item.Event)
+		if err != nil {
+			return nil, err
+		}
+		output := payload.(*v1.ToolOutputDelta)
+		report := t.tools[scope].output(output)
+		if report.line == "" {
+			return nil, nil
+		}
+		block := prefixSubagentText(strings.Repeat("  ", max(1, item.Depth))+"  ", report.block)
+		return []subagentReport{{id: scope + "tool:" + output.ToolCallID, line: prefixSubagentActivity(prefix, report.line), block: block, style: report.style}}, nil
 	case v1.EventTaskProgress:
 		payload, err := v1.DecodeEventData(item.Event)
 		if err != nil {
@@ -694,6 +715,10 @@ func (t *streamToolTracker) describeReport(item v1.Event) streamToolReport {
 		t.calls = make(map[string]streamToolCall)
 	}
 	call := t.calls[callID]
+	if pending, ok := t.pending[callID]; ok {
+		call.output = pending
+		delete(t.pending, callID)
+	}
 	if name != "" {
 		call.name = name
 		call.style = toolActivityStyle(name)
@@ -716,17 +741,69 @@ func (t *streamToolTracker) describeReport(item v1.Event) streamToolReport {
 	} else if status == "failure" && call.input != nil {
 		block = truncateToolBlock(formatFailedToolRequest(call.input), maxToolBlockLines)
 	}
+	if terminalEvent && call.name == "shell" {
+		output := toolActivityOutputTail(item.Data)
+		if output == "" {
+			output = call.output.String()
+		}
+		if output == "" && result != "" {
+			call.output.Write(result)
+			output = call.output.String()
+		}
+		if output != "" {
+			block = output
+		}
+	}
 	style := call.style
 	if status == "failure" || status == "interrupted" {
 		style = terminal.TextStyleDefault
 	}
 	if terminalEvent && callID != "" {
+		if t.done == nil {
+			t.done = make(map[string]bool)
+		}
+		t.done[callID] = true
+		delete(t.pending, callID)
 		delete(t.calls, callID)
 	}
 	return streamToolReport{
 		line: streamToolStatus(status, toolActivityError(item.Data)), label: toolActivityLabel(call.name, call.input), block: block,
 		terminal: terminalEvent, style: style,
 	}
+}
+
+func (t *streamToolTracker) output(item *v1.ToolOutputDelta) streamToolReport {
+	if item == nil || item.ToolCallID == "" {
+		return streamToolReport{}
+	}
+	if t.done[item.ToolCallID] {
+		return streamToolReport{}
+	}
+	call, ok := t.calls[item.ToolCallID]
+	if !ok {
+		if t.pending == nil {
+			t.pending = make(map[string]shellOutputTail)
+		}
+		pending := t.pending[item.ToolCallID]
+		pending.Write(item.Delta)
+		t.pending[item.ToolCallID] = pending
+		return streamToolReport{}
+	}
+	call.output.Write(item.Delta)
+	t.calls[item.ToolCallID] = call
+	return streamToolReport{line: "  ◐ Running " + toolActivityLabel(call.name, call.input), block: call.output.String(), style: call.style}
+}
+
+func writeStreamToolOutput(options streamOptions, tracker *streamToolTracker, item *v1.ToolOutputDelta) error {
+	report := tracker.output(item)
+	if report.line == "" || options.renderer == nil {
+		return nil
+	}
+	text := report.line
+	if report.block != "" {
+		text += "\n" + report.block
+	}
+	return options.renderer.UpdateStyled([]terminal.StyledText{{Text: text, Style: report.style}})
 }
 
 func writeStreamToolEvent(options streamOptions, tracker *streamToolTracker, item v1.Event) error {
@@ -936,6 +1013,12 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 						_ = options.renderer.Update([]string{line})
 					} else {
 						fmt.Fprintln(options.stderr, line)
+					}
+				}
+			case *v1.ToolOutputDelta:
+				if options.format != "jsonl" {
+					if err := writeStreamToolOutput(options, &toolTracker, value); err != nil {
+						return streamResult{err: err}
 					}
 				}
 			}

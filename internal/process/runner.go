@@ -14,6 +14,7 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -47,10 +48,12 @@ type Request struct {
 	Cwd     string            `json:"cwd,omitempty"`
 	Env     map[string]string `json:"env,omitempty"`
 	Timeout time.Duration     `json:"timeout,omitempty"`
+	Output  io.Writer         `json:"-"`
 }
 
 type Result struct {
 	Output     string `json:"output"`
+	OutputTail string `json:"output_tail"`
 	ExitCode   int    `json:"exit_code"`
 	TimedOut   bool   `json:"timed_out"`
 	Cancelled  bool   `json:"cancelled"`
@@ -144,7 +147,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
 		return Result{}, err
 	}
 
-	capture := &boundedWriter{limit: r.config.MaxOutputBytes, output: r.config.Output}
+	capture := &boundedWriter{limit: r.config.MaxOutputBytes, output: r.config.Output, stream: request.Output}
 	var outputPipe *io.PipeWriter
 	var stored <-chan storedResult
 	if r.config.OutputStore != nil {
@@ -218,6 +221,7 @@ func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
 		}
 	}
 	result.Output, result.Truncated = capture.result()
+	result.OutputTail = capture.tail.String()
 	if command.ProcessState != nil {
 		result.ExitCode = command.ProcessState.ExitCode()
 	}
@@ -333,12 +337,15 @@ type boundedWriter struct {
 	data      []byte
 	limit     int64
 	output    io.Writer
+	stream    io.Writer
 	truncated bool
+	tail      lineTail
 }
 
 func (w *boundedWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	w.tail.Write(p)
 	remaining := w.limit - int64(len(w.data))
 	if remaining > 0 {
 		keep := int64(len(p))
@@ -354,10 +361,67 @@ func (w *boundedWriter) Write(p []byte) (int, error) {
 			w.output = nil
 		}
 	}
+	if w.stream != nil {
+		if _, err := w.stream.Write(p); err != nil {
+			w.stream = nil
+		}
+	}
 	if int64(len(p)) > remaining {
 		w.truncated = true
 	}
 	return len(p), nil
+}
+
+const (
+	outputTailLines     = 3
+	outputTailLineBytes = 16 << 10
+)
+
+type lineTail struct {
+	lines    []string
+	pending  []byte
+	carriage bool
+}
+
+func (t *lineTail) Write(value []byte) {
+	for _, char := range value {
+		if t.carriage {
+			t.carriage = false
+			if char != '\n' {
+				t.pending = t.pending[:0]
+			}
+		}
+		switch char {
+		case '\n':
+			t.lines = append(t.lines, string(t.pending))
+			t.pending = t.pending[:0]
+		case '\r':
+			t.carriage = true
+		default:
+			t.pending = append(t.pending, char)
+			if len(t.pending) > outputTailLineBytes {
+				start := len(t.pending) - outputTailLineBytes
+				for start < len(t.pending) && !utf8.RuneStart(t.pending[start]) {
+					start++
+				}
+				t.pending = t.pending[start:]
+			}
+		}
+	}
+	if len(t.lines) > outputTailLines {
+		t.lines = t.lines[len(t.lines)-outputTailLines:]
+	}
+}
+
+func (t lineTail) String() string {
+	lines := append([]string(nil), t.lines...)
+	if len(t.pending) != 0 {
+		lines = append(lines, string(t.pending))
+	}
+	if len(lines) > outputTailLines {
+		lines = lines[len(lines)-outputTailLines:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func (w *boundedWriter) result() (string, bool) {

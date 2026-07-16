@@ -131,11 +131,12 @@ func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	if err != nil || resolvedCwd != input.ResolvedCwd {
 		return Result{}, errors.New("shell: cwd changed after planning")
 	}
-	result, err := runner.Run(ctx, process.Request{Shell: input.ResolvedShell, Command: input.Command, Cwd: input.Cwd, Env: input.Env, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond})
+	result, err := runner.Run(ctx, process.Request{Shell: input.ResolvedShell, Command: input.Command, Cwd: input.Cwd, Env: input.Env, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond, Output: call.Output})
 	if err != nil {
 		return Result{}, err
 	}
 	metadata := map[string]any{"exit_code": result.ExitCode, "timed_out": result.TimedOut, "cancelled": result.Cancelled, "truncated": result.Truncated}
+	metadata["output_tail"] = result.OutputTail
 	if result.OutputID != "" {
 		metadata["output_id"] = result.OutputID
 		metadata["output_bytes"] = result.OutputSize

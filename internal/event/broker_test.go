@@ -102,3 +102,31 @@ func TestLiveBrokerPublishesReasoningSummaryDone(t *testing.T) {
 		t.Fatalf("payload = %#v", done)
 	}
 }
+
+func TestLiveBrokerPublishesToolOutput(t *testing.T) {
+	broker := event.NewBroker()
+	events, closeSubscription := broker.Subscribe("ses_test", 1)
+	defer closeSubscription()
+	broker.Publish("ses_test", protocol.Event{Type: protocol.EventToolOutputDelta, ToolCallID: "call_test", Text: "line\n"})
+
+	payload, err := v1.DecodeEventData(<-events)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := payload.(*v1.ToolOutputDelta)
+	if output.ToolCallID != "call_test" || output.Delta != "line\n" {
+		t.Fatalf("payload = %#v", output)
+	}
+}
+
+func TestLiveBrokerDropsToolOutputWithoutClosingSlowSubscriber(t *testing.T) {
+	broker := event.NewBroker()
+	events, closeSubscription := broker.Subscribe("ses_test", 1)
+	defer closeSubscription()
+	broker.Publish("ses_test", protocol.Event{Type: protocol.EventToolOutputDelta, ToolCallID: "call", Text: "first"})
+	broker.Publish("ses_test", protocol.Event{Type: protocol.EventToolOutputDelta, ToolCallID: "call", Text: "dropped"})
+	broker.Publish("ses_test", protocol.Event{Type: protocol.EventFinish})
+	if next, ok := <-events; !ok || next.Type != v1.EventSessionStatus {
+		t.Fatalf("subscriber was closed after output overflow: %#v, open = %v", next, ok)
+	}
+}
