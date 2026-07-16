@@ -140,6 +140,7 @@ type enhancedActivityItem struct {
 	reasoning        bool
 	reasoningSummary bool
 	block            string
+	rendered         string
 }
 
 type enhancedModal struct {
@@ -187,6 +188,7 @@ type enhancedChatRuntime struct {
 	lastCompleteID   string
 	borderCommitted  bool
 	contextTokens    int
+	subagents        subagentStreamTracker
 
 	stream           *client.EventStream
 	streamSessionID  string
@@ -571,6 +573,9 @@ func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns i
 }
 
 func formatActivity(item enhancedActivityItem, now time.Time) string {
+	if item.rendered != "" {
+		return item.rendered
+	}
 	end := now
 	if !item.ended.IsZero() {
 		end = item.ended
@@ -1731,8 +1736,64 @@ func (r *enhancedChatRuntime) stopStream() {
 	r.streamGeneration++
 }
 
+func (r *enhancedChatRuntime) handleSubagentEvent(item *v1.SubagentEvent) error {
+	thinking := r.shell != nil && r.shell.options.thinking
+	reports, err := r.subagents.describe(item, thinking)
+	if err != nil {
+		return err
+	}
+	for _, report := range reports {
+		text := report.line
+		if report.block != "" {
+			text += "\n" + report.block
+		}
+		if report.terminal {
+			for i := 0; i < len(r.activity); i++ {
+				if r.activity[i].id == report.id {
+					r.activity = append(r.activity[:i], r.activity[i+1:]...)
+					break
+				}
+			}
+			if r.shell == nil || r.shell.renderer == nil {
+				continue
+			}
+			styled := terminal.StyledText{Text: text, Style: report.style}
+			if report.block != "" {
+				err = r.shell.renderer.CommitStyledBlock(styled)
+			} else {
+				err = r.shell.renderer.CommitStyled(styled)
+			}
+			if err != nil {
+				return err
+			}
+			r.borderCommitted = false
+			continue
+		}
+		found := false
+		for i := range r.activity {
+			if r.activity[i].id != report.id {
+				continue
+			}
+			r.activity[i].rendered = text
+			r.activity[i].style = report.style
+			found = true
+			break
+		}
+		if !found {
+			r.activity = append(r.activity, enhancedActivityItem{id: report.id, rendered: text, style: report.style, status: "running", started: time.Now()})
+		}
+	}
+	return nil
+}
+
 func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 	switch item.Type {
+	case v1.EventSubagent:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		return r.handleSubagentEvent(payload.(*v1.SubagentEvent))
 	case v1.EventMessagePartDelta:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {

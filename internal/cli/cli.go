@@ -425,6 +425,229 @@ type streamToolReport struct {
 	style    terminal.TextStyle
 }
 
+type subagentMessageState struct {
+	text             strings.Builder
+	reasoning        strings.Builder
+	reasoningSummary bool
+}
+
+type subagentReport struct {
+	id        string
+	line      string
+	block     string
+	terminal  bool
+	emitPlain bool
+	style     terminal.TextStyle
+}
+
+type subagentStreamTracker struct {
+	messages map[string]*subagentMessageState
+	tools    map[string]*streamToolTracker
+}
+
+func subagentPrefix(item *v1.SubagentEvent) string {
+	if item == nil {
+		return ""
+	}
+	depth := item.Depth
+	if depth < 1 {
+		depth = 1
+	}
+	name := strings.TrimSpace(item.TaskName)
+	if name == "" {
+		name = "task"
+	}
+	return strings.Repeat("  ", depth) + "[" + name + "] "
+}
+
+func prefixSubagentText(prefix, text string) string {
+	lines := strings.Split(text, "\n")
+	for i := range lines {
+		lines[i] = prefix + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) ([]subagentReport, error) {
+	if item == nil || item.TaskID == "" || item.Depth < 1 || !v1.KnownEvent(item.Event.Type) {
+		return nil, nil
+	}
+	scope := fmt.Sprintf("%d:%s:", item.Depth, item.TaskID)
+	prefix := subagentPrefix(item)
+	switch item.Event.Type {
+	case "session.assistant.started":
+		var payload struct {
+			MessageID string `json:"message_id"`
+		}
+		if err := json.Unmarshal(item.Event.Data, &payload); err != nil {
+			return nil, err
+		}
+		messageID := payload.MessageID
+		if messageID == "" {
+			messageID = "assistant"
+		}
+		key := scope + "message:" + messageID
+		if t.messages == nil {
+			t.messages = make(map[string]*subagentMessageState)
+		}
+		if t.messages[key] == nil {
+			t.messages[key] = &subagentMessageState{}
+		}
+		return []subagentReport{{id: key + ":response", line: prefix + "working…", emitPlain: true, style: terminal.TextStyleMuted}}, nil
+	case v1.EventMessagePartDelta:
+		payload, err := v1.DecodeEventData(item.Event)
+		if err != nil {
+			return nil, err
+		}
+		delta := payload.(*v1.MessagePartDelta)
+		messageID := delta.MessageID
+		if messageID == "" {
+			messageID = "assistant"
+		}
+		key := scope + "message:" + messageID
+		if t.messages == nil {
+			t.messages = make(map[string]*subagentMessageState)
+		}
+		state := t.messages[key]
+		if state == nil {
+			state = &subagentMessageState{}
+			t.messages[key] = state
+		}
+		switch delta.Kind {
+		case "text":
+			state.text.WriteString(delta.Delta)
+			line := prefixSubagentText(prefix, "response: "+state.text.String())
+			return []subagentReport{{id: key + ":response", line: line, style: terminal.TextStyleMuted}}, nil
+		case "reasoning_summary":
+			if !state.reasoningSummary {
+				state.reasoning.Reset()
+				state.reasoningSummary = true
+			}
+			if delta.Done && delta.Delta != "" {
+				state.reasoning.Reset()
+				state.reasoning.WriteString(delta.Delta)
+			} else {
+				state.reasoning.WriteString(delta.Delta)
+			}
+			line := prefixSubagentText(prefix, "thought: "+singleLineReasoningSummary(state.reasoning.String()))
+			return []subagentReport{{id: key + ":reasoning", line: line, terminal: delta.Done, emitPlain: delta.Done, style: terminal.TextStyleMuted}}, nil
+		case "reasoning":
+			if !thinking || state.reasoningSummary {
+				return nil, nil
+			}
+			state.reasoning.WriteString(delta.Delta)
+			line := prefixSubagentText(prefix, "reasoning: "+singleLineReasoningSummary(state.reasoning.String()))
+			return []subagentReport{{id: key + ":reasoning", line: line, style: terminal.TextStyleMuted}}, nil
+		default:
+			return []subagentReport{{id: key + ":status", line: prefix + "status: " + delta.Kind, style: terminal.TextStyleMuted}}, nil
+		}
+	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
+		var payload struct {
+			MessageID string `json:"message_id"`
+			Error     string `json:"error"`
+		}
+		if err := json.Unmarshal(item.Event.Data, &payload); err != nil {
+			return nil, err
+		}
+		messageID := payload.MessageID
+		if messageID == "" {
+			messageID = "assistant"
+		}
+		key := scope + "message:" + messageID
+		state := t.messages[key]
+		status := "✓"
+		if item.Event.Type == "session.assistant.error" {
+			status = "✗"
+		} else if item.Event.Type == "session.assistant.interrupted" {
+			status = "■"
+		}
+		text := "response complete"
+		if state != nil && strings.TrimSpace(state.text.String()) != "" {
+			text = "response: " + state.text.String()
+		}
+		if payload.Error != "" {
+			text += " · " + payload.Error
+		}
+		delete(t.messages, key)
+		return []subagentReport{{id: key + ":response", line: prefixSubagentText(prefix, status+" "+text), terminal: true, emitPlain: true, style: terminal.TextStyleMuted}}, nil
+	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
+		if t.tools == nil {
+			t.tools = make(map[string]*streamToolTracker)
+		}
+		tracker := t.tools[scope]
+		if tracker == nil {
+			tracker = &streamToolTracker{}
+			t.tools[scope] = tracker
+		}
+		callID, _, _, _ := toolActivityPayload(item.Event.Data)
+		report := tracker.describeReport(item.Event)
+		block := ""
+		if report.block != "" {
+			block = prefixSubagentText(strings.Repeat("  ", max(1, item.Depth))+"  ", report.block)
+		}
+		return []subagentReport{{id: scope + "tool:" + callID, line: prefixSubagentText(prefix, report.line), block: block, terminal: report.terminal, emitPlain: true, style: report.style}}, nil
+	case v1.EventTaskProgress:
+		payload, err := v1.DecodeEventData(item.Event)
+		if err != nil {
+			return nil, err
+		}
+		progress := payload.(*v1.TaskProgress)
+		line := fmt.Sprintf("task: %s · %s tokens · %d tools", progress.Agent, formatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
+		terminalEvent := progress.Status != "pending" && progress.Status != "running"
+		return []subagentReport{{id: scope + "task:" + progress.TaskID, line: prefix + line, terminal: terminalEvent, emitPlain: true, style: terminal.TextStyleMuted}}, nil
+	case v1.EventSessionStatus:
+		payload, err := v1.DecodeEventData(item.Event)
+		if err != nil {
+			return nil, err
+		}
+		status := payload.(*v1.SessionStatus)
+		if status.Kind == "idle" || status.Kind == "finish" || status.Kind == "usage" || status.Kind == "tool_call_complete" {
+			return nil, nil
+		}
+		return []subagentReport{{id: scope + "status:" + status.MessageID, line: prefix + "status: " + status.Kind, terminal: true, emitPlain: true, style: terminal.TextStyleMuted}}, nil
+	case "session.context.initialized", "session.context.changed", "session.context.replaced":
+		lines := agentsLoadedActivities(item.Event)
+		reports := make([]subagentReport, 0, len(lines))
+		for i, line := range lines {
+			reports = append(reports, subagentReport{id: fmt.Sprintf("%scontext:%d", scope, i), line: prefix + line, terminal: true, emitPlain: true, style: terminal.TextStyleMuted})
+		}
+		return reports, nil
+	default:
+		return nil, nil
+	}
+}
+
+func writeStreamSubagentEvent(options streamOptions, tracker *subagentStreamTracker, item *v1.SubagentEvent) error {
+	reports, err := tracker.describe(item, options.thinking)
+	if err != nil {
+		return err
+	}
+	for _, report := range reports {
+		text := report.line
+		if report.block != "" {
+			text += "\n" + report.block
+		}
+		if options.renderer != nil {
+			styled := terminal.StyledText{Text: text, Style: report.style}
+			if report.terminal {
+				if report.block != "" {
+					err = options.renderer.CommitStyledBlock(styled)
+				} else {
+					err = options.renderer.CommitStyled(styled)
+				}
+			} else {
+				err = options.renderer.UpdateStyled([]terminal.StyledText{styled})
+			}
+		} else if report.emitPlain {
+			_, err = fmt.Fprintln(options.stderr, terminal.Sanitize(text))
+		}
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // toolActivityStyle returns the transcript style shared by the standard and
 // enhanced chat renderers. Read-only discovery and retrieval tools are muted
 // so they remain visible without competing with actions that change state.
@@ -569,6 +792,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 	interrupted := false
 	interruptCount := 0
 	var toolTracker streamToolTracker
+	var subagentTracker subagentStreamTracker
 	interrupts, _ := ctx.Value(interruptKey{}).(<-chan os.Signal)
 	requestInterrupt := func() error {
 		interruptCount++
@@ -646,6 +870,12 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				return streamResult{err: decodeErr}
 			}
 			switch value := payload.(type) {
+			case *v1.SubagentEvent:
+				if options.format != "jsonl" {
+					if err := writeStreamSubagentEvent(options, &subagentTracker, value); err != nil {
+						return streamResult{err: err}
+					}
+				}
 			case *v1.MessagePartDelta:
 				if value.Kind == "text" {
 					streamed.WriteString(value.Delta)

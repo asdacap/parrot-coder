@@ -50,6 +50,11 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			event: v1.Event{Type: v1.EventMessagePartDelta, Data: json.RawMessage(`{"message_id":"msg_1","part_id":"reasoning_1:2","kind":"reasoning_summary","delta":"","done":true}`)},
 			want:  &v1.MessagePartDelta{MessageID: "msg_1", PartID: "reasoning_1:2", Kind: "reasoning_summary", Done: true},
 		},
+		{
+			name:  "subagent event",
+			event: v1.Event{Type: v1.EventSubagent, Data: json.RawMessage(`{"task_id":"task_1","task_name":"explore","depth":2,"event":{"id":"evt_child","type":"message.part.delta","session_id":"ses_child","data":{"message_id":"msg_child","kind":"text","delta":"result"}}}`)},
+			want:  &v1.SubagentEvent{TaskID: "task_1", TaskName: "explore", Depth: 2, Event: v1.Event{ID: "evt_child", Type: v1.EventMessagePartDelta, SessionID: "ses_child", Data: json.RawMessage(`{"message_id":"msg_child","kind":"text","delta":"result"}`)}},
+		},
 	}
 
 	for _, test := range tests {
@@ -70,6 +75,7 @@ func TestDecodeSessionInputEventDataRejectsUnknownFields(t *testing.T) {
 		{Type: v1.EventSessionInputAdmitted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","content":"hello","delivery":"steer","extra":true}`)},
 		{Type: v1.EventSessionInputPromoted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","extra":true}`)},
 		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","agent":"explore","status":"running","usage":{},"tool_uses":0,"extra":true}`)},
+		{Type: v1.EventSubagent, Data: json.RawMessage(`{"task_id":"task_1","task_name":"explore","depth":1,"event":{"id":"evt_child","type":"session.status","data":{}},"extra":true}`)},
 	} {
 		if _, err := v1.DecodeEventData(event); err == nil {
 			t.Fatalf("DecodeEventData(%q) accepted an unknown field", event.Type)
