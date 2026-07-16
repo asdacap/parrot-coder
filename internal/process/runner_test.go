@@ -18,6 +18,12 @@ import (
 
 type memoryOutputStore struct{ data []byte }
 
+type directSandbox struct{}
+
+func (directSandbox) command(shell, script, _ string) (string, []string, error) {
+	return shell, []string{"-c", script}, nil
+}
+
 func (s *memoryOutputStore) Store(_ context.Context, reader io.Reader) (StoredOutput, error) {
 	data, err := io.ReadAll(reader)
 	s.data = append([]byte(nil), data...)
@@ -32,6 +38,7 @@ func testRunner(t *testing.T, config Config) *Runner {
 		t.Fatal(err)
 	}
 	config.Workspace = ws
+	config.sandbox = directSandbox{}
 	if config.Timeout == 0 {
 		config.Timeout = 2 * time.Second
 	}

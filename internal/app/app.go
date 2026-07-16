@@ -268,7 +268,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	result.outputs = outputs
 	changes := change.NewService(change.Config{})
 	snapshots := snapshot.NewService(db, snapshot.Config{})
-	processes, err := process.NewRunner(process.Config{Workspace: ws, OutputStore: tool.NewProcessOutputStore(outputs)})
+	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs)})
 	if err != nil {
 		return nil, fmt.Errorf("app: process: %w", err)
 	}

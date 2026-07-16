@@ -20,6 +20,7 @@ import (
 
 type Config struct {
 	Workspace              *workspace.Workspace
+	WorkingDirectory       string
 	Environment            map[string]string
 	MaxOutputBytes         int64
 	Timeout                time.Duration
@@ -27,6 +28,7 @@ type Config struct {
 	Output                 io.Writer
 	OutputStore            OutputStore
 	AllowUnsafeEnvironment bool
+	sandbox                sandbox
 }
 
 type StoredOutput struct {
@@ -57,7 +59,10 @@ type Result struct {
 	OutputSize int64  `json:"output_size,omitempty"`
 }
 
-type Runner struct{ config Config }
+type Runner struct {
+	config  Config
+	sandbox sandbox
+}
 
 // DefaultShell returns the user's configured shell when it is an absolute,
 // executable regular file, and otherwise falls back to the system POSIX shell.
@@ -91,7 +96,19 @@ func NewRunner(config Config) (*Runner, error) {
 	if config.TerminationGrace <= 0 {
 		config.TerminationGrace = 500 * time.Millisecond
 	}
-	return &Runner{config: config}, nil
+	implementation := config.sandbox
+	if implementation == nil {
+		workingDirectory := config.WorkingDirectory
+		if workingDirectory == "" {
+			workingDirectory = config.Workspace.Root()
+		}
+		resolved, err := config.Workspace.ResolveRead(workingDirectory)
+		if err != nil {
+			return nil, fmt.Errorf("process: resolve working directory: %w", err)
+		}
+		implementation = platformSandbox(config.Workspace, resolved)
+	}
+	return &Runner{config: config, sandbox: implementation}, nil
 }
 
 // Run treats the command as arbitrary process execution. The shell path is an
@@ -142,7 +159,23 @@ func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
 			result <- storedResult{output: output, err: storeErr}
 		}()
 	}
-	command := exec.Command(request.Shell, "-c", request.Command)
+	resolvedShell, err := executableFile(request.Shell)
+	if err != nil {
+		if outputPipe != nil {
+			_ = outputPipe.CloseWithError(err)
+			<-stored
+		}
+		return Result{}, fmt.Errorf("process: shell: %w", err)
+	}
+	program, arguments, err := r.sandbox.command(resolvedShell, request.Command, resolved)
+	if err != nil {
+		if outputPipe != nil {
+			_ = outputPipe.CloseWithError(err)
+			<-stored
+		}
+		return Result{}, fmt.Errorf("process: sandbox: %w", err)
+	}
+	command := exec.Command(program, arguments...)
 	command.Dir = resolved
 	command.Env = environment
 	command.Stdin = nil
@@ -195,6 +228,21 @@ func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
 	return result, nil
 }
 
+func executableFile(path string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return "", err
+	}
+	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		return "", errors.New("not an executable regular file")
+	}
+	return resolved, nil
+}
+
 type storedResult struct {
 	output StoredOutput
 	err    error
@@ -231,8 +279,8 @@ func groupExists(pgid int) bool {
 }
 
 func (r *Runner) environment(overrides map[string]string) ([]string, error) {
-	values := map[string]string{}
-	for _, name := range []string{"HOME", "LANG", "LC_ALL", "PATH", "TERM", "TMPDIR", "TZ"} {
+	values := map[string]string{"TMPDIR": "/tmp"}
+	for _, name := range []string{"HOME", "LANG", "LC_ALL", "PATH", "TERM", "TZ"} {
 		if value, ok := os.LookupEnv(name); ok && !unsafeEnvironmentName(name) {
 			values[name] = value
 		}

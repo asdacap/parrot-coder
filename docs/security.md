@@ -36,7 +36,7 @@ login, device login, refresh, text generation, and tool-call canaries.
 - New paths validate the nearest existing parent.
 - Paths and preimage hashes are revalidated immediately before mutation.
 - External roots require explicit canonical capabilities.
-- A working directory is not a sandbox.
+- Structured file tools remain confined by canonical workspace capabilities.
 
 ## Permissions
 
@@ -68,7 +68,17 @@ ends when the session runtime or Parrot process exits.
 
 ## Processes
 
-Shell permission means arbitrary process execution. The process runner:
+Shell permission allows arbitrary process execution inside a mandatory platform
+sandbox. On Linux, Parrot uses Bubblewrap with a read-only host filesystem, a
+writable workspace, read-only existing project metadata (`.git`, `.parrot`, and
+project `parrot.jsonc` along the configuration path), a private `/tmp`, user and
+PID namespaces, and no capabilities. On macOS it applies equivalent filesystem
+write restrictions through the system `/usr/bin/sandbox-exec` and grants a
+writable `/tmp`. Both backends retain host network access. Parrot fails shell
+execution when the platform sandbox is unavailable; permission approval does
+not bypass the sandbox.
+
+The process runner also:
 
 - does not inherit interactive stdin;
 - creates a process group;
@@ -77,8 +87,13 @@ Shell permission means arbitrary process execution. The process runner:
 - constructs the environment deliberately;
 - separates nonzero exit status from infrastructure failure.
 
-Platform sandboxing may be added, but command parsing is never represented as a
-security boundary.
+Shell subprocesses may read host files that are readable by the invoking user,
+but can write only the workspace and private temporary area. Repository and
+Parrot metadata inside the workspace are read-only to shell commands; use
+reviewed structured tools for intended changes. Network destinations are not
+restricted. Configured formatter, LSP, and MCP processes are trusted local
+services and do not use the agent shell sandbox. Command parsing is never
+represented as a security boundary.
 
 ## Changes and Recovery
 

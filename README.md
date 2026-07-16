@@ -66,6 +66,15 @@ toolchains, build systems, package managers, and developer tools such as `go`,
 `python3`, `java`, `docker`, and `kubectl`. Available optional utilities are
 listed in agent context without warnings for tools that are absent.
 
+Agent shell commands are OS-sandboxed. Linux requires Bubblewrap and
+unprivileged user namespaces; the Nix package and development shell include
+Bubblewrap. macOS uses the system Seatbelt executable. The host filesystem is
+read-only, the workspace is writable except for existing `.git`, `.parrot`, and
+project configuration metadata along the startup working-directory path, and
+host network access is retained. Linux provides a private `/tmp`; macOS grants
+the sandboxed command a writable `/tmp`. Shell commands fail closed when the
+sandbox is unavailable.
+
 ## Quick Start
 
 ### ChatGPT OAuth
@@ -258,8 +267,9 @@ terminal controls, and binds approvals to canonical inputs, resources, and
 operation hashes. File mutations revalidate canonical paths and preimage hashes,
 stage writes in destination directories, and journal undo/redo state.
 
-Permission to run a shell, MCP server, LSP server, or formatter is permission to
-run local code. Parrot is not an OS sandbox, cannot protect against another
+Permission to run an MCP server, LSP server, or formatter is permission to run
+local code with the invoking user's authority. Parrot's shell sandbox cannot
+protect against another
 same-user process racing filesystem operations, and cannot guarantee exactly-once
 remote provider execution after an uncertain crash. Multi-file filesystem
 rollback is best effort across process or machine failure; the SQLite event and

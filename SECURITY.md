@@ -27,9 +27,14 @@ Credentials, canonical permission binding, workspace containment, bounded I/O,
 terminal sanitation, process-group cleanup, and loopback HTTP binding are in
 scope for security reports.
 
-Parrot is not an operating-system sandbox. A user-approved shell or configured
-local executable has the invoking user's authority. Another same-user process,
-a compromised provider account, malicious dependencies used to build Parrot,
-and the confidentiality of intentionally fetched or submitted content are
-outside the isolation boundary. The unauthenticated HTTP API must remain on
+User-approved agent shell commands run in a mandatory operating-system sandbox:
+Bubblewrap on Linux and Seatbelt on macOS. The host filesystem is read-only,
+the workspace is writable except for existing repository and Parrot metadata
+along the startup configuration path, and network access is allowed. Shell
+execution fails when the sandbox is unavailable. Configured local formatter,
+LSP, and MCP executables remain trusted services with the invoking user's
+authority. Another same-user process, a
+compromised provider account, malicious dependencies used to build Parrot, and
+the confidentiality of intentionally readable, fetched, or submitted content
+are outside the isolation boundary. The unauthenticated HTTP API must remain on
 loopback or be placed behind an independently managed authenticated proxy.
