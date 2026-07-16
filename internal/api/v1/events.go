@@ -20,6 +20,7 @@ const (
 	EventSessionInputPromoted = "session.input.promoted"
 	EventTodoUpdated          = "todo.updated"
 	EventTaskProgress         = "task.progress"
+	EventSubagent             = "subagent.event"
 )
 
 // Event is used for both durable and disposable live events. Sequence and
@@ -58,6 +59,17 @@ type TaskProgress struct {
 	Status     string `json:"status"`
 	Usage      Usage  `json:"usage"`
 	ToolUses   int    `json:"tool_uses"`
+}
+
+// SubagentEvent projects an event from an isolated child session onto its
+// parent's event stream. Depth is relative to the session receiving this
+// event: a direct child has depth 1. TaskName is currently the child agent ID,
+// which is the human-facing name available on task requests.
+type SubagentEvent struct {
+	TaskID   string `json:"task_id"`
+	TaskName string `json:"task_name"`
+	Depth    int    `json:"depth"`
+	Event    Event  `json:"event"`
 }
 
 type SessionStatus struct {
@@ -114,6 +126,7 @@ var EventManifest = []EventDefinition{
 	{Name: EventSessionInputPromoted, Durable: true, Payload: "SessionInputPromoted"},
 	{Name: EventTodoUpdated, Durable: true, Payload: "TodoUpdated"},
 	{Name: EventTaskProgress, Payload: "TaskProgress"},
+	{Name: EventSubagent, Payload: "SubagentEvent"},
 	{Name: "session.selection.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.initialized", Durable: true, Payload: "object"},
 	{Name: "session.context.observed", Durable: true, Payload: "object"},
@@ -171,6 +184,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &TodoUpdated{}
 	case EventTaskProgress:
 		target = &TaskProgress{}
+	case EventSubagent:
+		target = &SubagentEvent{}
 	default:
 		if !KnownEvent(event.Type) {
 			return nil, errors.New("v1: unknown event type")

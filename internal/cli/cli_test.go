@@ -739,6 +739,24 @@ func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
 	}
 }
 
+func TestEnhancedSubagentEventUsesDepthAndTaskPrefix(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "checking"})
+	envelope, _ := json.Marshal(v1.SubagentEvent{
+		TaskID: "task-review", TaskName: "review", Depth: 2,
+		Event: v1.Event{Type: v1.EventMessagePartDelta, Data: delta},
+	})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: envelope}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 {
+		t.Fatalf("activity = %#v", runtime.activity)
+	}
+	if got := formatActivity(runtime.activity[0], runtime.activity[0].started); got != "    [review] response: checking" {
+		t.Fatalf("subagent activity = %q", got)
+	}
+}
+
 func TestFormatTokenCountByHundreds(t *testing.T) {
 	tests := []struct {
 		tokens int
@@ -1276,6 +1294,42 @@ func TestStreamToolTrackerCommitsEditAndFailureBlocks(t *testing.T) {
 	}
 	if len(tracker.calls) != 0 {
 		t.Fatalf("terminal tool calls remained tracked: %#v", tracker.calls)
+	}
+}
+
+func TestStreamSubagentEventPrefixesCompletedResponseByDepth(t *testing.T) {
+	var output bytes.Buffer
+	options := streamOptions{stderr: &output}
+	var tracker subagentStreamTracker
+	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "review result"})
+	item := &v1.SubagentEvent{TaskID: "task-review", TaskName: "review", Depth: 2, Event: v1.Event{Type: v1.EventMessagePartDelta, Data: delta}}
+	if err := writeStreamSubagentEvent(options, &tracker, item); err != nil {
+		t.Fatal(err)
+	}
+	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
+	item.Event = v1.Event{Type: "session.assistant.complete", Data: complete}
+	if err := writeStreamSubagentEvent(options, &tracker, item); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "    [review] ✓ response: review result\n" {
+		t.Fatalf("subagent output = %q", got)
+	}
+}
+
+func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
+	var tracker subagentStreamTracker
+	pending := json.RawMessage(`{"call_id":"shell-call","name":"shell","input":{"command":"exit 1"}}`)
+	item := &v1.SubagentEvent{TaskID: "task-explore", TaskName: "explore", Depth: 1, Event: v1.Event{Type: "session.tool.pending", Data: pending}}
+	if _, err := tracker.describe(item, false); err != nil {
+		t.Fatal(err)
+	}
+	item.Event = v1.Event{Type: "session.tool.failure", Data: json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)}
+	reports, err := tracker.describe(item, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].line != "  [explore] ✗ tool: exit status 1" || reports[0].block != "    request:\n      command: exit 1" {
+		t.Fatalf("tool report = %#v", reports)
 	}
 }
 

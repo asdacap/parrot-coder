@@ -328,7 +328,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, err
 	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
-	subagentExecutor := &appSubagentExecutor{sessions: sessions, project: info, providers: providerRegistry, defaultSelection: defaultSelection, live: live}
+	subagentExecutor := &appSubagentExecutor{sessions: sessions, events: repository, project: info, providers: providerRegistry, defaultSelection: defaultSelection, live: live}
 	subagents := subagent.NewManager(subagentExecutor, subagent.Config{OnProgress: func(task subagent.Task) {
 		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, Data: data})
@@ -983,6 +983,7 @@ func skillMetadata(registry *skill.Registry) string {
 
 type appSubagentExecutor struct {
 	sessions         *session.Service
+	events           *event.Repository
 	coordinator      *agent.Coordinator
 	project          project.Info
 	providers        *agent.ProviderRegistry
@@ -1031,35 +1032,14 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	if err != nil {
 		return "", err
 	}
+	stopEvents := e.forwardEvents(child.ID, execution)
+	defer stopEvents()
 	messageID, err := id.New("msg")
 	if err != nil {
 		return "", err
 	}
 	if _, err := e.sessions.Admit(ctx, child.ID, session.AdmitParams{MessageID: messageID, Content: execution.Request.Prompt, Delivery: session.DeliverySteer}); err != nil {
 		return "", err
-	}
-	var progressDone chan struct{}
-	stopProgress := func() {}
-	if e.live != nil && execution.ReportProgress != nil {
-		events, unsubscribe := e.live.Subscribe(child.ID, 128)
-		progressDone = make(chan struct{})
-		stop := make(chan struct{})
-		stopProgress = func() { close(stop); unsubscribe(); <-progressDone }
-		go func() {
-			defer close(progressDone)
-			for {
-				select {
-				case item, ok := <-events:
-					if !ok {
-						return
-					}
-					reportSubagentEvent(execution.ReportProgress, item)
-				case <-stop:
-					return
-				}
-			}
-		}()
-		defer stopProgress()
 	}
 	if err := e.coordinator.Resume(ctx, child.ID); err != nil {
 		if ctx.Err() != nil {
@@ -1085,7 +1065,144 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	return "", errors.New("app: subagent produced no assistant output")
 }
 
+// forwardEvents projects both durable child lifecycle/tool events and
+// disposable provider deltas onto the parent session. Nested projections are
+// flattened while their relative depth is increased, so a terminal only needs
+// one subscription regardless of subagent recursion.
+func (e *appSubagentExecutor) forwardEvents(childSession string, execution subagent.Execution) func() {
+	if e.live == nil {
+		return func() {}
+	}
+	liveEvents, unsubscribeLive := e.live.Subscribe(childSession, 256)
+	var durableEvents <-chan event.Event
+	var durableSubscription *event.Subscription
+	if e.events != nil {
+		durableSubscription = e.events.Subscribe(childSession, 256)
+		durableEvents = durableSubscription.Events
+	}
+	stop := make(chan struct{})
+	done := make(chan struct{})
+	forwardLive := func(item v1.Event) {
+		reportSubagentEvent(execution.ReportProgress, item)
+		e.publishSubagentEvent(execution, item)
+	}
+	forwardDurable := func(item event.Event) {
+		sequence, created := item.Sequence, item.CreatedAt
+		e.publishSubagentEvent(execution, v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, Sequence: &sequence, Data: item.Data, CreatedAt: &created})
+	}
+	go func() {
+		defer close(done)
+		for {
+			select {
+			case item, ok := <-liveEvents:
+				if !ok {
+					liveEvents = nil
+					continue
+				}
+				forwardLive(item)
+			case item, ok := <-durableEvents:
+				if !ok {
+					durableEvents = nil
+					continue
+				}
+				// Provider deltas are published before the durable assistant
+				// completion they lead to. Drain ready deltas first so the parent
+				// observes the same causal order as a direct session subscriber.
+				if strings.HasPrefix(item.Type, "session.assistant.") && item.Type != "session.assistant.started" {
+					for {
+						select {
+						case liveItem, liveOK := <-liveEvents:
+							if !liveOK {
+								liveEvents = nil
+								break
+							}
+							forwardLive(liveItem)
+						default:
+							goto liveDrained
+						}
+					}
+				}
+			liveDrained:
+				forwardDurable(item)
+			case <-stop:
+				// The execution is complete by the time stop is closed. Drain events
+				// which were already queued without waiting on subscriptions that stay
+				// open for the lifetime of the application. Disposable provider deltas
+				// must be drained before durable completion events, or a final answer
+				// could be rendered as complete before its text arrives.
+				for {
+					select {
+					case item, ok := <-liveEvents:
+						if !ok {
+							liveEvents = nil
+							goto durableDrain
+						}
+						forwardLive(item)
+					default:
+						goto durableDrain
+					}
+				}
+			durableDrain:
+				for {
+					select {
+					case item, ok := <-durableEvents:
+						if !ok {
+							return
+						}
+						forwardDurable(item)
+					default:
+						return
+					}
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() {
+			close(stop)
+			<-done
+			unsubscribeLive()
+			if durableSubscription != nil {
+				durableSubscription.Close()
+			}
+		})
+	}
+}
+
+func (e *appSubagentExecutor) publishSubagentEvent(execution subagent.Execution, item v1.Event) {
+	projected := v1.SubagentEvent{TaskID: execution.TaskID, TaskName: execution.Request.Agent, Depth: 1, Event: item}
+	if item.Type == v1.EventSubagent {
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return
+		}
+		projected = *payload.(*v1.SubagentEvent)
+		projected.Depth++
+	} else if item.Type == v1.EventTaskProgress {
+		// A task.progress event on a child session describes that child's own
+		// subtask. Attribute it to the nested task rather than to the child that
+		// launched it.
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return
+		}
+		progress := payload.(*v1.TaskProgress)
+		projected.TaskID = progress.TaskID
+		projected.TaskName = progress.Agent
+		projected.Depth = 2
+	}
+	data, err := json.Marshal(projected)
+	if err != nil {
+		return
+	}
+	e.live.PublishEvent(v1.Event{Type: v1.EventSubagent, SessionID: execution.ParentSession, Data: data})
+}
+
 func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {
+	if report == nil {
+		return
+	}
 	switch item.Type {
 	case v1.EventSessionStatus:
 		var status v1.SessionStatus

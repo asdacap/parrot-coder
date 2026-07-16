@@ -534,6 +534,75 @@ func TestReportSubagentEventConvertsUsageAndToolCalls(t *testing.T) {
 	}
 }
 
+func TestPublishSubagentEventPreservesNestedTaskAndDepth(t *testing.T) {
+	live := event.NewBroker()
+	parentEvents, unsubscribe := live.Subscribe("parent", 4)
+	defer unsubscribe()
+	executor := &appSubagentExecutor{live: live}
+	execution := subagent.Execution{TaskID: "outer-task", ParentSession: "parent", Request: subagent.Request{Agent: "explore"}}
+
+	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "working"})
+	executor.publishSubagentEvent(execution, v1.Event{Type: v1.EventMessagePartDelta, SessionID: "child", Data: delta})
+	direct := decodeSubagentEvent(t, <-parentEvents)
+	if direct.TaskID != "outer-task" || direct.TaskName != "explore" || direct.Depth != 1 || direct.Event.SessionID != "child" {
+		t.Fatalf("direct projection = %#v", direct)
+	}
+
+	innerData, _ := json.Marshal(v1.SubagentEvent{TaskID: "inner-task", TaskName: "review", Depth: 1, Event: v1.Event{Type: v1.EventMessagePartDelta, SessionID: "grandchild", Data: delta}})
+	executor.publishSubagentEvent(execution, v1.Event{Type: v1.EventSubagent, SessionID: "child", Data: innerData})
+	nested := decodeSubagentEvent(t, <-parentEvents)
+	if nested.TaskID != "inner-task" || nested.TaskName != "review" || nested.Depth != 2 || nested.Event.SessionID != "grandchild" {
+		t.Fatalf("nested projection = %#v", nested)
+	}
+
+	progressData, _ := json.Marshal(v1.TaskProgress{TaskID: "inner-task", Agent: "review", Status: "running"})
+	executor.publishSubagentEvent(execution, v1.Event{Type: v1.EventTaskProgress, SessionID: "child", Data: progressData})
+	progress := decodeSubagentEvent(t, <-parentEvents)
+	if progress.TaskID != "inner-task" || progress.TaskName != "review" || progress.Depth != 2 {
+		t.Fatalf("nested progress projection = %#v", progress)
+	}
+}
+
+func TestForwardSubagentEventsRelaysLiveEventsAndProgress(t *testing.T) {
+	live := event.NewBroker()
+	parentEvents, unsubscribeParent := live.Subscribe("parent", 2)
+	defer unsubscribeParent()
+	var progress []subagent.Progress
+	executor := &appSubagentExecutor{live: live}
+	stop := executor.forwardEvents("child", subagent.Execution{
+		TaskID: "task-explore", ParentSession: "parent", Request: subagent.Request{Agent: "explore"},
+		ReportProgress: func(item subagent.Progress) { progress = append(progress, item) },
+	})
+
+	usage, _ := json.Marshal(v1.SessionStatus{MessageID: "child-message", Kind: "usage", Usage: &v1.Usage{TotalTokens: 42}})
+	live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "child", Data: usage})
+	select {
+	case item := <-parentEvents:
+		projected := decodeSubagentEvent(t, item)
+		if projected.Depth != 1 || projected.TaskName != "explore" || projected.Event.Type != v1.EventSessionStatus {
+			t.Fatalf("projection = %#v", projected)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("live child event was not relayed")
+	}
+	stop()
+	if len(progress) != 1 || progress[0].Usage.TotalTokens != 42 {
+		t.Fatalf("progress = %#v", progress)
+	}
+}
+
+func decodeSubagentEvent(t *testing.T, item v1.Event) *v1.SubagentEvent {
+	t.Helper()
+	if item.Type != v1.EventSubagent {
+		t.Fatalf("event type = %q, want %q", item.Type, v1.EventSubagent)
+	}
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return payload.(*v1.SubagentEvent)
+}
+
 func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
