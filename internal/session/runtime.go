@@ -365,19 +365,27 @@ func (s *Service) StartTool(ctx context.Context, sessionID, callID string) error
 }
 
 func (s *Service) SettleTool(ctx context.Context, sessionID, callID, status, result, errorText string) error {
+	return s.SettleToolWithOutput(ctx, sessionID, callID, status, result, errorText, "")
+}
+
+func (s *Service) SettleToolWithOutput(ctx context.Context, sessionID, callID, status, result, errorText, outputTail string) error {
 	if status != "success" && status != "failure" && status != "interrupted" {
 		return errors.New("session: invalid terminal tool status")
 	}
-	return s.transitionTool(ctx, sessionID, callID, status, result, errorText)
+	return s.transitionTool(ctx, sessionID, callID, status, result, errorText, outputTail)
 }
 
-func (s *Service) transitionTool(ctx context.Context, sessionID, callID, status, resultText, errorText string) error {
+func (s *Service) transitionTool(ctx context.Context, sessionID, callID, status, resultText, errorText string, outputTail ...string) error {
 	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		var name string
 		if err := tx.QueryRowContext(ctx, `SELECT name FROM session_tool_call WHERE id=? AND session_id=?`, callID, sessionID).Scan(&name); err != nil {
 			return nil, nil, err
 		}
-		payload, _ := json.Marshal(map[string]string{"call_id": callID, "tool_name": name, "status": status, "result": resultText, "error": errorText})
+		tail := ""
+		if len(outputTail) > 0 {
+			tail = outputTail[0]
+		}
+		payload, _ := json.Marshal(map[string]string{"call_id": callID, "tool_name": name, "status": status, "result": resultText, "error": errorText, "output_tail": tail})
 		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 			query := `UPDATE session_tool_call SET status=? WHERE id=? AND session_id=? AND status='pending'`
 			args := []any{status, callID, sessionID}

@@ -84,6 +84,8 @@ func (b *Broker) Publish(sessionID string, item protocol.Event) {
 			status.ErrorCode = item.ProviderError.Code
 		}
 		eventType, payload = v1.EventSessionStatus, status
+	case protocol.EventToolOutputDelta:
+		eventType, payload = v1.EventToolOutputDelta, v1.ToolOutputDelta{ToolCallID: item.ToolCallID, Delta: item.Text}
 	default:
 		return
 	}
@@ -112,11 +114,54 @@ func (b *Broker) PublishEvent(event v1.Event) {
 		select {
 		case listener <- event:
 		default:
+			if disposableToolOutput(event) {
+				continue
+			}
+			if evictDisposableToolOutput(listener) {
+				listener <- event
+				continue
+			}
+			select {
+			case listener <- event:
+				continue
+			default:
+			}
 			close(listener)
 			delete(b.listeners[event.SessionID], id)
 		}
 	}
 	if len(b.listeners[event.SessionID]) == 0 {
 		delete(b.listeners, event.SessionID)
+	}
+}
+
+func disposableToolOutput(event v1.Event) bool {
+	if event.Type == v1.EventToolOutputDelta {
+		return true
+	}
+	if event.Type != v1.EventSubagent {
+		return false
+	}
+	payload, err := v1.DecodeEventData(event)
+	return err == nil && disposableToolOutput(payload.(*v1.SubagentEvent).Event)
+}
+
+func evictDisposableToolOutput(listener chan v1.Event) bool {
+	queued := make([]v1.Event, 0, cap(listener))
+	for {
+		select {
+		case item := <-listener:
+			queued = append(queued, item)
+		default:
+			removed := false
+			for _, item := range queued {
+				if !removed && disposableToolOutput(item) {
+					removed = true
+					continue
+				}
+				listener <- item
+			}
+			return removed
+		}
 	}
 }

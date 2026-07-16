@@ -1563,6 +1563,31 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	}
 }
 
+func TestShellOutputTailStreamsAndCommitsLastThreeLines(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
+	pending := json.RawMessage(`{"call_id":"shell_call","name":"shell","input":{"command":"run"}}`)
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.running", Data: json.RawMessage(`{"call_id":"shell_call"}`)})
+
+	for _, delta := range []string{"one\ntw", "o\nthree\nfour", "\nfive"} {
+		data, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "shell_call", Delta: delta})
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventToolOutputDelta, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows := runtime.activityRows(time.Now(), 80)
+	if len(rows) != 1 || !strings.Contains(rows[0], "three\nfour\nfive") || strings.Contains(rows[0], "one") || strings.Contains(rows[0], "two") {
+		t.Fatalf("live rows = %#v", rows)
+	}
+
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"shell_call","tool_name":"shell","result":"one\ntwo\nthree\nfour\nfive"}`)})
+	got := output.String()
+	if !strings.Contains(got, "three\nfour\nfive") || strings.Contains(got, "one\ntwo") {
+		t.Fatalf("committed shell output = %q", got)
+	}
+}
+
 func TestEnhancedFailedToolCommitsInputAsIndentedYAML(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{

@@ -21,7 +21,11 @@ import (
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 var errInvalidModalAnswer = errors.New("invalid modal answer")
 
-const maxToolBlockLines = 10
+const (
+	maxToolBlockLines   = 10
+	maxShellOutputLines = 3
+	maxShellOutputBytes = 16 << 10
+)
 
 func isExecutionHaltKey(key terminal.Key) bool {
 	return key.Kind == terminal.KeyEscape || key.Kind == terminal.KeyInterrupt
@@ -141,6 +145,50 @@ type enhancedActivityItem struct {
 	reasoningSummary bool
 	block            string
 	rendered         string
+	output           shellOutputTail
+}
+
+type shellOutputTail struct {
+	lines    []string
+	pending  []rune
+	carriage bool
+}
+
+func (t *shellOutputTail) Write(delta string) {
+	for _, char := range delta {
+		if t.carriage {
+			t.carriage = false
+			if char != '\n' {
+				t.pending = t.pending[:0]
+			}
+		}
+		switch char {
+		case '\n':
+			t.lines = append(t.lines, string(t.pending))
+			t.pending = t.pending[:0]
+		case '\r':
+			t.carriage = true
+		default:
+			t.pending = append(t.pending, char)
+			if len(t.pending) > maxShellOutputBytes {
+				t.pending = t.pending[len(t.pending)-maxShellOutputBytes:]
+			}
+		}
+	}
+	if len(t.lines) > maxShellOutputLines {
+		t.lines = t.lines[len(t.lines)-maxShellOutputLines:]
+	}
+}
+
+func (t shellOutputTail) String() string {
+	lines := append([]string(nil), t.lines...)
+	if len(t.pending) != 0 {
+		lines = append(lines, string(t.pending))
+	}
+	if len(lines) > maxShellOutputLines {
+		lines = lines[len(lines)-maxShellOutputLines:]
+	}
+	return strings.Join(lines, "\n")
 }
 
 type enhancedModal struct {
@@ -168,27 +216,29 @@ type enhancedChatRuntime struct {
 	shell *chatShell
 	state *terminal.EditorState
 
-	busy             bool
-	idleSeen         bool
-	status           string
-	spinner          int
-	interruptCount   int
-	streamed         strings.Builder
-	reasoningText    strings.Builder
-	reasoningSummary bool
-	reasoningParts   map[string]string
-	streamMessageID  string
-	pending          []queuedChatInput
-	modal            *enhancedModal
-	inputMode        enhancedInputMode
-	knownMessages    map[string]bool
-	activity         []enhancedActivityItem
-	completedTools   []enhancedActivityItem
-	planReviewID     string
-	lastCompleteID   string
-	borderCommitted  bool
-	contextTokens    int
-	subagents        subagentStreamTracker
+	busy              bool
+	idleSeen          bool
+	status            string
+	spinner           int
+	interruptCount    int
+	streamed          strings.Builder
+	reasoningText     strings.Builder
+	reasoningSummary  bool
+	reasoningParts    map[string]string
+	streamMessageID   string
+	pending           []queuedChatInput
+	modal             *enhancedModal
+	inputMode         enhancedInputMode
+	knownMessages     map[string]bool
+	activity          []enhancedActivityItem
+	completedTools    []enhancedActivityItem
+	planReviewID      string
+	lastCompleteID    string
+	borderCommitted   bool
+	contextTokens     int
+	subagents         subagentStreamTracker
+	pendingToolOutput map[string]shellOutputTail
+	completedToolIDs  map[string]bool
 
 	stream           *client.EventStream
 	streamSessionID  string
@@ -522,6 +572,9 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 		line := formatActivity(item, now)
 		if item.reasoning && item.status == "thinking" {
 			line = formatReasoningActivity(item, now, columns)
+		}
+		if output := item.output.String(); output != "" {
+			line += "\n" + output
 		}
 		rows = append(rows, terminal.StyledText{Text: line, Style: item.style})
 	}
@@ -1930,6 +1983,12 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			return err
 		}
 		r.updateTaskProgress(payload.(*v1.TaskProgress))
+	case v1.EventToolOutputDelta:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		r.updateToolOutput(payload.(*v1.ToolOutputDelta))
 	case "session.context.initialized", "session.context.changed", "session.context.replaced":
 		for _, line := range agentsLoadedActivities(item) {
 			if r.shell != nil && r.shell.renderer != nil {
@@ -2004,6 +2063,24 @@ func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
 	r.updateTaskProgress(progress)
 }
 
+func (r *enhancedChatRuntime) updateToolOutput(output *v1.ToolOutputDelta) {
+	if output == nil || output.ToolCallID == "" || r.completedToolIDs[output.ToolCallID] {
+		return
+	}
+	for i := range r.activity {
+		if r.activity[i].id == output.ToolCallID {
+			r.activity[i].output.Write(output.Delta)
+			return
+		}
+	}
+	if r.pendingToolOutput == nil {
+		r.pendingToolOutput = make(map[string]shellOutputTail)
+	}
+	pending := r.pendingToolOutput[output.ToolCallID]
+	pending.Write(output.Delta)
+	r.pendingToolOutput[output.ToolCallID] = pending
+}
+
 func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	callID, name, input, result := toolActivityPayload(item.Data)
 	errorText := toolActivityError(item.Data)
@@ -2024,6 +2101,15 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminalEvent := status == "success" || status == "failure" || status == "interrupted"
 	r.upsertActivity(callID, label, status, terminalEvent, false, false)
+	for i := range r.activity {
+		if r.activity[i].id == callID {
+			if pending, ok := r.pendingToolOutput[callID]; ok {
+				r.activity[i].output = pending
+				delete(r.pendingToolOutput, callID)
+			}
+			break
+		}
+	}
 	for i := range r.activity {
 		if r.activity[i].id != callID {
 			continue
@@ -2089,6 +2175,30 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		}
 	}
 	if terminalEvent {
+		for i := range r.activity {
+			if r.activity[i].id == callID && r.activity[i].toolName == "shell" {
+				output := toolActivityOutputTail(item.Data)
+				if output == "" {
+					output = r.activity[i].output.String()
+				}
+				if output == "" && result != "" {
+					var tail shellOutputTail
+					tail.Write(result)
+					output = tail.String()
+				}
+				if output != "" {
+					r.activity[i].block = output
+				}
+				break
+			}
+		}
+	}
+	if terminalEvent {
+		if r.completedToolIDs == nil {
+			r.completedToolIDs = make(map[string]bool)
+		}
+		r.completedToolIDs[callID] = true
+		delete(r.pendingToolOutput, callID)
 		r.queueCompletedTool(callID)
 		if err := r.flushCompletedTools(); err != nil {
 			r.status = "tool activity flush failed"
@@ -2223,6 +2333,14 @@ func toolActivityError(data json.RawMessage) string {
 		return ""
 	}
 	return firstString(raw, "error", "error_message", "message")
+}
+
+func toolActivityOutputTail(data json.RawMessage) string {
+	raw, ok := decodeJSONObject(data)
+	if !ok {
+		return ""
+	}
+	return firstString(raw, "output_tail")
 }
 
 func toolActivityPayload(data json.RawMessage) (string, string, map[string]any, string) {

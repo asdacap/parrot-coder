@@ -35,6 +35,7 @@ type CallContext struct {
 	Questions  *question.Broker
 	Agent      string
 	ToolCallID string
+	Output     io.Writer
 }
 
 type Plan struct {
