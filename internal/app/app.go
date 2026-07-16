@@ -354,10 +354,13 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	toolSnapshot := tools.Materialize()
 	guidance, _ := json.Marshal(toolSnapshot.Definitions())
+	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
+	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
 		AgentPrompt: "You are Parrot Coder, a local coding agent.", ToolGuidance: string(guidance),
 		Skills:    skillMetadata(skills),
 		ConfigDir: paths.Config, ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
+		AvailableCLIUtilities: availableCLIUtilities, AvailableOptionalCLIUtilities: availableOptionalCLIUtilities,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("app: context sources: %w", err)
