@@ -32,7 +32,7 @@ func protectedWorkspacePaths(root, cwd string) []string {
 	}
 	paths := make([]string, 0, len(directories)*3)
 	for _, directory := range directories {
-		for _, name := range []string{".git", ".parrot", "parrot.jsonc"} {
+		for _, name := range []string{".parrot", "parrot.jsonc"} {
 			path := filepath.Join(directory, name)
 			if _, err := os.Lstat(path); err == nil {
 				paths = append(paths, path)
@@ -40,4 +40,56 @@ func protectedWorkspacePaths(root, cwd string) []string {
 		}
 	}
 	return paths
+}
+
+// linkedGitCommonDirectory returns the external common Git directory for a
+// linked worktree. The backlink and standard worktrees layout checks avoid
+// treating an arbitrary project-controlled .git file as a write capability.
+func linkedGitCommonDirectory(root string) (string, bool) {
+	dotGit := filepath.Join(root, ".git")
+	data, err := os.ReadFile(dotGit)
+	if err != nil {
+		return "", false
+	}
+	value := strings.TrimSpace(string(data))
+	const prefix = "gitdir:"
+	if !strings.HasPrefix(value, prefix) {
+		return "", false
+	}
+	gitDirectory := strings.TrimSpace(strings.TrimPrefix(value, prefix))
+	if !filepath.IsAbs(gitDirectory) {
+		gitDirectory = filepath.Join(root, gitDirectory)
+	}
+	gitDirectory, err = filepath.EvalSymlinks(gitDirectory)
+	if err != nil {
+		return "", false
+	}
+
+	backlink, err := os.ReadFile(filepath.Join(gitDirectory, "gitdir"))
+	if err != nil {
+		return "", false
+	}
+	backlinkPath := strings.TrimSpace(string(backlink))
+	if !filepath.IsAbs(backlinkPath) {
+		backlinkPath = filepath.Join(gitDirectory, backlinkPath)
+	}
+	backlinkPath, err = filepath.Abs(backlinkPath)
+	if err != nil || filepath.Clean(backlinkPath) != dotGit {
+		return "", false
+	}
+
+	commonData, err := os.ReadFile(filepath.Join(gitDirectory, "commondir"))
+	if err != nil {
+		return "", false
+	}
+	commonDirectory := strings.TrimSpace(string(commonData))
+	if !filepath.IsAbs(commonDirectory) {
+		commonDirectory = filepath.Join(gitDirectory, commonDirectory)
+	}
+	commonDirectory, err = filepath.EvalSymlinks(commonDirectory)
+	if err != nil || filepath.Dir(filepath.Dir(gitDirectory)) != commonDirectory {
+		return "", false
+	}
+	info, err := os.Stat(commonDirectory)
+	return commonDirectory, err == nil && info.IsDir()
 }

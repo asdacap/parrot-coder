@@ -649,7 +649,7 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 			return nil, err
 		}
 		status := payload.(*v1.SessionStatus)
-		if status.Kind == "idle" || status.Kind == "finish" || status.Kind == "usage" || status.Kind == "tool_call_complete" {
+		if status.Kind == "running" || status.Kind == "idle" || status.Kind == "finish" || status.Kind == "usage" || status.Kind == "tool_call_complete" {
 			return nil, nil
 		}
 		return []subagentReport{{id: scope + "status:" + status.MessageID, line: prefix + "status: " + status.Kind, terminal: true, emitPlain: true, style: terminal.TextStyleMuted}}, nil

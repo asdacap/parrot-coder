@@ -16,7 +16,7 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{".git", ".parrot", "parrot.jsonc"} {
+	for _, name := range []string{".parrot", "parrot.jsonc"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("protected"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -46,7 +46,6 @@ func TestLinuxSandboxCommand(t *testing.T) {
 		{"--unshare-user"}, {"--unshare-pid"}, {"--cap-drop", "ALL"},
 		{"--ro-bind", "/", "/"}, {"--bind", root, root}, {"--tmpfs", "/tmp"},
 		{"--bind", writable, writable},
-		{"--ro-bind", filepath.Join(root, ".git"), filepath.Join(root, ".git")},
 		{"--ro-bind", filepath.Join(root, ".parrot"), filepath.Join(root, ".parrot")},
 		{"--ro-bind", filepath.Join(root, "parrot.jsonc"), filepath.Join(root, "parrot.jsonc")},
 		{"--ro-bind", filepath.Join(nested, "parrot.jsonc"), filepath.Join(nested, "parrot.jsonc")},
@@ -58,6 +57,41 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	}
 	if slices.Contains(args, "--unshare-net") {
 		t.Fatalf("network unexpectedly isolated: %q", args)
+	}
+}
+
+func TestLinuxSandboxAllowsLinkedWorktreeGitMetadata(t *testing.T) {
+	base := t.TempDir()
+	root := filepath.Join(base, "worktree")
+	common := filepath.Join(base, "repository", ".git")
+	gitDirectory := filepath.Join(common, "worktrees", "worktree")
+	bin := filepath.Join(base, "bin")
+	for _, directory := range []string{root, gitDirectory, bin} {
+		if err := os.MkdirAll(directory, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for path, content := range map[string]string{
+		filepath.Join(root, ".git"):              "gitdir: " + gitDirectory + "\n",
+		filepath.Join(gitDirectory, "gitdir"):    filepath.Join(root, ".git") + "\n",
+		filepath.Join(gitDirectory, "commondir"): "../..\n",
+		filepath.Join(bin, "bwrap"):              "#!/bin/sh\n",
+	} {
+		if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv("PATH", bin)
+
+	_, args, err := (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "git commit", root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsSequence(args, []string{"--bind", common, common}) {
+		t.Fatalf("arguments do not make linked Git metadata writable: %q", args)
+	}
+	if containsSequence(args, []string{"--ro-bind", filepath.Join(root, ".git"), filepath.Join(root, ".git")}) {
+		t.Fatalf("worktree .git file unexpectedly read-only: %q", args)
 	}
 }
 

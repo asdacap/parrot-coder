@@ -20,6 +20,9 @@ All notable changes to Parrot Coder will be documented in this file.
 - Added an `unrestricted_shell` tool that requires permission under the default
   policy and executes with the invoking user's local authority without the OS
   sandbox.
+- Sandboxed shell commands may write Git metadata, including the external
+  common Git directory used by a linked worktree, so Git commits work from
+  worktree-based workspaces.
 
 ### Added
 

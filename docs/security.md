@@ -77,10 +77,12 @@ ends when the session runtime or Parrot process exits.
 ## Processes
 
 The default `shell` tool allows arbitrary process execution inside a mandatory
-platform sandbox. On Linux, Parrot uses Bubblewrap with a read-only host filesystem, a
-writable workspace, read-only existing project metadata (`.git`, `.parrot`, and
-project `parrot.jsonc` along the configuration path), a private `/tmp`, user and
-PID namespaces, and no capabilities. On macOS it applies equivalent filesystem
+platform sandbox. On Linux, Parrot uses Bubblewrap with a read-only host
+filesystem, a writable workspace and Git metadata, read-only existing Parrot
+metadata (`.parrot` and project `parrot.jsonc` along the configuration path), a
+private `/tmp`, user and PID namespaces, and no capabilities. Linked-worktree
+common Git directories outside the workspace are writable. On macOS it applies
+equivalent filesystem
 write restrictions through the system `/usr/bin/sandbox-exec` and grants a
 writable `/tmp`. Both backends retain host network access. Parrot fails shell
 execution when the platform sandbox is unavailable; permission approval does
@@ -102,12 +104,12 @@ The process runner also:
 - separates nonzero exit status from infrastructure failure.
 
 Sandboxed shell subprocesses may read host files that are readable by the
-invoking user, but can write only the workspace and private temporary area.
-Repository and Parrot metadata inside the workspace are read-only to sandboxed
-shell commands; use reviewed structured tools for intended changes. Network
-destinations are not restricted. Unrestricted shell, configured formatter, LSP,
-and MCP processes are trusted local execution and do not use the agent shell
-sandbox. Command parsing is never represented as a security boundary.
+invoking user, but can write only the workspace, its linked-worktree Git
+metadata, and private temporary area. Parrot metadata inside the workspace is
+read-only to shell commands; use reviewed structured tools for intended changes.
+Network destinations are not restricted. Unrestricted shell, configured
+formatter, LSP, and MCP processes are trusted local execution and do not use the
+agent shell sandbox. Command parsing is never represented as a security boundary.
 
 ## Changes and Recovery
 

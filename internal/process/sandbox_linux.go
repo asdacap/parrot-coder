@@ -42,6 +42,9 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string)
 	for _, path := range writablePaths {
 		args = append(args, "--bind", path, path)
 	}
+	if commonDirectory, ok := linkedGitCommonDirectory(s.workspace); ok {
+		args = append(args, "--bind", commonDirectory, commonDirectory)
+	}
 	for _, path := range protectedWorkspacePaths(s.workspace, s.workingDirectory) {
 		args = append(args, "--ro-bind", path, path)
 	}
