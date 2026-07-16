@@ -38,7 +38,7 @@ func (a *recordingAuthorizer) Authorize(_ context.Context, request permission.Re
 	return permission.Allow, nil
 }
 
-func phase6Harness(t *testing.T) (context.Context, *workspace.Workspace, *change.Service, *snapshot.Service, string) {
+func workspaceToolHarness(t *testing.T) (context.Context, *workspace.Workspace, *change.Service, *snapshot.Service, string) {
 	t.Helper()
 	ctx := context.Background()
 	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "parrot.db"))
@@ -59,7 +59,7 @@ func phase6Harness(t *testing.T) (context.Context, *workspace.Workspace, *change
 }
 
 func TestEditPermissionReviewHashAndSnapshotIntegration(t *testing.T) {
-	ctx, ws, changes, snapshots, sessionID := phase6Harness(t)
+	ctx, ws, changes, snapshots, sessionID := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), "file")
 	before := []byte("before\n")
 	if err := os.WriteFile(path, before, 0o600); err != nil {
@@ -111,7 +111,7 @@ func TestEditPermissionReviewHashAndSnapshotIntegration(t *testing.T) {
 }
 
 func TestEditRevalidatesAfterPermission(t *testing.T) {
-	ctx, ws, changes, snapshots, sessionID := phase6Harness(t)
+	ctx, ws, changes, snapshots, sessionID := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), "file")
 	before := []byte("before")
 	if err := os.WriteFile(path, before, 0o600); err != nil {
@@ -164,7 +164,7 @@ func TestQuestionToolBlocksForReply(t *testing.T) {
 }
 
 func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T) {
-	_, ws, _, _, _ := phase6Harness(t)
+	_, ws, _, _, _ := workspaceToolHarness(t)
 	raw := json.RawMessage(`{"shell":"/bin/sh","command":"printf ok","env":{"API_TOKEN":"top-secret"}}`)
 	planned, err := NewShellTool(nil).Plan(context.Background(), raw, CallContext{Workspace: ws})
 	if err != nil {
@@ -187,7 +187,7 @@ func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T
 }
 
 func TestShellDefaultsShellAndWorkingDirectory(t *testing.T) {
-	_, ws, _, _, _ := phase6Harness(t)
+	_, ws, _, _, _ := workspaceToolHarness(t)
 	t.Setenv("SHELL", "/bin/sh")
 	planned, err := NewShellTool(nil).Plan(context.Background(), json.RawMessage(`{"command":"printf ok"}`), CallContext{Workspace: ws})
 	if err != nil {
@@ -203,25 +203,8 @@ func TestShellDefaultsShellAndWorkingDirectory(t *testing.T) {
 	}
 }
 
-func TestRegisterPhase6Definitions(t *testing.T) {
-	registry := NewRegistry()
-	if err := RegisterPhase6(registry, Phase6Services{}); err != nil {
-		t.Fatal(err)
-	}
-	definitions := registry.Definitions()
-	want := []string{"apply_patch", "edit", "question", "shell", "todoread", "todowrite"}
-	if len(definitions) != len(want) {
-		t.Fatalf("definitions = %#v", definitions)
-	}
-	for i := range want {
-		if definitions[i].ID != want[i] {
-			t.Fatalf("definition[%d] = %q", i, definitions[i].ID)
-		}
-	}
-}
-
 func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
-	_, ws, changes, _, _ := phase6Harness(t)
+	_, ws, changes, _, _ := workspaceToolHarness(t)
 	tool := NewApplyPatchTool(changes, nil)
 	schema := string(tool.JSONSchema())
 	if !strings.Contains(schema, `"required":["patchText"]`) || strings.Contains(schema, `"required":["patch"]`) {
