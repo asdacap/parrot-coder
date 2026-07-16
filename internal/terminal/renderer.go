@@ -342,7 +342,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	if !frame.ShowDivider && (frame.InputLeft != "" || frame.InputRight != "") {
 		barRows = 1
 	}
-	// Queued previews use only spare input capacity and never reduce the
+	// Pending previews use only spare input capacity and never reduce the
 	// prompt/menu's own row budget.
 	available := max(0, r.maxInputRows-len(promptRows))
 	pendingCount := min(len(frame.Pending), min(2, available))
@@ -350,7 +350,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	for i := len(frame.Pending) - 1; i >= len(frame.Pending)-pendingCount; i-- {
 		item := frame.Pending[i]
 		line, _, _ := strings.Cut(strings.TrimSpace(Sanitize(item)), "\n")
-		group := []string{queuedPreview(line, r.columns)}
+		group := []string{pendingPreview(line, r.columns)}
 		if len(pendingRows) >= available {
 			continue
 		}
@@ -643,12 +643,12 @@ func dividerStatusBar(left, center, right string, columns int) string {
 	return leftPart + strings.Repeat("─", width-leftWidth-displayWidth(rightPart)) + rightPart
 }
 
-func queuedPreview(value string, columns int) string {
+func pendingPreview(value string, columns int) string {
 	const prefix = "$ "
-	const suffix = "  (○ queued)"
+	const suffix = "  (○ pending)"
 	available := columns - displayWidth(prefix) - displayWidth(suffix)
 	if available <= 0 {
-		return truncateWidth(prefix+"queued", max(1, columns-1))
+		return truncateWidth(prefix+"pending", max(1, columns-1))
 	}
 	if displayWidth(value) > available {
 		value = truncateWidth(value, max(1, available-1)) + "…"
