@@ -382,3 +382,60 @@ func newService(t *testing.T) (context.Context, *store.DB, *event.Repository, *s
 	}
 	return ctx, db, repository, service, created.ID
 }
+
+func TestInteractiveClaimLifecycle(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "claim.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := session.NewService(db, event.NewRepository(db))
+	selection := session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	owner := session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 101}
+
+	first, err := service.ClaimInteractive(ctx, owner, session.CreateParams{Title: "first"}, selection, false, func(int) bool { return false })
+	if err != nil || first.Disposition != session.ClaimCreated {
+		t.Fatalf("first claim = %#v, %v", first, err)
+	}
+	retry, err := service.ClaimInteractive(ctx, owner, session.CreateParams{}, selection, false, func(int) bool { return true })
+	if err != nil || retry.Session.ID != first.Session.ID || retry.Disposition != session.ClaimExisting {
+		t.Fatalf("retry = %#v, %v", retry, err)
+	}
+
+	reclaimed, err := service.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 202}, session.CreateParams{}, selection, false, func(pid int) bool { return pid != 101 })
+	if err != nil || reclaimed.Session.ID != first.Session.ID || reclaimed.Disposition != session.ClaimReclaimed {
+		t.Fatalf("reclaimed = %#v, %v", reclaimed, err)
+	}
+
+	cleared, err := service.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 202}, session.CreateParams{Title: "fresh"}, selection, true, func(int) bool { return true })
+	if err != nil || cleared.Session.ID == first.Session.ID || cleared.Disposition != session.ClaimCreated {
+		t.Fatalf("clear = %#v, %v", cleared, err)
+	}
+	items, err := service.List(ctx)
+	if err != nil || len(items) != 2 {
+		t.Fatalf("sessions = %#v, %v", items, err)
+	}
+}
+
+func TestInteractiveClaimDoesNotStealLiveOwner(t *testing.T) {
+	ctx := context.Background()
+	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "live-claim.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	service := session.NewService(db, event.NewRepository(db))
+	selection := session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	first, err := service.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 101}, session.CreateParams{}, selection, false, func(int) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 202}, session.CreateParams{}, selection, false, func(int) bool { return true })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Session.ID == first.Session.ID || second.Disposition != session.ClaimCreated {
+		t.Fatalf("live owner was stolen: first=%#v second=%#v", first, second)
+	}
+}

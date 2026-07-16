@@ -63,6 +63,24 @@ type CreateSessionRequest struct {
 	Variant   *string `json:"variant,omitempty"`
 }
 
+type ClaimSessionRequest struct {
+	WorkingDirectory string  `json:"working_directory"`
+	HostKey          string  `json:"host_key"`
+	PID              int     `json:"pid"`
+	ProjectID        string  `json:"project_id,omitempty"`
+	Title            string  `json:"title,omitempty"`
+	Agent            string  `json:"agent,omitempty"`
+	Mode             string  `json:"mode,omitempty"`
+	Model            string  `json:"model,omitempty"`
+	Variant          *string `json:"variant,omitempty"`
+	ForceNew         bool    `json:"force_new,omitempty"`
+}
+
+type ClaimSessionResponse struct {
+	Session     Session `json:"session"`
+	Disposition string  `json:"disposition"`
+}
+
 // SessionSelection is the resolved execution selection persisted on a session.
 type SessionSelection struct {
 	Agent    string `json:"agent"`

@@ -34,6 +34,7 @@ type Backend interface {
 	Runtime(context.Context) (v1.Runtime, error)
 	ListSessions(context.Context) (v1.SessionList, error)
 	CreateSession(context.Context, v1.CreateSessionRequest) (v1.Session, error)
+	ClaimSession(context.Context, v1.ClaimSessionRequest) (v1.ClaimSessionResponse, error)
 	GetSession(context.Context, string) (v1.Session, error)
 	UpdateSessionSelection(context.Context, string, v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error)
 	DeleteSession(context.Context, string) error

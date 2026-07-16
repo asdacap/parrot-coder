@@ -75,15 +75,16 @@ type Options struct {
 // App owns every long-lived dependency and the optional HTTP handler. Local
 // callers use Client, whose transport invokes Handler without binding a socket.
 type App struct {
-	Paths       appdirs.Paths
-	Project     project.Info
-	Config      config.Result
-	Credentials auth.Store
-	Client      *Client
-	Handler     http.Handler
-	Backend     *httpapi.DomainBackend
-	Commands    *command.Registry
-	Skills      *skill.Registry
+	Paths            appdirs.Paths
+	Project          project.Info
+	WorkingDirectory string
+	Config           config.Result
+	Credentials      auth.Store
+	Client           *Client
+	Handler          http.Handler
+	Backend          *httpapi.DomainBackend
+	Commands         *command.Registry
+	Skills           *skill.Registry
 	// DefaultSelection is incomplete when Open permits model-less startup and
 	// no default model is configured.
 	DefaultSelection v1.SessionSelection
@@ -217,7 +218,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	defaultSelection := session.Selection{Agent: agentID, Provider: providerID, Model: modelID}
 	result := &App{
-		Paths: paths, Project: info, Config: loaded, Credentials: credentials, db: db,
+		Paths: paths, Project: info, WorkingDirectory: cwd, Config: loaded, Credentials: credentials, db: db,
 		DefaultSelection: v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID},
 	}
 	defer func() {

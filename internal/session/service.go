@@ -46,6 +46,25 @@ type CreateParams struct {
 	Title     string
 }
 
+type InteractiveOwner struct {
+	WorkingDirectory string
+	HostKey          string
+	PID              int
+}
+
+type ClaimDisposition string
+
+const (
+	ClaimExisting  ClaimDisposition = "existing"
+	ClaimReclaimed ClaimDisposition = "reclaimed"
+	ClaimCreated   ClaimDisposition = "created"
+)
+
+type InteractiveClaim struct {
+	Session     Session
+	Disposition ClaimDisposition
+}
+
 type Input struct {
 	ID               string
 	SessionID        string
@@ -109,6 +128,16 @@ func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selec
 }
 
 func (s *Service) create(ctx context.Context, params CreateParams, selection Selection) (Session, error) {
+	var result Session
+	err := s.db.WithImmediate(ctx, func(tx *sql.Tx) error {
+		var err error
+		result, err = createTx(ctx, tx, params, selection)
+		return err
+	})
+	return result, err
+}
+
+func createTx(ctx context.Context, tx *sql.Tx, params CreateParams, selection Selection) (Session, error) {
 	sessionID, err := id.New("ses")
 	if err != nil {
 		return Session{}, fmt.Errorf("session: generate ID: %w", err)
@@ -118,7 +147,7 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 	if params.ProjectID != "" {
 		projectID = params.ProjectID
 	}
-	_, err = s.db.SQL().ExecContext(ctx, `
+	_, err = tx.ExecContext(ctx, `
 		INSERT INTO session(id, project_id, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sessionID, projectID, params.Title, selection.Agent, selection.Provider, selection.Model, selection.Variant, formatTime(now), formatTime(now))
@@ -126,6 +155,75 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 		return Session{}, fmt.Errorf("session: create: %w", err)
 	}
 	return Session{ID: sessionID, ProjectID: params.ProjectID, Title: params.Title, Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: selection.Variant, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+// ClaimInteractive atomically selects the session associated with a working
+// directory. A live owner is never displaced; an abandoned owner is replaced.
+func (s *Service) ClaimInteractive(ctx context.Context, owner InteractiveOwner, params CreateParams, selection Selection, forceNew bool, alive func(int) bool) (InteractiveClaim, error) {
+	if owner.WorkingDirectory == "" || owner.HostKey == "" || owner.PID <= 0 {
+		return InteractiveClaim{}, errors.New("session: working directory, host key, and PID are required")
+	}
+	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
+		return InteractiveClaim{}, ErrSelectionRequired
+	}
+	var claim InteractiveClaim
+	err := s.db.WithImmediate(ctx, func(tx *sql.Tx) error {
+		if !forceNew {
+			item, err := scanSession(tx.QueryRowContext(ctx, `
+				SELECT s.id, COALESCE(s.project_id, ''), s.title, s.selected_agent, s.selected_provider, s.selected_model, s.selected_variant, s.created_at, s.updated_at
+				FROM interactive_session_owner o JOIN session s ON s.id=o.session_id
+				WHERE o.working_directory=? AND o.host_key=? AND o.owner_pid=?`, owner.WorkingDirectory, owner.HostKey, owner.PID))
+			if err == nil {
+				claim = InteractiveClaim{Session: item, Disposition: ClaimExisting}
+				return nil
+			}
+			if !errors.Is(err, ErrNotFound) {
+				return err
+			}
+
+			var sessionID, hostKey string
+			var pid int
+			err = tx.QueryRowContext(ctx, `SELECT session_id, host_key, owner_pid FROM interactive_session_owner
+				WHERE working_directory=? ORDER BY claimed_at DESC, session_id DESC LIMIT 1`, owner.WorkingDirectory).Scan(&sessionID, &hostKey, &pid)
+			if errors.Is(err, sql.ErrNoRows) {
+				sessionID = ""
+			} else if err != nil {
+				return fmt.Errorf("session: find interactive owner: %w", err)
+			} else if hostKey == owner.HostKey && alive != nil && alive(pid) {
+				sessionID = ""
+			}
+			if sessionID != "" {
+				now := formatTime(time.Now().UTC())
+				if _, err := tx.ExecContext(ctx, `UPDATE interactive_session_owner SET host_key=?, owner_pid=?, claimed_at=? WHERE session_id=?`, owner.HostKey, owner.PID, now, sessionID); err != nil {
+					return fmt.Errorf("session: reclaim interactive owner: %w", err)
+				}
+				item, err := scanSession(tx.QueryRowContext(ctx, `SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at FROM session WHERE id=?`, sessionID))
+				if err != nil {
+					return err
+				}
+				claim = InteractiveClaim{Session: item, Disposition: ClaimReclaimed}
+				return nil
+			}
+		}
+
+		// /clear moves this process away from its old binding before creating.
+		if forceNew {
+			if _, err := tx.ExecContext(ctx, `DELETE FROM interactive_session_owner WHERE working_directory=? AND host_key=? AND owner_pid=?`, owner.WorkingDirectory, owner.HostKey, owner.PID); err != nil {
+				return err
+			}
+		}
+		item, err := createTx(ctx, tx, params, selection)
+		if err != nil {
+			return err
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO interactive_session_owner(session_id,working_directory,host_key,owner_pid,claimed_at) VALUES(?,?,?,?,?)`, item.ID, owner.WorkingDirectory, owner.HostKey, owner.PID, formatTime(time.Now().UTC()))
+		if err != nil {
+			return fmt.Errorf("session: bind interactive owner: %w", err)
+		}
+		claim = InteractiveClaim{Session: item, Disposition: ClaimCreated}
+		return nil
+	})
+	return claim, err
 }
 
 func (s *Service) Get(ctx context.Context, sessionID string) (Session, error) {

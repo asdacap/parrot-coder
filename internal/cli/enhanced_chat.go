@@ -1509,7 +1509,7 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 	}
 	previousSession := r.shell.current.ID
 	exit, code := r.shell.slash(name, arguments)
-	if name == "/new" || name == "/session" || name == "/connect" || r.shell.current.ID != previousSession {
+	if name == "/new" || name == "/clear" || name == "/session" || name == "/connect" || r.shell.current.ID != previousSession {
 		r.stopStream()
 	}
 	r.borderCommitted = false
@@ -1554,7 +1554,7 @@ func (r *enhancedChatRuntime) submitPrompt(content string) error {
 		r.borderCommitted = false
 	}
 	if r.shell.current.ID == "" {
-		item, err := createChatSession(r.shell.ctx, r.shell.api, r.shell.projectID, content, r.shell.selection)
+		item, err := r.shell.createSession(content, false)
 		if err != nil {
 			return err
 		}

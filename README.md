@@ -173,7 +173,7 @@ REPL. `/status` shows the active agent, model, session, and project.
 Interactive chat has an equivalent for every top-level CLI action: `/help`,
 `/version`, `/run PROMPT`, `/chat`, `/models`, `/usage`, `/modes`, `/agents`,
 `/session`, `/auth`, and `/serve`. It also supports `/model`, `/effort`,
-`/mode`, `/sessions`, `/resume`, `/new`, `/compact`, `/connect`, `/thinking`,
+`/mode`, `/sessions`, `/resume`, `/new`, `/clear`, `/compact`, `/connect`, `/thinking`,
 `/undo`, `/redo`, `/status`, custom commands, and `/exit`.
 
 The management namespaces mirror their CLI forms: `/session list`, `/session
@@ -184,6 +184,12 @@ text. `/serve` starts the existing local runtime in the background and supports
 `/serve status` and `/serve stop`. Credential changes take effect in a new chat.
 Use `/effort` to pick from the active model's reasoning levels, or pass one
 directly, for example `/effort high`.
+
+Interactive chat remembers the active conversation by canonical working
+directory. On startup, Parrot reopens the previous session when its recorded
+host and PID are no longer running. A second live Parrot in the same directory
+gets a separate session. `/clear` (and its `/new` alias) immediately opens a
+fresh durable session without deleting the previous conversation.
 
 Keybindings: Enter submits, Ctrl-J inserts a newline, arrows edit/navigate
 history and choices, Tab completes slash commands, Shift-Tab or Ctrl-X switches modes,

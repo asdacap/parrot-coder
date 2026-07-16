@@ -10,15 +10,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestMigration001UpgradesThrough005AndReopens(t *testing.T) {
+func TestMigration001UpgradesThrough006AndReopens(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "parrot.db")
 	migrations, err := loadMigrations()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 5 {
-		t.Fatalf("migration count = %d, want 5", len(migrations))
+	if len(migrations) != 6 {
+		t.Fatalf("migration count = %d, want 6", len(migrations))
 	}
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -42,7 +42,7 @@ func TestMigration001UpgradesThrough005AndReopens(t *testing.T) {
 		t.Fatal(err)
 	}
 	var count int
-	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM _parrot_migration`).Scan(&count); err != nil || count != 5 {
+	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM _parrot_migration`).Scan(&count); err != nil || count != 6 {
 		t.Fatalf("migration count after upgrade = %d, %v", count, err)
 	}
 	if err := db.Close(); err != nil {

@@ -14,6 +14,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
+	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -76,32 +77,55 @@ func (b *DomainBackend) ListSessions(ctx context.Context) (v1.SessionList, error
 }
 
 func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSessionRequest) (v1.Session, error) {
-	selection := b.DefaultSelection
-	if request.Mode != "" {
-		request.Agent = request.Mode
-	}
-	if request.Variant != nil {
-		selection.Variant = *request.Variant
-	}
-	if request.Agent != "" {
-		selection.Agent = request.Agent
-	}
-	if request.Model != "" {
-		providerID, modelID, qualified := strings.Cut(request.Model, "/")
-		if qualified {
-			selection.Provider, selection.Model = providerID, modelID
-		} else {
-			selection.Model = request.Model
-		}
-	}
-	if !completeSelection(selection) {
-		return v1.Session{}, ErrModelRequired
-	}
-	if err := b.validateSelection(selection); err != nil {
+	selection, err := b.requestSelection(request.Agent, request.Mode, request.Model, request.Variant)
+	if err != nil {
 		return v1.Session{}, err
 	}
 	item, err := b.Sessions.CreateSelected(ctx, session.CreateParams{ProjectID: request.ProjectID, Title: request.Title}, selection)
 	return sessionDTO(item), err
+}
+
+func (b *DomainBackend) requestSelection(agentID, modeID, modelID string, variant *string) (session.Selection, error) {
+	selection := b.DefaultSelection
+	if modeID != "" {
+		agentID = modeID
+	}
+	if variant != nil {
+		selection.Variant = *variant
+	}
+	if agentID != "" {
+		selection.Agent = agentID
+	}
+	if modelID != "" {
+		providerID, selectedModel, qualified := strings.Cut(modelID, "/")
+		if qualified {
+			selection.Provider, selection.Model = providerID, selectedModel
+		} else {
+			selection.Model = modelID
+		}
+	}
+	if !completeSelection(selection) {
+		return session.Selection{}, ErrModelRequired
+	}
+	if err := b.validateSelection(selection); err != nil {
+		return session.Selection{}, err
+	}
+	return selection, nil
+}
+
+func (b *DomainBackend) ClaimSession(ctx context.Context, request v1.ClaimSessionRequest) (v1.ClaimSessionResponse, error) {
+	if request.WorkingDirectory == "" || request.HostKey == "" || request.PID <= 0 {
+		return v1.ClaimSessionResponse{}, ErrInvalid
+	}
+	selection, err := b.requestSelection(request.Agent, request.Mode, request.Model, request.Variant)
+	if err != nil {
+		return v1.ClaimSessionResponse{}, err
+	}
+	claim, err := b.Sessions.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: request.WorkingDirectory, HostKey: request.HostKey, PID: request.PID}, session.CreateParams{ProjectID: request.ProjectID, Title: request.Title}, selection, request.ForceNew, processidentity.Alive)
+	if err != nil {
+		return v1.ClaimSessionResponse{}, err
+	}
+	return v1.ClaimSessionResponse{Session: sessionDTO(claim.Session), Disposition: string(claim.Disposition)}, nil
 }
 
 func (b *DomainBackend) GetSession(ctx context.Context, id string) (v1.Session, error) {

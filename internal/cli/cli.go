@@ -30,6 +30,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
+	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 	"go.yaml.in/yaml/v3"
 )
@@ -343,6 +344,10 @@ type apiClient interface {
 	Models(context.Context) (v1.ModelList, error)
 	SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error)
 	Agents(context.Context) (v1.AgentList, error)
+}
+
+type sessionClaimer interface {
+	ClaimSession(context.Context, v1.ClaimSessionRequest) (v1.ClaimSessionResponse, error)
 }
 
 type resumableClient interface {
@@ -1035,13 +1040,42 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 		}
 	}
 	selection := defaultChatSelection(runtime.DefaultSelection, options.variant)
+	identity, identityErr := processidentity.Load(runtime.Paths.State)
+	if identityErr != nil {
+		fmt.Fprintln(stderr, identityErr)
+		return exitWithReason(ctx, exitError, "process_identity_failed", identityErr)
+	}
+	claimRequest := v1.ClaimSessionRequest{WorkingDirectory: runtime.WorkingDirectory, HostKey: identity.HostKey, PID: identity.PID, ProjectID: runtime.Project.ID}
+	if current.ID == "" && selection.modelName() != "" {
+		claimRequest.Agent, claimRequest.Model = selection.agent, selection.modelName()
+		if selection.variant != "" {
+			claimRequest.Variant = &selection.variant
+		}
+		claimed, claimErr := runtime.Client.ClaimSession(ctx, claimRequest)
+		if claimErr != nil {
+			fmt.Fprintln(stderr, claimErr)
+			return exitWithReason(ctx, exitError, "session_claim_failed", claimErr)
+		}
+		current = claimed.Session
+		if err := applySelection(ctx, api, current.ID, options.agent, options.model, options.variant); err != nil {
+			fmt.Fprintln(stderr, err)
+			return exitWithReason(ctx, exitError, "selection_update_failed", err)
+		}
+		if options.agent != "" || options.model != "" || options.variant != "" {
+			current, err = api.Session(ctx, current.ID)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return exitWithReason(ctx, exitError, "session_refresh_failed", err)
+			}
+		}
+	}
 	if current.ID != "" {
 		selection = selectionFromSession(current, selection.agent)
 	}
 	plainOut := terminal.Writer{W: stdout}
 	shell := &chatShell{
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
-		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, commands: runtime.Commands,
+		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, claimRequest: claimRequest, commands: runtime.Commands,
 		build: a.build, credentials: runtime.Credentials, handler: runtime.Handler,
 		models: models.Items,
 		stdout: plainOut, stderr: stderr, inputTTY: terminal.IsTTY(stdin), outputTTY: terminal.IsTTY(stdout),
@@ -1149,32 +1183,33 @@ func compactTokenCount(value int) string {
 }
 
 type chatShell struct {
-	ctx         context.Context
-	api         apiClient
-	current     v1.Session
-	selection   chatSelection
-	options     codingFlags
-	projectID   string
-	projectRoot string
-	commands    *customcommand.Registry
-	build       BuildInfo
-	credentials auth.Store
-	handler     http.Handler
-	server      *http.Server
-	listener    net.Listener
-	models      []v1.Model
-	stdout      io.Writer
-	stderr      io.Writer
-	reader      *bufio.Reader
-	decoder     *terminal.KeyDecoder
-	editor      *terminal.Editor
-	renderer    *terminal.LiveRenderer
-	enhanced    bool
-	inputTTY    bool
-	outputTTY   bool
-	inputEcho   bool
-	inputEchoed bool
-	columns     int
+	ctx          context.Context
+	api          apiClient
+	current      v1.Session
+	selection    chatSelection
+	options      codingFlags
+	projectID    string
+	projectRoot  string
+	claimRequest v1.ClaimSessionRequest
+	commands     *customcommand.Registry
+	build        BuildInfo
+	credentials  auth.Store
+	handler      http.Handler
+	server       *http.Server
+	listener     net.Listener
+	models       []v1.Model
+	stdout       io.Writer
+	stderr       io.Writer
+	reader       *bufio.Reader
+	decoder      *terminal.KeyDecoder
+	editor       *terminal.Editor
+	renderer     *terminal.LiveRenderer
+	enhanced     bool
+	inputTTY     bool
+	outputTTY    bool
+	inputEcho    bool
+	inputEchoed  bool
+	columns      int
 }
 
 func (s *chatShell) run(first string) int {
@@ -1274,7 +1309,7 @@ func (s *chatShell) run(first string) int {
 		}
 
 		if s.current.ID == "" {
-			item, err := createChatSession(s.ctx, s.api, s.projectID, line, s.selection)
+			item, err := s.createSession(line, false)
 			if err != nil {
 				s.commitError(err.Error())
 				readDraft = true
@@ -1295,6 +1330,25 @@ func (s *chatShell) run(first string) int {
 			s.commitError(result.err.Error())
 		}
 	}
+}
+
+func (s *chatShell) createSession(title string, forceNew bool) (v1.Session, error) {
+	if claimer, ok := s.api.(sessionClaimer); ok && s.claimRequest.WorkingDirectory != "" {
+		request := s.claimRequest
+		line, _, _ := strings.Cut(strings.TrimSpace(title), "\n")
+		if len(line) > 80 {
+			line = line[:80]
+		}
+		request.Title, request.Agent, request.Model, request.ForceNew = line, s.selection.agent, s.selection.modelName(), forceNew
+		if s.selection.variant != "" {
+			request.Variant = &s.selection.variant
+		} else {
+			request.Variant = nil
+		}
+		claimed, err := claimer.ClaimSession(s.ctx, request)
+		return claimed.Session, err
+	}
+	return createChatSession(s.ctx, s.api, s.projectID, title, s.selection)
 }
 
 func (s *chatShell) commitUser(text string) error {
@@ -1415,6 +1469,7 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/serve", Description: "start, stop, or inspect the local API server"},
 	{Value: "/resume", Description: "resume an interrupted session"},
 	{Value: "/new", Description: "start a new session"},
+	{Value: "/clear", Description: "start a fresh session"},
 	{Value: "/compact", Description: "compact the current conversation"},
 	{Value: "/connect", Description: "connect to an API server"},
 	{Value: "/thinking", Description: "toggle reasoning status"},
@@ -1590,9 +1645,18 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		s.authAction(argument)
 	case "/serve":
 		s.serveAction(argument)
-	case "/new":
-		s.current = v1.Session{}
-		s.commitStatus("✓ New session")
+	case "/new", "/clear":
+		if s.selection.modelName() == "" {
+			s.commitError("select a model before starting a new session")
+			break
+		}
+		item, err := s.createSession("", true)
+		if err != nil {
+			s.commitError(err.Error())
+			break
+		}
+		s.current = item
+		s.commitStatus("✓ New session: " + item.ID)
 	case "/connect":
 		if argument == "" {
 			s.commitError("connect requires an http:// or https:// API URL")
@@ -1626,6 +1690,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		}
 		s.api = remote
 		s.current = v1.Session{}
+		s.claimRequest = v1.ClaimSessionRequest{}
 		s.selection = chatSelection{agent: agent}
 		s.models = models.Items
 		s.commitStatus("✓ Connected: " + argument)
@@ -2205,7 +2270,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
+	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
 		return true
 	default:
 		return false
