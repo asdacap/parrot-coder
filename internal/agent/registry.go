@@ -12,7 +12,14 @@ const (
 	BuildID   = "build"
 	PlanID    = "plan"
 	ExploreID = "explore"
+	ReviewID  = "review"
 )
+
+const reviewPrompt = `You are Parrot's code review agent. Perform a read-only, defect-first review of the requested change.
+
+Inspect the complete requested diff or target and enough surrounding code, tests, and call sites to establish whether each issue is real. Report only concrete regressions introduced by the reviewed change that affect correctness, security, performance, or maintainability in a meaningful way. Do not report style nits, speculative concerns, pre-existing problems, or intentional behavior changes.
+
+Return all actionable findings, ordered by severity. For each finding, include a concise severity-tagged title, an exact file path and line, and a short explanation of the affected scenario. If there are no actionable findings, say so explicitly. Do not modify files.`
 
 type Profile struct {
 	ID             string
@@ -46,18 +53,24 @@ func NewRegistry(profiles ...Profile) (*Registry, error) {
 }
 
 func Builtins() []Profile {
-	readTools := []string{"glob", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread"}
+	readTools := []string{"glob", "git_diff", "grep", "read", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread"}
+	reviewTools := []string{"glob", "git_diff", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "todoread"}
 	return []Profile{
 		{ID: BuildID, Prompt: "You are Parrot's build agent. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64},
 		{ID: PlanID, Prompt: "You are Parrot's planning agent. Inspect the project and produce an implementation plan.", AllowedToolIDs: readTools, HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, ReadOnly: true},
 		{ID: ExploreID, Prompt: "You are Parrot's exploration agent. Investigate the project and report evidence.", AllowedToolIDs: readTools, HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 32, ReadOnly: true},
+		{ID: ReviewID, Prompt: reviewPrompt, AllowedToolIDs: reviewTools, HardRules: []string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."}, MaxTurns: 32, ReadOnly: true},
 	}
 }
 
 // Subagents returns task-only profiles, not foreground modes.
 func Subagents() []Profile {
-	readTools := []string{"glob", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread"}
-	return []Profile{{ID: ExploreID, Prompt: "You are Parrot's exploration agent. Investigate the project and report evidence.", AllowedToolIDs: readTools, HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 32, ReadOnly: true}}
+	exploreTools := []string{"glob", "git_diff", "grep", "read", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread"}
+	reviewTools := []string{"glob", "git_diff", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "todoread"}
+	return []Profile{
+		{ID: ExploreID, Prompt: "You are Parrot's exploration agent. Investigate the project and report evidence.", AllowedToolIDs: exploreTools, HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 32, ReadOnly: true},
+		{ID: ReviewID, Prompt: reviewPrompt, AllowedToolIDs: reviewTools, HardRules: []string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."}, MaxTurns: 32, ReadOnly: true},
+	}
 }
 
 func (r *Registry) GetProfile(id string) (Profile, error) { return r.Get(id) }
@@ -96,6 +109,8 @@ func (r *Registry) List() []Profile {
 	r.mu.RLock()
 	result := make([]Profile, 0, len(r.profiles))
 	for _, profile := range r.profiles {
+		profile.AllowedToolIDs = append([]string(nil), profile.AllowedToolIDs...)
+		profile.HardRules = append([]string(nil), profile.HardRules...)
 		result = append(result, profile)
 	}
 	r.mu.RUnlock()
@@ -116,7 +131,7 @@ func (p Profile) AllowsTool(id string) bool {
 
 func readOnlyTool(id string) bool {
 	switch id {
-	case "read", "glob", "grep", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread":
+	case "read", "glob", "git_diff", "grep", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread":
 		return true
 	default:
 		return false

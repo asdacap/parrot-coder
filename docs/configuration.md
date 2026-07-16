@@ -203,6 +203,16 @@ Review the requested code and report concrete findings first.
 `name` and `description` are required. `agent`, `model`, and `allowed-tools` are
 optional. Names contain only ASCII letters, digits, `_`, or `-`.
 
+## Review subagent
+
+Parrot includes a built-in `review` worker and a parent-callable `review` tool.
+The tool accepts a review prompt and an optional model override, launches an
+isolated child session, waits for it, and returns its final findings to the
+parent agent. The worker is defect-first and runtime-enforced read-only; it has
+repository inspection and LSP tools, plus a bounded read-only `git_diff` tool,
+but no mutation, shell, network, or nested delegation tools. It is a task-only
+agent, not a selectable foreground mode.
+
 ## Commands
 
 Commands are discovered from `commands/**/*.md` globally and
