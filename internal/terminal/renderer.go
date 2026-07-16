@@ -116,10 +116,11 @@ type LiveFrame struct {
 }
 
 // StreamMessage is the cumulative text of one in-progress assistant message.
-// Stable rows are moved into normal terminal scrollback while the final,
-// unfinished row remains in the renderer-owned live region. When prior
-// transcript output exists, the renderer places a dim rule before the first
-// answer row.
+// Complete source lines are moved into normal terminal scrollback while the
+// unfinished source line remains in the renderer-owned live region. A fenced
+// code block remains live until its closing fence so highlighting can preserve
+// multiline lexer state. When prior transcript output exists, the renderer
+// places a dim rule before the first answer row.
 type StreamMessage struct {
 	ID     string
 	Prefix string
@@ -136,11 +137,12 @@ const (
 )
 
 type liveStream struct {
-	id      string
-	prefix  string
-	text    string
-	pending []rune
-	started bool
+	id       string
+	prefix   string
+	text     string
+	pending  []rune
+	started  bool
+	markdown markdownState
 }
 
 // LiveRenderer owns the terminal's bounded, redrawable bottom region. No
@@ -156,6 +158,7 @@ type LiveRenderer struct {
 	columnsFn    func() int
 	rows         []string
 	styles       []TextStyle
+	spans        [][]textSpan
 	cursorRow    int
 	cursorCol    int
 	renderedCols int
@@ -302,15 +305,18 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	}
 	r.syncColumns()
 	streamBefore := cloneLiveStream(r.stream)
-	var promoted, streamRows []string
+	var promoted, streamContent richRows
 	if frame.Stream != nil {
 		var err error
-		promoted, streamRows, err = r.advanceStream(*frame.Stream, false)
+		promoted, streamContent, err = r.advanceStream(*frame.Stream, false)
 		if err != nil {
 			r.stream = streamBefore
 			return err
 		}
 	}
+	streamContent = streamContent.tail(r.maxRows)
+	streamRows := streamContent.rows
+	streamSpans := streamContent.spans
 	prompt := frame.Prompt
 	if frame.Busy {
 		spinner := frame.Spinner
@@ -370,7 +376,9 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	// region is redrawn, so it moves into scrollback without jumping past
 	// context or activity rows.
 	if len(streamRows) > remaining {
-		streamRows = streamRows[len(streamRows)-remaining:]
+		start := len(streamRows) - remaining
+		streamRows = streamRows[start:]
+		streamSpans = streamSpans[start:]
 	}
 	remaining -= len(streamRows)
 
@@ -410,6 +418,8 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	rows = append(rows, activity...)
 	styles := make([]TextStyle, len(streamRows)+len(contextRows))
 	styles = append(styles, activityStyles...)
+	spans := append([][]textSpan(nil), streamSpans...)
+	spans = append(spans, make([][]textSpan, len(contextRows)+len(activity))...)
 	// Permanent transcript blocks and transient output are separate visual
 	// regions. Keep their boundary in the live region so it appears immediately
 	// both after a submitted user message and after a response settles. A new
@@ -417,13 +427,14 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	// other transient output retains the gap. The rule must appear before the
 	// answer's first row is old enough to be promoted to scrollback.
 	blockGap := 0
-	if r.committed && !r.streamBlock && len(promoted) == 0 && (r.lastCommit == commitBlock || len(streamRows) > 0) {
+	if r.committed && !r.streamBlock && len(promoted.rows) == 0 && (r.lastCommit == commitBlock || len(streamRows) > 0) {
 		boundary := ""
 		if len(streamRows) > 0 {
 			boundary = assistantSeparatorRow(r.columns)
 		}
 		rows = append([]string{boundary}, rows...)
 		styles = append([]TextStyle{TextStyleDefault}, styles...)
+		spans = append([][]textSpan{nil}, spans...)
 		blockGap = 1
 	}
 	rows = append(rows, inputRows...)
@@ -432,22 +443,23 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		inputStyles[i] = textStyleWhite
 	}
 	styles = append(styles, inputStyles...)
+	spans = append(spans, make([][]textSpan, len(inputRows))...)
 	cursorRow := len(streamRows) + len(contextRows) + len(activity) + blockGap + dividerRows + barRows + len(pendingRows) + len(promptContextRows) + promptCursorRow
 	if !r.tty {
-		if err := r.writePlain(append(promoted, rows...)); err != nil {
+		if err := r.writePlain(append(promoted.rows, rows...)); err != nil {
 			r.stream = streamBefore
 			return err
 		}
 		return nil
 	}
-	if len(promoted) > 0 {
-		if err := r.promoteAndRedraw(promoted, rows, styles, cursorRow, promptCursorCol); err != nil {
+	if len(promoted.rows) > 0 {
+		if err := r.promoteAndRedraw(promoted, rows, styles, spans, cursorRow, promptCursorCol); err != nil {
 			r.stream = streamBefore
 			return err
 		}
 		return nil
 	}
-	if err := r.redrawStyled(rows, styles, cursorRow, promptCursorCol); err != nil {
+	if err := r.redrawRich(rows, styles, spans, cursorRow, promptCursorCol); err != nil {
 		r.stream = streamBefore
 		return err
 	}
@@ -464,18 +476,19 @@ func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 	}
 	r.syncColumns()
 	before := cloneLiveStream(r.stream)
-	rows, _, err := r.advanceStream(message, true)
+	content, _, err := r.advanceStream(message, true)
 	if err != nil {
 		r.stream = before
 		return err
 	}
 	if divider {
-		rows = append(rows, strings.Repeat("─", max(3, r.columns-1)))
+		content.rows = append(content.rows, strings.Repeat("─", max(3, r.columns-1)))
+		content.spans = append(content.spans, nil)
 	}
 	if !r.streamBlock {
-		rows = r.separateAssistantRows(rows)
+		content = r.separateAssistantRichRows(content)
 	}
-	if err := r.commitRows(rows); err != nil {
+	if err := r.commitRowsRich(content.rows, nil, content.spans); err != nil {
 		r.stream = before
 		return err
 	}
@@ -686,18 +699,23 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	rows := r.messageRows(prefix, text)
-	if divider {
-		rows = append(rows, strings.Repeat("─", max(1, r.columns-1)))
-	}
 	if Sanitize(prefix) == "- " {
-		rows = r.separateAssistantRows(rows)
-		if err := r.commitRows(rows); err != nil {
+		content := renderAssistantMarkdown(prefix, text, r.columns, r.color)
+		if divider {
+			content.rows = append(content.rows, strings.Repeat("─", max(1, r.columns-1)))
+			content.spans = append(content.spans, nil)
+		}
+		content = r.separateAssistantRichRows(content)
+		if err := r.commitRowsRich(content.rows, nil, content.spans); err != nil {
 			return err
 		}
 		r.committed = true
 		r.lastCommit = commitBlock
 		return nil
+	}
+	rows := r.messageRows(prefix, text)
+	if divider {
+		rows = append(rows, strings.Repeat("─", max(1, r.columns-1)))
 	}
 	return r.commitRowsAs(rows, commitBlock)
 }
@@ -810,6 +828,7 @@ func (r *LiveRenderer) Commit(text string) error {
 	}
 	r.rows = nil
 	r.styles = nil
+	r.spans = nil
 	r.cursorRow = 0
 	r.cursorCol = 0
 	r.committed = true
@@ -832,6 +851,7 @@ func (r *LiveRenderer) Close() error {
 		if err == nil {
 			r.rows = nil
 			r.styles = nil
+			r.spans = nil
 		}
 	}
 	r.closed = true
@@ -843,16 +863,21 @@ func (r *LiveRenderer) redraw(rows []string, cursorRow, cursorCol int) error {
 }
 
 func (r *LiveRenderer) redrawStyled(rows []string, styles []TextStyle, cursorRow, cursorCol int) error {
-	if r.sameFrame(rows, styles, cursorRow, cursorCol) {
+	return r.redrawRich(rows, styles, nil, cursorRow, cursorCol)
+}
+
+func (r *LiveRenderer) redrawRich(rows []string, styles []TextStyle, spans [][]textSpan, cursorRow, cursorCol int) error {
+	if r.sameFrame(rows, styles, spans, cursorRow, cursorCol) {
 		return nil
 	}
 	var output strings.Builder
-	r.buildRedrawStyled(&output, rows, styles, cursorRow, cursorCol)
+	r.buildRedrawRich(&output, rows, styles, spans, cursorRow, cursorCol)
 	if err := writeAtomic(r.w, output.String()); err != nil {
 		return err
 	}
 	r.rows = append(r.rows[:0], rows...)
 	r.styles = append(r.styles[:0], styles...)
+	r.spans = cloneTextSpans(spans)
 	r.cursorRow = cursorRow
 	r.cursorCol = cursorCol
 	r.renderedCols = r.columns
@@ -862,12 +887,28 @@ func (r *LiveRenderer) redrawStyled(rows []string, styles []TextStyle, cursorRow
 // sameFrame compares the complete terminal-visible state. Comparing only text
 // would incorrectly suppress cursor moves, style changes, or redraws after a
 // terminal resize.
-func (r *LiveRenderer) sameFrame(rows []string, styles []TextStyle, cursorRow, cursorCol int) bool {
+func (r *LiveRenderer) sameFrame(rows []string, styles []TextStyle, spans [][]textSpan, cursorRow, cursorCol int) bool {
 	if r.renderedCols != r.columns || r.cursorRow != cursorRow || r.cursorCol != cursorCol || len(r.rows) != len(rows) {
 		return false
 	}
 	for i := range rows {
-		if r.rows[i] != rows[i] || r.visibleStyleAt(r.styles, i) != r.visibleStyleAt(styles, i) {
+		if r.rows[i] != rows[i] || r.visibleStyleAt(r.styles, i) != r.visibleStyleAt(styles, i) ||
+			!r.visibleSpansEqual(spansAt(r.spans, i), spansAt(spans, i)) {
+			return false
+		}
+	}
+	return true
+}
+
+func (r *LiveRenderer) visibleSpansEqual(left, right []textSpan) bool {
+	if !r.color {
+		return true
+	}
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
 			return false
 		}
 	}
@@ -886,6 +927,10 @@ func (r *LiveRenderer) buildRedraw(output *strings.Builder, rows []string, curso
 }
 
 func (r *LiveRenderer) buildRedrawStyled(output *strings.Builder, rows []string, styles []TextStyle, cursorRow, cursorCol int) {
+	r.buildRedrawRich(output, rows, styles, nil, cursorRow, cursorCol)
+}
+
+func (r *LiveRenderer) buildRedrawRich(output *strings.Builder, rows []string, styles []TextStyle, spans [][]textSpan, cursorRow, cursorCol int) {
 	// Cursor visibility changes surround one buffered write, not persistent UI.
 	output.WriteString("\x1b[?25l")
 	if len(r.rows) > 0 {
@@ -896,7 +941,7 @@ func (r *LiveRenderer) buildRedrawStyled(output *strings.Builder, rows []string,
 	for i := 0; i < count; i++ {
 		output.WriteString("\x1b[2K")
 		if i < len(rows) {
-			output.WriteString(r.decorateStyled(rows[i], styleAt(styles, i)))
+			output.WriteString(r.decorateRich(rows[i], styleAt(styles, i), spansAt(spans, i)))
 		}
 		if i+1 < count {
 			output.WriteString("\r\n")
@@ -909,7 +954,8 @@ func (r *LiveRenderer) buildRedrawStyled(output *strings.Builder, rows []string,
 		} else if cursorRow != count-1 || cursorCol != displayWidth(rows[cursorRow]) {
 			output.WriteByte('\r')
 			moveUp(output, count-1-cursorRow)
-			output.WriteString(r.decorateStyled(prefixWidth(rows[cursorRow], cursorCol), styleAt(styles, cursorRow)))
+			prefix := prefixWidth(rows[cursorRow], cursorCol)
+			output.WriteString(r.decorateRich(prefix, styleAt(styles, cursorRow), clipTextSpans(spansAt(spans, cursorRow), len(prefix))))
 		}
 	}
 	output.WriteString("\x1b[?25h")
@@ -920,12 +966,16 @@ func (r *LiveRenderer) commitRows(rows []string) error {
 }
 
 func (r *LiveRenderer) commitRowsStyled(rows []string, styles []TextStyle) error {
+	return r.commitRowsRich(rows, styles, nil)
+}
+
+func (r *LiveRenderer) commitRowsRich(rows []string, styles []TextStyle, spans [][]textSpan) error {
 	var output strings.Builder
 	if r.tty && len(r.rows) > 0 {
 		r.buildRedraw(&output, nil, 0, 0)
 	}
 	for i, row := range rows {
-		output.WriteString(r.decorateStyled(row, styleAt(styles, i)))
+		output.WriteString(r.decorateRich(row, styleAt(styles, i), spansAt(spans, i)))
 		output.WriteByte('\n')
 	}
 	if err := writeAtomic(r.w, output.String()); err != nil {
@@ -933,6 +983,7 @@ func (r *LiveRenderer) commitRowsStyled(rows []string, styles []TextStyle) error
 	}
 	r.rows = nil
 	r.styles = nil
+	r.spans = nil
 	r.cursorRow = 0
 	r.cursorCol = 0
 	return nil
@@ -962,120 +1013,247 @@ func (r *LiveRenderer) separateAssistantRows(rows []string) []string {
 	return rows
 }
 
+func (r *LiveRenderer) separateAssistantRichRows(rows richRows) richRows {
+	if !r.committed {
+		return rows
+	}
+	rows.rows = append([]string{assistantSeparatorRow(r.columns)}, rows.rows...)
+	rows.spans = append([][]textSpan{nil}, rows.spans...)
+	return rows
+}
+
 func assistantSeparatorRow(columns int) string {
 	return strings.Repeat("─", max(1, columns-1))
 }
 
 func cloneLiveStream(value liveStream) liveStream {
 	value.pending = append([]rune(nil), value.pending...)
+	value.markdown.code = append([]string(nil), value.markdown.code...)
 	return value
 }
 
-func (r *LiveRenderer) advanceStream(message StreamMessage, complete bool) ([]string, []string, error) {
+func (r *LiveRenderer) advanceStream(message StreamMessage, complete bool) (richRows, richRows, error) {
 	message.ID = Sanitize(message.ID)
 	message.Prefix = Sanitize(message.Prefix)
 	clean := Sanitize(message.Text)
 	if message.ID == "" {
-		return nil, nil, errStreamMessageIDEmpty
+		return richRows{}, richRows{}, errStreamMessageIDEmpty
 	}
 	if r.stream.id == "" {
 		r.stream = liveStream{id: message.ID, prefix: message.Prefix}
 	} else if r.stream.id != message.ID {
-		return nil, nil, errStreamMessageConflict
+		return richRows{}, richRows{}, errStreamMessageConflict
 	} else if r.stream.prefix != message.Prefix {
-		return nil, nil, errStreamPrefixChanged
+		return richRows{}, richRows{}, errStreamPrefixChanged
 	}
 	if !strings.HasPrefix(clean, r.stream.text) {
-		return nil, nil, errStreamTextChanged
+		return richRows{}, richRows{}, errStreamTextChanged
 	}
 	r.stream.pending = append(r.stream.pending, []rune(clean[len(r.stream.text):])...)
 	r.stream.text = clean
 
-	prefix := r.stream.prefix
-	if r.stream.started {
-		prefix = strings.Repeat(" ", displayWidth(r.stream.prefix))
-	}
-	rows, boundaries := layoutStreamingRows(prefix, r.stream.pending, r.columns)
-	commitCount := len(rows) - 1
-	if complete {
-		commitCount = len(rows)
-		// A trailing newline creates an empty layout row, not an extra message row.
-		pendingEndsInNewline := len(r.stream.pending) > 0 && r.stream.pending[len(r.stream.pending)-1] == '\n'
-		if commitCount > 0 && (pendingEndsInNewline || len(r.stream.pending) == 0 && strings.HasSuffix(r.stream.text, "\n")) {
-			commitCount--
-		}
-	}
-	if commitCount < 0 {
-		commitCount = 0
-	}
-	promoted := append([]string(nil), rows[:commitCount]...)
-	if commitCount > 0 {
-		consumed := boundaries[commitCount-1]
-		r.stream.pending = append([]rune(nil), r.stream.pending[consumed:]...)
-		r.stream.started = true
-	}
-	if complete {
-		return promoted, nil, nil
-	}
-	return promoted, append([]string(nil), rows[commitCount:]...), nil
-}
-
-// layoutStreamingRows returns rendered rows and, for each row, the number of
-// source runes consumed through the end of that row. Prefix is formatting and
-// is not counted as source.
-func layoutStreamingRows(prefix string, source []rune, columns int) ([]string, []int) {
-	indent := strings.Repeat(" ", displayWidth(prefix))
-	if displayWidth(indent) >= columns {
-		indent = ""
-	}
-	rows := []string{prefix}
-	boundaries := []int{0}
-	row, col := 0, displayWidth(prefix)
-	for index, raw := range source {
-		if raw == '\n' {
-			boundaries[row] = index + 1
-			rows = append(rows, indent)
-			boundaries = append(boundaries, index+1)
-			row++
-			col = displayWidth(indent)
-			continue
-		}
-		for _, value := range expandRune(raw) {
-			width := runeWidth(value)
-			if col > 0 && col+width > columns {
-				boundaries[row] = index
-				rows = append(rows, indent)
-				boundaries = append(boundaries, index)
-				row++
-				col = displayWidth(indent)
+	var promoted richRows
+	for {
+		newline := -1
+		for index, value := range r.stream.pending {
+			if value == '\n' {
+				newline = index
+				break
 			}
-			rows[row] += string(value)
-			col += width
 		}
-		boundaries[row] = index + 1
+		if newline < 0 {
+			break
+		}
+		line := string(r.stream.pending[:newline])
+		r.stream.pending = append([]rune(nil), r.stream.pending[newline+1:]...)
+		rendered := r.renderStreamLine(line, &r.stream.markdown, r.stream.started)
+		promoted.append(rendered)
+		if len(rendered.rows) > 0 {
+			r.stream.started = true
+		}
 	}
-	return rows, boundaries
+
+	if complete {
+		if len(r.stream.pending) > 0 {
+			rendered := r.renderStreamLine(string(r.stream.pending), &r.stream.markdown, r.stream.started)
+			promoted.append(rendered)
+			r.stream.pending = nil
+			if len(rendered.rows) > 0 {
+				r.stream.started = true
+			}
+		}
+		// An unterminated fence is still response content. Flush its buffered
+		// source as code when the provider completes instead of losing it while
+		// waiting for a closing delimiter that can no longer arrive.
+		if r.stream.markdown.inFence {
+			if !r.stream.markdown.plainFence {
+				rendered := renderCodeBlock(markdownPrefix(r.stream.prefix, r.stream.started), r.stream.markdown, r.columns, r.color)
+				promoted.append(rendered)
+				if len(rendered.rows) > 0 {
+					r.stream.started = true
+				}
+			}
+			r.stream.markdown = markdownState{}
+		}
+		return promoted, richRows{}, nil
+	}
+
+	prefix := markdownPrefix(r.stream.prefix, r.stream.started)
+	return promoted, r.renderStreamPreview(prefix), nil
 }
 
-func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, styles []TextStyle, cursorRow, cursorCol int) error {
+// renderStreamPreview bounds Markdown parsing, syntax highlighting, and layout
+// before Frame applies its row cap. Completed content is never truncated: this
+// limit applies only to the redrawable view of an unfinished source line or an
+// open fence.
+func (r *LiveRenderer) renderStreamPreview(prefix string) richRows {
+	state := r.stream.markdown
+	if state.inFence {
+		if len(r.stream.pending) > maxLiveMarkdownRunes {
+			return renderPlainLiveRunesTail(prefix, r.stream.pending, r.columns, r.maxRows)
+		}
+		pending := string(r.stream.pending)
+		closing := pending != "" && isFenceClosing(pending, state.fenceChar, state.fenceLength)
+		if state.plainFence {
+			if closing || pending == "" {
+				return richRows{}
+			}
+			return renderPlainLiveTail(prefix, pending, r.columns, r.maxRows)
+		}
+		return renderOpenFencePreview(prefix, state, pending, !closing, r.columns, r.maxRows, r.color)
+	}
+
+	if len(r.stream.pending) > maxLiveMarkdownRunes {
+		return renderPlainLiveRunesTail(prefix, r.stream.pending, r.columns, r.maxRows)
+	}
+	pending := string(r.stream.pending)
+	previewState := state
+	live := richRows{}
+	if pending != "" {
+		live = renderMarkdownLine(prefix, pending, r.columns, &previewState, r.color)
+	}
+	if previewState.inFence {
+		live = renderOpenFencePreview(prefix, previewState, "", false, r.columns, r.maxRows, r.color)
+	}
+	return live.tail(r.maxRows)
+}
+
+func renderPlainLiveRunesTail(prefix string, value []rune, columns, maxRows int) richRows {
+	start := max(0, len(value)-maxLiveMarkdownRunes)
+	linePrefix := prefix
+	if start > 0 {
+		linePrefix = hangingIndent(prefix)
+	}
+	return layoutRichRuns(withMarkdownPrefix(linePrefix, []textRun{{text: string(value[start:])}}), hangingIndent(prefix), columns).tail(maxRows)
+}
+
+func renderOpenFencePreview(prefix string, state markdownState, pending string, includePending bool, columns, maxRows int, color bool) richRows {
+	pendingRunes := utf8.RuneCountInString(pending)
+	if includePending && pendingRunes > maxLiveMarkdownRunes {
+		return renderPlainLiveTail(prefix, pending, columns, maxRows)
+	}
+	extraLines, extraBytes := 0, 0
+	if includePending {
+		extraLines, extraBytes = 1, len(pending)
+	}
+	if state.codeBytes+extraBytes <= maxLiveMarkdownRunes && len(state.code)+extraLines <= maxLiveMarkdownLines {
+		preview := state
+		preview.code = append([]string(nil), state.code...)
+		if includePending {
+			appendCodeLine(&preview, pending)
+		}
+		return renderCodeBlock(prefix, preview, columns, color).tail(maxRows)
+	}
+
+	lines := state.code
+	if includePending {
+		lines = append(append([]string(nil), state.code...), pending)
+	}
+	return renderPlainCodeTail(prefix, lines, columns, maxRows)
+}
+
+func renderPlainLiveTail(prefix, value string, columns, maxRows int) richRows {
+	suffix, truncated := suffixRunes(value, maxLiveMarkdownRunes)
+	linePrefix := prefix
+	if truncated {
+		linePrefix = hangingIndent(prefix)
+	}
+	return layoutRichRuns(withMarkdownPrefix(linePrefix, []textRun{{text: suffix}}), hangingIndent(prefix), columns).tail(maxRows)
+}
+
+func renderPlainCodeTail(prefix string, lines []string, columns, maxRows int) richRows {
+	if len(lines) == 0 {
+		return layoutRichRuns(withMarkdownPrefix(prefix, nil), hangingIndent(prefix), columns).tail(maxRows)
+	}
+	start := max(0, len(lines)-maxLiveMarkdownLines)
+	selected := make([]string, 0, len(lines)-start)
+	remaining := maxLiveMarkdownRunes
+	truncatedFirst := false
+	for index := len(lines) - 1; index >= start && remaining > 0; index-- {
+		suffix, truncated := suffixRunes(lines[index], remaining)
+		selected = append(selected, suffix)
+		remaining -= utf8.RuneCountInString(suffix)
+		if truncated {
+			truncatedFirst = true
+			start = index
+			break
+		}
+	}
+	for left, right := 0, len(selected)-1; left < right; left, right = left+1, right-1 {
+		selected[left], selected[right] = selected[right], selected[left]
+	}
+	omitted := start > 0 || truncatedFirst || len(selected) < len(lines)
+	var output richRows
+	for index, line := range selected {
+		linePrefix := hangingIndent(prefix)
+		if index == 0 && !omitted {
+			linePrefix = prefix
+		}
+		output.append(layoutRichRuns(withMarkdownPrefix(linePrefix, []textRun{{text: line}}), hangingIndent(prefix), columns))
+	}
+	return output.tail(maxRows)
+}
+
+func suffixRunes(value string, limit int) (string, bool) {
+	if limit <= 0 {
+		return "", value != ""
+	}
+	end := len(value)
+	start := end
+	for count := 0; start > 0 && count < limit; count++ {
+		_, size := utf8.DecodeLastRuneInString(value[:start])
+		start -= size
+	}
+	return value[start:end], start > 0
+}
+
+func (r *LiveRenderer) renderStreamLine(line string, state *markdownState, started bool) richRows {
+	prefix := markdownPrefix(r.stream.prefix, started)
+	return renderMarkdownLine(prefix, line, r.columns, state, r.color)
+}
+
+func (r *LiveRenderer) promoteAndRedraw(promoted richRows, rows []string, styles []TextStyle, spans [][]textSpan, cursorRow, cursorCol int) error {
 	var output strings.Builder
 	r.buildRedraw(&output, nil, 0, 0)
 	if !r.streamBlock {
-		promoted = r.separateAssistantRows(promoted)
+		promoted = r.separateAssistantRichRows(promoted)
 	}
-	for _, row := range promoted {
-		output.WriteString(r.decorate(row))
+	for index, row := range promoted.rows {
+		output.WriteString(r.decorateRich(row, TextStyleDefault, spansAt(promoted.spans, index)))
 		output.WriteByte('\n')
 	}
-	oldRows, oldStyles, oldCursorRow, oldCursorCol, oldRenderedCols := r.rows, r.styles, r.cursorRow, r.cursorCol, r.renderedCols
-	r.rows, r.cursorRow, r.cursorCol = nil, 0, 0
-	r.buildRedrawStyled(&output, rows, styles, cursorRow, cursorCol)
-	r.rows, r.styles, r.cursorRow, r.cursorCol, r.renderedCols = oldRows, oldStyles, oldCursorRow, oldCursorCol, oldRenderedCols
+	oldRows, oldStyles, oldSpans := r.rows, r.styles, r.spans
+	oldCursorRow, oldCursorCol, oldRenderedCols := r.cursorRow, r.cursorCol, r.renderedCols
+	r.rows, r.styles, r.spans, r.cursorRow, r.cursorCol = nil, nil, nil, 0, 0
+	r.buildRedrawRich(&output, rows, styles, spans, cursorRow, cursorCol)
+	r.rows, r.styles, r.spans = oldRows, oldStyles, oldSpans
+	r.cursorRow, r.cursorCol, r.renderedCols = oldCursorRow, oldCursorCol, oldRenderedCols
 	if err := writeAtomic(r.w, output.String()); err != nil {
 		return err
 	}
 	r.rows = append(r.rows[:0], rows...)
 	r.styles = append(r.styles[:0], styles...)
+	r.spans = cloneTextSpans(spans)
 	r.cursorRow = cursorRow
 	r.cursorCol = cursorCol
 	r.renderedCols = r.columns
@@ -1146,6 +1324,86 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 	default:
 		return row
 	}
+}
+
+func (r *LiveRenderer) decorateRich(row string, style TextStyle, spans []textSpan) string {
+	if !r.color || len(spans) == 0 || style != TextStyleDefault {
+		return r.decorateStyled(row, style)
+	}
+	var output strings.Builder
+	position := 0
+	for _, span := range spans {
+		start := clamp(span.start, position, len(row))
+		end := clamp(span.end, start, len(row))
+		output.WriteString(row[position:start])
+		if start < end {
+			output.WriteString(ansiStyled(row[start:end], span.style))
+		}
+		position = end
+	}
+	output.WriteString(row[position:])
+	return output.String()
+}
+
+func ansiStyled(value string, style ansiStyle) string {
+	if value == "" || style == (ansiStyle{}) {
+		return value
+	}
+	codes := make([]string, 0, 6)
+	if style.bold {
+		codes = append(codes, "1")
+	}
+	if style.dim {
+		codes = append(codes, "2")
+	}
+	if style.italic {
+		codes = append(codes, "3")
+	}
+	if style.underline {
+		codes = append(codes, "4")
+	}
+	if style.strike {
+		codes = append(codes, "9")
+	}
+	if style.color != "" {
+		codes = append(codes, style.color)
+	}
+	if len(codes) == 0 {
+		return value
+	}
+	return "\x1b[" + strings.Join(codes, ";") + "m" + value + "\x1b[0m"
+}
+
+func spansAt(spans [][]textSpan, index int) []textSpan {
+	if index < 0 || index >= len(spans) {
+		return nil
+	}
+	return spans[index]
+}
+
+func cloneTextSpans(spans [][]textSpan) [][]textSpan {
+	if len(spans) == 0 {
+		return nil
+	}
+	clone := make([][]textSpan, len(spans))
+	for index := range spans {
+		clone[index] = append([]textSpan(nil), spans[index]...)
+	}
+	return clone
+}
+
+func clipTextSpans(spans []textSpan, bytes int) []textSpan {
+	var clipped []textSpan
+	for _, span := range spans {
+		if span.start >= bytes {
+			break
+		}
+		if span.end > bytes {
+			span.end = bytes
+		}
+		clipped = append(clipped, span)
+	}
+	return clipped
 }
 
 func hasSpinnerPrefix(value string) bool {

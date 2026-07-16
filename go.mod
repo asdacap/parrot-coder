@@ -3,6 +3,7 @@ module github.com/amirulashraf/parrot-coder
 go 1.25.0
 
 require (
+	github.com/alecthomas/chroma/v2 v2.20.0
 	github.com/tailscale/hujson v0.0.0-20260302212456-ecc657c15afd
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/sys v0.44.0
@@ -10,6 +11,7 @@ require (
 )
 
 require (
+	github.com/dlclark/regexp2 v1.11.5 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/mattn/go-isatty v0.0.20 // indirect

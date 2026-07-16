@@ -6,6 +6,9 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Changed
 
+- Interactive assistant output now renders a terminal-safe Markdown subset and
+  syntax-highlights recognized fenced code on color-capable TTYs, with bounded
+  plain-text fallback for large, unknown-language, no-color, and non-TTY code.
 - Final assistant messages now use a dim rule instead of an empty leading gap
   in interactive chat.
 - Reviewed `edit` and `apply_patch` operations inside the current workspace are

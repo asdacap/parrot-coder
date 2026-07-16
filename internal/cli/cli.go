@@ -799,11 +799,8 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 				return streamResult{err: err}
 			}
 		} else if final = strings.TrimRight(final, "\r\n"); final != "" {
-			writer := &hangingWriter{w: options.stdout}
-			if _, err := writer.Write([]byte(terminal.Sanitize(final))); err != nil {
-				return streamResult{err: err}
-			}
-			if _, err := io.WriteString(options.stdout, "\n"); err != nil {
+			plain := terminal.NewLiveRenderer(options.stdout, terminal.RendererConfig{Columns: terminal.Columns(options.stdout)})
+			if err := plain.CommitMessage("- ", final, false); err != nil {
 				return streamResult{err: err}
 			}
 		}
@@ -840,42 +837,6 @@ func streamToolStatus(status, errorText string) string {
 	default:
 		return "Status: tool " + status
 	}
-}
-
-type hangingWriter struct {
-	w         io.Writer
-	started   bool
-	lineStart bool
-}
-
-func (w *hangingWriter) Write(data []byte) (int, error) {
-	var output strings.Builder
-	if len(data) > 0 && !w.started {
-		output.WriteString("- ")
-		w.started = true
-	}
-	for _, value := range data {
-		if w.lineStart && value != '\n' {
-			output.WriteString("  ")
-			w.lineStart = false
-		}
-		output.WriteByte(value)
-		if value == '\n' {
-			w.lineStart = true
-		}
-	}
-	if err := writeAll(w.w, output.String()); err != nil {
-		return 0, err
-	}
-	return len(data), nil
-}
-
-func writeAll(w io.Writer, value string) error {
-	n, err := io.WriteString(w, value)
-	if err == nil && n != len(value) {
-		return io.ErrShortWrite
-	}
-	return err
 }
 
 // permissionContextLines presents only the tool-provided, human-readable

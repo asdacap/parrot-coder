@@ -493,6 +493,22 @@ func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	}
 }
 
+func TestPlainFinishRendersAssistantMarkdown(t *testing.T) {
+	var output bytes.Buffer
+	api := staticMessageClient{items: v1.MessageList{Items: []v1.Message{{
+		ID: "answer", Role: "assistant", Content: "# Heading\n```go\npackage main\n```",
+	}}}}
+	result := finishStream(api, "session", v1.MessageList{}, "", false, streamOptions{
+		format: "text", chat: true, stdout: &output, stderr: io.Discard,
+	})
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if got, want := output.String(), "- Heading\n  package main\n"; got != want {
+		t.Fatalf("plain assistant Markdown = %q; want %q", got, want)
+	}
+}
+
 func TestEnhancedSubmissionCommitsUserMessage(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, MaxRows: 6})
