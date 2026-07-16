@@ -1364,6 +1364,20 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 	}
 }
 
+func TestSubagentRunningStatusIsNotReported(t *testing.T) {
+	status, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
+	reports, err := (&subagentStreamTracker{}).describe(&v1.SubagentEvent{
+		TaskID: "task-review", TaskName: "review", Depth: 1,
+		Event: v1.Event{Type: v1.EventSessionStatus, Data: status},
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("running status reports = %#v, want none", reports)
+	}
+}
+
 func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
 	var tracker subagentStreamTracker
 	pending := json.RawMessage(`{"call_id":"shell-call","name":"shell","input":{"command":"exit 1"}}`)
