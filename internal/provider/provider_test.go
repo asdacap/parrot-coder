@@ -317,6 +317,36 @@ func TestNonSuccessErrorIsStructuredBoundedAndRedacted(t *testing.T) {
 	}
 }
 
+func TestNonSuccessErrorWithoutStructuredMessageFallsBackToBody(t *testing.T) {
+	for _, testCase := range []struct{ name, body, want string }{
+		{"plain text", "upstream rejected the request", "upstream rejected the request"},
+		{"unknown json shape", `{"detail":"model \"m\" is unknown"}`, `{"detail":"model \"m\" is unknown"}`},
+		{"multiline body", "invalid request\nfield: model", "invalid requestfield: model"},
+		{"empty body", "", http.StatusText(http.StatusBadRequest)},
+		{"only a secret", "secret-token", "[REDACTED]"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+				response.WriteHeader(http.StatusBadRequest)
+				_, _ = io.WriteString(response, testCase.body)
+			}))
+			defer server.Close()
+			value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+				ID: "local", BaseURL: server.URL, Protocol: ProtocolResponses, APIKey: "secret-token",
+				AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = value.Stream(context.Background(), protocol.Request{Model: "m"})
+			var providerError *HTTPError
+			if !errors.As(err, &providerError) || providerError.Message != testCase.want {
+				t.Fatalf("error = %#v", err)
+			}
+		})
+	}
+}
+
 func TestStreamEventsAndErrorsRedactCredential(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "text/event-stream")

@@ -314,6 +314,9 @@ func parseHTTPError(response *http.Response, secrets []string) error {
 	}
 	result.Message = sanitize(envelope.Message, secrets, 1024)
 	if result.Message == "" {
+		result.Message = sanitize(string(data), secrets, 1024)
+	}
+	if result.Message == "" {
 		result.Message = http.StatusText(response.StatusCode)
 	}
 	return result
