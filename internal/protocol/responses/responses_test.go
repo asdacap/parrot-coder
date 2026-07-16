@@ -14,7 +14,10 @@ import (
 func TestEncodeRequest(t *testing.T) {
 	encoded, err := EncodeRequest(protocol.Request{
 		Model: "model", Instructions: "instructions",
-		Messages:  []protocol.Message{{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "hello"}}}},
+		Messages: []protocol.Message{
+			{Role: protocol.RoleSystem, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "context changed"}}},
+			{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "hello"}}},
+		},
 		Tools:     []protocol.ToolDefinition{{Name: "shell", InputSchema: json.RawMessage(`{"type":"object"}`)}},
 		Reasoning: &protocol.ReasoningOptions{Effort: "high", Summary: "auto"},
 	})
@@ -27,6 +30,10 @@ func TestEncodeRequest(t *testing.T) {
 	}
 	if body["instructions"] != "instructions" || body["store"] != false || body["stream"] != true {
 		t.Fatalf("unexpected body: %s", encoded)
+	}
+	input := body["input"].([]any)
+	if len(input) != 2 || input[0].(map[string]any)["role"] != "developer" || input[1].(map[string]any)["role"] != "user" {
+		t.Fatalf("input = %#v", input)
 	}
 	reasoning := body["reasoning"].(map[string]any)
 	if reasoning["effort"] != "high" || reasoning["summary"] != "auto" {

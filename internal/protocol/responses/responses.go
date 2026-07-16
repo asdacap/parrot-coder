@@ -18,6 +18,14 @@ import (
 func EncodeRequest(request protocol.Request) ([]byte, error) {
 	input := make([]any, 0, len(request.Messages))
 	for _, message := range request.Messages {
+		role := message.Role
+		// The Responses API carries top-level instructions separately and some
+		// compatible endpoints reject system-role input messages. Context updates
+		// retained in conversation history have system semantics, so encode them
+		// with the supported developer role instead.
+		if role == protocol.RoleSystem {
+			role = "developer"
+		}
 		content := make([]any, 0, len(message.Content))
 		afterMessage := make([]any, 0)
 		for _, part := range message.Content {
@@ -43,7 +51,7 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 			}
 		}
 		if len(content) > 0 || len(message.Content) == 0 {
-			input = append(input, map[string]any{"type": "message", "role": message.Role, "content": content})
+			input = append(input, map[string]any{"type": "message", "role": role, "content": content})
 		}
 		input = append(input, afterMessage...)
 	}
