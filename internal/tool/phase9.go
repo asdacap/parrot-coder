@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -532,6 +533,173 @@ type formatNoop struct {
 
 type AgentLookup func(string) (bool, error)
 
+const maxGitDiffBytes = 4 << 20
+
+// GitDiffTool exposes only fixed, read-only Git operations. Review workers use
+// it to inspect changes without receiving the general shell tool.
+type GitDiffTool struct{}
+
+func NewGitDiffTool() Tool        { return &GitDiffTool{} }
+func (t *GitDiffTool) ID() string { return "git_diff" }
+func (t *GitDiffTool) Description() string {
+	return "Read a bounded Git diff for uncommitted changes, a base branch, or a commit. Uncommitted output also lists untracked paths."
+}
+func (t *GitDiffTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input gitDiffInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	if input.Target == "" {
+		input.Target = "uncommitted"
+	}
+	return "Read Git diff for " + input.Target, nil
+}
+func (t *GitDiffTool) JSONSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"target":{"type":"string","enum":["uncommitted","base","commit"]},"ref":{"type":"string","description":"Required branch or commit when target is base or commit."}},"additionalProperties":false}`)
+}
+
+type gitDiffInput struct {
+	Target string `json:"target"`
+	Ref    string `json:"ref"`
+}
+
+func (t *GitDiffTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
+	if call.Workspace == nil {
+		return Plan{}, errors.New("git_diff: workspace is required")
+	}
+	var input gitDiffInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return Plan{}, err
+	}
+	if input.Target == "" {
+		input.Target = "uncommitted"
+	}
+	if input.Target != "uncommitted" && input.Target != "base" && input.Target != "commit" {
+		return Plan{}, errors.New("git_diff: target must be uncommitted, base, or commit")
+	}
+	input.Ref = strings.TrimSpace(input.Ref)
+	if input.Target == "uncommitted" {
+		if input.Ref != "" {
+			return Plan{}, errors.New("git_diff: ref is not valid for uncommitted changes")
+		}
+	} else if !validGitRef(input.Ref) {
+		return Plan{}, errors.New("git_diff: a valid ref is required for base or commit")
+	}
+	return NewPlan(t.ID(), raw, nil, nil, input)
+}
+
+func (t *GitDiffTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	input, ok := plan.Data.(gitDiffInput)
+	if !ok || call.Workspace == nil {
+		return Result{}, errors.New("git_diff: incompatible plan or missing workspace")
+	}
+	root := call.Workspace.Root()
+	var output string
+	var truncated bool
+	var err error
+	switch input.Target {
+	case "uncommitted":
+		// Read index and worktree diffs separately so unborn repositories do not
+		// fail merely because HEAD does not exist.
+		output, truncated, err = runBoundedGit(ctx, root, "diff", "--cached", "--no-ext-diff", "--no-textconv", "--find-renames", "--")
+		if err == nil {
+			var unstaged string
+			var unstagedTruncated bool
+			unstaged, unstagedTruncated, err = runBoundedGit(ctx, root, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", "--")
+			truncated = truncated || unstagedTruncated
+			if unstaged != "" {
+				output += "\n" + unstaged
+			}
+		}
+		if err == nil {
+			var status string
+			var statusTruncated bool
+			status, statusTruncated, err = runBoundedGit(ctx, root, "status", "--short", "--untracked-files=all")
+			truncated = truncated || statusTruncated
+			if err == nil && status != "" {
+				output += "\n\nGit status (including untracked paths):\n" + status
+			}
+		}
+	case "base":
+		var base string
+		base, truncated, err = runBoundedGit(ctx, root, "merge-base", "HEAD", input.Ref)
+		if err == nil {
+			base = strings.TrimSpace(base)
+			var diffTruncated bool
+			output, diffTruncated, err = runBoundedGit(ctx, root, "diff", "--no-ext-diff", "--no-textconv", "--find-renames", base, "--")
+			truncated = truncated || diffTruncated
+		}
+	case "commit":
+		output, truncated, err = runBoundedGit(ctx, root, "show", "--format=fuller", "--no-ext-diff", "--no-textconv", "--find-renames", input.Ref, "--")
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	if strings.TrimSpace(output) == "" {
+		output = "No changes found."
+	}
+	if truncated {
+		output += "\n\n[git_diff output truncated; narrow the review target before drawing conclusions.]"
+	}
+	return Result{Text: output, Metadata: map[string]any{"target": input.Target, "ref": input.Ref, "truncated": truncated}}, nil
+}
+
+func validGitRef(ref string) bool {
+	if ref == "" || strings.HasPrefix(ref, "-") {
+		return false
+	}
+	for _, r := range ref {
+		if r < 0x20 || r == 0x7f || r == ' ' {
+			return false
+		}
+	}
+	return true
+}
+
+func runBoundedGit(ctx context.Context, root string, args ...string) (string, bool, error) {
+	// Disable optional writes and repository-configured helper execution. In
+	// particular, core.fsmonitor and diff textconv/external drivers must not turn
+	// a read-only reviewer operation into arbitrary process execution.
+	gitArgs := []string{"--no-pager", "--no-optional-locks", "-c", "core.fsmonitor=false", "-c", "diff.external="}
+	gitArgs = append(gitArgs, args...)
+	command := exec.CommandContext(ctx, "git", gitArgs...)
+	command.Dir = root
+	var stdout strings.Builder
+	var stderr strings.Builder
+	stdoutWriter := &limitedStringWriter{builder: &stdout, remaining: maxGitDiffBytes}
+	stderrWriter := &limitedStringWriter{builder: &stderr, remaining: 64 << 10}
+	command.Stdout = stdoutWriter
+	command.Stderr = stderrWriter
+	if err := command.Run(); err != nil {
+		message := strings.TrimSpace(stderr.String())
+		if stderrWriter.truncated {
+			message += " [stderr truncated]"
+		}
+		if message == "" {
+			message = err.Error()
+		}
+		return "", false, fmt.Errorf("git_diff: git %s: %s", args[0], message)
+	}
+	return stdout.String(), stdoutWriter.truncated, nil
+}
+
+type limitedStringWriter struct {
+	builder   *strings.Builder
+	remaining int
+	truncated bool
+}
+
+func (w *limitedStringWriter) Write(p []byte) (int, error) {
+	original := len(p)
+	if len(p) > w.remaining {
+		p = p[:w.remaining]
+		w.truncated = true
+	}
+	_, _ = w.builder.Write(p)
+	w.remaining -= len(p)
+	return original, nil
+}
+
 type TaskTool struct {
 	Kind       string
 	Manager    *subagent.Manager
@@ -545,6 +713,101 @@ func NewTaskTools(manager *subagent.Manager, agents AgentLookup) []Tool {
 		&TaskTool{Kind: "task_status", Manager: manager, Agents: agents},
 		&TaskTool{Kind: "task_cancel", Manager: manager, Agents: agents, CancelWait: 5 * time.Second},
 	}
+}
+
+const reviewAgentID = "review"
+
+// ReviewTool starts the built-in, read-only review worker. It is deliberately
+// separate from task so a parent model can request a review without selecting
+// or knowing the implementation profile used by the child session.
+type ReviewTool struct {
+	Manager    *subagent.Manager
+	Agents     AgentLookup
+	CancelWait time.Duration
+}
+
+func NewReviewTool(manager *subagent.Manager, agents AgentLookup) Tool {
+	return &ReviewTool{Manager: manager, Agents: agents, CancelWait: 5 * time.Second}
+}
+
+func (t *ReviewTool) ID() string { return "review" }
+func (t *ReviewTool) Description() string {
+	return "Launch the built-in read-only review subagent and wait for its actionable findings. Use after implementing changes or when explicitly asked to review code."
+}
+func (t *ReviewTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input reviewInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return "Launch read-only review subagent", nil
+}
+func (t *ReviewTool) JSONSchema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string","description":"The exact change or review target, including any additional review instructions."},"model":{"type":"string","description":"Optional model override for the reviewer."}},"required":["prompt"],"additionalProperties":false}`)
+}
+
+type reviewInput struct {
+	Prompt string `json:"prompt"`
+	Model  string `json:"model"`
+}
+
+func (t *ReviewTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
+	if t.Manager == nil || t.Agents == nil || call.SessionID == "" || call.Agent == "" {
+		return Plan{}, errors.New("review: manager, agent registry, session, and caller agent are required")
+	}
+	var input reviewInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return Plan{}, err
+	}
+	if strings.TrimSpace(input.Prompt) == "" {
+		return Plan{}, errors.New("review: prompt is required")
+	}
+	if _, err := t.Agents(call.Agent); err != nil {
+		return Plan{}, err
+	}
+	reviewerReadOnly, err := t.Agents(reviewAgentID)
+	if err != nil {
+		return Plan{}, err
+	}
+	if !reviewerReadOnly {
+		return Plan{}, errors.New("review: built-in reviewer must be read-only")
+	}
+	return NewPlan(t.ID(), raw, nil, nil, input)
+}
+
+func (t *ReviewTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	input, ok := plan.Data.(reviewInput)
+	if !ok {
+		return Result{}, errors.New("review: incompatible plan")
+	}
+	id, err := t.Manager.Launch(call.SessionID, []string{call.Agent}, subagent.Request{
+		Prompt: input.Prompt, Agent: reviewAgentID, Model: input.Model, ToolCallID: call.ToolCallID,
+	})
+	if err != nil {
+		return Result{}, err
+	}
+	task, err := t.Manager.Await(ctx, call.SessionID, id)
+	if ctx.Err() != nil {
+		cancelWait := t.CancelWait
+		if cancelWait <= 0 {
+			cancelWait = 5 * time.Second
+		}
+		cancelCtx, cancel := context.WithTimeout(context.Background(), cancelWait)
+		cancelErr := t.Manager.Cancel(cancelCtx, call.SessionID, id)
+		cancel()
+		if cancelErr == nil {
+			_ = t.Manager.Forget(call.SessionID, id)
+		}
+		return Result{}, ctx.Err()
+	}
+	if err != nil {
+		_ = t.Manager.Forget(call.SessionID, id)
+		return Result{}, err
+	}
+	result := taskResult(task)
+	if err := t.Manager.Forget(call.SessionID, id); err != nil {
+		return Result{}, err
+	}
+	return result, nil
 }
 func (t *TaskTool) ID() string { return t.Kind }
 func (t *TaskTool) Description() string {
@@ -670,7 +933,7 @@ func RegisterPhase9(registry *Registry, services Phase9Services) error {
 	if registry == nil || services.Skills == nil || services.WebFetch == nil || services.Subagents == nil || services.Agents == nil {
 		return errors.New("tool: phase 9 core services are required")
 	}
-	items := []Tool{NewSkillTool(services.Skills), NewWebFetchTool(services.WebFetch)}
+	items := []Tool{NewSkillTool(services.Skills), NewWebFetchTool(services.WebFetch), NewGitDiffTool()}
 	if services.LSP.Client != nil {
 		items = append(items, NewLSPTools(services.LSP)...)
 	}
@@ -678,6 +941,7 @@ func RegisterPhase9(registry *Registry, services Phase9Services) error {
 		items = append(items, NewFormatTool(services.Formatters, services.Changes, services.Snapshots))
 	}
 	items = append(items, NewTaskTools(services.Subagents, services.Agents)...)
+	items = append(items, NewReviewTool(services.Subagents, services.Agents))
 	definitions := append([]mcp.ToolDefinition(nil), services.MCPTools...)
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	for _, definition := range definitions {

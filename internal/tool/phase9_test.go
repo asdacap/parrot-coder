@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -240,6 +241,109 @@ func TestTaskToolOutputReadOnlyBoundaryAndParentCancellation(t *testing.T) {
 	}
 }
 
+func TestReviewToolLaunchesFixedReadOnlyReviewerAndReturnsFindings(t *testing.T) {
+	var captured subagent.Execution
+	manager := subagent.NewManager(subagentExecutorFunc(func(_ context.Context, execution subagent.Execution) (string, error) {
+		captured = execution
+		return "[P1] Fix the regression — source.go:12", nil
+	}), subagent.Config{})
+	lookup := func(id string) (bool, error) {
+		switch id {
+		case "build":
+			return false, nil
+		case "review":
+			return true, nil
+		default:
+			return false, errors.New("unknown agent")
+		}
+	}
+	item := NewReviewTool(manager, lookup)
+	call := CallContext{SessionID: "parent", Agent: "build", ToolCallID: "call-review"}
+	plan, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":"Review the current diff","model":"provider/reviewer"}`), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := item.Execute(context.Background(), plan, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "[P1] Fix the regression — source.go:12" {
+		t.Fatalf("review output = %q", result.Text)
+	}
+	if captured.Request.Agent != "review" || captured.Request.Prompt != "Review the current diff" || captured.Request.Model != "provider/reviewer" || captured.Request.ToolCallID != "call-review" {
+		t.Fatalf("review execution = %#v", captured)
+	}
+	if captured.ParentSession != "parent" || len(captured.Lineage) != 1 || captured.Lineage[0] != "build" {
+		t.Fatalf("review lineage = %#v", captured)
+	}
+	if result.Metadata["agent"] != "review" || result.Metadata["status"] != subagent.StatusSucceeded {
+		t.Fatalf("review metadata = %#v", result.Metadata)
+	}
+	if tasks := manager.List("parent"); len(tasks) != 0 {
+		t.Fatalf("completed review was retained: %#v", tasks)
+	}
+}
+
+func TestReviewToolRejectsMissingPromptAndWritableReviewer(t *testing.T) {
+	manager := subagent.NewManager(subagentExecutorFunc(func(context.Context, subagent.Execution) (string, error) {
+		return "", nil
+	}), subagent.Config{})
+	call := CallContext{SessionID: "parent", Agent: "build"}
+	item := NewReviewTool(manager, func(id string) (bool, error) { return id != "review", nil })
+	if _, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":""}`), call); err == nil {
+		t.Fatal("empty review prompt was accepted")
+	}
+	if _, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":"review it"}`), call); err == nil || !strings.Contains(err.Error(), "must be read-only") {
+		t.Fatalf("writable reviewer error = %v", err)
+	}
+}
+
+func TestGitDiffToolReadsUncommittedChangesAndRejectsOptionRefs(t *testing.T) {
+	root := t.TempDir()
+	runGit := func(args ...string) {
+		command := exec.Command("git", args...)
+		command.Dir = root
+		command.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1", "HOME="+t.TempDir())
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, output)
+		}
+	}
+	runGit("init")
+	runGit("config", "user.email", "test@example.com")
+	runGit("config", "user.name", "Test")
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runGit("add", "tracked.txt")
+	runGit("commit", "-m", "initial")
+	if err := os.WriteFile(filepath.Join(root, "tracked.txt"), []byte("after\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("new\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ws, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := NewGitDiffTool()
+	call := CallContext{Workspace: ws}
+	plan, err := item.Plan(context.Background(), json.RawMessage(`{"target":"uncommitted"}`), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := item.Execute(context.Background(), plan, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Text, "-before") || !strings.Contains(result.Text, "+after") || !strings.Contains(result.Text, "?? new.txt") {
+		t.Fatalf("git diff output = %q", result.Text)
+	}
+	if _, err := item.Plan(context.Background(), json.RawMessage(`{"target":"base","ref":"--help"}`), call); err == nil {
+		t.Fatal("option-like Git ref was accepted")
+	}
+}
+
 func TestTaskStatusAndCancelToolsAreParentScoped(t *testing.T) {
 	started := make(chan struct{})
 	manager := subagent.NewManager(subagentExecutorFunc(func(ctx context.Context, _ subagent.Execution) (string, error) {
@@ -332,7 +436,11 @@ func TestFormatToolNoopDoesNotRequireSnapshot(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	formatters, err := formatter.NewRegistry(formatter.Config{Workspace: root}, formatter.Formatter{Name: "identity", Extensions: []string{".txt"}, Command: []string{"/bin/cat"}, Mode: formatter.ModeStdin})
+	cat, err := exec.LookPath("cat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatters, err := formatter.NewRegistry(formatter.Config{Workspace: root}, formatter.Formatter{Name: "identity", Extensions: []string{".txt"}, Command: []string{cat}, Mode: formatter.ModeStdin})
 	if err != nil {
 		t.Fatal(err)
 	}

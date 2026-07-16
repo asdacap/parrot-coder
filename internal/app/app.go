@@ -998,7 +998,7 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	}
 	selection := e.defaultSelection
 	if parent.Provider != "" && parent.Model != "" {
-		selection.Provider, selection.Model = parent.Provider, parent.Model
+		selection.Provider, selection.Model, selection.Variant = parent.Provider, parent.Model, parent.Variant
 	}
 	selection.Agent = execution.Request.Agent
 	if execution.Request.Model != "" {
@@ -1007,12 +1007,19 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 		} else {
 			selection.Model = execution.Request.Model
 		}
+		// Variants are model-specific. An explicit model override must not carry
+		// either the parent's or the default model's variant into the child.
+		selection.Variant = ""
 	}
 	if selection.Provider == "" || selection.Model == "" {
 		return "", errors.New("app: subagent has no default model")
 	}
-	if _, _, err := e.providers.Resolve(selection.Provider, selection.Model); err != nil {
+	if _, model, err := e.providers.Resolve(selection.Provider, selection.Model); err != nil {
 		return "", fmt.Errorf("app: subagent model: %w", err)
+	} else if selection.Variant != "" {
+		if _, ok := model.Capabilities.Variants[selection.Variant]; !ok {
+			return "", fmt.Errorf("app: subagent model: unknown model variant %q", selection.Variant)
+		}
 	}
 	title := "Subtask " + execution.TaskID + " [" + execution.Request.Agent + "]"
 	child, err := e.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: parent.ProjectID, Title: title}, selection)
