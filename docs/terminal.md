@@ -40,7 +40,8 @@ edit -> submit steer or queue -> continue editing while events stream
 
 The editor supports rune-aware movement, history, slash completion, bracketed
 paste, Ctrl-J multiline input, and the conventional Ctrl-A/Ctrl-E bindings for
-moving to the beginning/end of the current line. Enter starts a turn while idle
+moving to the beginning/end of the current line. Ctrl-K clears from the cursor
+to the end of the current line. Enter starts a turn while idle
 and queues a follow-up while the agent is running. Safe informational slash commands execute
 immediately; commands that switch or mutate the active session are rejected
 until it is idle. Stable assistant rows are progressively committed to normal scrollback as they

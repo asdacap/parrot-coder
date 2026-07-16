@@ -1565,7 +1565,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 	switch command {
 	case "/help":
 		var text strings.Builder
-		text.WriteString("Keys: Enter submit/queue; Ctrl-J newline; Ctrl-A/Ctrl-E line start/end; Ctrl-C clear draft/interrupt turn; Ctrl-D exit when idle; Tab complete; Escape cancel\nCommands:\n")
+		text.WriteString("Keys: Enter submit/queue; Ctrl-J newline; Ctrl-A/Ctrl-E line start/end; Ctrl-K clear to end of line; Ctrl-C clear draft/interrupt turn; Ctrl-D exit when idle; Tab complete; Escape cancel\nCommands:\n")
 		for _, item := range chatCompletionCandidates(s.commands) {
 			fmt.Fprintf(&text, "%s\t%s\n", item.Value, item.Description)
 		}

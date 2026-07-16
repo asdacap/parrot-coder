@@ -169,6 +169,11 @@ func (p *Picker) Pick(ctx context.Context) (Candidate, error) {
 				query = append(query[:cursor], query[cursor+1:]...)
 				selected = 0
 			}
+		case KeyKillLine:
+			if cursor < len(query) {
+				query = query[:cursor]
+				selected = 0
+			}
 		case KeyEOF:
 			if len(query) == 0 {
 				return finish(Candidate{}, io.EOF)

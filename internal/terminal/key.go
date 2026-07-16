@@ -31,6 +31,7 @@ const (
 	KeyEOF
 	KeyPaste
 	KeyModeSwitch
+	KeyKillLine
 	KeyIgnored
 )
 
@@ -96,6 +97,10 @@ func (d *KeyDecoder) ReadKey(ctx context.Context) (Key, error) {
 		return Key{Kind: KeyEOF}, nil
 	case 0x05:
 		return Key{Kind: KeyEnd}, nil
+	case 0x0b:
+		// Ctrl-K is Readline's kill-line binding. Editors interpret it relative
+		// to their cursor so multiline input only changes the current line.
+		return Key{Kind: KeyKillLine}, nil
 	case '\t':
 		return Key{Kind: KeyTab}, nil
 	case '\n':

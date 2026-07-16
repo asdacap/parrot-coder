@@ -22,6 +22,15 @@ func TestPickerFilterNavigateAndSelect(t *testing.T) {
 	}
 }
 
+func TestPickerCtrlKKillsToEndOfFilter(t *testing.T) {
+	options := []Candidate{{Value: "alpha"}, {Value: "alpine"}}
+	picker := NewPickerIO(bytes.NewBufferString("alXX\x1b[D\x1b[D\x0b\r"), nil, options)
+	selected, err := picker.Pick(context.Background())
+	if err != nil || selected.Value != "alpha" {
+		t.Fatalf("Pick() = %#v, %v; want alpha", selected, err)
+	}
+}
+
 func TestPickerCancel(t *testing.T) {
 	picker := NewPickerIO(bytes.NewBufferString("\x1b"), nil, []Candidate{{Value: "one"}})
 	_, err := picker.Pick(context.Background())

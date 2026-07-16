@@ -288,6 +288,17 @@ func (s *EditorState) Handle(key Key) EditorResult {
 			s.buffer = append(s.buffer[:s.cursor], s.buffer[s.cursor+1:]...)
 			changed = true
 		}
+	case KeyKillLine:
+		end := lineEnd(s.buffer, s.cursor)
+		if end == s.cursor && end < len(s.buffer) {
+			// Readline's kill-line removes the line break when invoked at the
+			// end of a non-final line.
+			end++
+		}
+		if s.cursor < end {
+			s.buffer = append(s.buffer[:s.cursor], s.buffer[end:]...)
+			changed = true
+		}
 	case KeyEOF:
 		if len(s.buffer) == 0 {
 			return EditorResult{Done: true, Err: io.EOF}
