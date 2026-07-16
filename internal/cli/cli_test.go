@@ -204,7 +204,7 @@ func TestChatHelpListsCustomCommandsAndSubtaskUsesNormalPrompt(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	shell := chatShell{ctx: context.Background(), stdout: &stdout, stderr: &stderr, commands: commands}
 	exit, code := shell.slash("/help", "")
-	if exit || code != exitOK || !strings.Contains(stdout.String(), "/review\tReview changes") {
+	if exit || code != exitOK || !strings.Contains(stdout.String(), "Ctrl-A/Ctrl-E line start/end") || !strings.Contains(stdout.String(), "/review\tReview changes") {
 		t.Fatalf("help = %q, exit=%t, code=%d", stdout.String(), exit, code)
 	}
 	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explore", Model: "local/model", Subtask: true})

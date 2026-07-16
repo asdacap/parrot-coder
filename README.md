@@ -193,7 +193,8 @@ host and PID are no longer running. A second live Parrot in the same directory
 gets a separate session. `/clear` (and its `/new` alias) immediately opens a
 fresh durable session without deleting the previous conversation.
 
-Keybindings: Enter submits, Ctrl-J inserts a newline, arrows edit/navigate
+Keybindings: Enter submits, Ctrl-J inserts a newline, arrows edit/navigate,
+Ctrl-A/Ctrl-E move to the beginning/end of the current line,
 history and choices, Tab completes slash commands, Shift-Tab or Ctrl-X switches modes,
 Escape cancels a picker or halts an active turn, idle Ctrl-C clears the current
 edit, and Ctrl-D on an empty prompt exits. During a turn, the first Ctrl-C
