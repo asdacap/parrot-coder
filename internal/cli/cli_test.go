@@ -757,6 +757,10 @@ func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
 
 func TestEnhancedSubagentEventUsesDepthAndTaskPrefix(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	runtime.activity = append(runtime.activity,
+		enhancedActivityItem{id: "call-read", label: "read · file.go", toolName: "read", status: "running", started: time.Now()},
+		enhancedActivityItem{id: "call-task", label: "task · review", toolName: "task", status: "running", started: time.Now()},
+	)
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "checking"})
 	envelope, _ := json.Marshal(v1.SubagentEvent{
 		TaskID: "task-review", TaskName: "review", Depth: 2,
@@ -765,11 +769,14 @@ func TestEnhancedSubagentEventUsesDepthAndTaskPrefix(t *testing.T) {
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: envelope}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.activity) != 1 {
+	if len(runtime.activity) != 3 {
 		t.Fatalf("activity = %#v", runtime.activity)
 	}
-	if got := formatActivity(runtime.activity[0], runtime.activity[0].started); got != "    ○ [review] response: checking" {
+	if got := formatActivity(runtime.activity[1], runtime.activity[1].started); got != "    ○ [review] response: checking" {
 		t.Fatalf("subagent activity = %q", got)
+	}
+	if got := formatActivity(runtime.activity[2], runtime.activity[2].started); !strings.Contains(got, "Working: task · review") {
+		t.Fatalf("task activity = %q", got)
 	}
 }
 
