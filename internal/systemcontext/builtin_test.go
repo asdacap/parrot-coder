@@ -126,6 +126,29 @@ func TestBuiltinsDiscoverAgentsFromGlobalAndRootToWorkingDirectory(t *testing.T)
 			t.Fatal("AGENTS discovery escaped the project root")
 		}
 	}
+	loaded, err := ObserveAgentsFiles(context.Background(), sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPaths := []string{filepath.Join(config, "AGENTS.md"), filepath.Join(root, "AGENTS.md"), filepath.Join(root, "a", "AGENTS.md"), filepath.Join(cwd, "AGENTS.md")}
+	if !reflect.DeepEqual(loaded, wantPaths) {
+		t.Fatalf("loaded AGENTS files = %#v, want %#v", loaded, wantPaths)
+	}
+}
+
+func TestObserveAgentsFilesReportsNoMissingFiles(t *testing.T) {
+	root := t.TempDir()
+	sources, err := Builtins(BuiltinOptions{ProjectRoot: root, WorkingDirectory: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ObserveAgentsFiles(context.Background(), sources)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded) != 0 {
+		t.Fatalf("loaded AGENTS files = %#v, want none", loaded)
+	}
 }
 
 func TestBuiltinsRejectWorkingDirectoryOutsideCanonicalRoot(t *testing.T) {

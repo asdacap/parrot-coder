@@ -1870,9 +1870,9 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		}
 		r.updateTaskProgress(payload.(*v1.TaskProgress))
 	case "session.context.initialized", "session.context.changed", "session.context.replaced":
-		for _, path := range agentsLoadedPaths(item) {
+		for _, line := range agentsLoadedActivities(item) {
 			if r.shell != nil && r.shell.renderer != nil {
-				if err := r.shell.renderer.CommitStyled(terminal.MutedText(agentsLoadedActivity(path))); err != nil {
+				if err := r.shell.renderer.CommitStyled(terminal.MutedText(line)); err != nil {
 					return err
 				}
 			}

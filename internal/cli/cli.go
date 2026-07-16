@@ -282,6 +282,7 @@ func (a *App) runCommand(ctx context.Context, args []string, stdin io.Reader, st
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
+	writeAgentsStartupActivity(stderr, runtime.AgentsFiles)
 	sessionItem, err := chooseSession(ctx, runtime.Client, runtime.Project.ID, options.continued, options.session, prompt)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
@@ -693,22 +694,58 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 }
 
 func agentsLoadedPaths(item v1.Event) []string {
+	paths, _ := agentsLoadedPathsReported(item)
+	return paths
+}
+
+func agentsLoadedPathsReported(item v1.Event) ([]string, bool) {
 	var payload struct {
-		Paths []string `json:"agents_files"`
+		Paths *[]string `json:"agents_files"`
 	}
-	if json.Unmarshal(item.Data, &payload) != nil {
-		return nil
+	if json.Unmarshal(item.Data, &payload) != nil || payload.Paths == nil {
+		return nil, false
 	}
-	return payload.Paths
+	return *payload.Paths, true
 }
 
 func agentsLoadedActivity(path string) string {
 	return "✓ Loaded AGENTS.md from " + path
 }
 
+func agentsLoadedLines(paths []string) []string {
+	if len(paths) == 0 {
+		return []string{"No AGENTS.md files loaded"}
+	}
+	lines := make([]string, 0, len(paths))
+	for _, path := range paths {
+		lines = append(lines, agentsLoadedActivity(path))
+	}
+	return lines
+}
+
+func agentsLoadedActivities(item v1.Event) []string {
+	paths, reported := agentsLoadedPathsReported(item)
+	if !reported {
+		return nil
+	}
+	// Changed events only identify files newly loaded because their contents
+	// changed. An empty changed event therefore says nothing about the complete
+	// context. Initialization and replacement events are complete snapshots, so
+	// they can accurately report that no AGENTS.md files were loaded.
+	if len(paths) == 0 && item.Type == "session.context.changed" {
+		return nil
+	}
+	return agentsLoadedLines(paths)
+}
+
+func writeAgentsStartupActivity(output io.Writer, paths []string) {
+	for _, line := range agentsLoadedLines(paths) {
+		_, _ = fmt.Fprintln(output, terminal.Sanitize(line))
+	}
+}
+
 func writeAgentsLoadedActivity(options streamOptions, item v1.Event) error {
-	for _, path := range agentsLoadedPaths(item) {
-		line := agentsLoadedActivity(path)
+	for _, line := range agentsLoadedActivities(item) {
 		if options.renderer != nil {
 			if err := options.renderer.Commit(line); err != nil {
 				return err
@@ -1047,6 +1084,7 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
+	writeAgentsStartupActivity(stderr, runtime.AgentsFiles)
 	api := apiClient(runtime.Client)
 	models, err := api.Models(ctx)
 	if err != nil {
