@@ -247,12 +247,12 @@ func (a *App) runCommand(ctx context.Context, args []string, stdin io.Reader, st
 	var interactive bool
 	addCodingFlags(fs, &options)
 	fs.StringVar(&format, "format", "text", "output format: text or jsonl")
-	fs.StringVar(&permissionMode, "permission", "deny", "mutating tool policy: deny or ask")
+	fs.StringVar(&permissionMode, "permission", "", "override mutating tool policy: deny or ask")
 	fs.BoolVar(&interactive, "interactive-prompts", false, "answer prompts from the controlling terminal")
 	if err := fs.Parse(args); err != nil {
 		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
 	}
-	if options.continued && options.session != "" || fs.NArg() > 1 || format != "text" && format != "jsonl" || permissionMode != "deny" && permissionMode != "ask" {
+	if options.continued && options.session != "" || fs.NArg() > 1 || format != "text" && format != "jsonl" || permissionMode != "" && permissionMode != "deny" && permissionMode != "ask" {
 		fmt.Fprintln(stderr, "invalid run flags; see parrot run --help")
 		return exitWithReason(ctx, exitUsage, "invalid_run_arguments", nil)
 	}
@@ -1003,7 +1003,7 @@ func (a *App) chatCommand(ctx context.Context, args []string, stdin io.Reader, s
 		fmt.Fprintln(stderr, "invalid chat flags; see parrot chat --help")
 		return exitWithReason(ctx, exitUsage, "invalid_chat_arguments", nil)
 	}
-	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, Model: options.model, Agent: options.agent, Permission: permission.Ask, AllowNoModel: true})
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, Model: options.model, Agent: options.agent, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)

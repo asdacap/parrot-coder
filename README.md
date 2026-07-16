@@ -152,7 +152,9 @@ parrot help
 ```
 
 Prompt text may be supplied as one argument, piped on stdin, or both. Piped
-stdin is always prompt data. `run` denies mutating tools by default;
+stdin is always prompt data. Reviewed `edit` and `apply_patch` operations inside
+the current workspace are allowed by default. Use `run --permission deny` to
+disable mutations or `run --permission ask --interactive-prompts` to prompt;
 `--interactive-prompts` explicitly opens `/dev/tty` for permission and question
 replies. `serve` refuses non-loopback addresses because the HTTP API has no
 authentication layer.

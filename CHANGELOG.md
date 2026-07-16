@@ -4,6 +4,12 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ## Unreleased
 
+### Changed
+
+- Reviewed `edit` and `apply_patch` operations inside the current workspace are
+  allowed by default; `run --permission deny|ask` remains available as an
+  explicit override.
+
 ### Added
 
 - Initial local-first Go CLI with append-only interactive chat and

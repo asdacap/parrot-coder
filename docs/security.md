@@ -45,6 +45,11 @@ An approval is bound to an operation hash containing tool input, resolved
 resources, and review data. Changed arguments, paths, commands, or file hashes
 invalidate the approval.
 
+Canonical reads and searches and reviewed `edit`/`apply_patch` mutations inside
+the current workspace are allowed by the default workspace policy. An explicit
+permission mode overrides the mutation default. Workspace containment,
+preimage revalidation, snapshots, and undo/redo still apply.
+
 Permission dialogs show only the tool's human-readable description, flattened
 to one line. They do not show policy metadata, resource records, canonical
 input, or structured review JSON. Those values remain part of the verified

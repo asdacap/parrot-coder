@@ -245,6 +245,38 @@ func toolHarness(t *testing.T) (*workspace.Workspace, Executor, CallContext) {
 	return w, Executor{Snapshot: r.Materialize(), Permissions: broker, MaxOutputBytes: 4096}, call
 }
 
+func TestDefaultWorkspacePolicyAllowsOnlyReviewedMutationTools(t *testing.T) {
+	request := func(toolID, kind, operation string) permission.Request {
+		return permission.Request{ToolID: toolID, Resources: []permission.Resource{{Kind: kind, Identifier: "/workspace/file", Operation: operation}}}
+	}
+	tests := []struct {
+		name     string
+		request  permission.Request
+		decision permission.Decision
+		readOnly permission.Decision
+	}{
+		{name: "read", request: request("read", "filesystem", "read"), decision: permission.Allow, readOnly: permission.Allow},
+		{name: "edit write", request: request("edit", "filesystem", "write"), decision: permission.Allow, readOnly: permission.Ask},
+		{name: "edit create", request: request("edit", "filesystem", "create"), decision: permission.Allow, readOnly: permission.Ask},
+		{name: "patch delete", request: request("apply_patch", "filesystem", "delete"), decision: permission.Allow, readOnly: permission.Ask},
+		{name: "formatter write", request: request("format", "filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
+		{name: "edit external capability", request: request("edit", "external_filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
+		{name: "shell", request: request("shell", "process", "execute"), decision: permission.Ask, readOnly: permission.Ask},
+	}
+	workspacePolicy := DefaultWorkspacePolicy()
+	readOnlyPolicy := DefaultReadOnlyPolicy()
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got, _, _ := workspacePolicy.Evaluate(test.request); got != test.decision {
+				t.Fatalf("workspace decision = %q, want %q", got, test.decision)
+			}
+			if got, _, _ := readOnlyPolicy.Evaluate(test.request); got != test.readOnly {
+				t.Fatalf("read-only decision = %q, want %q", got, test.readOnly)
+			}
+		})
+	}
+}
+
 func TestReadBinaryHugeLineAndSymlinkSwap(t *testing.T) {
 	w, e, call := toolHarness(t)
 	root := w.Root()
