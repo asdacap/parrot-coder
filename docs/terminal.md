@@ -30,6 +30,16 @@ Color is optional for human-oriented interactive output and is disabled by
 `NO_COLOR`, `--no-color`, `TERM=dumb`, or non-TTY output. Untrusted model and
 tool text is sanitized before renderer-owned styling is applied.
 
+Assistant responses render a terminal-safe Markdown subset: headings,
+blockquotes, ordered and unordered lists, task boxes, thematic rules, inline
+code, emphasis, strong text, strikethrough, and links. Fenced code delimiters
+are hidden. Known fence languages use embedded Chroma lexers for syntax
+highlighting on a color-capable TTY; unknown or explicitly plain languages,
+disabled color, and non-TTY output use plain code. Highlighting falls back to
+plain code above 512 KiB or 10,000 lines. Model content is sanitized before
+Markdown parsing, and only renderer-owned presentation metadata may introduce
+ANSI sequences.
+
 ## Chat Loop
 
 Enhanced chat keeps one editor active while the session is idle or running:
@@ -103,8 +113,11 @@ The live region and permanent scrollback have explicit ownership boundaries:
 1. Reasoning summaries remain redrawable while they are being updated. At the
    first nonempty answer-text delta, they are committed in provider order before
    any answer text can enter scrollback. Raw chain-of-thought is never committed.
-2. During an answer, each complete newline- or width-wrapped row is promoted to
-   scrollback immediately. Only the unfinished final row remains redrawable.
+2. During an answer, each complete source line is promoted to scrollback.
+   Width-wrapped fragments remain redrawable until their source line is
+   complete, so later input cannot reinterpret already-committed Markdown.
+   Fenced code remains redrawable until the closing fence, preserving
+   multiline lexer state. The live preview remains bounded to six rows.
 3. Completed tool reports are queued while an assistant message is open. After
    the answer suffix is committed, reports are flushed in completion order. This
    prevents a tool status from splitting the assistant response.

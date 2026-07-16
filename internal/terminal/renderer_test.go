@@ -487,7 +487,7 @@ func TestLiveRendererCompositeFrameShowsTransientContentInModeline(t *testing.T)
 	}
 }
 
-func TestLiveRendererPromotesStreamingRowsAndCommitsOnlySuffix(t *testing.T) {
+func TestLiveRendererPromotesCompleteStreamingLinesAndCommitsOnlySuffix(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 10, MaxRows: 6})
 	frame := LiveFrame{
@@ -506,26 +506,39 @@ func TestLiveRendererPromotesStreamingRowsAndCommitsOnlySuffix(t *testing.T) {
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
-	promotion := output.String()[before:]
-	if !strings.Contains(promotion, "- abcdefgh\n") {
-		t.Fatalf("stable row was not promoted to scrollback: %q", promotion)
+	redraw := output.String()[before:]
+	if strings.Contains(redraw, "- abcdefgh\n") || renderer.stream.started {
+		t.Fatalf("width wrapping prematurely promoted Markdown source: output=%q state=%#v", redraw, renderer.stream)
 	}
-	if !renderer.stream.started || string(renderer.stream.pending) != "ijklmnop" {
+	if string(renderer.stream.pending) != "abcdefghijklmnop" {
 		t.Fatalf("stream state = %#v", renderer.stream)
 	}
-	if len(renderer.rows) == 0 || renderer.rows[0] != "  ijklmnop" {
-		t.Fatalf("unfinished streaming row is not aligned: %#v", renderer.rows)
+	if len(renderer.rows) < 2 || renderer.rows[0] != "- abcdefgh" || renderer.rows[1] != "  ijklmnop" {
+		t.Fatalf("wrapped unfinished source is not live: %#v", renderer.rows)
 	}
 	if renderer.cursorRow != len(renderer.rows)-1 || !strings.Contains(strings.Join(renderer.rows, "\n"), "$ draft") {
 		t.Fatalf("editor was not restored: rows=%#v cursor=%d", renderer.rows, renderer.cursorRow)
 	}
 
 	before = output.Len()
-	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop!"}, true); err != nil {
+	frame.Stream.Text = "abcdefghijklmnop\nnext"
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	promotion := output.String()[before:]
+	if !strings.Contains(promotion, "- abcdefgh\n  ijklmnop\n") {
+		t.Fatalf("complete source line was not promoted to scrollback: %q", promotion)
+	}
+	if !renderer.stream.started || string(renderer.stream.pending) != "next" || len(renderer.rows) == 0 || renderer.rows[0] != "  next" {
+		t.Fatalf("promoted stream state = %#v; rows=%#v", renderer.stream, renderer.rows)
+	}
+
+	before = output.Len()
+	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop\nnext!"}, true); err != nil {
 		t.Fatal(err)
 	}
 	completion := output.String()[before:]
-	if strings.Contains(completion, "abcdefgh") || !strings.Contains(completion, "  ijklmnop") || !strings.Contains(completion, "!") {
+	if strings.Contains(completion, "abcdefgh") || !strings.Contains(completion, "  next!") {
 		t.Fatalf("completion duplicated prefix or lost suffix: %q", completion)
 	}
 	if renderer.stream.id != "" {
@@ -554,15 +567,15 @@ func TestLiveRendererKeepsStreamingRowAtTopOfCompositeFrame(t *testing.T) {
 	}
 
 	before := output.Len()
-	frame.Stream.Text = "partial response that wraps"
+	frame.Stream.Text = "partial response that wraps\nnext"
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
 	promotion := output.String()[before:]
-	if !strings.Contains(promotion, "- partial response t\n") {
+	if !strings.Contains(promotion, "- partial response t\n  hat wraps\n") {
 		t.Fatalf("top streaming row was not promoted at the live boundary: %q", promotion)
 	}
-	if len(renderer.rows) == 0 || renderer.rows[0] != "  hat wraps" {
+	if len(renderer.rows) == 0 || renderer.rows[0] != "  next" {
 		t.Fatalf("unfinished suffix is not the highest live row: %#v", renderer.rows)
 	}
 }
@@ -726,12 +739,20 @@ func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
-	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(output.String(), "")
+	if renderer.streamBlock {
+		t.Fatal("width-only wrapping committed the stream block")
+	}
+	before := output.Len()
+	frame.Stream.Text = "abcdefghijklmnop\nnext"
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(output.String()[before:], "")
 	plain = strings.ReplaceAll(plain, "\r", "")
-	if got := strings.Count(plain, "\n"+wantRule+"\n- abcdefgh\n"); got != 1 {
+	if got := strings.Count(plain, wantRule+"\n- abcdefgh\n  ijklmnop\n"); got != 1 {
 		t.Fatalf("stream block separator count = %d; output=%q", got, output.String())
 	}
-	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop!"}, false); err != nil {
+	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop\nnext!"}, false); err != nil {
 		t.Fatal(err)
 	}
 	if err := renderer.Commit("next tool"); err != nil {
