@@ -29,8 +29,9 @@ scope for security reports.
 
 User-approved agent shell commands run in a mandatory operating-system sandbox:
 Bubblewrap on Linux and Seatbelt on macOS. The host filesystem is read-only,
-the workspace is writable except for existing repository and Parrot metadata
-along the startup configuration path, and network access is allowed. Shell
+the workspace and Git metadata are writable except for existing Parrot metadata
+along the startup configuration path, and network access is allowed. Linked
+worktree common Git directories outside the workspace are also writable. Shell
 execution fails when the sandbox is unavailable. Configured local formatter,
 LSP, and MCP executables remain trusted services with the invoking user's
 authority. Another same-user process, a

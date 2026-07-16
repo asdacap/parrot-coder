@@ -39,6 +39,9 @@ func (s linuxSandbox) command(shell, script, cwd string) (string, []string, erro
 		"--setenv", "TMPDIR", "/tmp",
 		"--bind", s.workspace, s.workspace,
 	}
+	if commonDirectory, ok := linkedGitCommonDirectory(s.workspace); ok {
+		args = append(args, "--bind", commonDirectory, commonDirectory)
+	}
 	for _, path := range protectedWorkspacePaths(s.workspace, s.workingDirectory) {
 		args = append(args, "--ro-bind", path, path)
 	}

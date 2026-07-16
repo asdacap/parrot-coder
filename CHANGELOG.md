@@ -14,6 +14,9 @@ All notable changes to Parrot Coder will be documented in this file.
 - Reviewed `edit` and `apply_patch` operations inside the current workspace are
   allowed by default; `run --permission deny|ask` remains available as an
   explicit override.
+- Sandboxed shell commands may write Git metadata, including the external
+  common Git directory used by a linked worktree, so Git commits work from
+  worktree-based workspaces.
 
 ### Added
 
