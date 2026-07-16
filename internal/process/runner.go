@@ -43,12 +43,13 @@ type OutputStore interface {
 }
 
 type Request struct {
-	Shell   string            `json:"shell"`
-	Command string            `json:"command"`
-	Cwd     string            `json:"cwd,omitempty"`
-	Env     map[string]string `json:"env,omitempty"`
-	Timeout time.Duration     `json:"timeout,omitempty"`
-	Output  io.Writer         `json:"-"`
+	Shell     string            `json:"shell"`
+	Command   string            `json:"command"`
+	Cwd       string            `json:"cwd,omitempty"`
+	Env       map[string]string `json:"env,omitempty"`
+	Timeout   time.Duration     `json:"timeout,omitempty"`
+	Output    io.Writer         `json:"-"`
+	SessionID string            `json:"-"`
 }
 
 type Result struct {
@@ -63,8 +64,10 @@ type Result struct {
 }
 
 type Runner struct {
-	config  Config
-	sandbox sandbox
+	config        Config
+	sandbox       sandbox
+	mu            sync.RWMutex
+	writablePaths map[string]map[string]struct{}
 }
 
 // DefaultShell returns the user's configured shell when it is an absolute,
@@ -111,12 +114,72 @@ func NewRunner(config Config) (*Runner, error) {
 		}
 		implementation = platformSandbox(config.Workspace, resolved)
 	}
-	return &Runner{config: config, sandbox: implementation}, nil
+	return &Runner{config: config, sandbox: implementation, writablePaths: make(map[string]map[string]struct{})}, nil
+}
+
+// AllowWrite grants sandboxed commands in one session write access to an exact
+// existing file or directory. Grants are held only for this Runner's lifetime.
+func (r *Runner) AllowWrite(sessionID, path string) error {
+	if sessionID == "" || !filepath.IsAbs(path) {
+		return errors.New("process: session and absolute writable path are required")
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return fmt.Errorf("process: resolve writable path: %w", err)
+	}
+	if _, err := os.Stat(resolved); err != nil {
+		return fmt.Errorf("process: stat writable path: %w", err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.writablePaths[sessionID] == nil {
+		r.writablePaths[sessionID] = make(map[string]struct{})
+	}
+	for existing := range r.writablePaths[sessionID] {
+		if isPathWithin(resolved, existing) {
+			return nil
+		}
+		if isPathWithin(existing, resolved) {
+			delete(r.writablePaths[sessionID], existing)
+		}
+	}
+	r.writablePaths[sessionID][resolved] = struct{}{}
+	return nil
+}
+
+func isPathWithin(path, root string) bool {
+	relative, err := filepath.Rel(root, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func (r *Runner) writableForSession(sessionID string) ([]string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	paths := make([]string, 0, len(r.writablePaths[sessionID]))
+	for path := range r.writablePaths[sessionID] {
+		resolved, err := filepath.EvalSymlinks(path)
+		if err != nil || resolved != path {
+			return nil, fmt.Errorf("process: writable path changed after approval: %s", path)
+		}
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	return paths, nil
 }
 
 // Run treats the command as arbitrary process execution. The shell path is an
 // executable, not a policy boundary. If omitted, it is detected automatically.
 func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
+	return r.run(ctx, request, true)
+}
+
+// RunUnrestricted executes without the platform sandbox. Callers must obtain
+// explicit permission before invoking it.
+func (r *Runner) RunUnrestricted(ctx context.Context, request Request) (Result, error) {
+	return r.run(ctx, request, false)
+}
+
+func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Result, error) {
 	if request.Shell == "" {
 		var err error
 		request.Shell, err = DefaultShell()
@@ -170,13 +233,24 @@ func (r *Runner) Run(ctx context.Context, request Request) (Result, error) {
 		}
 		return Result{}, fmt.Errorf("process: shell: %w", err)
 	}
-	program, arguments, err := r.sandbox.command(resolvedShell, request.Command, resolved)
-	if err != nil {
-		if outputPipe != nil {
-			_ = outputPipe.CloseWithError(err)
-			<-stored
+	program, arguments := resolvedShell, []string{"-c", request.Command}
+	if sandboxed {
+		writablePaths, writableErr := r.writableForSession(request.SessionID)
+		if writableErr != nil {
+			if outputPipe != nil {
+				_ = outputPipe.CloseWithError(writableErr)
+				<-stored
+			}
+			return Result{}, writableErr
 		}
-		return Result{}, fmt.Errorf("process: sandbox: %w", err)
+		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, writablePaths)
+		if err != nil {
+			if outputPipe != nil {
+				_ = outputPipe.CloseWithError(err)
+				<-stored
+			}
+			return Result{}, fmt.Errorf("process: sandbox: %w", err)
+		}
 	}
 	command := exec.Command(program, arguments...)
 	command.Dir = resolved

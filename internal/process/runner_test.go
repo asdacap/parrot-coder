@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -20,8 +21,107 @@ type memoryOutputStore struct{ data []byte }
 
 type directSandbox struct{}
 
-func (directSandbox) command(shell, script, _ string) (string, []string, error) {
+func (directSandbox) command(shell, script, _ string, _ []string) (string, []string, error) {
 	return shell, []string{"-c", script}, nil
+}
+
+type recordingSandbox struct{ writable []string }
+
+func (s *recordingSandbox) command(shell, script, _ string, writable []string) (string, []string, error) {
+	s.writable = append([]string(nil), writable...)
+	return shell, []string{"-c", script}, nil
+}
+
+func TestRunnerWritablePathsAreExactAndSessionScoped(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "first")
+	second := filepath.Join(root, "second")
+	for _, path := range []string{first, second} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ws, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sandbox := &recordingSandbox{}
+	runner, err := NewRunner(Config{Workspace: ws, MaxOutputBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.sandbox = sandbox
+	if err := runner.AllowWrite("session-a", second); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.AllowWrite("session-a", first); err != nil {
+		t.Fatal(err)
+	}
+	child := filepath.Join(second, "child")
+	if err := os.MkdirAll(child, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.AllowWrite("session-a", child); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: "true", Cwd: root, SessionID: "session-a"}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(sandbox.writable, []string{first, second}) {
+		t.Fatalf("session-a writable paths = %q", sandbox.writable)
+	}
+	if _, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: "true", Cwd: root, SessionID: "session-b"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.writable) != 0 {
+		t.Fatalf("session-b inherited writable paths: %q", sandbox.writable)
+	}
+}
+
+func TestRunnerRejectsWritablePathChangedAfterApproval(t *testing.T) {
+	root := t.TempDir()
+	ws, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	external := t.TempDir()
+	granted := filepath.Join(external, "granted")
+	other := filepath.Join(external, "other")
+	for _, path := range []string{granted, other} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner, err := NewRunner(Config{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.sandbox = directSandbox{}
+	if err := runner.AllowWrite("session", granted); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(granted); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(other, granted); err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: "true", SessionID: "session"})
+	if err == nil || !strings.Contains(err.Error(), "writable path changed after approval") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunUnrestrictedBypassesSandbox(t *testing.T) {
+	runner := testRunner(t, Config{})
+	runner.sandbox = unsupportedSandbox{platform: "test"}
+	result, err := runner.RunUnrestricted(context.Background(), Request{Shell: "/bin/sh", Command: "printf unrestricted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "unrestricted" {
+		t.Fatalf("output = %q", result.Output)
+	}
 }
 
 func (s *memoryOutputStore) Store(_ context.Context, reader io.Reader) (StoredOutput, error) {

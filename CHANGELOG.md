@@ -14,6 +14,12 @@ All notable changes to Parrot Coder will be documented in this file.
 - Reviewed `edit` and `apply_patch` operations inside the current workspace are
   allowed by default; `run --permission deny|ask` remains available as an
   explicit override.
+- Sandboxed shell commands are now allowed without a permission prompt by the
+  default workspace policy; `run --permission deny|ask` remains available as an
+  explicit override.
+- Added an `unrestricted_shell` tool that requires permission under the default
+  policy and executes with the invoking user's local authority without the OS
+  sandbox.
 
 ### Added
 

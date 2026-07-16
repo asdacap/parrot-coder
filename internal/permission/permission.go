@@ -191,6 +191,7 @@ type Pending struct {
 type Reply struct {
 	Decision Decision
 	Scope    Scope
+	Reason   string
 }
 
 type Prompter interface {
@@ -271,6 +272,9 @@ func (b *Broker) Authorize(ctx context.Context, request Request) (Decision, erro
 	}
 	select {
 	case reply := <-state.result:
+		if reply.Decision == Deny && reply.Reason != "" {
+			return Deny, errors.New(reply.Reason)
+		}
 		return reply.Decision, nil
 	case <-ctx.Done():
 		b.mu.Lock()
@@ -291,11 +295,20 @@ func (b *Broker) Pending() []Pending {
 	return out
 }
 
-func (b *Broker) ReplyOnce(id string) error      { return b.reply(id, Reply{Allow, ""}) }
-func (b *Broker) ReplyProcess(id string) error   { return b.reply(id, Reply{Allow, ScopeProcess}) }
-func (b *Broker) ReplySession(id string) error   { return b.reply(id, Reply{Allow, ScopeSession}) }
-func (b *Broker) ReplyWorkspace(id string) error { return b.reply(id, Reply{Allow, ScopeWorkspace}) }
-func (b *Broker) Reject(id string) error         { return b.reply(id, Reply{Deny, ""}) }
+func (b *Broker) ReplyOnce(id string) error { return b.reply(id, Reply{Decision: Allow}) }
+func (b *Broker) ReplyProcess(id string) error {
+	return b.reply(id, Reply{Decision: Allow, Scope: ScopeProcess})
+}
+func (b *Broker) ReplySession(id string) error {
+	return b.reply(id, Reply{Decision: Allow, Scope: ScopeSession})
+}
+func (b *Broker) ReplyWorkspace(id string) error {
+	return b.reply(id, Reply{Decision: Allow, Scope: ScopeWorkspace})
+}
+func (b *Broker) Reject(id string) error { return b.reply(id, Reply{Decision: Deny}) }
+func (b *Broker) RejectWithReason(id, reason string) error {
+	return b.reply(id, Reply{Decision: Deny, Reason: reason})
+}
 
 // EnableYolo allows every permission request in the pending request's session
 // for the lifetime of this broker. It also releases requests already pending

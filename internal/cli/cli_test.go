@@ -1958,6 +1958,41 @@ func TestEnhancedPermissionAnswerAllowsProcessScope(t *testing.T) {
 	}
 }
 
+func TestWritePermissionModalUsesSpecializedChoicesAndReplies(t *testing.T) {
+	api := &enhancedQueueAPI{}
+	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	permissionItem := &v1.Permission{ID: "permission", ToolID: "request_write_permission"}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}},
+		state: state, modal: &enhancedModal{kind: "permission", state: state, permission: permissionItem, choices: permissionChoicesFor(*permissionItem)},
+	}
+	if got := runtime.modal.choices; len(got) != 3 || got[0].Value != "grant" || got[1].Value != "reject" || got[2].Value != "reject with reason" {
+		t.Fatalf("choices = %#v", got)
+	}
+	runtime.modal.selected = 2
+	done, err := runtime.handlePermissionModalKey(terminal.Key{Kind: terminal.KeyEnter})
+	if err != nil || !done || !runtime.modal.customInput || runtime.modal.prompt != "rejection reason: " {
+		t.Fatalf("reason selection = done %t, custom %t, prompt %q, err %v", done, runtime.modal.customInput, runtime.modal.prompt, err)
+	}
+	if err := runtime.answerModal("use the project cache instead"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "deny" || api.permissionReplies[0].Reason != "use the project cache instead" {
+		t.Fatalf("reason reply = %#v", api.permissionReplies)
+	}
+
+	runtime.modal = &enhancedModal{kind: "permission", state: state, permission: permissionItem}
+	if err := runtime.answerModal("grant"); err != nil {
+		t.Fatal(err)
+	}
+	if len(api.permissionReplies) != 2 || api.permissionReplies[1].Decision != "allow" || api.permissionReplies[1].Scope != "" {
+		t.Fatalf("grant reply = %#v", api.permissionReplies)
+	}
+}
+
 func TestPermissionReplyEnableYolo(t *testing.T) {
 	reply := permissionReplyFromAnswer("enable yolo")
 	if reply.Decision != "allow" || reply.Scope != "yolo" {

@@ -248,7 +248,7 @@ func (a *App) runCommand(ctx context.Context, args []string, stdin io.Reader, st
 	var interactive bool
 	addCodingFlags(fs, &options)
 	fs.StringVar(&format, "format", "text", "output format: text or jsonl")
-	fs.StringVar(&permissionMode, "permission", "", "override mutating tool policy: deny or ask")
+	fs.StringVar(&permissionMode, "permission", "", "override tool permission policy: deny or ask")
 	fs.BoolVar(&interactive, "interactive-prompts", false, "answer prompts from the controlling terminal")
 	if err := fs.Parse(args); err != nil {
 		return exitWithReason(ctx, flagCode(err), flagReason(err), nil)
@@ -1241,12 +1241,34 @@ func settlePrompts(ctx context.Context, api apiClient, sessionID string, input i
 	}
 	for _, item := range permissions.Items {
 		writePermissionContext(output, item)
-		fmt.Fprint(output, "allow once/session/workspace/process or enable yolo? [deny]: ")
+		if item.ToolID == "request_write_permission" {
+			fmt.Fprint(output, "grant, reject, or reject with reason? [reject]: ")
+		} else {
+			fmt.Fprint(output, "allow once/session/workspace/process or enable yolo? [deny]: ")
+		}
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return readErr
 		}
-		reply := permissionReplyFromAnswer(line)
+		var reply v1.PermissionReply
+		if item.ToolID == "request_write_permission" {
+			switch strings.ToLower(strings.TrimSpace(line)) {
+			case "grant":
+				reply.Decision = "allow"
+			case "reject with reason":
+				reply.Decision = "deny"
+				fmt.Fprint(output, "rejection reason: ")
+				reason, reasonErr := reader.ReadString('\n')
+				if reasonErr != nil && !errors.Is(reasonErr, io.EOF) {
+					return reasonErr
+				}
+				reply.Reason = strings.TrimSpace(reason)
+			default:
+				reply.Decision = "deny"
+			}
+		} else {
+			reply = permissionReplyFromAnswer(line)
+		}
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
 		}
@@ -1313,16 +1335,36 @@ func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, o
 				return err
 			}
 		}
-		picker := terminal.NewPickerDecoder(options.keyInput, options.stdout, permissionChoices(),
+		picker := terminal.NewPickerDecoder(options.keyInput, options.stdout, permissionChoicesFor(item),
 			terminal.WithPickerPrompt("permission decision: "), terminal.WithPickerRenderer(options.renderer))
 		choice, readErr := picker.Pick(ctx)
 		if errors.Is(readErr, terminal.ErrCanceled) || errors.Is(readErr, io.EOF) {
-			choice.Value, readErr = "no", nil
+			choice.Value, readErr = "reject", nil
 		}
 		if readErr != nil {
 			return readErr
 		}
-		reply := permissionReplyFromAnswer(choice.Value)
+		var reply v1.PermissionReply
+		if item.ToolID == "request_write_permission" {
+			switch choice.Value {
+			case "grant":
+				reply.Decision = "allow"
+			case "reject with reason":
+				reply.Decision = "deny"
+				reason, reasonErr := read("rejection reason: ")
+				if errors.Is(reasonErr, terminal.ErrCanceled) || errors.Is(reasonErr, io.EOF) {
+					reason, reasonErr = "", nil
+				}
+				if reasonErr != nil {
+					return reasonErr
+				}
+				reply.Reason = strings.TrimSpace(reason)
+			default:
+				reply.Decision = "deny"
+			}
+		} else {
+			reply = permissionReplyFromAnswer(choice.Value)
+		}
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
 		}

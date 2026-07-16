@@ -8,12 +8,12 @@ import (
 )
 
 type sandbox interface {
-	command(shell, script, cwd string) (string, []string, error)
+	command(shell, script, cwd string, writablePaths []string) (string, []string, error)
 }
 
 type unsupportedSandbox struct{ platform string }
 
-func (s unsupportedSandbox) command(_, _, _ string) (string, []string, error) {
+func (s unsupportedSandbox) command(_, _, _ string, _ []string) (string, []string, error) {
 	return "", nil, errors.New("no sandbox backend is available for " + s.platform)
 }
 

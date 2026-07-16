@@ -29,9 +29,13 @@ func TestLinuxSandboxCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", root+string(os.PathListSeparator)+bin)
+	writable := filepath.Join(t.TempDir(), "granted")
+	if err := os.WriteFile(writable, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	implementation := linuxSandbox{workspace: root, workingDirectory: nested}
-	program, args, err := implementation.command("/bin/sh", "printf ok", root)
+	program, args, err := implementation.command("/bin/sh", "printf ok", root, []string{writable})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,6 +45,7 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	for _, expected := range [][]string{
 		{"--unshare-user"}, {"--unshare-pid"}, {"--cap-drop", "ALL"},
 		{"--ro-bind", "/", "/"}, {"--bind", root, root}, {"--tmpfs", "/tmp"},
+		{"--bind", writable, writable},
 		{"--ro-bind", filepath.Join(root, ".git"), filepath.Join(root, ".git")},
 		{"--ro-bind", filepath.Join(root, ".parrot"), filepath.Join(root, ".parrot")},
 		{"--ro-bind", filepath.Join(root, "parrot.jsonc"), filepath.Join(root, "parrot.jsonc")},

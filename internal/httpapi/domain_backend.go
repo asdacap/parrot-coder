@@ -350,13 +350,30 @@ func (b *DomainBackend) ReplyPermission(ctx context.Context, sessionID, requestI
 	if !containsPermission(items.Items, requestID) || b.Permissions == nil {
 		return ErrPermissionNotFound
 	}
+	var permissionItem v1.Permission
+	for _, item := range items.Items {
+		if item.ID == requestID {
+			permissionItem = item
+			break
+		}
+	}
+	if len(reply.Reason) > 4096 || permissionItem.ToolID == "request_write_permission" && reply.Decision == "allow" && reply.Scope != "" {
+		return ErrInvalid
+	}
 	switch reply.Decision {
 	case "deny":
 		if reply.Scope != "" {
 			return ErrInvalid
 		}
-		err = b.Permissions.Reject(requestID)
+		if reply.Reason != "" {
+			err = b.Permissions.RejectWithReason(requestID, reply.Reason)
+		} else {
+			err = b.Permissions.Reject(requestID)
+		}
 	case "allow":
+		if reply.Reason != "" {
+			return ErrInvalid
+		}
 		switch reply.Scope {
 		case "":
 			err = b.Permissions.ReplyOnce(requestID)

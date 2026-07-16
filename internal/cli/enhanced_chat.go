@@ -331,7 +331,7 @@ func (s *chatShell) runEnhanced(first string) int {
 				targetState = runtime.modal.state
 				modalAction = true
 			}
-			if modalAction && runtime.modal.kind == "permission" {
+			if modalAction && runtime.modal.kind == "permission" && !runtime.modal.customInput {
 				done, err := runtime.handlePermissionModalKey(result.key)
 				close(result.ack)
 				if done {
@@ -1137,7 +1137,7 @@ func (r *enhancedChatRuntime) detectModal() {
 		}
 		r.modal = &enhancedModal{
 			kind: "permission", state: state, permission: &item,
-			prompt: "permission decision: ", choices: permissionChoices(),
+			prompt: "permission decision: ", choices: permissionChoicesFor(item),
 		}
 		r.inputMode.advance()
 		r.showPermissionContext(item)
@@ -1169,6 +1169,17 @@ func permissionChoices() []terminal.Candidate {
 		{Value: "allow all for process", Description: "Allow matching requests until Parrot exits"},
 		{Value: "enable yolo", Description: "Disable all permission checks for this session"},
 	}
+}
+
+func permissionChoicesFor(item v1.Permission) []terminal.Candidate {
+	if item.ToolID == "request_write_permission" {
+		return []terminal.Candidate{
+			{Value: "grant", Description: "Allow sandboxed writes to this path for the current session"},
+			{Value: "reject", Description: "Reject this request"},
+			{Value: "reject with reason", Description: "Reject and provide feedback to the agent"},
+		}
+	}
+	return permissionChoices()
 }
 
 func permissionReplyFromAnswer(value string) v1.PermissionReply {
@@ -1210,7 +1221,14 @@ func (r *enhancedChatRuntime) handlePermissionModalKey(key terminal.Key) (bool, 
 		} else if selected >= len(choices) {
 			selected = len(choices) - 1
 		}
-		return true, r.answerModal(choices[selected].Value)
+		value := choices[selected].Value
+		if value == "reject with reason" {
+			r.modal.customInput = true
+			r.modal.prompt = "rejection reason: "
+			r.modal.choices = nil
+			return true, r.modal.state.Reset("")
+		}
+		return true, r.answerModal(value)
 	case terminal.KeyEscape, terminal.KeyEOF:
 		r.cancelModal()
 		return true, nil
@@ -1377,7 +1395,21 @@ func (r *enhancedChatRuntime) answerModal(value string) error {
 			return r.submitPrompt(answer)
 		}
 	case "permission":
-		reply := permissionReplyFromAnswer(value)
+		var reply v1.PermissionReply
+		if modal.permission.ToolID == "request_write_permission" {
+			switch {
+			case modal.customInput && strings.TrimSpace(value) != "":
+				reply = v1.PermissionReply{Decision: "deny", Reason: strings.TrimSpace(value)}
+			case modal.customInput:
+				return fmt.Errorf("%w: enter a rejection reason", errInvalidModalAnswer)
+			case value == "grant":
+				reply = v1.PermissionReply{Decision: "allow"}
+			default:
+				reply = v1.PermissionReply{Decision: "deny"}
+			}
+		} else {
+			reply = permissionReplyFromAnswer(value)
+		}
 		if err := r.shell.api.ReplyPermission(r.shell.ctx, r.shell.current.ID, modal.permission.ID, reply); err != nil {
 			return err
 		}

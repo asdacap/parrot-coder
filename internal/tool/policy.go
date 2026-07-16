@@ -5,8 +5,8 @@ import (
 )
 
 // DefaultWorkspacePolicy allows canonical read/search operations, bounded web
-// fetches, and reviewed workspace mutations made through edit or apply_patch.
-// Other operations, including process execution, remain at ask.
+// fetches, reviewed workspace mutations made through edit or apply_patch, and
+// sandboxed shell execution. Other operations remain at ask.
 func DefaultWorkspacePolicy() permission.Policy {
 	return permission.Policy{Default: permission.Ask, Rules: []permission.Rule{{Match: func(r permission.Request) bool {
 		if len(r.Resources) == 0 {
@@ -38,7 +38,17 @@ func DefaultWorkspacePolicy() permission.Policy {
 			}
 		}
 		return true
-	}, Decision: permission.Allow, Reason: "reviewed workspace mutation"}}}
+	}, Decision: permission.Allow, Reason: "reviewed workspace mutation"}, {Match: func(r permission.Request) bool {
+		if r.ToolID != "shell" || len(r.Resources) == 0 {
+			return false
+		}
+		for _, resource := range r.Resources {
+			if resource.Kind != "process" || resource.Operation != "execute" {
+				return false
+			}
+		}
+		return true
+	}, Decision: permission.Allow, Reason: "sandboxed shell execution"}}}
 }
 
 // DefaultReadOnlyPolicy is retained for callers that need automatic access

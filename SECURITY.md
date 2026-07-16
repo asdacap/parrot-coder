@@ -27,12 +27,14 @@ Credentials, canonical permission binding, workspace containment, bounded I/O,
 terminal sanitation, process-group cleanup, and loopback HTTP binding are in
 scope for security reports.
 
-User-approved agent shell commands run in a mandatory operating-system sandbox:
+The default `shell` tool runs in a mandatory operating-system sandbox:
 Bubblewrap on Linux and Seatbelt on macOS. The host filesystem is read-only,
 the workspace is writable except for existing repository and Parrot metadata
 along the startup configuration path, and network access is allowed. Shell
-execution fails when the sandbox is unavailable. Configured local formatter,
-LSP, and MCP executables remain trusted services with the invoking user's
+execution fails when the sandbox is unavailable. The separate
+`unrestricted_shell` tool requires permission under the default policy and runs
+without the sandbox, with the invoking user's local authority. Configured local
+formatter, LSP, and MCP executables are likewise trusted services with that
 authority. Another same-user process, a
 compromised provider account, malicious dependencies used to build Parrot, and
 the confidentiality of intentionally readable, fetched, or submitted content

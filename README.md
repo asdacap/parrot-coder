@@ -66,7 +66,11 @@ toolchains, build systems, package managers, and developer tools such as `go`,
 `python3`, `java`, `docker`, and `kubectl`. Available optional utilities are
 listed in agent context without warnings for tools that are absent.
 
-Agent shell commands are OS-sandboxed. Linux requires Bubblewrap and
+Agent shell commands are allowed without a permission prompt by the default
+workspace policy and are OS-sandboxed. An explicit permission mode can override
+this default. The separate `unrestricted_shell` tool always requires permission
+under the default policy and runs with the invoking user's local authority,
+without an OS sandbox. Linux requires Bubblewrap and
 unprivileged user namespaces; the Nix package and development shell include
 Bubblewrap. macOS uses the system Seatbelt executable. The host filesystem is
 read-only, the workspace is writable except for existing `.git`, `.parrot`, and
@@ -173,8 +177,9 @@ parrot help
 
 Prompt text may be supplied as one argument, piped on stdin, or both. Piped
 stdin is always prompt data. Reviewed `edit` and `apply_patch` operations inside
-the current workspace are allowed by default. Use `run --permission deny` to
-disable mutations or `run --permission ask --interactive-prompts` to prompt;
+the current workspace, bounded web fetches, and sandboxed shell commands are
+allowed by default. Use `run --permission deny` to deny these operations or
+`run --permission ask --interactive-prompts` to prompt;
 `--interactive-prompts` explicitly opens `/dev/tty` for permission and question
 replies. `serve` refuses non-loopback addresses because the HTTP API has no
 authentication layer.

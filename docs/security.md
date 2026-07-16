@@ -46,10 +46,11 @@ resources, and review data. Changed arguments, paths, commands, or file hashes
 invalidate the approval.
 
 Canonical reads and searches, bounded `web_fetch` GET/HEAD requests, and
-reviewed `edit`/`apply_patch` mutations inside the current workspace are allowed
-by the default workspace policy. An explicit permission mode overrides the web
-fetch and mutation defaults. Workspace containment, SSRF protections, preimage
-revalidation, snapshots, and undo/redo still apply.
+reviewed `edit`/`apply_patch` mutations inside the current workspace, and
+sandboxed `shell` execution are allowed by the default workspace policy. An
+explicit permission mode overrides the web fetch, mutation, and shell defaults.
+Workspace containment, SSRF protections, preimage revalidation, snapshots, and
+undo/redo still apply.
 
 Permission dialogs show only the tool's human-readable description, flattened
 to one line. They do not show policy metadata, resource records, canonical
@@ -61,6 +62,13 @@ or explicitly remember an in-memory process, session, or workspace grant; grants
 are not persisted across process restarts. Questions and security permissions
 use separate APIs and presentation.
 
+The `request_write_permission` tool uses a specialized Grant/Reject dialog.
+Granting it adds the exact existing file or directory to the sandbox's writable
+paths for shell calls in that session only. Reject with reason denies the tool
+call and returns the supplied text to the agent as its tool error. These grants
+are held in memory, are not shared with other sessions, and disappear when
+Parrot restarts.
+
 The explicit `enable yolo` reply disables all subsequent permission policy
 checks, including hard denies, for that session. It also allows permission
 requests already pending for the session. YOLO mode is held only in memory and
@@ -68,15 +76,21 @@ ends when the session runtime or Parrot process exits.
 
 ## Processes
 
-Shell permission allows arbitrary process execution inside a mandatory platform
-sandbox. On Linux, Parrot uses Bubblewrap with a read-only host filesystem, a
+The default `shell` tool allows arbitrary process execution inside a mandatory
+platform sandbox. On Linux, Parrot uses Bubblewrap with a read-only host filesystem, a
 writable workspace, read-only existing project metadata (`.git`, `.parrot`, and
 project `parrot.jsonc` along the configuration path), a private `/tmp`, user and
 PID namespaces, and no capabilities. On macOS it applies equivalent filesystem
 write restrictions through the system `/usr/bin/sandbox-exec` and grants a
 writable `/tmp`. Both backends retain host network access. Parrot fails shell
 execution when the platform sandbox is unavailable; permission approval does
-not bypass the sandbox.
+not bypass that tool's sandbox.
+
+The separate `unrestricted_shell` tool remains at `ask` under the default
+workspace policy. Once approved, it executes directly with the invoking user's
+local filesystem and process authority. It retains process timeouts, bounded
+output, cancellation, deliberate environment construction, and workspace-bound
+working-directory validation, but it has no operating-system sandbox.
 
 The process runner also:
 
@@ -87,13 +101,13 @@ The process runner also:
 - constructs the environment deliberately;
 - separates nonzero exit status from infrastructure failure.
 
-Shell subprocesses may read host files that are readable by the invoking user,
-but can write only the workspace and private temporary area. Repository and
-Parrot metadata inside the workspace are read-only to shell commands; use
-reviewed structured tools for intended changes. Network destinations are not
-restricted. Configured formatter, LSP, and MCP processes are trusted local
-services and do not use the agent shell sandbox. Command parsing is never
-represented as a security boundary.
+Sandboxed shell subprocesses may read host files that are readable by the
+invoking user, but can write only the workspace and private temporary area.
+Repository and Parrot metadata inside the workspace are read-only to sandboxed
+shell commands; use reviewed structured tools for intended changes. Network
+destinations are not restricted. Unrestricted shell, configured formatter, LSP,
+and MCP processes are trusted local execution and do not use the agent shell
+sandbox. Command parsing is never represented as a security boundary.
 
 ## Changes and Recovery
 

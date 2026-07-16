@@ -86,6 +86,26 @@ func TestNoninteractiveAskDenies(t *testing.T) {
 	}
 }
 
+func TestRejectWithReasonReturnsToolError(t *testing.T) {
+	b := NewBroker(Policy{Default: Ask}, false, nil)
+	done := make(chan error, 1)
+	go func() { _, err := b.Authorize(context.Background(), request(t)); done <- err }()
+	deadline := time.Now().Add(time.Second)
+	for len(b.Pending()) == 0 && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	items := b.Pending()
+	if len(items) != 1 {
+		t.Fatalf("pending = %d, want 1", len(items))
+	}
+	if err := b.RejectWithReason(items[0].ID, "use the project cache instead"); err != nil {
+		t.Fatal(err)
+	}
+	if err := <-done; err == nil || err.Error() != "use the project cache instead" {
+		t.Fatalf("authorization error = %v", err)
+	}
+}
+
 func TestEnableYoloAllowsSessionAndSettlesPending(t *testing.T) {
 	b := NewBroker(Policy{Default: Ask}, false, nil)
 	first := request(t)

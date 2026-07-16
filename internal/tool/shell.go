@@ -16,20 +16,37 @@ import (
 	"time"
 )
 
-type ShellTool struct{ Runner *process.Runner }
+type ShellTool struct {
+	Runner       *process.Runner
+	unrestricted bool
+}
 
 func NewShellTool(runner *process.Runner) *ShellTool { return &ShellTool{Runner: runner} }
+func NewUnrestrictedShellTool(runner *process.Runner) *ShellTool {
+	return &ShellTool{Runner: runner, unrestricted: true}
+}
 
-func (*ShellTool) ID() string { return "shell" }
-func (*ShellTool) Description() string {
+func (t *ShellTool) ID() string {
+	if t.unrestricted {
+		return "unrestricted_shell"
+	}
+	return "shell"
+}
+func (t *ShellTool) Description() string {
+	if t.unrestricted {
+		return "Execute an arbitrary process through a shell without the OS sandbox. This requires permission and runs with the invoking user's local authority."
+	}
 	return "Execute an arbitrary process through a shell in the workspace. The shell and working directory are detected from the environment and workspace when omitted. Shell permission permits arbitrary process execution."
 }
-func (*ShellTool) DescribeRequest(raw json.RawMessage) (string, error) {
+func (t *ShellTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input shellInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", err
 	}
 	description := "Run shell command:\n" + input.Command
+	if t.unrestricted {
+		description = "Run shell command without the OS sandbox (full local authority):\n" + input.Command
+	}
 	if input.Cwd != "" {
 		description += "\nWorking directory: " + input.Cwd
 	}
@@ -102,7 +119,11 @@ func (t *ShellTool) Plan(ctx context.Context, raw json.RawMessage, call CallCont
 		environmentNames = append(environmentNames, name)
 	}
 	sort.Strings(environmentNames)
-	review, _ := json.Marshal(map[string]any{"warning": "This permits arbitrary process execution.", "shell": resolvedShell, "command": input.Command, "cwd": resolved, "environment_names": environmentNames, "timeout_ms": input.TimeoutMS})
+	warning := "This permits arbitrary process execution inside the OS sandbox."
+	if t.unrestricted {
+		warning = "This permits arbitrary process execution without the OS sandbox, using the invoking user's local authority."
+	}
+	review, _ := json.Marshal(map[string]any{"warning": warning, "shell": resolvedShell, "command": input.Command, "cwd": resolved, "environment_names": environmentNames, "timeout_ms": input.TimeoutMS})
 	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{resource}, review)
 	if err != nil {
 		return Plan{}, err
@@ -131,7 +152,13 @@ func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	if err != nil || resolvedCwd != input.ResolvedCwd {
 		return Result{}, errors.New("shell: cwd changed after planning")
 	}
-	result, err := runner.Run(ctx, process.Request{Shell: input.ResolvedShell, Command: input.Command, Cwd: input.Cwd, Env: input.Env, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond, Output: call.Output})
+	request := process.Request{Shell: input.ResolvedShell, Command: input.Command, Cwd: input.Cwd, Env: input.Env, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond, Output: call.Output, SessionID: call.SessionID}
+	var result process.Result
+	if t.unrestricted {
+		result, err = runner.RunUnrestricted(ctx, request)
+	} else {
+		result, err = runner.Run(ctx, request)
+	}
 	if err != nil {
 		return Result{}, err
 	}

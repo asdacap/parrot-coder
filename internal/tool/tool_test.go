@@ -245,7 +245,7 @@ func toolHarness(t *testing.T) (*workspace.Workspace, Executor, CallContext) {
 	return w, Executor{Snapshot: r.Materialize(), Permissions: broker, MaxOutputBytes: 4096}, call
 }
 
-func TestDefaultWorkspacePolicyAllowsOnlyReviewedMutationTools(t *testing.T) {
+func TestDefaultWorkspaceAndReadOnlyPolicies(t *testing.T) {
 	request := func(toolID, kind, operation string) permission.Request {
 		return permission.Request{ToolID: toolID, Resources: []permission.Resource{{Kind: kind, Identifier: "/workspace/file", Operation: operation}}}
 	}
@@ -265,7 +265,10 @@ func TestDefaultWorkspacePolicyAllowsOnlyReviewedMutationTools(t *testing.T) {
 		{name: "patch delete", request: request("apply_patch", "filesystem", "delete"), decision: permission.Allow, readOnly: permission.Ask},
 		{name: "formatter write", request: request("format", "filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "edit external capability", request: request("edit", "external_filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
-		{name: "shell", request: request("shell", "process", "execute"), decision: permission.Ask, readOnly: permission.Ask},
+		{name: "shell", request: request("shell", "process", "execute"), decision: permission.Allow, readOnly: permission.Ask},
+		{name: "other process tool", request: request("other", "process", "execute"), decision: permission.Ask, readOnly: permission.Ask},
+		{name: "shell non-process resource", request: request("shell", "filesystem", "execute"), decision: permission.Ask, readOnly: permission.Ask},
+		{name: "shell unsupported operation", request: request("shell", "process", "inspect"), decision: permission.Ask, readOnly: permission.Ask},
 	}
 	workspacePolicy := DefaultWorkspacePolicy()
 	readOnlyPolicy := DefaultReadOnlyPolicy()

@@ -21,7 +21,7 @@ func platformSandbox(ws *workspace.Workspace, workingDirectory string) sandbox {
 	return linuxSandbox{workspace: ws.Root(), workingDirectory: workingDirectory}
 }
 
-func (s linuxSandbox) command(shell, script, cwd string) (string, []string, error) {
+func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string) (string, []string, error) {
 	bwrap, err := executableOutsideWorkspace("bwrap", s.workspace)
 	if err != nil {
 		return "", nil, errors.New("bubblewrap is required; install bwrap and ensure unprivileged user namespaces are enabled")
@@ -38,6 +38,9 @@ func (s linuxSandbox) command(shell, script, cwd string) (string, []string, erro
 		"--tmpfs", "/tmp",
 		"--setenv", "TMPDIR", "/tmp",
 		"--bind", s.workspace, s.workspace,
+	}
+	for _, path := range writablePaths {
+		args = append(args, "--bind", path, path)
 	}
 	for _, path := range protectedWorkspacePaths(s.workspace, s.workingDirectory) {
 		args = append(args, "--ro-bind", path, path)

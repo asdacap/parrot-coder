@@ -163,26 +163,79 @@ func TestQuestionToolBlocksForReply(t *testing.T) {
 	}
 }
 
+func TestWritePermissionDescriptionUsesCanonicalPath(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	description, err := NewWritePermissionTool(nil).DescribeRequest(json.RawMessage(`{"path":"` + alias + `"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(description, target) || strings.Contains(description, alias) {
+		t.Fatalf("description = %q", description)
+	}
+}
+
+func TestWritePermissionRejectsWorkspacePath(t *testing.T) {
+	_, ws, _, _, _ := workspaceToolHarness(t)
+	path := filepath.Join(ws.Root(), ".git")
+	if err := os.WriteFile(path, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := NewWritePermissionTool(nil).Plan(context.Background(), json.RawMessage(`{"path":"`+path+`"}`), CallContext{Workspace: ws, SessionID: "session"})
+	if err == nil || !strings.Contains(err.Error(), "workspace paths are already writable") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestUnrestrictedShellRequiresDefaultPermission(t *testing.T) {
+	_, ws, _, _, _ := workspaceToolHarness(t)
+	planned, err := NewUnrestrictedShellTool(nil).Plan(context.Background(), json.RawMessage(`{"shell":"/bin/sh","command":"true"}`), CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Permissions) != 1 || planned.Permissions[0].ToolID != "unrestricted_shell" {
+		t.Fatalf("permission = %#v", planned.Permissions)
+	}
+	decision, _, _ := DefaultWorkspacePolicy().Evaluate(planned.Permissions[0])
+	if decision != permission.Ask {
+		t.Fatalf("decision = %q", decision)
+	}
+}
+
 func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T) {
 	_, ws, _, _, _ := workspaceToolHarness(t)
 	raw := json.RawMessage(`{"shell":"/bin/sh","command":"printf ok","env":{"API_TOKEN":"top-secret"}}`)
-	planned, err := NewShellTool(nil).Plan(context.Background(), raw, CallContext{Workspace: ws})
+	tool := NewShellTool(nil)
+	planned, err := tool.Plan(context.Background(), raw, CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)
 	}
 	review := string(planned.Review)
-	if strings.Contains(review, "top-secret") || !strings.Contains(review, "API_TOKEN") || !strings.Contains(review, "arbitrary process execution") {
+	if strings.Contains(review, "top-secret") || !strings.Contains(review, "API_TOKEN") || !strings.Contains(review, "inside the OS sandbox") {
 		t.Fatalf("unsafe or incomplete review: %s", review)
 	}
-	if len(planned.Permissions) != 1 || planned.Permissions[0].Resources[0].Identifier == "" || planned.Permissions[0].Resources[0].Attributes["command_sha256"] == "" {
+	if len(planned.Permissions) != 1 || planned.Permissions[0].ToolID != tool.ID() || planned.Permissions[0].Resources[0].Identifier == "" || planned.Permissions[0].Resources[0].Attributes["command_sha256"] == "" {
 		t.Fatalf("shell resources = %#v", planned.Permissions)
 	}
-	description, err := NewShellTool(nil).DescribeRequest(raw)
+	description, err := tool.DescribeRequest(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(description, "top-secret") || !strings.Contains(description, "printf ok") || !strings.Contains(description, "API_TOKEN") {
+	if strings.Contains(description, "top-secret") || !strings.Contains(description, "printf ok") || !strings.Contains(description, "API_TOKEN") || !strings.Contains(description, "Run shell command") {
 		t.Fatalf("unsafe or incomplete request description: %q", description)
+	}
+	unrestrictedDescription, err := NewUnrestrictedShellTool(nil).DescribeRequest(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(unrestrictedDescription, "without the OS sandbox") || !strings.Contains(unrestrictedDescription, "full local authority") {
+		t.Fatalf("unrestricted description = %q", unrestrictedDescription)
 	}
 }
 

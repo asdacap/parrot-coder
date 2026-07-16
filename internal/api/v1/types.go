@@ -180,6 +180,7 @@ type PermissionList struct {
 type PermissionReply struct {
 	Decision string `json:"decision"`
 	Scope    string `json:"scope,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 type Option struct {
