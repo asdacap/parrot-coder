@@ -77,6 +77,7 @@ const (
 	// TextStyleMuted renders an informational row in ANSI bright black (grey).
 	TextStyleMuted
 	textStyleWhite
+	textStyleGreen
 )
 
 // StyledText is plain terminal text with a semantic renderer-owned style.
@@ -440,7 +441,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	rows = append(rows, inputRows...)
 	inputStyles := make([]TextStyle, len(inputRows))
 	for i := 0; i < dividerRows+barRows; i++ {
-		inputStyles[i] = textStyleWhite
+		inputStyles[i] = textStyleGreen
 	}
 	styles = append(styles, inputStyles...)
 	spans = append(spans, make([][]textSpan, len(inputRows))...)
@@ -1295,6 +1296,8 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 		return color("90", row)
 	case textStyleWhite:
 		return color("37", row)
+	case textStyleGreen:
+		return color("32", row)
 	}
 	switch {
 	case hasSpinnerPrefix(row):
