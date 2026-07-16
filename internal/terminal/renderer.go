@@ -117,7 +117,9 @@ type LiveFrame struct {
 
 // StreamMessage is the cumulative text of one in-progress assistant message.
 // Stable rows are moved into normal terminal scrollback while the final,
-// unfinished row remains in the renderer-owned live region.
+// unfinished row remains in the renderer-owned live region. When prior
+// transcript output exists, the renderer places a dim rule before the first
+// answer row.
 type StreamMessage struct {
 	ID     string
 	Prefix string
@@ -125,7 +127,7 @@ type StreamMessage struct {
 }
 
 // commitKind describes how a permanent transcript entry is spaced. Compact
-// entries stack without gaps; block entries have an empty row at boundaries.
+// entries stack without gaps; ordinary block boundaries have an empty row.
 type commitKind uint8
 
 const (
@@ -409,14 +411,18 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	styles := make([]TextStyle, len(streamRows)+len(contextRows))
 	styles = append(styles, activityStyles...)
 	// Permanent transcript blocks and transient output are separate visual
-	// regions. Keep their separator in the live region so it appears immediately
+	// regions. Keep their boundary in the live region so it appears immediately
 	// both after a submitted user message and after a response settles. A new
-	// assistant stream is itself a block, so it also needs this gap after compact
-	// output such as a committed reasoning summary, before its first row is old
-	// enough to be promoted to scrollback.
+	// assistant answer uses a dim rule in place of the ordinary empty block gap;
+	// other transient output retains the gap. The rule must appear before the
+	// answer's first row is old enough to be promoted to scrollback.
 	blockGap := 0
 	if r.committed && !r.streamBlock && len(promoted) == 0 && (r.lastCommit == commitBlock || len(streamRows) > 0) {
-		rows = append([]string{""}, rows...)
+		boundary := ""
+		if len(streamRows) > 0 {
+			boundary = assistantSeparatorRow(r.columns)
+		}
+		rows = append([]string{boundary}, rows...)
 		styles = append([]TextStyle{TextStyleDefault}, styles...)
 		blockGap = 1
 	}
@@ -467,7 +473,7 @@ func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 		rows = append(rows, strings.Repeat("─", max(3, r.columns-1)))
 	}
 	if !r.streamBlock {
-		rows = r.spaceRows(rows, commitBlock)
+		rows = r.separateAssistantRows(rows)
 	}
 	if err := r.commitRows(rows); err != nil {
 		r.stream = before
@@ -669,8 +675,10 @@ func (r *LiveRenderer) UpdateMessage(prefix, text string) error {
 	return r.redraw(rows, row, col)
 }
 
-// CommitMessage appends a permanent hanging-indented message. When divider is
-// true, a dim rule is committed beneath it before the live response begins.
+// CommitMessage appends a permanent hanging-indented message. Assistant
+// messages (identified by the "- " prefix) replace their leading block gap
+// with a dim rule. When divider is true, another dim rule is committed beneath
+// the message before the live response begins.
 func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -681,6 +689,15 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	rows := r.messageRows(prefix, text)
 	if divider {
 		rows = append(rows, strings.Repeat("─", max(1, r.columns-1)))
+	}
+	if Sanitize(prefix) == "- " {
+		rows = r.separateAssistantRows(rows)
+		if err := r.commitRows(rows); err != nil {
+			return err
+		}
+		r.committed = true
+		r.lastCommit = commitBlock
+		return nil
 	}
 	return r.commitRowsAs(rows, commitBlock)
 }
@@ -938,11 +955,15 @@ func (r *LiveRenderer) commitRowsAsStyled(rows []string, styles []TextStyle, kin
 	return nil
 }
 
-func (r *LiveRenderer) spaceRows(rows []string, kind commitKind) []string {
-	if r.committed && (r.lastCommit == commitBlock || kind == commitBlock) {
-		return append([]string{""}, rows...)
+func (r *LiveRenderer) separateAssistantRows(rows []string) []string {
+	if r.committed {
+		return append([]string{assistantSeparatorRow(r.columns)}, rows...)
 	}
 	return rows
+}
+
+func assistantSeparatorRow(columns int) string {
+	return strings.Repeat("─", max(1, columns-1))
 }
 
 func cloneLiveStream(value liveStream) liveStream {
@@ -1040,7 +1061,7 @@ func (r *LiveRenderer) promoteAndRedraw(promoted, rows []string, styles []TextSt
 	var output strings.Builder
 	r.buildRedraw(&output, nil, 0, 0)
 	if !r.streamBlock {
-		promoted = r.spaceRows(promoted, commitBlock)
+		promoted = r.separateAssistantRows(promoted)
 	}
 	for _, row := range promoted {
 		output.WriteString(r.decorate(row))

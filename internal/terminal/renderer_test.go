@@ -432,6 +432,43 @@ func TestLiveRendererSpacesWorkingActivityFromUserMessageImmediately(t *testing.
 	}
 }
 
+func TestLiveRendererSeparatesFinalAssistantFromUserWithDimRule(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20, MaxRows: 6})
+	if err := renderer.CommitUserMessage("$ ", "request"); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Frame(LiveFrame{
+		Stream: &StreamMessage{ID: "answer", Prefix: "- ", Text: "final answer"},
+		Prompt: PromptState{Prefix: "$ "},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantRule := strings.Repeat("─", 19)
+	if len(renderer.rows) < 2 || renderer.rows[0] != wantRule || renderer.rows[1] != "- final answer" {
+		t.Fatalf("final assistant boundary = %#v, want rule then answer", renderer.rows)
+	}
+	if got := output.String(); !strings.Contains(got, "\x1b[2;90m"+wantRule+"\x1b[0m") {
+		t.Fatalf("final assistant rule was not dim grey: %q", got)
+	}
+}
+
+func TestLiveRendererSeparatesCommittedFinalAssistantWithDimRule(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20})
+	if err := renderer.CommitStyled(MutedText("✓ summary")); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.CommitMessage("- ", "final answer", false); err != nil {
+		t.Fatal(err)
+	}
+	wantRule := strings.Repeat("─", 19)
+	want := "\x1b[90m✓ summary\x1b[0m\n\x1b[2;90m" + wantRule + "\x1b[0m\n\x1b[32m-\x1b[0m final answer\n"
+	if got := output.String(); got != want {
+		t.Fatalf("committed final assistant = %q; want %q", got, want)
+	}
+}
+
 func TestLiveRendererCompositeFrameShowsTransientContentInModeline(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: 6})
@@ -681,8 +718,9 @@ func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
-	if len(renderer.rows) < 2 || renderer.rows[0] != "" || renderer.rows[1] != "- abc" {
-		t.Fatalf("live stream is not spaced from compact summary: %#v", renderer.rows)
+	wantRule := strings.Repeat("─", 9)
+	if len(renderer.rows) < 2 || renderer.rows[0] != wantRule || renderer.rows[1] != "- abc" {
+		t.Fatalf("live stream is not separated from compact summary: %#v", renderer.rows)
 	}
 	frame.Stream.Text = "abcdefghijklmnop"
 	if err := renderer.Frame(frame); err != nil {
@@ -690,7 +728,7 @@ func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
 	}
 	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(output.String(), "")
 	plain = strings.ReplaceAll(plain, "\r", "")
-	if got := strings.Count(plain, "\n\n- abcdefgh\n"); got != 1 {
+	if got := strings.Count(plain, "\n"+wantRule+"\n- abcdefgh\n"); got != 1 {
 		t.Fatalf("stream block separator count = %d; output=%q", got, output.String())
 	}
 	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop!"}, false); err != nil {

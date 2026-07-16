@@ -172,13 +172,14 @@ authentication layer.
 
 On a real terminal, chat uses a bounded inline editor without an alternate
 screen. User messages start with `$`, assistant messages start with `-`, and a
-dim rule separates every committed message and forms the input area's top
-border. The editor remains active while the agent works: Enter queues a
-follow-up, safe slash commands run immediately, and a spinner marks the busy
-prompt. Human-facing outcomes pair icons with text, such as `✓ Done`, `✗ Failed`,
-and `■ Interrupted`. Complete rows of a streaming assistant response are written directly
-to normal terminal scrollback while only its unfinished row remains live. Chat can start
-without a configured model. Submitting a normal prompt with no model opens a
+dim rule replaces the empty gap before the final assistant message and forms
+the input area's top border. The editor remains active while the agent works:
+Enter queues a follow-up, safe slash commands run immediately, and a spinner
+marks the busy prompt. Human-facing outcomes pair icons with text, such as
+`✓ Done`, `✗ Failed`, and `■ Interrupted`. Complete rows of a streaming assistant
+response are written directly to normal terminal scrollback while only its
+unfinished row remains live. Chat can start without a configured model.
+Submitting a normal prompt with no model opens a
 picker and preserves the draft until a model is selected. Explicit non-TTY
 `parrot chat` retains the same role markers in a deterministic, ANSI-free line
 REPL. `/status` shows the active agent, model, session, and project.
