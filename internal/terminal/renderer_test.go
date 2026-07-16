@@ -372,6 +372,9 @@ func TestLiveRendererAlignsRowsAboveModeline(t *testing.T) {
 	if got := output.String(); !strings.Contains(got, "\x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "\x1b[32m-\x1b[0m response") {
 		t.Fatalf("live rows lost semantic color: %q", got)
 	}
+	if got, modeline := output.String(), renderer.rows[3]; !strings.Contains(got, "\x1b[32m"+modeline+"\x1b[0m") {
+		t.Fatalf("modeline was not green: %q", got)
+	}
 }
 
 func TestLiveRendererKeepsModelineThinAfterTranscriptBoundaryWasCommitted(t *testing.T) {

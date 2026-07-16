@@ -420,6 +420,7 @@ type streamToolTracker struct {
 
 type streamToolReport struct {
 	line     string
+	label    string
 	block    string
 	terminal bool
 	style    terminal.TextStyle
@@ -468,6 +469,21 @@ func prefixSubagentText(prefix, text string) string {
 	return strings.Join(lines, "\n")
 }
 
+func prefixSubagentActivity(prefix, text string) string {
+	lines := strings.Split(text, "\n")
+	for _, icon := range []string{"○", "◌", "✓", "✗", "■"} {
+		if rest, ok := strings.CutPrefix(lines[0], icon+" "); ok {
+			indent := prefix[:len(prefix)-len(strings.TrimLeft(prefix, " "))]
+			lines[0] = indent + icon + " " + strings.TrimSpace(prefix) + " " + rest
+			for i := 1; i < len(lines); i++ {
+				lines[i] = prefix + lines[i]
+			}
+			return strings.Join(lines, "\n")
+		}
+	}
+	return prefix + text
+}
+
 func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) ([]subagentReport, error) {
 	if item == nil || item.TaskID == "" || item.Depth < 1 || !v1.KnownEvent(item.Event.Type) {
 		return nil, nil
@@ -493,7 +509,7 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 		if t.messages[key] == nil {
 			t.messages[key] = &subagentMessageState{}
 		}
-		return []subagentReport{{id: key + ":response", line: prefix + "working…", emitPlain: true, style: terminal.TextStyleMuted}}, nil
+		return []subagentReport{{id: key + ":response", line: prefixSubagentActivity(prefix, "○ working…"), emitPlain: true, style: terminal.TextStyleMuted}}, nil
 	case v1.EventMessagePartDelta:
 		payload, err := v1.DecodeEventData(item.Event)
 		if err != nil {
@@ -516,7 +532,7 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 		switch delta.Kind {
 		case "text":
 			state.text.WriteString(delta.Delta)
-			line := prefixSubagentText(prefix, "response: "+state.text.String())
+			line := prefixSubagentActivity(prefix, "○ response: "+state.text.String())
 			return []subagentReport{{id: key + ":response", line: line, style: terminal.TextStyleMuted}}, nil
 		case "reasoning_summary":
 			if !state.reasoningSummary {
@@ -555,7 +571,7 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 		}
 		key := scope + "message:" + messageID
 		state := t.messages[key]
-		status := "✓"
+		status := "○"
 		if item.Event.Type == "session.assistant.error" {
 			status = "✗"
 		} else if item.Event.Type == "session.assistant.interrupted" {
@@ -569,7 +585,7 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 			text += " · " + payload.Error
 		}
 		delete(t.messages, key)
-		return []subagentReport{{id: key + ":response", line: prefixSubagentText(prefix, status+" "+text), terminal: true, emitPlain: true, style: terminal.TextStyleMuted}}, nil
+		return []subagentReport{{id: key + ":response", line: prefixSubagentActivity(prefix, status+" "+text), terminal: true, emitPlain: true, style: terminal.TextStyleMuted}}, nil
 	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
 		if t.tools == nil {
 			t.tools = make(map[string]*streamToolTracker)
@@ -581,11 +597,15 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 		}
 		callID, _, _, _ := toolActivityPayload(item.Event.Data)
 		report := tracker.describeReport(item.Event)
+		line := report.line
+		if report.label != "" {
+			line = strings.Replace(line, "tool", report.label, 1)
+		}
 		block := ""
 		if report.block != "" {
 			block = prefixSubagentText(strings.Repeat("  ", max(1, item.Depth))+"  ", report.block)
 		}
-		return []subagentReport{{id: scope + "tool:" + callID, line: prefixSubagentText(prefix, report.line), block: block, terminal: report.terminal, emitPlain: true, style: report.style}}, nil
+		return []subagentReport{{id: scope + "tool:" + callID, line: prefixSubagentActivity(prefix, line), block: block, terminal: report.terminal, emitPlain: true, style: report.style}}, nil
 	case v1.EventTaskProgress:
 		payload, err := v1.DecodeEventData(item.Event)
 		if err != nil {
@@ -609,7 +629,7 @@ func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) 
 		lines := agentsLoadedActivities(item.Event)
 		reports := make([]subagentReport, 0, len(lines))
 		for i, line := range lines {
-			reports = append(reports, subagentReport{id: fmt.Sprintf("%scontext:%d", scope, i), line: prefix + line, terminal: true, emitPlain: true, style: terminal.TextStyleMuted})
+			reports = append(reports, subagentReport{id: fmt.Sprintf("%scontext:%d", scope, i), line: prefixSubagentActivity(prefix, line), terminal: true, emitPlain: true, style: terminal.TextStyleMuted})
 		}
 		return reports, nil
 	default:
@@ -704,7 +724,7 @@ func (t *streamToolTracker) describeReport(item v1.Event) streamToolReport {
 		delete(t.calls, callID)
 	}
 	return streamToolReport{
-		line: streamToolStatus(status, toolActivityError(item.Data)), block: block,
+		line: streamToolStatus(status, toolActivityError(item.Data)), label: toolActivityLabel(call.name, call.input), block: block,
 		terminal: terminalEvent, style: style,
 	}
 }
