@@ -40,6 +40,10 @@ func (b *stubBackend) ListSessions(context.Context) (v1.SessionList, error) {
 func (b *stubBackend) CreateSession(context.Context, v1.CreateSessionRequest) (v1.Session, error) {
 	return v1.Session{ID: "ses_test"}, b.backendErr
 }
+
+func (b *stubBackend) ClaimSession(context.Context, v1.ClaimSessionRequest) (v1.ClaimSessionResponse, error) {
+	return v1.ClaimSessionResponse{}, nil
+}
 func (b *stubBackend) GetSession(context.Context, string) (v1.Session, error) {
 	return v1.Session{ID: "ses_test"}, b.backendErr
 }
@@ -110,6 +114,7 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"GET", "/api/v1/runtime", "", 200},
 		{"GET", "/api/v1/sessions", "", 200},
 		{"POST", "/api/v1/sessions", `{}`, 201},
+		{"POST", "/api/v1/interactive-sessions/claim", `{"working_directory":"/tmp/project","host_key":"host","pid":123}`, 200},
 		{"GET", "/api/v1/sessions/ses_test", "", 200},
 		{"DELETE", "/api/v1/sessions/ses_test", "", 204},
 		{"PUT", "/api/v1/sessions/ses_test/selection", `{"agent":"plan"}`, 200},

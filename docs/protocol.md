@@ -11,6 +11,7 @@ GET    /api/v1/health
 GET    /api/v1/runtime
 GET    /api/v1/sessions
 POST   /api/v1/sessions
+POST   /api/v1/interactive-sessions/claim
 GET    /api/v1/sessions/{id}
 DELETE /api/v1/sessions/{id}
 GET    /api/v1/sessions/{id}/messages

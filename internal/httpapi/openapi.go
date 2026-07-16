@@ -20,6 +20,7 @@ var operationSchemas = map[string]operationSchema{
 	"getRuntime":             {response: v1.Runtime{}, status: "200"},
 	"listSessions":           {response: v1.SessionList{}, status: "200"},
 	"createSession":          {request: v1.CreateSessionRequest{}, response: v1.Session{}, status: "201"},
+	"claimSession":           {request: v1.ClaimSessionRequest{}, response: v1.ClaimSessionResponse{}, status: "200"},
 	"getSession":             {response: v1.Session{}, status: "200"},
 	"deleteSession":          {status: "204"},
 	"updateSessionSelection": {request: v1.UpdateSessionSelectionRequest{}, response: v1.SessionSelection{}, status: "200"},

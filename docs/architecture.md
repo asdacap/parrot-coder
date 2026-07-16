@@ -54,6 +54,13 @@ uses admitted prompts, projected messages, context epochs, and terminal tool
 states. The runtime must not claim exactly-once provider execution after an
 uncertain process failure.
 
+Interactive terminal ownership is stored separately from conversation data.
+It binds a canonical working directory and host-key/PID owner to a session.
+Startup atomically reclaims an abandoned binding, while a live binding causes
+a second session to be created. `/clear` moves the current process binding to
+a fresh durable session; it does not delete the old one. This ownership only
+controls terminal session selection and does not replace drain coordination.
+
 A safe provider-turn boundary performs these operations in order:
 
 1. Initialize or reconcile the context epoch.

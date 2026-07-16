@@ -63,6 +63,7 @@ var routes = []Route{
 	{"GET", "/api/v1/runtime", "getRuntime"},
 	{"GET", "/api/v1/sessions", "listSessions"},
 	{"POST", "/api/v1/sessions", "createSession"},
+	{"POST", "/api/v1/interactive-sessions/claim", "claimSession"},
 	{"GET", "/api/v1/sessions/{id}", "getSession"},
 	{"DELETE", "/api/v1/sessions/{id}", "deleteSession"},
 	{"PUT", "/api/v1/sessions/{id}/selection", "updateSessionSelection"},
@@ -99,6 +100,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/health", s.health)
 	s.mux.HandleFunc("/api/v1/runtime", s.runtime)
 	s.mux.HandleFunc("/api/v1/sessions", s.sessions)
+	s.mux.HandleFunc("/api/v1/interactive-sessions/claim", s.claimSession)
 	s.mux.HandleFunc("/api/v1/sessions/{id}", s.session)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/selection", s.selection)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/messages", s.messages)
@@ -182,6 +184,22 @@ func (s *Server) sessions(w http.ResponseWriter, r *http.Request) {
 	default:
 		s.methodProblem(w, r, http.MethodGet+", "+http.MethodPost)
 	}
+}
+
+func (s *Server) claimSession(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodPost) {
+		return
+	}
+	var request v1.ClaimSessionRequest
+	if !s.decode(w, r, &request) {
+		return
+	}
+	if request.WorkingDirectory == "" || request.HostKey == "" || request.PID <= 0 {
+		s.writeProblem(w, r, invalidProblem(requestID(r), "working_directory, host_key, and a positive pid are required."))
+		return
+	}
+	item, err := s.backend.ClaimSession(r.Context(), request)
+	s.respond(w, r, http.StatusOK, item, err)
 }
 
 func (s *Server) session(w http.ResponseWriter, r *http.Request) {

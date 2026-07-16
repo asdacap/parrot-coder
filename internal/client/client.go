@@ -75,6 +75,12 @@ func (c *Client) CreateSession(ctx context.Context, request v1.CreateSessionRequ
 	return out, err
 }
 
+func (c *Client) ClaimSession(ctx context.Context, request v1.ClaimSessionRequest) (v1.ClaimSessionResponse, error) {
+	var out v1.ClaimSessionResponse
+	err := c.do(ctx, http.MethodPost, "/api/v1/interactive-sessions/claim", request, http.StatusOK, &out)
+	return out, err
+}
+
 func (c *Client) Session(ctx context.Context, id string) (v1.Session, error) {
 	var out v1.Session
 	err := c.do(ctx, http.MethodGet, sessionPath(id), nil, http.StatusOK, &out)
