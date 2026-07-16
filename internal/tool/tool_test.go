@@ -256,6 +256,10 @@ func TestDefaultWorkspacePolicyAllowsOnlyReviewedMutationTools(t *testing.T) {
 		readOnly permission.Decision
 	}{
 		{name: "read", request: request("read", "filesystem", "read"), decision: permission.Allow, readOnly: permission.Allow},
+		{name: "web fetch get", request: request("web_fetch", "network", "GET"), decision: permission.Allow, readOnly: permission.Allow},
+		{name: "web fetch head", request: request("web_fetch", "network", "HEAD"), decision: permission.Allow, readOnly: permission.Allow},
+		{name: "other network tool", request: request("other", "network", "GET"), decision: permission.Ask, readOnly: permission.Ask},
+		{name: "web fetch unsupported operation", request: request("web_fetch", "network", "POST"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "edit write", request: request("edit", "filesystem", "write"), decision: permission.Allow, readOnly: permission.Ask},
 		{name: "edit create", request: request("edit", "filesystem", "create"), decision: permission.Allow, readOnly: permission.Ask},
 		{name: "patch delete", request: request("apply_patch", "filesystem", "delete"), decision: permission.Allow, readOnly: permission.Ask},

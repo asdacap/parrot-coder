@@ -4,9 +4,9 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 )
 
-// DefaultWorkspacePolicy allows canonical read/search operations and reviewed
-// workspace mutations made through edit or apply_patch. Other operations,
-// including process execution, remain at ask.
+// DefaultWorkspacePolicy allows canonical read/search operations, bounded web
+// fetches, and reviewed workspace mutations made through edit or apply_patch.
+// Other operations, including process execution, remain at ask.
 func DefaultWorkspacePolicy() permission.Policy {
 	return permission.Policy{Default: permission.Ask, Rules: []permission.Rule{{Match: func(r permission.Request) bool {
 		if len(r.Resources) == 0 {
@@ -19,6 +19,16 @@ func DefaultWorkspacePolicy() permission.Policy {
 		}
 		return true
 	}, Decision: permission.Allow, Reason: "read-only operation"}, {Match: func(r permission.Request) bool {
+		if r.ToolID != "web_fetch" || len(r.Resources) == 0 {
+			return false
+		}
+		for _, resource := range r.Resources {
+			if resource.Kind != "network" || resource.Operation != "GET" && resource.Operation != "HEAD" {
+				return false
+			}
+		}
+		return true
+	}, Decision: permission.Allow, Reason: "bounded web fetch"}, {Match: func(r permission.Request) bool {
 		if r.ToolID != "edit" && r.ToolID != "apply_patch" || len(r.Resources) == 0 {
 			return false
 		}
@@ -35,6 +45,6 @@ func DefaultWorkspacePolicy() permission.Policy {
 // only to non-mutating workspace operations.
 func DefaultReadOnlyPolicy() permission.Policy {
 	policy := DefaultWorkspacePolicy()
-	policy.Rules = policy.Rules[:1]
+	policy.Rules = policy.Rules[:2]
 	return policy
 }
