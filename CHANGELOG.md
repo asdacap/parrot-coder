@@ -12,6 +12,8 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Added
 
+- Startup output now lists every loaded `AGENTS.md` file, or explicitly reports
+  when none were loaded.
 - Initial local-first Go CLI with append-only interactive chat and
   noninteractive text/JSONL execution.
 - ChatGPT OAuth and explicitly configured OpenAI-compatible Responses and Chat

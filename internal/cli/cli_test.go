@@ -217,6 +217,10 @@ func TestRunTextAndJSONLThroughInProcessClient(t *testing.T) {
 	provider, cleanup := configureCLIProvider(t, "hello\x1b[2J world")
 	defer cleanup()
 	_ = provider
+	agentsPath := filepath.Join(os.Getenv("XDG_CONFIG_HOME"), "parrot", "AGENTS.md")
+	if err := os.WriteFile(agentsPath, []byte("Use project conventions."), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	application := New(BuildInfo{Version: "test"})
 	for _, test := range []struct {
 		name   string
@@ -248,6 +252,9 @@ func TestRunTextAndJSONLThroughInProcessClient(t *testing.T) {
 			}
 			if strings.Contains(stdout.String(), "\x1b") || strings.Contains(stderr.String(), "\x1b") {
 				t.Fatalf("terminal escape leaked: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			if want := "✓ Loaded AGENTS.md from " + agentsPath; !strings.Contains(stderr.String(), want) {
+				t.Fatalf("startup output %q does not contain %q", stderr.String(), want)
 			}
 		})
 	}
@@ -292,6 +299,25 @@ func TestModelLessChatHelpThenExit(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "/status\tshow chat state") || strings.Contains(stdout.String(), "\x1b") {
 		t.Fatalf("model-less help output = %q", stdout.String())
+	}
+}
+
+func TestChatStartupReportsLoadedAgentsFiles(t *testing.T) {
+	configHome := configureCLIConfig(t, `{}`)
+	path := filepath.Join(configHome, "parrot", "AGENTS.md")
+	if err := os.WriteFile(path, []byte("Use project conventions."), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := New(BuildInfo{}).Run(context.Background(), []string{"chat"}, strings.NewReader("/exit\n"), &stdout, &stderr)
+	if code != exitOK {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if want := "✓ Loaded AGENTS.md from " + path; !strings.Contains(stderr.String(), want) {
+		t.Fatalf("startup output %q does not contain %q", stderr.String(), want)
+	}
+	if strings.Contains(stderr.String(), "No AGENTS.md files loaded") {
+		t.Fatalf("startup output incorrectly reported no files: %q", stderr.String())
 	}
 }
 
@@ -1146,6 +1172,34 @@ func TestAgentsLoadedActivityMentionsSourcePath(t *testing.T) {
 	}
 	if got := agentsLoadedActivity(want[1]); got != "✓ Loaded AGENTS.md from /work/nested/AGENTS.md" {
 		t.Fatalf("agentsLoadedActivity() = %q", got)
+	}
+}
+
+func TestAgentsLoadedActivitiesMentionsWhenNoFilesWereLoaded(t *testing.T) {
+	initialized := v1.Event{Type: "session.context.initialized", Data: json.RawMessage(`{"agents_files":[]}`)}
+	if got, want := agentsLoadedActivities(initialized), []string{"No AGENTS.md files loaded"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("agentsLoadedActivities(initialized) = %#v, want %#v", got, want)
+	}
+
+	// A changed event contains only newly loaded or modified files, not the full
+	// set. It must not claim that the session loaded no AGENTS.md files.
+	changed := v1.Event{Type: "session.context.changed", Data: json.RawMessage(`{"agents_files":[]}`)}
+	if got := agentsLoadedActivities(changed); len(got) != 0 {
+		t.Fatalf("agentsLoadedActivities(changed) = %#v, want no activity", got)
+	}
+	for _, item := range []v1.Event{
+		{Type: "session.context.initialized", Data: json.RawMessage(`{}`)},
+		{Type: "session.context.initialized", Data: json.RawMessage(`not-json`)},
+	} {
+		if got := agentsLoadedActivities(item); len(got) != 0 {
+			t.Fatalf("agentsLoadedActivities(%s) = %#v, want no activity", item.Data, got)
+		}
+	}
+
+	var output bytes.Buffer
+	writeAgentsStartupActivity(&output, nil)
+	if got, want := output.String(), "No AGENTS.md files loaded\n"; got != want {
+		t.Fatalf("startup activity = %q, want %q", got, want)
 	}
 }
 
@@ -2197,7 +2251,7 @@ func configureCLIEnvironment(t *testing.T, providerURL string) {
 	t.Setenv("PARROT_CLI_TEST_KEY", "secret")
 }
 
-func configureCLIConfig(t *testing.T, configuration string) {
+func configureCLIConfig(t *testing.T, configuration string) string {
 	t.Helper()
 	root := t.TempDir()
 	configHome := filepath.Join(root, "config")
@@ -2217,6 +2271,7 @@ func configureCLIConfig(t *testing.T, configuration string) {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
 	t.Setenv("XDG_STATE_HOME", filepath.Join(root, "state"))
 	t.Setenv("XDG_CACHE_HOME", filepath.Join(root, "cache"))
+	return configHome
 }
 
 func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {

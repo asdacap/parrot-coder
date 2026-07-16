@@ -85,6 +85,7 @@ type App struct {
 	Backend          *httpapi.DomainBackend
 	Commands         *command.Registry
 	Skills           *skill.Registry
+	AgentsFiles      []string
 	// DefaultSelection is incomplete when Open permits model-less startup and
 	// no default model is configured.
 	DefaultSelection v1.SessionSelection
@@ -358,6 +359,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: context sources: %w", err)
 	}
+	// Startup reporting is best-effort. Context initialization remains the
+	// authoritative read and preserves its existing error behavior, while an
+	// unreadable file cannot prevent unrelated commands from opening the app.
+	result.AgentsFiles, _ = systemcontext.ObserveAgentsFiles(ctx, sources)
 	contextRegistry, err := systemcontext.NewRegistry(sources...)
 	if err != nil {
 		return nil, fmt.Errorf("app: context registry: %w", err)

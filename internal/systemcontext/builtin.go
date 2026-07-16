@@ -180,6 +180,31 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 	return sources, nil
 }
 
+// ObserveAgentsFiles reads the AGENTS.md sources in their effective order and
+// returns the files whose contents will be included in agent context. Missing
+// files are valid inputs and are omitted from the result.
+func ObserveAgentsFiles(ctx context.Context, sources []Source) ([]string, error) {
+	paths := make([]string, 0)
+	seen := make(map[string]bool)
+	var failures []error
+	for _, source := range sources {
+		if source == nil || !strings.HasPrefix(source.Key(), "agents:") {
+			continue
+		}
+		observation, err := source.Observe(ctx)
+		if err != nil {
+			failures = append(failures, fmt.Errorf("%s: %w", source.Key(), err))
+			continue
+		}
+		if !observation.Available || len(observation.Value) == 0 || observation.Path == "" || seen[observation.Path] {
+			continue
+		}
+		seen[observation.Path] = true
+		paths = append(paths, observation.Path)
+	}
+	return paths, errors.Join(failures...)
+}
+
 func canonicalBounds(root, cwd string) (string, string, error) {
 	if root == "" || cwd == "" {
 		return "", "", errors.New("systemcontext: project root and working directory are required")
