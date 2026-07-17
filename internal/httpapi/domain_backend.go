@@ -513,11 +513,11 @@ func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {
 			continue
 		}
 		for _, model := range provider.Models() {
-			variants := make(map[string]v1.ModelVariant, len(model.Capabilities.Variants))
-			for name, variant := range model.Capabilities.Variants {
-				variants[name] = v1.ModelVariant{ReasoningEffort: variant.ReasoningEffort}
+			variants := make([]v1.ModelVariant, len(model.Capabilities.Variants))
+			for i, variant := range model.Capabilities.Variants {
+				variants[i] = v1.ModelVariant{Name: variant.Name, ReasoningEffort: variant.ReasoningEffort}
 			}
-			out.Items = append(out.Items, v1.Model{Provider: provider.ID(), ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Tools: model.Capabilities.Tools, Reasoning: model.Capabilities.Reasoning, Output: append([]string(nil), model.Capabilities.Output...), Variants: variants, VariantOrder: append([]string(nil), model.Capabilities.VariantOrder...)})
+			out.Items = append(out.Items, v1.Model{Provider: provider.ID(), ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Tools: model.Capabilities.Tools, Reasoning: model.Capabilities.Reasoning, Output: append([]string(nil), model.Capabilities.Output...), Variants: variants})
 		}
 	}
 	sort.Slice(out.Items, func(i, j int) bool {
@@ -640,7 +640,7 @@ func (b *DomainBackend) validateSelection(selection session.Selection) error {
 		return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
 	}
 	if selection.Variant != "" {
-		if _, ok := model.Capabilities.Variants[selection.Variant]; !ok {
+		if _, ok := model.Capabilities.Variant(selection.Variant); !ok {
 			return fmt.Errorf("%w: unknown variant %q", ErrInvalidSelection, selection.Variant)
 		}
 	}

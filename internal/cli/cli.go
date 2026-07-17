@@ -2502,11 +2502,8 @@ func (s *chatShell) applyModel(value string) error {
 			if item.Provider != provider || item.ID != model {
 				continue
 			}
-			for _, name := range item.VariantOrder {
-				if _, ok := item.Variants[name]; ok {
-					variant = name
-					break
-				}
+			if len(item.Variants) > 0 {
+				variant = item.Variants[0].Name
 			}
 			break
 		}
@@ -2524,12 +2521,8 @@ func (s *chatShell) applyModel(value string) error {
 
 func modelVariantOrder(model v1.Model) []string {
 	efforts := make([]string, 0, len(model.Variants))
-	seen := make(map[string]bool, len(model.Variants))
-	for _, name := range model.VariantOrder {
-		if _, ok := model.Variants[name]; ok && !seen[name] {
-			efforts = append(efforts, name)
-			seen[name] = true
-		}
+	for _, variant := range model.Variants {
+		efforts = append(efforts, variant.Name)
 	}
 	return efforts
 }

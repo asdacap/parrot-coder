@@ -379,9 +379,9 @@ func TestDefaultChatSelectionPreservesRestoredEffort(t *testing.T) {
 
 func TestEffortSlashCommandUpdatesActiveSession(t *testing.T) {
 	api := &effortSwitchAPI{models: v1.ModelList{Items: []v1.Model{{
-		Provider: "chatgpt", ID: "gpt", Variants: map[string]v1.ModelVariant{
-			"low": {ReasoningEffort: "low"}, "high": {ReasoningEffort: "high"},
-		}, VariantOrder: []string{"low", "high"},
+		Provider: "chatgpt", ID: "gpt", Variants: []v1.ModelVariant{
+			{Name: "low", ReasoningEffort: "low"}, {Name: "high", ReasoningEffort: "high"},
+		},
 	}}}}
 	var stdout, stderr bytes.Buffer
 	shell := chatShell{
@@ -410,9 +410,9 @@ func TestEffortSlashCommandUpdatesActiveSession(t *testing.T) {
 
 func TestSelectingModelDefaultsEffortUnlessAlreadySelected(t *testing.T) {
 	ordered := v1.ModelList{Items: []v1.Model{{
-		Provider: "chatgpt", ID: "gpt", Variants: map[string]v1.ModelVariant{
-			"medium": {ReasoningEffort: "medium"}, "high": {ReasoningEffort: "high"},
-		}, VariantOrder: []string{"medium", "high"},
+		Provider: "chatgpt", ID: "gpt", Variants: []v1.ModelVariant{
+			{Name: "medium", ReasoningEffort: "medium"}, {Name: "high", ReasoningEffort: "high"},
+		},
 	}}}
 	tests := []struct {
 		name, selected, want string
@@ -421,7 +421,7 @@ func TestSelectingModelDefaultsEffortUnlessAlreadySelected(t *testing.T) {
 		{name: "defaults to provider's first effort", models: ordered, want: "medium"},
 		{name: "preserves selected effort", models: ordered, selected: "medium", want: "medium"},
 		{name: "does not infer alphabetical order", models: v1.ModelList{Items: []v1.Model{{
-			Provider: "chatgpt", ID: "gpt", Variants: map[string]v1.ModelVariant{"medium": {}, "high": {}},
+			Provider: "chatgpt", ID: "gpt", Variants: nil,
 		}}}},
 	}
 	for _, test := range tests {

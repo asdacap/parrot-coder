@@ -727,7 +727,7 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // BuildProviders creates configured provider clients. Environment credentials
 // take precedence over credentials stored under the provider ID.
 func modelHasVariant(model provider.Model, name string) bool {
-	_, ok := model.Capabilities.Variants[name]
+	_, ok := model.Capabilities.Variant(name)
 	return ok
 }
 
@@ -793,11 +793,16 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 			if name == "" {
 				name = modelID
 			}
-			variants := make(map[string]provider.Variant, len(model.Variants))
-			for variantName, variant := range model.Variants {
-				variants[variantName] = provider.Variant{ReasoningEffort: variant.ReasoningEffort}
+			variantNames := make([]string, 0, len(model.Variants))
+			for name := range model.Variants {
+				variantNames = append(variantNames, name)
 			}
-			models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...), Variants: variants, VariantOrder: append([]string(nil), model.VariantOrder...)}})
+			sort.Strings(variantNames)
+			variants := make([]provider.Variant, 0, len(variantNames))
+			for _, name := range variantNames {
+				variants = append(variants, provider.Variant{Name: name, ReasoningEffort: model.Variants[name].ReasoningEffort})
+			}
+			models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...), Variants: variants}})
 		}
 		compatible, createErr := provider.NewOpenAICompatible(provider.OpenAICompatibleOptions{
 			ID: id, BaseURL: item.BaseURL, Protocol: provider.CompatibleProtocol(item.Protocol), APIKey: auth.Secret(key),
@@ -1023,7 +1028,7 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	if _, model, err := e.providers.Resolve(selection.Provider, selection.Model); err != nil {
 		return "", fmt.Errorf("app: subagent model: %w", err)
 	} else if selection.Variant != "" {
-		if _, ok := model.Capabilities.Variants[selection.Variant]; !ok {
+		if _, ok := model.Capabilities.Variant(selection.Variant); !ok {
 			return "", fmt.Errorf("app: subagent model: unknown model variant %q", selection.Variant)
 		}
 	}
