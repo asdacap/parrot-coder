@@ -227,18 +227,19 @@ type SnapshotTransaction struct {
 }
 
 type Model struct {
-	Provider        string                  `json:"provider"`
-	ID              string                  `json:"id"`
-	Name            string                  `json:"name"`
-	ContextWindow   int                     `json:"context_window"`
-	MaxOutputTokens int                     `json:"max_output_tokens"`
-	Tools           bool                    `json:"tools"`
-	Reasoning       bool                    `json:"reasoning"`
-	Output          []string                `json:"output"`
-	Variants        map[string]ModelVariant `json:"variants"`
+	Provider        string         `json:"provider"`
+	ID              string         `json:"id"`
+	Name            string         `json:"name"`
+	ContextWindow   int            `json:"context_window"`
+	MaxOutputTokens int            `json:"max_output_tokens"`
+	Tools           bool           `json:"tools"`
+	Reasoning       bool           `json:"reasoning"`
+	Output          []string       `json:"output"`
+	Variants        []ModelVariant `json:"variants"`
 }
 
 type ModelVariant struct {
+	Name            string `json:"name"`
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 

@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -2497,15 +2496,35 @@ func (s *chatShell) applyModel(value string) error {
 	if !ok || provider == "" || model == "" {
 		return fmt.Errorf("invalid model %q", value)
 	}
+	variant := s.selection.variant
+	if variant == "" {
+		for _, item := range s.models {
+			if item.Provider != provider || item.ID != model {
+				continue
+			}
+			if len(item.Variants) > 0 {
+				variant = item.Variants[0].Name
+			}
+			break
+		}
+	}
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, "", value, ""); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, "", value, variant); err != nil {
 			return err
 		}
 	}
-	s.selection.provider, s.selection.model = provider, model
-	s.current.Provider, s.current.Model = provider, model
+	s.selection.provider, s.selection.model, s.selection.variant = provider, model, variant
+	s.current.Provider, s.current.Model, s.current.Variant = provider, model, variant
 	s.commitStatus("✓ Model selected: " + value)
 	return nil
+}
+
+func modelVariantOrder(model v1.Model) []string {
+	efforts := make([]string, 0, len(model.Variants))
+	for _, variant := range model.Variants {
+		efforts = append(efforts, variant.Name)
+	}
+	return efforts
 }
 
 func (s *chatShell) modelEfforts() ([]string, error) {
@@ -2521,11 +2540,7 @@ func (s *chatShell) modelEfforts() ([]string, error) {
 		if item.Provider != s.selection.provider || item.ID != s.selection.model {
 			continue
 		}
-		efforts := make([]string, 0, len(item.Variants))
-		for name := range item.Variants {
-			efforts = append(efforts, name)
-		}
-		sort.Strings(efforts)
+		efforts := modelVariantOrder(item)
 		if len(efforts) == 0 {
 			return nil, fmt.Errorf("model %s does not expose reasoning efforts", s.selection.modelName())
 		}

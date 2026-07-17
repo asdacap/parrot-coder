@@ -224,7 +224,7 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) error {
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
 		if selected.Variant != "" {
-			variant, ok := model.Capabilities.Variants[selected.Variant]
+			variant, ok := model.Capabilities.Variant(selected.Variant)
 			if !ok {
 				return fmt.Errorf("agent: unknown model variant %q", selected.Variant)
 			}
