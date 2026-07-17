@@ -509,7 +509,7 @@ func (r *enhancedChatRuntime) render() error {
 	message := r.streamed.String()
 	var stream *terminal.StreamMessage
 	if message != "" && r.streamMessageID != "" {
-		stream = &terminal.StreamMessage{ID: r.streamMessageID, Prefix: "- ", Text: message}
+		stream = &terminal.StreamMessage{ID: r.streamMessageID, Prefix: "● ", Text: message}
 	}
 	prompt := r.state.PromptState()
 	if r.modal != nil {
@@ -2654,10 +2654,10 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		}
 		if item.Content != "" {
 			if item.ID == r.streamMessageID {
-				if err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "- ", Text: item.Content}, false); err != nil {
+				if err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "● ", Text: item.Content}, false); err != nil {
 					return err
 				}
-			} else if err := r.shell.renderer.CommitMessage("- ", item.Content, false); err != nil {
+			} else if err := r.shell.renderer.CommitMessage("● ", item.Content, false); err != nil {
 				return err
 			}
 			// The live labeled modeline owns the response/input boundary. Leaving

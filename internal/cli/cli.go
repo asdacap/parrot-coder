@@ -1017,7 +1017,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				if value.Kind == "text" {
 					streamed.WriteString(value.Delta)
 					if options.renderer != nil {
-						if err := options.renderer.UpdateMessage("- ", streamed.String()); err != nil {
+						if err := options.renderer.UpdateMessage("● ", streamed.String()); err != nil {
 							return streamResult{err: err}
 						}
 					}
@@ -1168,12 +1168,12 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 	}
 	if options.chat {
 		if options.renderer != nil {
-			if err := options.renderer.CommitMessage("- ", final, false); err != nil {
+			if err := options.renderer.CommitMessage("● ", final, false); err != nil {
 				return streamResult{err: err}
 			}
 		} else if final = strings.TrimRight(final, "\r\n"); final != "" {
 			plain := terminal.NewLiveRenderer(options.stdout, terminal.RendererConfig{Columns: terminal.Columns(options.stdout)})
-			if err := plain.CommitMessage("- ", final, false); err != nil {
+			if err := plain.CommitMessage("● ", final, false); err != nil {
 				return streamResult{err: err}
 			}
 		}

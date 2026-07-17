@@ -269,7 +269,7 @@ func TestChatTranscriptAndSlashCommands(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, value := range []string{"$ hello", "- answer", "───", "/model", "/undo"} {
+	for _, value := range []string{"$ hello", "● answer", "───", "/model", "/undo"} {
 		if !strings.Contains(stdout.String(), value) {
 			t.Errorf("transcript missing %q: %q", value, stdout.String())
 		}
@@ -475,7 +475,7 @@ func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error)   { return a.
 func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, MaxRows: 6})
-	if err := renderer.UpdateMessage("- ", "partial"); err != nil {
+	if err := renderer.UpdateMessage("● ", "partial"); err != nil {
 		t.Fatal(err)
 	}
 	before := output.Len()
@@ -488,7 +488,7 @@ func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 		t.Fatalf("final assistant response was not committed once: %q", output.String())
 	}
 	committed := output.String()[before:]
-	if !strings.HasPrefix(committed, "\x1b[?25l") || !strings.Contains(committed, "\x1b[2K") || strings.Count(committed, "- complete answer") != 1 {
+	if !strings.HasPrefix(committed, "\x1b[?25l") || !strings.Contains(committed, "\x1b[2K") || strings.Count(committed, "● complete answer") != 1 {
 		t.Fatalf("live response was not cleared before final commit: %q", committed)
 	}
 }
@@ -504,7 +504,7 @@ func TestPlainFinishRendersAssistantMarkdown(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if got, want := output.String(), "- Heading\n  package main\n"; got != want {
+	if got, want := output.String(), "● Heading\n  package main\n"; got != want {
 		t.Fatalf("plain assistant Markdown = %q; want %q", got, want)
 	}
 }

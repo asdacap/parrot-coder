@@ -146,8 +146,8 @@ func withMarkdownPrefix(prefix string, content []textRun) []textRun {
 	if prefix == "" {
 		return content
 	}
-	if strings.HasPrefix(prefix, "- ") {
-		runs := []textRun{{text: "-", style: ansiStyle{color: "32"}}, {text: prefix[1:]}}
+	if strings.HasPrefix(prefix, "● ") || strings.HasPrefix(prefix, "- ") {
+		runs := []textRun{{text: prefix[:len(prefix)-1], style: ansiStyle{color: "32"}}, {text: " "}}
 		return append(runs, content...)
 	}
 	return append([]textRun{{text: prefix}}, content...)

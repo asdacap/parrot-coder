@@ -360,16 +360,16 @@ func TestLiveRendererAlignsRowsAboveModeline(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20, MaxRows: 6})
 	if err := renderer.Frame(LiveFrame{
-		MessagePrefix: "- ", Message: "response", Context: []string{"context"}, Activity: []string{"✓ activity"},
+		MessagePrefix: "● ", Message: "response", Context: []string{"context"}, Activity: []string{"✓ activity"},
 		InputLeft: "mode: build", Prompt: PromptState{Prefix: "$ ", Text: "draft", Cursor: 5},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if len(renderer.rows) != 5 || renderer.rows[0] != "context" || renderer.rows[1] != "✓ activity" ||
-		renderer.rows[2] != "- response" || !strings.HasPrefix(renderer.rows[3], "─ mode: build ") || renderer.rows[4] != "$ draft" {
+		renderer.rows[2] != "● response" || !strings.HasPrefix(renderer.rows[3], "─ mode: build ") || renderer.rows[4] != "$ draft" {
 		t.Fatalf("live rows, modeline, and input are not aligned as expected: %#v", renderer.rows)
 	}
-	if got := output.String(); !strings.Contains(got, "\x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "\x1b[32m-\x1b[0m response") {
+	if got := output.String(); !strings.Contains(got, "\x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "\x1b[32m●\x1b[0m response") {
 		t.Fatalf("live rows lost semantic color: %q", got)
 	}
 	if got, modeline := output.String(), renderer.rows[3]; !strings.Contains(got, "\x1b[32m"+modeline+"\x1b[0m") {

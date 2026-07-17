@@ -690,7 +690,7 @@ func (r *LiveRenderer) UpdateMessage(prefix, text string) error {
 }
 
 // CommitMessage appends a permanent hanging-indented message. Assistant
-// messages (identified by the "- " prefix) replace their leading block gap
+// messages (identified by the "● " prefix) replace their leading block gap
 // with a dim rule. When divider is true, another dim rule is committed beneath
 // the message before the live response begins.
 func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
@@ -700,7 +700,7 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	if Sanitize(prefix) == "- " {
+	if cleanPrefix := Sanitize(prefix); cleanPrefix == "● " || cleanPrefix == "- " {
 		content := renderAssistantMarkdown(prefix, text, r.columns, r.color)
 		if divider {
 			content.rows = append(content.rows, strings.Repeat("─", max(1, r.columns-1)))
@@ -1308,8 +1308,9 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 		return color("36", spinner) + rest
 	case strings.HasPrefix(row, "$ "):
 		return color("36", "$") + row[1:]
-	case strings.HasPrefix(row, "- "):
-		return color("32", "-") + row[1:]
+	case strings.HasPrefix(row, "● ") || strings.HasPrefix(row, "- "):
+		marker, rest := firstRune(row)
+		return color("32", marker) + rest
 	case strings.HasPrefix(row, "✓ "):
 		return color("32", "✓") + row[len("✓"):]
 	case strings.HasPrefix(row, "✗ "):
