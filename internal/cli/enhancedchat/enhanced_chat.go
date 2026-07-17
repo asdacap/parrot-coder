@@ -1,4 +1,4 @@
-package cli
+package enhancedchat
 
 import (
 	"context"
@@ -1575,20 +1575,18 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 			_ = r.ensureInputBorder()
 			return enhancedInputOutcome{}
 		}
-		r.shell.current = item
-		r.shell.selection = selectionFromSession(item, r.shell.selection.agent)
+		r.shell.setCurrent(item)
 		if err := r.ensureStream(item.ID); err != nil {
 			r.commitError(err.Error())
 			_ = r.ensureInputBorder()
 			return enhancedInputOutcome{}
 		}
-		resumer, ok := r.shell.api.(resumableClient)
-		if !ok {
+		if r.shell.config == nil || r.shell.config.ResumeSession == nil {
 			r.commitError("connected server does not support explicit resume")
 			_ = r.ensureInputBorder()
 			return enhancedInputOutcome{}
 		}
-		if err := resumer.Resume(r.shell.ctx, item.ID); err != nil {
+		if err := r.shell.config.ResumeSession(item.ID); err != nil {
 			r.commitError(err.Error())
 			_ = r.ensureInputBorder()
 			return enhancedInputOutcome{}
@@ -1599,6 +1597,7 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 	}
 	previousSession := r.shell.current.ID
 	exit, code := r.shell.slash(name, arguments)
+	r.shell.refreshState()
 	if name == "/new" || name == "/clear" || name == "/session" || name == "/connect" || r.shell.current.ID != previousSession {
 		r.stopStream()
 	}
@@ -1648,7 +1647,7 @@ func (r *enhancedChatRuntime) submitPrompt(content string) error {
 		if err != nil {
 			return err
 		}
-		r.shell.current = item
+		r.shell.setCurrent(item)
 	}
 	if err := r.ensureStream(r.shell.current.ID); err != nil {
 		return err
