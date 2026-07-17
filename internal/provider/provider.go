@@ -150,10 +150,11 @@ func streamWithHeaderRetry(ctx context.Context, client Provider, request protoco
 
 // Capabilities describes optional model behavior callers may rely on.
 type Capabilities struct {
-	Tools     bool
-	Reasoning bool
-	Output    []string
-	Variants  map[string]Variant
+	Tools        bool
+	Reasoning    bool
+	Output       []string
+	Variants     map[string]Variant
+	VariantOrder []string
 }
 
 // Variant contains the request options selected by a named model variant.
@@ -175,6 +176,7 @@ func cloneModels(models []Model) []Model {
 	copy(result, models)
 	for i := range result {
 		result[i].Capabilities.Output = append([]string(nil), result[i].Capabilities.Output...)
+		result[i].Capabilities.VariantOrder = append([]string(nil), result[i].Capabilities.VariantOrder...)
 		if variants := result[i].Capabilities.Variants; variants != nil {
 			result[i].Capabilities.Variants = make(map[string]Variant, len(variants))
 			for name, variant := range variants {

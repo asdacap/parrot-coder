@@ -381,7 +381,7 @@ func TestEffortSlashCommandUpdatesActiveSession(t *testing.T) {
 	api := &effortSwitchAPI{models: v1.ModelList{Items: []v1.Model{{
 		Provider: "chatgpt", ID: "gpt", Variants: map[string]v1.ModelVariant{
 			"low": {ReasoningEffort: "low"}, "high": {ReasoningEffort: "high"},
-		},
+		}, VariantOrder: []string{"low", "high"},
 	}}}}
 	var stdout, stderr bytes.Buffer
 	shell := chatShell{
@@ -405,6 +405,45 @@ func TestEffortSlashCommandUpdatesActiveSession(t *testing.T) {
 	shell.slash("/effort", "missing")
 	if !strings.Contains(stderr.String(), `unknown effort "missing"`) || len(api.updates) != 1 {
 		t.Fatalf("invalid effort: stderr=%q updates=%#v", stderr.String(), api.updates)
+	}
+}
+
+func TestSelectingModelDefaultsEffortUnlessAlreadySelected(t *testing.T) {
+	ordered := v1.ModelList{Items: []v1.Model{{
+		Provider: "chatgpt", ID: "gpt", Variants: map[string]v1.ModelVariant{
+			"medium": {ReasoningEffort: "medium"}, "high": {ReasoningEffort: "high"},
+		}, VariantOrder: []string{"medium", "high"},
+	}}}
+	tests := []struct {
+		name, selected, want string
+		models               v1.ModelList
+	}{
+		{name: "defaults to provider's first effort", models: ordered, want: "medium"},
+		{name: "preserves selected effort", models: ordered, selected: "medium", want: "medium"},
+		{name: "does not infer alphabetical order", models: v1.ModelList{Items: []v1.Model{{
+			Provider: "chatgpt", ID: "gpt", Variants: map[string]v1.ModelVariant{"medium": {}, "high": {}},
+		}}}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			api := &effortSwitchAPI{models: test.models}
+			shell := chatShell{
+				ctx: context.Background(), api: api, current: v1.Session{ID: "session"},
+				selection: chatSelection{variant: test.selected}, stdout: io.Discard, stderr: io.Discard,
+			}
+			if err := shell.selectModel("chatgpt/gpt"); err != nil {
+				t.Fatal(err)
+			}
+			if shell.selection.variant != test.want || shell.current.Variant != test.want {
+				t.Fatalf("selection = %#v, session variant = %q; want %q", shell.selection, shell.current.Variant, test.want)
+			}
+			if len(api.updates) != 1 || api.updates[0].Model != "chatgpt/gpt" {
+				t.Fatalf("updates = %#v", api.updates)
+			}
+			if test.want == "" && api.updates[0].Variant != nil || test.want != "" && (api.updates[0].Variant == nil || *api.updates[0].Variant != test.want) {
+				t.Fatalf("update variant = %#v; want %q", api.updates[0].Variant, test.want)
+			}
+		})
 	}
 }
 
@@ -2329,7 +2368,11 @@ func (a *effortSwitchAPI) Models(context.Context) (v1.ModelList, error) { return
 
 func (a *effortSwitchAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
 	a.updates = append(a.updates, request)
-	return v1.SessionSelection{Variant: *request.Variant}, nil
+	selection := v1.SessionSelection{}
+	if request.Variant != nil {
+		selection.Variant = *request.Variant
+	}
+	return selection, nil
 }
 
 type modeSwitchAPI struct {

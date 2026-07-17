@@ -206,5 +206,6 @@ func init() {
 	}
 	for i := range chatGPTModels {
 		chatGPTModels[i].Capabilities.Variants = variants
+		chatGPTModels[i].Capabilities.VariantOrder = []string{"low", "medium", "high", "xhigh"}
 	}
 }

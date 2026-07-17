@@ -78,13 +78,14 @@ type Provider struct {
 
 // Model contains provider-specific model metadata needed for selection.
 type Model struct {
-	Name      string             `json:"name,omitempty"`
-	Context   int                `json:"context,omitempty"`
-	MaxTokens int                `json:"max_tokens,omitempty"`
-	Tools     bool               `json:"tools,omitempty"`
-	Reasoning bool               `json:"reasoning,omitempty"`
-	Output    []string           `json:"output,omitempty"`
-	Variants  map[string]Variant `json:"variants,omitempty"`
+	Name         string             `json:"name,omitempty"`
+	Context      int                `json:"context,omitempty"`
+	MaxTokens    int                `json:"max_tokens,omitempty"`
+	Tools        bool               `json:"tools,omitempty"`
+	Reasoning    bool               `json:"reasoning,omitempty"`
+	Output       []string           `json:"output,omitempty"`
+	Variants     map[string]Variant `json:"variants,omitempty"`
+	VariantOrder []string           `json:"variant_order,omitempty"`
 }
 
 // Variant describes provider request options exposed under a stable name.

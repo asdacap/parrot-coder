@@ -236,6 +236,7 @@ type Model struct {
 	Reasoning       bool                    `json:"reasoning"`
 	Output          []string                `json:"output"`
 	Variants        map[string]ModelVariant `json:"variants"`
+	VariantOrder    []string                `json:"variant_order,omitempty"`
 }
 
 type ModelVariant struct {

@@ -797,7 +797,7 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 			for variantName, variant := range model.Variants {
 				variants[variantName] = provider.Variant{ReasoningEffort: variant.ReasoningEffort}
 			}
-			models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...), Variants: variants}})
+			models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...), Variants: variants, VariantOrder: append([]string(nil), model.VariantOrder...)}})
 		}
 		compatible, createErr := provider.NewOpenAICompatible(provider.OpenAICompatibleOptions{
 			ID: id, BaseURL: item.BaseURL, Protocol: provider.CompatibleProtocol(item.Protocol), APIKey: auth.Secret(key),

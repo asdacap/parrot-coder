@@ -487,7 +487,9 @@ func TestChatGPTFixedEndpointHeadersAndModels(t *testing.T) {
 		t.Fatalf("models = %#v", models)
 	}
 	models[0].Capabilities.Output[0] = "mutated"
-	if value.Models()[0].Capabilities.Output[0] == "mutated" {
+	models[0].Capabilities.VariantOrder[0] = "mutated"
+	got := value.Models()[0].Capabilities
+	if got.Output[0] == "mutated" || got.VariantOrder[0] == "mutated" {
 		t.Fatal("Models exposed mutable provider metadata")
 	}
 }

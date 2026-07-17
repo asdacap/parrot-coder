@@ -517,7 +517,7 @@ func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {
 			for name, variant := range model.Capabilities.Variants {
 				variants[name] = v1.ModelVariant{ReasoningEffort: variant.ReasoningEffort}
 			}
-			out.Items = append(out.Items, v1.Model{Provider: provider.ID(), ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Tools: model.Capabilities.Tools, Reasoning: model.Capabilities.Reasoning, Output: append([]string(nil), model.Capabilities.Output...), Variants: variants})
+			out.Items = append(out.Items, v1.Model{Provider: provider.ID(), ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Tools: model.Capabilities.Tools, Reasoning: model.Capabilities.Reasoning, Output: append([]string(nil), model.Capabilities.Output...), Variants: variants, VariantOrder: append([]string(nil), model.Capabilities.VariantOrder...)})
 		}
 	}
 	sort.Slice(out.Items, func(i, j int) bool {
