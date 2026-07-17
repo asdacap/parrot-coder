@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -174,11 +173,7 @@ func (selectionResolver) Resolve(providerID, modelID string) (provider.Provider,
 
 func newSelectionBackend(t *testing.T) (*DomainBackend, *session.Service) {
 	t.Helper()
-	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "selection.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { _ = db.Close() })
 	sessions := session.NewService(db, event.NewRepository(db))
 	agents, err := agent.NewRegistry()
@@ -330,10 +325,7 @@ func TestPromptAdmissionPrecedesWake(t *testing.T) {
 
 func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "parrot.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	defer db.Close()
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)

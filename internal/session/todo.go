@@ -41,12 +41,12 @@ type Todo struct {
 const EventTodoUpdated = "todo.updated"
 
 type TodoService struct {
-	db     *store.DB
-	events *event.Repository
+	sessions *store.Registry
+	events   *event.Repository
 }
 
-func NewTodoService(db *store.DB, repositories ...*event.Repository) *TodoService {
-	service := &TodoService{db: db}
+func NewTodoService(sessions *store.Registry, repositories ...*event.Repository) *TodoService {
+	service := &TodoService{sessions: sessions}
 	if len(repositories) > 0 {
 		service.events = repositories[0]
 	}
@@ -54,10 +54,14 @@ func NewTodoService(db *store.DB, repositories ...*event.Repository) *TodoServic
 }
 
 func (s *TodoService) List(ctx context.Context, sessionID string) ([]Todo, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.sessions == nil {
 		return nil, errors.New("session: todo service is not configured")
 	}
-	rows, err := s.db.SQL().QueryContext(ctx, `
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.SQL().QueryContext(ctx, `
 		SELECT id, content, status, priority, position
 		FROM session_todo WHERE session_id = ? ORDER BY position`, sessionID)
 	if err != nil {
@@ -81,7 +85,7 @@ func (s *TodoService) List(ctx context.Context, sessionID string) ([]Todo, error
 // Replace atomically replaces the complete ordered todo list. Empty IDs are
 // generated before the transaction; supplied IDs remain stable across updates.
 func (s *TodoService) Replace(ctx context.Context, sessionID string, todos []Todo) ([]Todo, error) {
-	if s == nil || s.db == nil {
+	if s == nil || s.sessions == nil {
 		return nil, errors.New("session: todo service is not configured")
 	}
 	items := append([]Todo(nil), todos...)
@@ -134,7 +138,11 @@ func (s *TodoService) Replace(ctx context.Context, sessionID string, todos []Tod
 		}
 		_, err = s.events.Append(ctx, sessionID, []event.NewEvent{{Type: EventTodoUpdated, Data: data}}, project)
 	} else {
-		err = s.db.WithImmediate(ctx, func(tx *sql.Tx) error { return project(ctx, tx, nil) })
+		db, resolveErr := s.sessions.Session(ctx, sessionID)
+		if resolveErr != nil {
+			return nil, resolveErr
+		}
+		err = db.WithImmediate(ctx, func(tx *sql.Tx) error { return project(ctx, tx, nil) })
 	}
 	if err != nil {
 		return nil, fmt.Errorf("session: replace todos: %w", err)

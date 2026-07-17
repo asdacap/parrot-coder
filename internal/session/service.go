@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
@@ -30,20 +31,22 @@ const (
 )
 
 type Session struct {
-	ID        string
-	ProjectID string
-	Title     string
-	Agent     string
-	Provider  string
-	Model     string
-	Variant   string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID          string
+	ProjectID   string
+	ProjectRoot string
+	Title       string
+	Agent       string
+	Provider    string
+	Model       string
+	Variant     string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
 }
 
 type CreateParams struct {
-	ProjectID string
-	Title     string
+	ProjectID   string
+	ProjectRoot string
+	Title       string
 }
 
 type InteractiveOwner struct {
@@ -105,12 +108,13 @@ type Message struct {
 }
 
 type Service struct {
-	db     *store.DB
-	events *event.Repository
+	sessions *store.Registry
+	events   *event.Repository
+	pid      int
 }
 
-func NewService(db *store.DB, events *event.Repository) *Service {
-	return &Service{db: db, events: events}
+func NewService(sessions *store.Registry, events *event.Repository) *Service {
+	return &Service{sessions: sessions, events: events, pid: os.Getpid()}
 }
 
 func (s *Service) Create(ctx context.Context, params CreateParams) (Session, error) {
@@ -128,37 +132,87 @@ func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selec
 }
 
 func (s *Service) create(ctx context.Context, params CreateParams, selection Selection) (Session, error) {
-	var result Session
-	err := s.db.WithImmediate(ctx, func(tx *sql.Tx) error {
-		var err error
-		result, err = createTx(ctx, tx, params, selection)
-		return err
-	})
-	return result, err
-}
-
-func createTx(ctx context.Context, tx *sql.Tx, params CreateParams, selection Selection) (Session, error) {
 	sessionID, err := id.New("ses")
 	if err != nil {
 		return Session{}, fmt.Errorf("session: generate ID: %w", err)
 	}
-	now := time.Now().UTC()
-	var projectID any
-	if params.ProjectID != "" {
-		projectID = params.ProjectID
-	}
-	_, err = tx.ExecContext(ctx, `
-		INSERT INTO session(id, project_id, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sessionID, projectID, params.Title, selection.Agent, selection.Provider, selection.Model, selection.Variant, formatTime(now), formatTime(now))
+	db, err := s.sessions.Create(ctx, sessionID)
 	if err != nil {
-		return Session{}, fmt.Errorf("session: create: %w", err)
+		return Session{}, err
 	}
-	return Session{ID: sessionID, ProjectID: params.ProjectID, Title: params.Title, Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: selection.Variant, CreatedAt: now, UpdatedAt: now}, nil
+	now := time.Now().UTC()
+	result := Session{
+		ID: sessionID, ProjectID: params.ProjectID, ProjectRoot: params.ProjectRoot, Title: params.Title,
+		Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: selection.Variant,
+		CreatedAt: now, UpdatedAt: now,
+	}
+	err = db.WithImmediate(ctx, func(tx *sql.Tx) error { return insertSession(ctx, tx, result) })
+	if err != nil {
+		// A session whose row was never written would be listed from its
+		// directory but fail to open, so remove it rather than leave a shell.
+		_ = s.sessions.Remove(sessionID)
+		return Session{}, err
+	}
+	if err := s.publish(result); err != nil {
+		_ = s.sessions.Remove(sessionID)
+		return Session{}, err
+	}
+	return result, nil
 }
 
-// ClaimInteractive atomically selects the session associated with a working
-// directory. A live owner is never displaced; an abandoned owner is replaced.
+func insertSession(ctx context.Context, tx *sql.Tx, item Session) error {
+	_, err := tx.ExecContext(ctx, `
+		INSERT INTO session(id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ProjectID, item.ProjectRoot, item.Title,
+		item.Agent, item.Provider, item.Model, item.Variant,
+		formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
+	if err != nil {
+		return fmt.Errorf("session: create: %w", err)
+	}
+	return nil
+}
+
+// publish republishes a session's index entry. The database stays the source of
+// truth; the entry exists so another host can list this session without opening
+// a database it cannot lock.
+func (s *Service) publish(item Session) error {
+	return store.WriteMeta(s.sessions.State(), store.Meta{
+		ID:          item.ID,
+		ProjectID:   item.ProjectID,
+		ProjectRoot: item.ProjectRoot,
+		Title:       item.Title,
+		Agent:       item.Agent,
+		Provider:    item.Provider,
+		Model:       item.Model,
+		Variant:     item.Variant,
+		CreatedAt:   formatTime(item.CreatedAt),
+		UpdatedAt:   formatTime(item.UpdatedAt),
+		HostKey:     s.sessions.HostKey(),
+		PID:         s.pid,
+	})
+}
+
+// republish refreshes the index entry from the session database. Callers use it
+// after a commit that changed indexed fields.
+func (s *Service) republish(ctx context.Context, sessionID string) error {
+	item, err := s.Get(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	return s.publish(item)
+}
+
+// ClaimInteractive selects the session associated with a working directory on
+// this machine. A live owner is never displaced; an abandoned owner is replaced.
+//
+// Owner records are kept per host because a working directory is a host-local
+// name: the same path on two machines is two different directories on two disks.
+// A record written by another host therefore describes something this host
+// cannot see, and is neither read nor written here. The previous shared table
+// looked owners up by directory alone and reclaimed any record whose host did
+// not match, which silently took over a session another machine was still
+// running.
 func (s *Service) ClaimInteractive(ctx context.Context, owner InteractiveOwner, params CreateParams, selection Selection, forceNew bool, alive func(int) bool) (InteractiveClaim, error) {
 	if owner.WorkingDirectory == "" || owner.HostKey == "" || owner.PID <= 0 {
 		return InteractiveClaim{}, errors.New("session: working directory, host key, and PID are required")
@@ -166,90 +220,94 @@ func (s *Service) ClaimInteractive(ctx context.Context, owner InteractiveOwner, 
 	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
 		return InteractiveClaim{}, ErrSelectionRequired
 	}
-	var claim InteractiveClaim
-	err := s.db.WithImmediate(ctx, func(tx *sql.Tx) error {
-		if !forceNew {
-			item, err := scanSession(tx.QueryRowContext(ctx, `
-				SELECT s.id, COALESCE(s.project_id, ''), s.title, s.selected_agent, s.selected_provider, s.selected_model, s.selected_variant, s.created_at, s.updated_at
-				FROM interactive_session_owner o JOIN session s ON s.id=o.session_id
-				WHERE o.working_directory=? AND o.host_key=? AND o.owner_pid=?`, owner.WorkingDirectory, owner.HostKey, owner.PID))
-			if err == nil {
-				claim = InteractiveClaim{Session: item, Disposition: ClaimExisting}
-				return nil
-			}
-			if !errors.Is(err, ErrNotFound) {
-				return err
-			}
+	// A conflict means another process on this host published a claim between
+	// the read and the write, so the decision is remade against its record.
+	for attempt := 0; attempt < ownerClaimAttempts; attempt++ {
+		claim, err := s.claimInteractiveOnce(ctx, owner, params, selection, forceNew, alive)
+		if !errors.Is(err, store.ErrOwnerConflict) {
+			return claim, err
+		}
+	}
+	return InteractiveClaim{}, errors.New("session: interactive owner kept changing")
+}
 
-			var sessionID, hostKey string
-			var pid int
-			err = tx.QueryRowContext(ctx, `SELECT session_id, host_key, owner_pid FROM interactive_session_owner
-				WHERE working_directory=? ORDER BY claimed_at DESC, session_id DESC LIMIT 1`, owner.WorkingDirectory).Scan(&sessionID, &hostKey, &pid)
-			if errors.Is(err, sql.ErrNoRows) {
-				sessionID = ""
-			} else if err != nil {
-				return fmt.Errorf("session: find interactive owner: %w", err)
-			} else if hostKey == owner.HostKey && alive != nil && alive(pid) {
-				sessionID = ""
-			}
-			if sessionID != "" {
-				now := formatTime(time.Now().UTC())
-				if _, err := tx.ExecContext(ctx, `UPDATE interactive_session_owner SET host_key=?, owner_pid=?, claimed_at=? WHERE session_id=?`, owner.HostKey, owner.PID, now, sessionID); err != nil {
-					return fmt.Errorf("session: reclaim interactive owner: %w", err)
-				}
-				item, err := scanSession(tx.QueryRowContext(ctx, `SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at FROM session WHERE id=?`, sessionID))
-				if err != nil {
-					return err
-				}
-				claim = InteractiveClaim{Session: item, Disposition: ClaimReclaimed}
-				return nil
-			}
-		}
+const ownerClaimAttempts = 5
 
-		// /clear moves this process away from its old binding before creating.
-		if forceNew {
-			if _, err := tx.ExecContext(ctx, `DELETE FROM interactive_session_owner WHERE working_directory=? AND host_key=? AND owner_pid=?`, owner.WorkingDirectory, owner.HostKey, owner.PID); err != nil {
-				return err
+func (s *Service) claimInteractiveOnce(ctx context.Context, owner InteractiveOwner, params CreateParams, selection Selection, forceNew bool, alive func(int) bool) (InteractiveClaim, error) {
+	chain, _, err := store.LoadOwnerChain(s.sessions.State(), owner.HostKey, owner.WorkingDirectory)
+	if err != nil {
+		return InteractiveClaim{}, err
+	}
+	current, bound := chain.Current()
+
+	if bound && !forceNew {
+		item, err := s.Get(ctx, current.SessionID)
+		switch {
+		case err == nil && current.PID == owner.PID:
+			return InteractiveClaim{Session: item, Disposition: ClaimExisting}, nil
+		case err == nil && !(alive != nil && alive(current.PID)):
+			// The owning process is gone, so its binding is abandoned.
+			next := current
+			next.PID, next.ClaimedAt = owner.PID, ""
+			if err := chain.Claim(next); err != nil {
+				return InteractiveClaim{}, err
 			}
+			if err := store.StampOwner(s.sessions.State(), item.ID, owner.HostKey, owner.PID); err != nil {
+				return InteractiveClaim{}, err
+			}
+			return InteractiveClaim{Session: item, Disposition: ClaimReclaimed}, nil
+		case err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, store.ErrNoSession):
+			return InteractiveClaim{}, err
 		}
-		item, err := createTx(ctx, tx, params, selection)
-		if err != nil {
-			return err
-		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO interactive_session_owner(session_id,working_directory,host_key,owner_pid,claimed_at) VALUES(?,?,?,?,?)`, item.ID, owner.WorkingDirectory, owner.HostKey, owner.PID, formatTime(time.Now().UTC()))
-		if err != nil {
-			return fmt.Errorf("session: bind interactive owner: %w", err)
-		}
-		claim = InteractiveClaim{Session: item, Disposition: ClaimCreated}
-		return nil
-	})
-	return claim, err
+		// A live owner, or a record pointing at a deleted session: fall through
+		// and create a new session rather than displace or resurrect it.
+	}
+
+	item, err := s.create(ctx, params, selection)
+	if err != nil {
+		return InteractiveClaim{}, err
+	}
+	if err := chain.Claim(store.Owner{
+		SessionID:        item.ID,
+		WorkingDirectory: owner.WorkingDirectory,
+		HostKey:          owner.HostKey,
+		PID:              owner.PID,
+	}); err != nil {
+		_ = s.sessions.Remove(item.ID)
+		return InteractiveClaim{}, err
+	}
+	return InteractiveClaim{Session: item, Disposition: ClaimCreated}, nil
 }
 
 func (s *Service) Get(ctx context.Context, sessionID string) (Session, error) {
-	return scanSession(s.db.SQL().QueryRowContext(ctx, `
-		SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
+	db, err := s.sessions.Session(ctx, sessionID)
+	if errors.Is(err, store.ErrNoSession) {
+		return Session{}, ErrNotFound
+	}
+	if err != nil {
+		return Session{}, err
+	}
+	return scanSession(db.SQL().QueryRowContext(ctx, `
+		SELECT id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
         FROM session WHERE id = ?`, sessionID))
 }
 
+// List reports every session on every machine sharing this state directory, by
+// reading published index entries rather than opening each database. Entries are
+// small and few enough that a directory scan is cheaper than the shared table it
+// replaces, which had to be written on every message to stay ordered.
 func (s *Service) List(ctx context.Context) ([]Session, error) {
-	rows, err := s.db.SQL().QueryContext(ctx, `
-		SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
-        FROM session ORDER BY created_at DESC, id DESC`)
+	metas, _, err := store.ListMeta(s.sessions.State())
 	if err != nil {
-		return nil, fmt.Errorf("session: list: %w", err)
+		return nil, err
 	}
-	defer rows.Close()
-	var result []Session
-	for rows.Next() {
-		item, err := scanSession(rows)
+	result := make([]Session, 0, len(metas))
+	for _, meta := range metas {
+		item, err := sessionFromMeta(meta)
 		if err != nil {
-			return nil, err
+			continue
 		}
 		result = append(result, item)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("session: list: %w", err)
 	}
 	return result, nil
 }
@@ -258,35 +316,34 @@ func (s *Service) List(ctx context.Context) ([]Session, error) {
 // project. It is used as an interactive startup preference, not as a config
 // override.
 func (s *Service) LatestSelection(ctx context.Context, projectID string) (Selection, error) {
-	var selection Selection
-	err := s.db.SQL().QueryRowContext(ctx, `
-		SELECT selected_agent, selected_provider, selected_model, selected_variant
-		FROM session
-		WHERE project_id = ? AND selected_agent <> '' AND selected_provider <> '' AND selected_model <> ''
-		ORDER BY updated_at DESC, id DESC
-		LIMIT 1`, projectID).Scan(&selection.Agent, &selection.Provider, &selection.Model, &selection.Variant)
-	if errors.Is(err, sql.ErrNoRows) {
+	metas, _, err := store.ListMeta(s.sessions.State())
+	if err != nil {
+		return Selection{}, err
+	}
+	var best store.Meta
+	for _, meta := range metas {
+		if meta.ProjectID != projectID || meta.Agent == "" || meta.Provider == "" || meta.Model == "" {
+			continue
+		}
+		if best.ID == "" || meta.UpdatedAt > best.UpdatedAt || (meta.UpdatedAt == best.UpdatedAt && meta.ID > best.ID) {
+			best = meta
+		}
+	}
+	if best.ID == "" {
 		return Selection{}, ErrNotFound
 	}
-	if err != nil {
-		return Selection{}, fmt.Errorf("session: latest selection: %w", err)
-	}
-	return selection, nil
+	return Selection{Agent: best.Agent, Provider: best.Provider, Model: best.Model, Variant: best.Variant}, nil
 }
 
+// Delete removes a session directory. The old shared table relied on cascading
+// deletes that its own RESTRICT constraints could block; a session now owns its
+// file, so deleting it is removing that file.
 func (s *Service) Delete(ctx context.Context, sessionID string) error {
-	result, err := s.db.SQL().ExecContext(ctx, `DELETE FROM session WHERE id = ?`, sessionID)
-	if err != nil {
-		return fmt.Errorf("session: delete: %w", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("session: delete result: %w", err)
-	}
-	if count == 0 {
+	err := s.sessions.Remove(sessionID)
+	if errors.Is(err, store.ErrNoSession) {
 		return ErrNotFound
 	}
-	return nil
+	return err
 }
 
 func (s *Service) Admit(ctx context.Context, sessionID string, params AdmitParams) (Admission, error) {
@@ -349,6 +406,9 @@ func (s *Service) Admit(ctx context.Context, sessionID string, params AdmitParam
 	if err == nil {
 		if len(appended) != 1 {
 			return Admission{}, errors.New("session: admission did not append one event")
+		}
+		if err := s.republish(ctx, sessionID); err != nil {
+			return Admission{}, err
 		}
 		return Admission{Input: admitted, Created: true}, nil
 	}
@@ -459,11 +519,20 @@ func (s *Service) promote(ctx context.Context, sessionID string, delivery Delive
 	if err != nil {
 		return nil, err
 	}
+	if len(messages) > 0 {
+		if err := s.republish(ctx, sessionID); err != nil {
+			return nil, err
+		}
+	}
 	return messages, nil
 }
 
 func (s *Service) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	rows, err := s.db.SQL().QueryContext(ctx, `
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.SQL().QueryContext(ctx, `
 		SELECT id, session_id, role, content, parts_json, status, finish_reason, error_text,
 		       usage_json, COALESCE(input_id, ''), sequence, created_at
         FROM session_message WHERE session_id = ? ORDER BY sequence`, sessionID)
@@ -496,7 +565,11 @@ func (s *Service) ListMessages(ctx context.Context, sessionID string) ([]Message
 }
 
 func (s *Service) inputByMessageID(ctx context.Context, sessionID, messageID string) (Input, error) {
-	return getInput(ctx, s.db.SQL(), sessionID, messageID)
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return Input{}, err
+	}
+	return getInput(ctx, db.SQL(), sessionID, messageID)
 }
 
 type queryRower interface {
@@ -514,10 +587,27 @@ type rowScanner interface {
 	Scan(...any) error
 }
 
+// sessionFromMeta builds a session from its published index entry.
+func sessionFromMeta(meta store.Meta) (Session, error) {
+	createdAt, err := parseTime(meta.CreatedAt)
+	if err != nil {
+		return Session{}, err
+	}
+	updatedAt, err := parseTime(meta.UpdatedAt)
+	if err != nil {
+		return Session{}, err
+	}
+	return Session{
+		ID: meta.ID, ProjectID: meta.ProjectID, ProjectRoot: meta.ProjectRoot, Title: meta.Title,
+		Agent: meta.Agent, Provider: meta.Provider, Model: meta.Model, Variant: meta.Variant,
+		CreatedAt: createdAt, UpdatedAt: updatedAt,
+	}, nil
+}
+
 func scanSession(row rowScanner) (Session, error) {
 	var item Session
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.ProjectID, &item.Title, &item.Agent, &item.Provider, &item.Model, &item.Variant, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.ProjectID, &item.ProjectRoot, &item.Title, &item.Agent, &item.Provider, &item.Model, &item.Variant, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}

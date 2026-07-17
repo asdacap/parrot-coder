@@ -16,10 +16,7 @@ import (
 func snapshotHarness(t *testing.T, config Config) (context.Context, *Service, *workspace.Workspace, string) {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "parrot.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { _ = db.Close() })
 	sessions := session.NewService(db, event.NewRepository(db))
 	created, err := sessions.Create(ctx, session.CreateParams{Title: "snapshots"})
@@ -30,7 +27,7 @@ func snapshotHarness(t *testing.T, config Config) (context.Context, *Service, *w
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ctx, NewService(db, config), ws, created.ID
+	return ctx, NewService(t.TempDir(), config), ws, created.ID
 }
 
 func TestUndoRedoModesSymlinksAndConflict(t *testing.T) {

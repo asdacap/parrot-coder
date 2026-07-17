@@ -42,10 +42,7 @@ func (a *recordingAuthorizer) Authorize(_ context.Context, request permission.Re
 func workspaceToolHarness(t *testing.T) (context.Context, *workspace.Workspace, *change.Service, *snapshot.Service, string) {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "parrot.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { _ = db.Close() })
 	sessions := session.NewService(db, event.NewRepository(db))
 	created, err := sessions.Create(ctx, session.CreateParams{Title: "tools"})
@@ -56,7 +53,7 @@ func workspaceToolHarness(t *testing.T) (context.Context, *workspace.Workspace, 
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ctx, ws, change.NewService(change.Config{}), snapshot.NewService(db, snapshot.Config{}), created.ID
+	return ctx, ws, change.NewService(change.Config{}), snapshot.NewService(t.TempDir(), snapshot.Config{}), created.ID
 }
 
 func TestEditPermissionReviewHashAndSnapshotIntegration(t *testing.T) {

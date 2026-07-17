@@ -3,7 +3,6 @@ package session_test
 import (
 	"context"
 	"errors"
-	"path/filepath"
 	"sync"
 	"testing"
 
@@ -15,11 +14,8 @@ import (
 
 func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "parrot.db")
-	db, err := store.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	state := t.TempDir()
+	db := store.NewRegistry(state, "host-test")
 	service := session.NewService(db, event.NewRepository(db))
 	created, err := service.Create(ctx, session.CreateParams{Title: "durable"})
 	if err != nil {
@@ -29,10 +25,8 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err = store.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Reopening the same state directory stands in for a process restart.
+	db = store.NewRegistry(state, "host-test")
 	defer db.Close()
 	service = session.NewService(db, event.NewRepository(db))
 	got, err := service.Get(ctx, created.ID)
@@ -70,12 +64,10 @@ func TestCreateSelectedPersistsCompleteInitialSelection(t *testing.T) {
 }
 
 func TestLatestSelectionUsesCurrentProject(t *testing.T) {
-	ctx, db, _, service, _ := newService(t)
-	for _, projectID := range []string{"other", "project"} {
-		if _, err := db.SQL().ExecContext(ctx, `INSERT INTO project(id, root_path, created_at) VALUES (?, ?, ?)`, projectID, "/"+projectID, "2026-01-01T00:00:00Z"); err != nil {
-			t.Fatal(err)
-		}
-	}
+	// Projects are no longer rows: project.StableID is a pure function of the
+	// repository identity, so a session records its project and every host
+	// recomputes the same value.
+	ctx, _, _, service, _ := newService(t)
 	if _, err := service.CreateSelected(ctx, session.CreateParams{ProjectID: "other", Title: "other"}, session.Selection{Agent: "build", Provider: "other", Model: "newer"}); err != nil {
 		t.Fatal(err)
 	}
@@ -366,13 +358,10 @@ func TestTodoListIsEmptyArrayAndWhitespaceContentIsRejected(t *testing.T) {
 	}
 }
 
-func newService(t *testing.T) (context.Context, *store.DB, *event.Repository, *session.Service, string) {
+func newService(t *testing.T) (context.Context, *store.Registry, *event.Repository, *session.Service, string) {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "parrot.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { db.Close() })
 	repository := event.NewRepository(db)
 	service := session.NewService(db, repository)
@@ -385,10 +374,7 @@ func newService(t *testing.T) (context.Context, *store.DB, *event.Repository, *s
 
 func TestInteractiveClaimLifecycle(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "claim.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	defer db.Close()
 	service := session.NewService(db, event.NewRepository(db))
 	selection := session.Selection{Agent: "build", Provider: "local", Model: "code"}
@@ -420,10 +406,7 @@ func TestInteractiveClaimLifecycle(t *testing.T) {
 
 func TestInteractiveClaimDoesNotStealLiveOwner(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "live-claim.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	defer db.Close()
 	service := session.NewService(db, event.NewRepository(db))
 	selection := session.Selection{Agent: "build", Provider: "local", Model: "code"}

@@ -3,7 +3,6 @@ package session_test
 import (
 	"context"
 	"encoding/json"
-	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -151,11 +150,8 @@ func TestModelHistoryDropsUnregisteredToolCall(t *testing.T) {
 
 func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	ctx := context.Background()
-	path := filepath.Join(t.TempDir(), "repair.db")
-	db, err := store.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	state := t.TempDir()
+	db := store.NewRegistry(state, "host-test")
 	repository := event.NewRepository(db)
 	service := session.NewService(db, repository)
 	created, err := service.Create(ctx, session.CreateParams{Title: "repair"})
@@ -177,10 +173,8 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	db, err = store.Open(ctx, path)
-	if err != nil {
-		t.Fatal(err)
-	}
+	// Reopening the same state directory stands in for a process restart.
+	db = store.NewRegistry(state, "host-test")
 	t.Cleanup(func() { db.Close() })
 	repository = event.NewRepository(db)
 	service = session.NewService(db, repository)
@@ -191,8 +185,12 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	if err != nil || len(messages) != 1 || messages[0].Status != "interrupted" {
 		t.Fatalf("repaired messages = %#v, %v", messages, err)
 	}
+	sessionDB, err := db.Session(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var toolStatus, toolError string
-	if err := db.SQL().QueryRowContext(ctx, `SELECT status,error_text FROM session_tool_call WHERE id='call'`).Scan(&toolStatus, &toolError); err != nil {
+	if err := sessionDB.SQL().QueryRowContext(ctx, `SELECT status,error_text FROM session_tool_call WHERE id='call'`).Scan(&toolStatus, &toolError); err != nil {
 		t.Fatal(err)
 	}
 	if toolStatus != "interrupted" || toolError != "process restarted" {

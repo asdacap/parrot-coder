@@ -16,22 +16,26 @@ import (
 )
 
 type Repository struct {
-	db     *store.DB
-	events *event.Repository
+	sessions *store.Registry
+	events   *event.Repository
 }
 
-func NewRepository(db *store.DB, events *event.Repository) *Repository {
-	return &Repository{db: db, events: events}
+func NewRepository(sessions *store.Registry, events *event.Repository) *Repository {
+	return &Repository{sessions: sessions, events: events}
 }
 
 func (r *Repository) Load(ctx context.Context, sessionID string) (State, error) {
+	db, err := r.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return State{}, err
+	}
 	var state State
-	if err := r.db.SQL().QueryRowContext(ctx, `SELECT id,ordinal,baseline,sources_json,history_cutoff
+	if err := db.SQL().QueryRowContext(ctx, `SELECT id,ordinal,baseline,sources_json,history_cutoff
 		FROM session_context_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, sessionID).Scan(
 		&state.Epoch.ID, &state.Epoch.Ordinal, &state.Epoch.Baseline, &state.Epoch.Sources, &state.Epoch.HistoryCutoff); err != nil {
 		return State{}, fmt.Errorf("compaction: load epoch: %w", err)
 	}
-	rows, err := r.db.SQL().QueryContext(ctx, `SELECT id,role,content,parts_json,status,usage_json,sequence
+	rows, err := db.SQL().QueryContext(ctx, `SELECT id,role,content,parts_json,status,usage_json,sequence
 		FROM session_message WHERE session_id=? AND sequence>=? ORDER BY sequence`, sessionID, state.Epoch.HistoryCutoff)
 	if err != nil {
 		return State{}, fmt.Errorf("compaction: load messages: %w", err)
@@ -60,7 +64,11 @@ func (r *Repository) Load(ctx context.Context, sessionID string) (State, error) 
 }
 
 func (r *Repository) Completed(ctx context.Context, sessionID, epochID string, from, to int64) (Record, bool, error) {
-	row := r.db.SQL().QueryRowContext(ctx, `SELECT id,attempt_id,session_id,source_epoch_id,target_epoch_id,
+	db, err := r.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return Record{}, false, err
+	}
+	row := db.SQL().QueryRowContext(ctx, `SELECT id,attempt_id,session_id,source_epoch_id,target_epoch_id,
 		covered_from_sequence,covered_to_sequence,history_cutoff,summary,usage_json,provider_id,model_id,created_at
 		FROM compaction_record WHERE session_id=? AND source_epoch_id=? AND covered_from_sequence=? AND covered_to_sequence=?`,
 		sessionID, epochID, from, to)
@@ -81,7 +89,11 @@ func (r *Repository) Begin(ctx context.Context, attempt Attempt) (Attempt, error
 	}
 	attempt.Status = "active"
 	attempt.CreatedAt = time.Now().UTC()
-	_, err := r.db.SQL().ExecContext(ctx, `INSERT INTO compaction_attempt(
+	db, err := r.sessions.Session(ctx, attempt.SessionID)
+	if err != nil {
+		return Attempt{}, err
+	}
+	_, err = db.SQL().ExecContext(ctx, `INSERT INTO compaction_attempt(
 		id,session_id,source_epoch_id,covered_from_sequence,covered_to_sequence,history_cutoff,
 		provider_id,model_id,forced,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'active',?)`,
 		attempt.ID, attempt.SessionID, attempt.SourceEpochID, attempt.CoveredFrom, attempt.CoveredTo,
@@ -156,31 +168,29 @@ func (r *Repository) Complete(ctx context.Context, attempt Attempt, summary Summ
 	return record, nil
 }
 
-func (r *Repository) Fail(ctx context.Context, attemptID, status, reason string) error {
+func (r *Repository) Fail(ctx context.Context, sessionID, attemptID, status, reason string) error {
 	if status != "failed" && status != "interrupted" {
 		return errors.New("compaction: invalid failure status")
 	}
+	db, err := r.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return err
+	}
 	reason = boundedText(reason, 1024)
-	_, err := r.db.SQL().ExecContext(ctx, `UPDATE compaction_attempt SET status=?,error_text=?,finished_at=? WHERE id=? AND status='active'`, status, reason, formatTime(time.Now().UTC()), attemptID)
+	_, err = db.SQL().ExecContext(ctx, `UPDATE compaction_attempt SET status=?,error_text=?,finished_at=? WHERE id=? AND status='active'`, status, reason, formatTime(time.Now().UTC()), attemptID)
 	return err
 }
 
-// InterruptAbandoned marks a bounded batch of attempts left active by an
-// earlier process. It never changes completed records or context epochs.
-func (r *Repository) InterruptAbandoned(ctx context.Context, limit int, reason string) (int64, error) {
-	if limit <= 0 {
-		limit = 100
-	}
-	result, err := r.db.SQL().ExecContext(ctx, `UPDATE compaction_attempt SET status='interrupted',error_text=?,finished_at=?
-		WHERE id IN (SELECT id FROM compaction_attempt WHERE status='active' ORDER BY created_at LIMIT ?)`, boundedText(reason, 1024), formatTime(time.Now().UTC()), limit)
-	if err != nil {
-		return 0, err
-	}
-	return result.RowsAffected()
-}
+// Attempts abandoned by a dead process are repaired by session.RepairActive,
+// which settles them alongside that session's in-flight messages and tool calls
+// when the session is next opened.
 
 func (r *Repository) Records(ctx context.Context, sessionID string) ([]Record, error) {
-	rows, err := r.db.SQL().QueryContext(ctx, `SELECT id,attempt_id,session_id,source_epoch_id,target_epoch_id,
+	db, err := r.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.SQL().QueryContext(ctx, `SELECT id,attempt_id,session_id,source_epoch_id,target_epoch_id,
 		covered_from_sequence,covered_to_sequence,history_cutoff,summary,usage_json,provider_id,model_id,created_at
 		FROM compaction_record WHERE session_id=? ORDER BY created_at,id`, sessionID)
 	if err != nil {

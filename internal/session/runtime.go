@@ -49,7 +49,7 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 	var updated Session
 	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		current, err := scanSession(tx.QueryRowContext(ctx, `
-			SELECT id, COALESCE(project_id, ''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
+			SELECT id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
 			FROM session WHERE id = ?`, sessionID))
 		if err != nil {
 			return nil, nil, err
@@ -104,12 +104,24 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 		}
 		return []event.NewEvent{{Type: "session.selection.changed", Data: data}}, project, nil
 	})
-	return updated, err
+	if err != nil {
+		return Session{}, err
+	}
+	// The selection is indexed, so the published entry has to follow the commit
+	// for LatestSelection on any host to see it.
+	if err := s.publish(updated); err != nil {
+		return Session{}, err
+	}
+	return updated, nil
 }
 
 func (s *Service) LatestSequence(ctx context.Context, sessionID string) (int64, error) {
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
 	var next int64
-	err := s.db.SQL().QueryRowContext(ctx, `SELECT next_sequence FROM event_sequence WHERE session_id=?`, sessionID).Scan(&next)
+	err = db.SQL().QueryRowContext(ctx, `SELECT next_sequence FROM event_sequence WHERE session_id=?`, sessionID).Scan(&next)
 	if errors.Is(err, sql.ErrNoRows) {
 		return -1, nil
 	}
@@ -117,8 +129,12 @@ func (s *Service) LatestSequence(ctx context.Context, sessionID string) (int64, 
 }
 
 func (s *Service) PendingCutoff(ctx context.Context, sessionID string) (int64, error) {
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return -1, err
+	}
 	var cutoff sql.NullInt64
-	err := s.db.SQL().QueryRowContext(ctx, `SELECT MAX(admitted_sequence) FROM session_input WHERE session_id=? AND status='pending'`, sessionID).Scan(&cutoff)
+	err = db.SQL().QueryRowContext(ctx, `SELECT MAX(admitted_sequence) FROM session_input WHERE session_id=? AND status='pending'`, sessionID).Scan(&cutoff)
 	if err != nil || !cutoff.Valid {
 		return -1, err
 	}
@@ -136,9 +152,13 @@ type ContextEpoch struct {
 }
 
 func (s *Service) CurrentContextEpoch(ctx context.Context, sessionID string) (ContextEpoch, error) {
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return ContextEpoch{}, err
+	}
 	var item ContextEpoch
 	var created string
-	err := s.db.SQL().QueryRowContext(ctx, `SELECT id, session_id, ordinal, baseline, sources_json, history_cutoff, created_at FROM session_context_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, sessionID).Scan(&item.ID, &item.SessionID, &item.Ordinal, &item.Baseline, &item.Sources, &item.HistoryCutoff, &created)
+	err = db.SQL().QueryRowContext(ctx, `SELECT id, session_id, ordinal, baseline, sources_json, history_cutoff, created_at FROM session_context_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, sessionID).Scan(&item.ID, &item.SessionID, &item.Ordinal, &item.Baseline, &item.Sources, &item.HistoryCutoff, &created)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ContextEpoch{}, ErrNotFound
 	}
@@ -408,11 +428,21 @@ func (s *Service) transitionTool(ctx context.Context, sessionID, callID, status,
 	return err
 }
 
+// RepairActive settles work this session left in flight when its process died.
+//
+// Repair is per session because that is the scope in which "abandoned" is
+// knowable: these rows are active only if the process running this session
+// stopped. Compaction attempts are repaired here too, in the same transaction.
+// They were previously swept across every session in a shared database, which
+// interrupted compactions that other live processes, on other machines, were
+// still running.
 func (s *Service) RepairActive(ctx context.Context, sessionID string) error {
 	data := json.RawMessage(`{"reason":"process restarted"}`)
 	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM session_message WHERE session_id=? AND status='active') + (SELECT COUNT(*) FROM session_tool_call WHERE session_id=? AND status IN ('pending','running'))`, sessionID, sessionID).Scan(&active); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM session_message WHERE session_id=? AND status='active')
+			+ (SELECT COUNT(*) FROM session_tool_call WHERE session_id=? AND status IN ('pending','running'))
+			+ (SELECT COUNT(*) FROM compaction_attempt WHERE session_id=? AND status='active')`, sessionID, sessionID, sessionID).Scan(&active); err != nil {
 			return nil, nil, err
 		}
 		if active == 0 {
@@ -422,7 +452,10 @@ func (s *Service) RepairActive(ctx context.Context, sessionID string) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE session_message SET status='interrupted',error_text='process restarted' WHERE session_id=? AND status='active'`, sessionID); err != nil {
 				return err
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE session_tool_call SET status='interrupted',error_text='process restarted',settled_sequence=?,settled_at=? WHERE session_id=? AND status IN ('pending','running')`, events[0].Sequence, formatTime(events[0].CreatedAt), sessionID)
+			if _, err := tx.ExecContext(ctx, `UPDATE session_tool_call SET status='interrupted',error_text='process restarted',settled_sequence=?,settled_at=? WHERE session_id=? AND status IN ('pending','running')`, events[0].Sequence, formatTime(events[0].CreatedAt), sessionID); err != nil {
+				return err
+			}
+			_, err := tx.ExecContext(ctx, `UPDATE compaction_attempt SET status='interrupted',error_text='process restarted',finished_at=? WHERE session_id=? AND status='active'`, formatTime(events[0].CreatedAt), sessionID)
 			return err
 		}
 		return []event.NewEvent{{Type: "session.runtime.repaired", Data: data}}, project, nil
@@ -437,7 +470,11 @@ func (s *Service) RecordCompactionRetry(ctx context.Context, sessionID, provider
 }
 
 func (s *Service) ListModelHistory(ctx context.Context, sessionID string, cutoff int64) ([]protocol.Message, error) {
-	rows, err := s.db.SQL().QueryContext(ctx, `SELECT role,content,parts_json FROM session_message WHERE session_id=? AND sequence>=? AND status IN ('complete','error','interrupted') AND NOT (status='error' AND content='' AND parts_json='[]') ORDER BY sequence`, sessionID, cutoff)
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.SQL().QueryContext(ctx, `SELECT role,content,parts_json FROM session_message WHERE session_id=? AND sequence>=? AND status IN ('complete','error','interrupted') AND NOT (status='error' AND content='' AND parts_json='[]') ORDER BY sequence`, sessionID, cutoff)
 	if err != nil {
 		return nil, err
 	}
@@ -484,8 +521,12 @@ type historyToolState struct {
 // behavior existed, and calls interrupted by a process crash between settling
 // the tool and appending its result message.
 func (s *Service) repairToolHistory(ctx context.Context, sessionID string, cutoff int64, messages []protocol.Message) ([]protocol.Message, error) {
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	states := make(map[string]historyToolState)
-	rows, err := s.db.SQL().QueryContext(ctx, `SELECT id,status,result_text,error_text FROM session_tool_call WHERE session_id=? AND sequence>=?`, sessionID, cutoff)
+	rows, err := db.SQL().QueryContext(ctx, `SELECT id,status,result_text,error_text FROM session_tool_call WHERE session_id=? AND sequence>=?`, sessionID, cutoff)
 	if err != nil {
 		return nil, err
 	}

@@ -5,7 +5,6 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -60,12 +58,15 @@ type Transaction struct {
 }
 
 type Service struct {
-	db     *store.DB
+	files  fileStore
 	config Config
 	mu     sync.Mutex
 }
 
-func NewService(db *store.DB, config Config) *Service {
+// NewService stores undo history under root. Quotas apply per session: the
+// shared database counted every session's transactions against one global cap,
+// so unrelated history from other projects could exhaust it permanently.
+func NewService(root string, config Config) *Service {
 	if config.MaxBlobBytes <= 0 {
 		config.MaxBlobBytes = 256 << 20
 	}
@@ -75,7 +76,7 @@ func NewService(db *store.DB, config Config) *Service {
 	if config.MaxFileBytes <= 0 {
 		config.MaxFileBytes = 16 << 20
 	}
-	return &Service{db: db, config: config}
+	return &Service{files: fileStore{root: root}, config: config}
 }
 
 func (s *Service) Capture(path string) (State, error) {
@@ -85,7 +86,7 @@ func (s *Service) Capture(path string) (State, error) {
 // Record appends one transaction at the current cursor. A new transaction
 // after undo removes the entire redo branch in the same SQLite transaction.
 func (s *Service) Record(ctx context.Context, ws *workspace.Workspace, sessionID string, entries []Entry) (Transaction, error) {
-	if s == nil || s.db == nil || ws == nil || sessionID == "" {
+	if s == nil || s.files.root == "" || ws == nil || sessionID == "" {
 		return Transaction{}, errors.New("snapshot: service, workspace, and session are required")
 	}
 	s.mu.Lock()
@@ -104,99 +105,132 @@ func (s *Service) Record(ctx context.Context, ws *workspace.Workspace, sessionID
 	now := time.Now().UTC()
 	result := Transaction{ID: id, Workspace: ws.Root(), SessionID: sessionID, CreatedAt: now, Entries: cloneEntries(clean)}
 
-	err = s.db.WithImmediate(ctx, func(tx *sql.Tx) error {
-		cursor, err := loadCursor(ctx, tx, ws.Root(), sessionID)
+	err = func() error {
+		records, err := s.files.records(sessionID)
+		if err != nil {
+			return err
+		}
+		cursor, err := s.files.cursor(sessionID)
 		if err != nil {
 			return err
 		}
 		for _, entry := range clean {
-			latest, ok, err := latestJournalState(ctx, tx, ws.Root(), sessionID, cursor, entry.Path)
-			if err != nil {
-				return err
-			}
+			latest, ok := latestJournalState(records, ws.Root(), cursor, entry.Path)
 			if ok && !stateEqual(latest, entry.Before) {
 				return ErrConflict
 			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM snapshot_transaction WHERE workspace=? AND session_id=? AND position>?`, ws.Root(), sessionID, cursor); err != nil {
-			return err
+		// A new transaction after an undo discards the redo branch it replaces.
+		kept := make([]journalRecord, 0, len(records))
+		for _, record := range records {
+			if record.Position <= cursor {
+				kept = append(kept, record)
+			}
 		}
-		if _, err := tx.ExecContext(ctx, `DELETE FROM snapshot_blob WHERE hash NOT IN (
-			SELECT before_blob_hash FROM snapshot_file WHERE before_blob_hash IS NOT NULL
-			UNION SELECT after_blob_hash FROM snapshot_file WHERE after_blob_hash IS NOT NULL
-		)`); err != nil {
-			return err
-		}
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM snapshot_transaction`).Scan(&count); err != nil {
-			return err
-		}
-		if count+1 > s.config.MaxTransactions {
+		if len(kept)+1 > s.config.MaxTransactions {
 			return ErrQuota
 		}
-		additional, err := additionalBlobBytes(ctx, tx, clean)
-		if err != nil {
-			return err
+		live := referenced(kept)
+		var total int64
+		for _, size := range live {
+			total += size
 		}
-		var existing int64
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(size),0) FROM snapshot_blob`).Scan(&existing); err != nil {
-			return err
+		for _, entry := range clean {
+			for _, state := range []State{entry.Before, entry.After} {
+				if state.Exists {
+					if _, ok := live[state.SHA256]; !ok && !s.files.hasBlob(state.SHA256) {
+						live[state.SHA256] = int64(len(state.Data))
+						total += int64(len(state.Data))
+					}
+				}
+			}
 		}
-		if existing+additional > s.config.MaxBlobBytes {
+		if total > s.config.MaxBlobBytes {
 			return ErrQuota
 		}
+		if len(kept) != len(records) {
+			if err := s.files.rewrite(sessionID, kept); err != nil {
+				return err
+			}
+		}
+		// Blobs are published before the record that names them, so a crash
+		// leaves unreferenced content for the sweep rather than a record
+		// pointing at bytes that were never written.
 		for _, entry := range clean {
 			for _, state := range []State{entry.Before, entry.After} {
 				if !state.Exists {
 					continue
 				}
-				if _, err := tx.ExecContext(ctx, `INSERT OR IGNORE INTO snapshot_blob(hash,data,size) VALUES(?,?,?)`, state.SHA256, state.Data, len(state.Data)); err != nil {
+				if err := s.files.putBlob(state.SHA256, state.Data); err != nil {
 					return err
 				}
 			}
 		}
 		result.Position = cursor + 1
-		if _, err := tx.ExecContext(ctx, `INSERT INTO snapshot_transaction(id,workspace,session_id,position,created_at) VALUES(?,?,?,?,?)`, id, ws.Root(), sessionID, result.Position, now.Format(time.RFC3339Nano)); err != nil {
-			return err
+		record := journalRecord{
+			ID: id, Workspace: ws.Root(), SessionID: sessionID, Position: result.Position,
+			CreatedAt: now.Format(time.RFC3339Nano), Entries: make([]journalEntry, len(clean)),
 		}
 		for i, entry := range clean {
-			beforeBlob, beforeHash := nullableState(entry.Before)
-			afterBlob, afterHash := nullableState(entry.After)
-			if _, err := tx.ExecContext(ctx, `INSERT INTO snapshot_file(
-				transaction_id,ordinal,path,before_exists,before_mode,before_symlink,before_hash,before_blob_hash,
-				after_exists,after_mode,after_symlink,after_hash,after_blob_hash
-			) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, id, i, entry.Path,
-				boolInt(entry.Before.Exists), uint32(entry.Before.Mode), nullableString(entry.Before.SymlinkTarget), beforeHash, beforeBlob,
-				boolInt(entry.After.Exists), uint32(entry.After.Mode), nullableString(entry.After.SymlinkTarget), afterHash, afterBlob); err != nil {
-				return err
-			}
+			record.Entries[i] = journalEntry{Path: entry.Path, Before: toJournalState(entry.Before), After: toJournalState(entry.After)}
 		}
-		_, err = tx.ExecContext(ctx, `INSERT INTO snapshot_cursor(workspace,session_id,position) VALUES(?,?,?)
-			ON CONFLICT(workspace,session_id) DO UPDATE SET position=excluded.position`, ws.Root(), sessionID, result.Position)
-		return err
-	})
+		if err := s.files.appendRecord(sessionID, record); err != nil {
+			return err
+		}
+		return s.files.setCursor(sessionID, result.Position)
+	}()
 	if err != nil {
 		return Transaction{}, fmt.Errorf("snapshot: record: %w", err)
 	}
 	return result, nil
 }
 
-func latestJournalState(ctx context.Context, tx *sql.Tx, root, sessionID string, cursor int, path string) (State, bool, error) {
-	var state State
-	var exists int
-	var mode uint32
-	err := tx.QueryRowContext(ctx, `SELECT f.after_exists,f.after_mode,COALESCE(f.after_symlink,''),COALESCE(f.after_hash,'')
-		FROM snapshot_file f JOIN snapshot_transaction t ON t.id=f.transaction_id
-		WHERE t.workspace=? AND t.session_id=? AND t.position<=? AND f.path=?
-		ORDER BY t.position DESC LIMIT 1`, root, sessionID, cursor, path).Scan(&exists, &mode, &state.SymlinkTarget, &state.SHA256)
-	if errors.Is(err, sql.ErrNoRows) {
-		return State{}, false, nil
+// latestJournalState reports the newest recorded state of a path at or before
+// the cursor, which is what a new transaction must agree with.
+func latestJournalState(records []journalRecord, root string, cursor int, path string) (State, bool) {
+	var found journalState
+	var ok bool
+	for _, record := range records {
+		if record.Workspace != root || record.Position > cursor {
+			continue
+		}
+		for _, entry := range record.Entries {
+			if entry.Path == path {
+				found, ok = entry.After, true
+			}
+		}
 	}
-	if err != nil {
-		return State{}, false, err
+	if !ok {
+		return State{}, false
 	}
-	state.Path, state.Exists, state.Mode = path, exists == 1, os.FileMode(mode)
-	return state, true, nil
+	return fromJournalState(path, found, nil), true
+}
+
+func toJournalState(state State) journalState {
+	if !state.Exists {
+		return journalState{}
+	}
+	return journalState{
+		Exists:        true,
+		Mode:          uint32(state.Mode),
+		SymlinkTarget: state.SymlinkTarget,
+		SHA256:        state.SHA256,
+		Size:          int64(len(state.Data)),
+	}
+}
+
+func fromJournalState(path string, state journalState, data []byte) State {
+	if !state.Exists {
+		return State{Path: path}
+	}
+	return State{
+		Path:          path,
+		Exists:        true,
+		Mode:          os.FileMode(state.Mode),
+		SymlinkTarget: state.SymlinkTarget,
+		SHA256:        state.SHA256,
+		Data:          data,
+	}
 }
 
 func (s *Service) Undo(ctx context.Context, ws *workspace.Workspace, sessionID string) (Transaction, error) {
@@ -208,12 +242,12 @@ func (s *Service) Redo(ctx context.Context, ws *workspace.Workspace, sessionID s
 }
 
 func (s *Service) moveCursor(ctx context.Context, ws *workspace.Workspace, sessionID string, redo bool) (Transaction, error) {
-	if s == nil || s.db == nil || ws == nil || sessionID == "" {
+	if s == nil || s.files.root == "" || ws == nil || sessionID == "" {
 		return Transaction{}, errors.New("snapshot: service, workspace, and session are required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	cursor, err := loadCursor(ctx, s.db.SQL(), ws.Root(), sessionID)
+	cursor, err := s.files.cursor(sessionID)
 	if err != nil {
 		return Transaction{}, err
 	}
@@ -223,8 +257,8 @@ func (s *Service) moveCursor(ctx context.Context, ws *workspace.Workspace, sessi
 	} else if position == 0 {
 		return Transaction{}, ErrNoUndo
 	}
-	transaction, err := s.loadTransaction(ctx, ws.Root(), sessionID, position)
-	if errors.Is(err, sql.ErrNoRows) {
+	transaction, err := s.loadTransaction(sessionID, ws.Root(), position)
+	if errors.Is(err, errNoTransaction) {
 		if redo {
 			return Transaction{}, ErrNoRedo
 		}
@@ -253,62 +287,56 @@ func (s *Service) moveCursor(ctx context.Context, ws *workspace.Workspace, sessi
 	if !redo {
 		newCursor = position - 1
 	}
-	if _, err := s.db.SQL().ExecContext(ctx, `UPDATE snapshot_cursor SET position=? WHERE workspace=? AND session_id=?`, newCursor, ws.Root(), sessionID); err != nil {
+	if err := s.files.setCursor(sessionID, newCursor); err != nil {
 		rollbackErr := s.restore(context.Background(), current)
 		return Transaction{}, errors.Join(fmt.Errorf("snapshot: update cursor: %w", err), rollbackErr)
 	}
 	return transaction, nil
 }
 
-type queryRower interface {
-	QueryRowContext(context.Context, string, ...any) *sql.Row
-}
+var errNoTransaction = errors.New("snapshot: no such transaction")
 
-func loadCursor(ctx context.Context, db queryRower, root, sessionID string) (int, error) {
-	var cursor int
-	err := db.QueryRowContext(ctx, `SELECT position FROM snapshot_cursor WHERE workspace=? AND session_id=?`, root, sessionID).Scan(&cursor)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
-	}
-	return cursor, err
-}
-
-func (s *Service) loadTransaction(ctx context.Context, root, sessionID string, position int) (Transaction, error) {
-	var item Transaction
-	var created string
-	err := s.db.SQL().QueryRowContext(ctx, `SELECT id,workspace,session_id,position,created_at FROM snapshot_transaction WHERE workspace=? AND session_id=? AND position=?`, root, sessionID, position).Scan(&item.ID, &item.Workspace, &item.SessionID, &item.Position, &created)
+// loadTransaction rebuilds one transaction, reading each state's content back
+// from the blob store.
+func (s *Service) loadTransaction(sessionID, root string, position int) (Transaction, error) {
+	records, err := s.files.records(sessionID)
 	if err != nil {
 		return Transaction{}, err
 	}
-	item.CreatedAt, err = time.Parse(time.RFC3339Nano, created)
-	if err != nil {
-		return Transaction{}, err
-	}
-	rows, err := s.db.SQL().QueryContext(ctx, `SELECT f.path,
-		f.before_exists,f.before_mode,COALESCE(f.before_symlink,''),COALESCE(f.before_hash,''),COALESCE(bb.data,X''),
-		f.after_exists,f.after_mode,COALESCE(f.after_symlink,''),COALESCE(f.after_hash,''),COALESCE(ab.data,X'')
-		FROM snapshot_file f
-		LEFT JOIN snapshot_blob bb ON bb.hash=f.before_blob_hash
-		LEFT JOIN snapshot_blob ab ON ab.hash=f.after_blob_hash
-		WHERE f.transaction_id=? ORDER BY f.ordinal`, item.ID)
-	if err != nil {
-		return Transaction{}, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var entry Entry
-		var beforeExists, afterExists int
-		var beforeMode, afterMode uint32
-		if err := rows.Scan(&entry.Path, &beforeExists, &beforeMode, &entry.Before.SymlinkTarget, &entry.Before.SHA256, &entry.Before.Data,
-			&afterExists, &afterMode, &entry.After.SymlinkTarget, &entry.After.SHA256, &entry.After.Data); err != nil {
+	for _, record := range records {
+		if record.Position != position || record.Workspace != root {
+			continue
+		}
+		created, err := time.Parse(time.RFC3339Nano, record.CreatedAt)
+		if err != nil {
 			return Transaction{}, err
 		}
-		entry.Before.Path, entry.After.Path = entry.Path, entry.Path
-		entry.Before.Exists, entry.After.Exists = beforeExists == 1, afterExists == 1
-		entry.Before.Mode, entry.After.Mode = os.FileMode(beforeMode), os.FileMode(afterMode)
-		item.Entries = append(item.Entries, entry)
+		item := Transaction{ID: record.ID, Workspace: record.Workspace, SessionID: record.SessionID, Position: record.Position, CreatedAt: created}
+		for _, entry := range record.Entries {
+			before, err := s.loadState(entry.Path, entry.Before)
+			if err != nil {
+				return Transaction{}, err
+			}
+			after, err := s.loadState(entry.Path, entry.After)
+			if err != nil {
+				return Transaction{}, err
+			}
+			item.Entries = append(item.Entries, Entry{Path: entry.Path, Before: before, After: after})
+		}
+		return item, nil
 	}
-	return item, rows.Err()
+	return Transaction{}, errNoTransaction
+}
+
+func (s *Service) loadState(path string, state journalState) (State, error) {
+	if !state.Exists {
+		return State{Path: path}, nil
+	}
+	data, err := s.files.getBlob(state.SHA256)
+	if err != nil {
+		return State{}, err
+	}
+	return fromJournalState(path, state, data), nil
 }
 
 func (s *Service) validateEntries(ws *workspace.Workspace, entries []Entry, checkAfter bool) ([]Entry, error) {
@@ -493,49 +521,6 @@ func securePath(root, path string) (string, error) {
 func contained(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel)
-}
-
-func additionalBlobBytes(ctx context.Context, tx *sql.Tx, entries []Entry) (int64, error) {
-	seen := make(map[string]int64)
-	for _, entry := range entries {
-		for _, state := range []State{entry.Before, entry.After} {
-			if state.Exists {
-				seen[state.SHA256] = int64(len(state.Data))
-			}
-		}
-	}
-	var total int64
-	for digest, size := range seen {
-		var exists int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM snapshot_blob WHERE hash=?`, digest).Scan(&exists); err != nil {
-			return 0, err
-		}
-		if exists == 0 {
-			total += size
-		}
-	}
-	return total, nil
-}
-
-func nullableState(state State) (any, any) {
-	if !state.Exists {
-		return nil, nil
-	}
-	return state.SHA256, state.SHA256
-}
-
-func nullableString(value string) any {
-	if value == "" {
-		return nil
-	}
-	return value
-}
-
-func boolInt(value bool) int {
-	if value {
-		return 1
-	}
-	return 0
 }
 
 func hash(data []byte) string {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"sort"
 	"sync"
 	"testing"
@@ -231,16 +230,17 @@ func TestReplayAndSubscribeHasNoGapOrDuplicate(t *testing.T) {
 func newRepository(t *testing.T) (*store.DB, *event.Repository, string) {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "parrot.db"))
+	sessions := store.NewRegistry(t.TempDir(), "host-test")
+	t.Cleanup(func() { sessions.Close() })
+	sessionID := "ses_test"
+	db, err := sessions.Create(ctx, sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { db.Close() })
-	sessionID := "ses_test"
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := db.SQL().ExecContext(ctx, `
         INSERT INTO session(id, title, created_at, updated_at) VALUES (?, '', ?, ?)`, sessionID, now, now); err != nil {
 		t.Fatal(err)
 	}
-	return db, event.NewRepository(db), sessionID
+	return db, event.NewRepository(sessions), sessionID
 }

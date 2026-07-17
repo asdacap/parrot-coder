@@ -38,6 +38,49 @@ sessions tools providers
       SQLite/events
 ```
 
+## Storage Layout
+
+State is divided so that no file is written by two machines. A home directory
+may be shared over a network filesystem, and a shared filesystem cannot be
+assumed to provide working locks: a mount may grant every advisory lock locally
+and tell no other host, so two machines both believe they hold an exclusive lock
+and both write. SQLite corrupts silently under that, as would any embedded
+database, because they all depend on the same locking primitive. The division is
+therefore structural, not lock-based.
+
+```text
+<state>/sessions/<session_id>/session.db   one database per session
+<state>/sessions/<session_id>/meta.json    published index entry
+<state>/owners/<hash>/v<N>.json            interactive owner, per host
+<config>/blobs/<hh>/<hash>                 content-addressed undo blobs
+<config>/snapshots/<session_id>/           per-session undo journal
+```
+
+Four rules keep it correct:
+
+1. **A session database is written by one machine.** It holds every table
+   belonging to that session, so its foreign keys stay inside one file and
+   SQLite still enforces them. It uses `journal_mode=TRUNCATE`: WAL coordinates
+   through a memory-mapped `-shm` file, and two hosts mapping one file get
+   incoherent private views rather than shared state. No `-shm` or `-wal` file
+   may ever appear under the state directory.
+2. **Listing reads `meta.json`, never another host's database.** Entries are
+   published by rename, which a reader cannot observe half-written. The database
+   remains the source of truth; the entry is a projection.
+3. **Owner records are per host.** A working directory is a host-local name, so
+   a record from another host describes a directory this host cannot see. It is
+   never read to decide a claim and never written. Claims use `link()` onto a
+   version-named target, which reports `EEXIST` instead of overwriting: rename
+   would silently discard a competing claim, and no lock manager is involved.
+4. **Blobs are addressed by content.** A name asserts its bytes, so concurrent
+   writers cannot conflict and nothing is modified after publication. Unreferenced
+   blobs are swept only after a grace period, because another machine may have
+   written a blob whose journal record is not yet visible here.
+
+Anything abandoned by a dead process is repaired per session, when that session
+is opened. Repair must not range across sessions: a process cannot tell whether
+work in another machine's session is abandoned or in flight.
+
 The application owns storage, providers, the event broker, tool registrations,
 and session execution. The HTTP listener is optional and has a separate
 lifecycle. Request handlers must not construct long-lived dependencies.

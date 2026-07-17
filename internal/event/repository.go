@@ -37,11 +37,12 @@ type Projector func(context.Context, *sql.Tx, []Event) error
 type Builder func(context.Context, *sql.Tx, int64) ([]NewEvent, Projector, error)
 
 type Repository struct {
-	db *store.DB
+	sessions *store.Registry
 
 	mu          sync.Mutex
 	nextSubID   uint64
 	subscribers map[string]map[uint64]*subscriber
+	commits     map[string]*sync.Mutex
 }
 
 type subscriber struct {
@@ -49,8 +50,26 @@ type subscriber struct {
 	after  int64
 }
 
-func NewRepository(db *store.DB) *Repository {
-	return &Repository{db: db, subscribers: make(map[string]map[uint64]*subscriber)}
+func NewRepository(sessions *store.Registry) *Repository {
+	return &Repository{
+		sessions:    sessions,
+		subscribers: make(map[string]map[uint64]*subscriber),
+		commits:     make(map[string]*sync.Mutex),
+	}
+}
+
+// commitLock serializes commit and publication for one session. Each session
+// owns its database, so sessions no longer contend with each other and a
+// subagent's child session commits without waiting behind its parent.
+func (r *Repository) commitLock(sessionID string) *sync.Mutex {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	lock, ok := r.commits[sessionID]
+	if !ok {
+		lock = &sync.Mutex{}
+		r.commits[sessionID] = lock
+	}
+	return lock
 }
 
 func (r *Repository) Append(ctx context.Context, sessionID string, pending []NewEvent, projector Projector) ([]Event, error) {
@@ -65,13 +84,18 @@ func (r *Repository) AppendBuilt(ctx context.Context, sessionID string, build Bu
 	if sessionID == "" || build == nil {
 		return nil, errors.New("event: session ID and builder are required")
 	}
+	db, err := r.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
 	// Keep commit and publication in sequence order. SQLite serializes the
 	// commits, but without this lock their goroutines could publish in reverse.
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	lock := r.commitLock(sessionID)
+	lock.Lock()
+	defer lock.Unlock()
 
 	var committed []Event
-	err := r.db.WithImmediate(ctx, func(tx *sql.Tx) error {
+	err = db.WithImmediate(ctx, func(tx *sql.Tx) error {
 		next, err := nextSequence(ctx, tx, sessionID)
 		if err != nil {
 			return err
@@ -124,7 +148,13 @@ func (r *Repository) AppendBuilt(ctx context.Context, sessionID string, build Bu
 	if err != nil {
 		return nil, err
 	}
+	// Publication takes the subscriber lock that ReplayAndSubscribe holds across
+	// its replay query, which is what keeps the durable/live handoff atomic. The
+	// session's commit lock is still held, so publication order still matches
+	// commit order for this session.
+	r.mu.Lock()
 	r.publishLocked(sessionID, committed)
+	r.mu.Unlock()
 	return committed, nil
 }
 
@@ -149,7 +179,11 @@ func (r *Repository) List(ctx context.Context, sessionID string, after int64, li
 	if limit <= 0 {
 		limit = 100
 	}
-	rows, err := r.db.SQL().QueryContext(ctx, `
+	db, err := r.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := db.SQL().QueryContext(ctx, `
         SELECT id, session_id, sequence, type, data_json, created_at
         FROM event
         WHERE session_id = ? AND sequence > ?
@@ -217,9 +251,16 @@ func (r *Repository) Subscribe(sessionID string, capacity int) *Subscription {
 // in replay or delivered through the subscription. Sequence filtering removes
 // the commit-before-publication duplicate case.
 func (r *Repository) ReplayAndSubscribe(ctx context.Context, sessionID string, after int64, capacity int) ([]Event, *Subscription, error) {
+	// Resolve the database before taking the subscriber lock. AppendBuilt
+	// resolves first and publishes second, so acquiring these two locks in the
+	// opposite order here could deadlock against it.
+	db, err := r.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return nil, nil, err
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	items, err := r.listAll(ctx, sessionID, after)
+	items, err := r.listAll(ctx, db, sessionID, after)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -230,8 +271,8 @@ func (r *Repository) ReplayAndSubscribe(ctx context.Context, sessionID string, a
 	return items, r.subscribeLockedHeld(sessionID, cutoff, capacity), nil
 }
 
-func (r *Repository) listAll(ctx context.Context, sessionID string, after int64) ([]Event, error) {
-	rows, err := r.db.SQL().QueryContext(ctx, `
+func (r *Repository) listAll(ctx context.Context, db *store.DB, sessionID string, after int64) ([]Event, error) {
+	rows, err := db.SQL().QueryContext(ctx, `
         SELECT id, session_id, sequence, type, data_json, created_at
         FROM event WHERE session_id = ? AND sequence > ? ORDER BY sequence`, sessionID, after)
 	if err != nil {

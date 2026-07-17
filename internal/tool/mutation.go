@@ -59,12 +59,22 @@ func executeMutation(ctx context.Context, changes *change.Service, snapshots *sn
 		entries[i] = snapshot.Entry{Path: mutation.Path, Before: snapshotState(mutation.Before), After: snapshotState(mutation.After)}
 	}
 	transaction, err := snapshots.Record(ctx, call.Workspace, call.SessionID, entries)
+	if errors.Is(err, snapshot.ErrQuota) {
+		// A full history must not cost the user their edit. Undo is a
+		// convenience; the write the model was asked to make is the point. The
+		// edit stays and only its undo entry is lost, which the text reports so
+		// the model does not offer an undo that cannot happen.
+		return Result{
+			Text:     planned.Change.Diff + "\n\nNote: undo history is full, so this change was not recorded and cannot be undone.",
+			Metadata: map[string]any{"files": len(entries), "snapshot_recorded": false},
+		}, nil
+	}
 	if err != nil {
 		rollbackCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		return Result{}, errors.Join(err, changes.Rollback(rollbackCtx, call.Workspace, planned.Change))
 	}
-	return Result{Text: planned.Change.Diff, Metadata: map[string]any{"transaction_id": transaction.ID, "files": len(entries)}}, nil
+	return Result{Text: planned.Change.Diff, Metadata: map[string]any{"transaction_id": transaction.ID, "files": len(entries), "snapshot_recorded": true}}, nil
 }
 
 func snapshotState(state change.FileState) snapshot.State {

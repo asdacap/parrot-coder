@@ -27,6 +27,7 @@ type Config struct {
 	LSP          map[string]LSP       `json:"lsp,omitempty"`
 	Formatters   map[string]Formatter `json:"formatters,omitempty"`
 	WebFetch     WebFetch             `json:"web_fetch,omitempty"`
+	Snapshot     Snapshot             `json:"snapshot,omitempty"`
 }
 
 type MCP struct {
@@ -65,6 +66,16 @@ type WebFetch struct {
 // Provider describes an OpenAI-compatible provider and its known models.
 // APIKeyEnv names an environment variable; configuration files should not
 // contain credential values.
+// Snapshot configures undo history storage.
+type Snapshot struct {
+	// Root holds blobs and per-session journals. It defaults to the
+	// configuration directory. Undo history describes a workspace on this
+	// machine, so pointing Root at local storage keeps it off a shared
+	// filesystem; correctness does not depend on the choice, because blobs are
+	// addressed by content hash and never modified once written.
+	Root string `json:"root,omitempty"`
+}
+
 type Provider struct {
 	Type                   string            `json:"type,omitempty"`
 	Protocol               string            `json:"protocol,omitempty"`

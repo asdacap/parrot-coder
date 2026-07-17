@@ -26,6 +26,7 @@ import (
 // All fields are long-lived dependencies owned by the application.
 type DomainBackend struct {
 	Version            string
+	ProjectRoot        string
 	Sessions           *session.Service
 	Coordinator        *agent.Coordinator
 	Agents             *agent.Registry
@@ -81,7 +82,7 @@ func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSess
 	if err != nil {
 		return v1.Session{}, err
 	}
-	item, err := b.Sessions.CreateSelected(ctx, session.CreateParams{ProjectID: request.ProjectID, Title: request.Title}, selection)
+	item, err := b.Sessions.CreateSelected(ctx, session.CreateParams{ProjectID: request.ProjectID, ProjectRoot: b.ProjectRoot, Title: request.Title}, selection)
 	return sessionDTO(item), err
 }
 
@@ -121,7 +122,7 @@ func (b *DomainBackend) ClaimSession(ctx context.Context, request v1.ClaimSessio
 	if err != nil {
 		return v1.ClaimSessionResponse{}, err
 	}
-	claim, err := b.Sessions.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: request.WorkingDirectory, HostKey: request.HostKey, PID: request.PID}, session.CreateParams{ProjectID: request.ProjectID, Title: request.Title}, selection, request.ForceNew, processidentity.Alive)
+	claim, err := b.Sessions.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: request.WorkingDirectory, HostKey: request.HostKey, PID: request.PID}, session.CreateParams{ProjectID: request.ProjectID, ProjectRoot: b.ProjectRoot, Title: request.Title}, selection, request.ForceNew, processidentity.Alive)
 	if err != nil {
 		return v1.ClaimSessionResponse{}, err
 	}
@@ -176,7 +177,16 @@ func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
 	if errors.Is(err, session.ErrNotFound) {
 		return ErrNotFound
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	// Undo history lives beside the session rather than in it, so removing the
+	// session no longer discards it as a cascade. Its blobs are left to the
+	// sweep because another session may reference the same content.
+	if b.Snapshots != nil {
+		return b.Snapshots.RemoveSession(id)
+	}
+	return nil
 }
 
 func (b *DomainBackend) ListMessages(ctx context.Context, id string) (v1.MessageList, error) {

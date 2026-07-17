@@ -19,14 +19,14 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
 	"github.com/amirulashraf/parrot-coder/internal/client"
-	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/project"
 	"github.com/amirulashraf/parrot-coder/internal/session"
-	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type appDrainerFunc func(context.Context, string) error
@@ -606,29 +606,41 @@ func decodeSubagentEvent(t *testing.T, item v1.Event) *v1.SubagentEvent {
 func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	db, err := store.Open(ctx, filepath.Join(root, "maintenance.db"))
+	snapshotDir := t.TempDir()
+	now := time.Now().UTC()
+	old := now.Add(-48 * time.Hour)
+
+	// A recorded edit, whose blob the sweep must keep so undo still works.
+	ws, err := workspace.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = db.Close() })
-	now := time.Now().UTC()
-	stamp := now.Format(time.RFC3339Nano)
-	statements := []struct {
-		query string
-		args  []any
-	}{
-		{`INSERT INTO project(id,root_path,created_at) VALUES('prj',?,?)`, []any{root, stamp}},
-		{`INSERT INTO session(id,project_id,title,created_at,updated_at) VALUES('ses','prj','test',?,?)`, []any{stamp, stamp}},
-		{`INSERT INTO session_context_epoch(id,session_id,ordinal,baseline,sources_json,history_cutoff,created_at) VALUES('ctx','ses',0,'','{}',0,?)`, []any{stamp}},
-		{`INSERT INTO compaction_attempt(id,session_id,source_epoch_id,covered_from_sequence,covered_to_sequence,history_cutoff,provider_id,model_id,forced,status,created_at) VALUES('cmpa','ses','ctx',0,0,1,'p','m',0,'active',?)`, []any{stamp}},
-		{`INSERT INTO snapshot_blob(hash,data,size) VALUES('referenced',X'01',1),('orphan',X'02',1)`, nil},
-		{`INSERT INTO snapshot_transaction(id,workspace,session_id,position,created_at) VALUES('txn',?,'ses',1,?)`, []any{root, stamp}},
-		{`INSERT INTO snapshot_file(transaction_id,ordinal,path,before_exists,before_mode,before_hash,before_blob_hash,after_exists,after_mode) VALUES('txn',0,?,1,420,'referenced','referenced',0,0)`, []any{filepath.Join(root, "file")}},
+	snapshots := snapshot.NewService(snapshotDir, snapshot.Config{})
+	kept := filepath.Join(root, "file")
+	before, err := snapshots.Capture(kept)
+	if err != nil {
+		t.Fatal(err)
 	}
-	for _, statement := range statements {
-		if _, err := db.SQL().ExecContext(ctx, statement.query, statement.args...); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(kept, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	after, err := snapshots.Capture(kept)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := snapshots.Record(ctx, ws, "ses", []snapshot.Entry{{Path: kept, Before: before, After: after}}); err != nil {
+		t.Fatal(err)
+	}
+	// An unreferenced blob, older than the grace period.
+	orphan := filepath.Join(snapshotDir, "blobs", "ff", "ff00000000000000000000000000000000000000000000000000000000000000")
+	if err := os.MkdirAll(filepath.Dir(orphan), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orphan, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(orphan, old, old); err != nil {
+		t.Fatal(err)
 	}
 
 	outputDir := filepath.Join(root, "outputs")
@@ -636,7 +648,6 @@ func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	old := now.Add(-48 * time.Hour)
 	files := map[string]time.Time{
 		"0123456789abcdef0123456789abcdef": old,
 		".parrot-output-stale":             old,
@@ -663,12 +674,12 @@ func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
 		}
 	}
 
-	application := &App{Project: project.Info{ID: "prj", Root: root}, db: db, outputs: outputs, compactions: compaction.NewRepository(db, event.NewRepository(db))}
+	application := &App{Project: project.Info{ID: "prj", Root: root}, outputs: outputs, snapshots: snapshots}
 	report, err := application.Maintain(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.OutputsRemoved != 2 || report.TemporaryFilesRemoved != 1 || report.SnapshotBlobsPruned != 1 || report.CompactionAttemptsRepaired != 1 {
+	if report.OutputsRemoved != 2 || report.TemporaryFilesRemoved != 1 || report.SnapshotBlobsPruned != 1 {
 		t.Fatalf("report = %#v", report)
 	}
 	for _, path := range []string{filepath.Join(outputDir, ".parrot-output-fresh"), filepath.Join(outputDir, "unmanaged"), freshTemp} {
@@ -676,13 +687,12 @@ func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
 			t.Fatalf("preserved file %s: %v", path, err)
 		}
 	}
-	var blobs int
-	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM snapshot_blob WHERE hash='referenced'`).Scan(&blobs); err != nil || blobs != 1 {
-		t.Fatalf("referenced blobs = %d, %v", blobs, err)
+	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
+		t.Fatal("unreferenced blob survived the sweep")
 	}
-	var attemptStatus string
-	if err := db.SQL().QueryRowContext(ctx, `SELECT status FROM compaction_attempt WHERE id='cmpa'`).Scan(&attemptStatus); err != nil || attemptStatus != "interrupted" {
-		t.Fatalf("attempt status = %q, %v", attemptStatus, err)
+	// The referenced blob is what undo depends on.
+	if _, err := snapshots.Undo(ctx, ws, "ses"); err != nil {
+		t.Fatalf("undo after maintenance: %v", err)
 	}
 	second, err := application.Maintain(ctx)
 	if err != nil {

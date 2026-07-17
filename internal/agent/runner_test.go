@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -158,10 +157,7 @@ func (c *fakeCompactor) Compact(_ context.Context, request compaction.Request) (
 func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tools ...tool.Tool) *runnerHarness {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "runner.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { db.Close() })
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
@@ -205,7 +201,11 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &runnerHarness{db: db, sessions: sessions, repository: repository, sessionID: created.ID, runner: runner}
+	sessionDB, err := db.Session(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &runnerHarness{db: sessionDB, sessions: sessions, repository: repository, sessionID: created.ID, runner: runner}
 }
 
 func (h *runnerHarness) admit(t *testing.T, id, content string, delivery session.Delivery) {

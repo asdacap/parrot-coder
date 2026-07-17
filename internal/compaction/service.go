@@ -20,7 +20,7 @@ type Store interface {
 	Completed(context.Context, string, string, int64, int64) (Record, bool, error)
 	Begin(context.Context, Attempt) (Attempt, error)
 	Complete(context.Context, Attempt, SummaryResult, FullContext) (Record, error)
-	Fail(context.Context, string, string, string) error
+	Fail(ctx context.Context, sessionID, attemptID, status, reason string) error
 }
 
 type Summarizer interface {
@@ -121,7 +121,7 @@ func (s *Service) Compact(ctx context.Context, request Request) (result Result, 
 		if cleanupCtx.Err() != nil {
 			cleanupCtx = context.Background()
 		}
-		markErr := s.store.Fail(cleanupCtx, attempt.ID, status, cause.Error())
+		markErr := s.store.Fail(cleanupCtx, attempt.SessionID, attempt.ID, status, cause.Error())
 		return Result{Status: status, AttemptID: attempt.ID, SourceEpochID: attempt.SourceEpochID}, errors.Join(cause, markErr)
 	}
 
@@ -147,7 +147,7 @@ func (s *Service) Compact(ctx context.Context, request Request) (result Result, 
 	record, err := s.store.Complete(ctx, attempt, summary, fresh)
 	if err != nil {
 		if existing, ok, lookupErr := s.store.Completed(context.Background(), request.SessionID, plan.SourceEpochID, plan.CoveredFrom, plan.CoveredTo); lookupErr == nil && ok {
-			_ = s.store.Fail(context.Background(), attempt.ID, "failed", "superseded by an idempotent completed compaction")
+			_ = s.store.Fail(context.Background(), attempt.SessionID, attempt.ID, "failed", "superseded by an idempotent completed compaction")
 			return completedResult(existing), nil
 		}
 		return fail(err)

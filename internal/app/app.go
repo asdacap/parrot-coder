@@ -36,6 +36,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
+	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/project"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
@@ -56,6 +57,21 @@ const (
 	CredentialFile = "credentials.json"
 	DatabaseFile   = "parrot.db"
 )
+
+// SnapshotGracePeriod is how long an unreferenced blob is kept before the sweep
+// removes it. The blob store is shared with other machines, which may have
+// written a blob but not yet the journal record naming it; this process cannot
+// see that record and cannot coordinate with the write, so it waits well past
+// the window instead.
+const SnapshotGracePeriod = 24 * time.Hour
+
+// snapshotRoot resolves where undo history is stored.
+func snapshotRoot(loaded config.Config, paths appdirs.Paths) string {
+	if root := strings.TrimSpace(loaded.Snapshot.Root); root != "" {
+		return root
+	}
+	return paths.Config
+}
 
 // Options controls process-local composition. Model accepts provider/model or
 // a model ID from the configured default provider.
@@ -90,14 +106,15 @@ type App struct {
 	// no default model is configured.
 	DefaultSelection v1.SessionSelection
 
-	db          *store.DB
-	coordinator *agent.Coordinator
-	compactions *compaction.Repository
-	outputs     *tool.OutputStore
-	mcp         *mcp.Manager
-	lsp         *lsp.Manager
-	closeOnce   sync.Once
-	closeErr    error
+	sessionStore *store.Registry
+	snapshots    *snapshot.Service
+	coordinator  *agent.Coordinator
+	compactions  *compaction.Repository
+	outputs      *tool.OutputStore
+	mcp          *mcp.Manager
+	lsp          *lsp.Manager
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 // Client is the typed application client used by local commands. It delegates
@@ -213,13 +230,17 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: default model: %w", err)
 	}
 
-	db, err := store.Open(ctx, filepath.Join(paths.State, DatabaseFile))
+	identity, err := processidentity.Load(paths.State)
 	if err != nil {
-		return nil, fmt.Errorf("app: store: %w", err)
+		return nil, fmt.Errorf("app: host identity: %w", err)
 	}
+	if err := store.AdoptLegacy(ctx, paths.State, filepath.Join(paths.State, DatabaseFile)); err != nil {
+		return nil, fmt.Errorf("app: adopt legacy database: %w", err)
+	}
+	sessionStore := store.NewRegistry(paths.State, identity.HostKey)
 	defaultSelection := session.Selection{Agent: agentID, Provider: providerID, Model: modelID}
 	result := &App{
-		Paths: paths, Project: info, WorkingDirectory: cwd, Config: loaded, Credentials: credentials, db: db,
+		Paths: paths, Project: info, WorkingDirectory: cwd, Config: loaded, Credentials: credentials, sessionStore: sessionStore,
 		DefaultSelection: v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID},
 	}
 	defer func() {
@@ -227,13 +248,11 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			_ = result.Close()
 		}
 	}()
-	if _, err := db.SQL().ExecContext(ctx, `INSERT INTO project(id,root_path,created_at) VALUES(?,?,?)
-		ON CONFLICT(id) DO UPDATE SET root_path=excluded.root_path`, info.ID, info.Root, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return nil, fmt.Errorf("app: persist project: %w", err)
-	}
-	repository := event.NewRepository(db)
+	// The project table was a cache of project.StableID, which is a pure
+	// function of the repository identity, so every host recomputes it instead.
+	repository := event.NewRepository(sessionStore)
 	live := event.NewBroker()
-	sessions := session.NewService(db, repository)
+	sessions := session.NewService(sessionStore, repository)
 	if providerID == "" && options.AllowNoModel {
 		selected, selectionErr := sessions.LatestSelection(ctx, info.ID)
 		switch {
@@ -247,7 +266,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
 		}
 	}
-	todos := session.NewTodoService(db, repository)
+	todos := session.NewTodoService(sessionStore, repository)
 	ws, err := workspace.New(info.Root)
 	if err != nil {
 		return nil, fmt.Errorf("app: workspace: %w", err)
@@ -267,7 +286,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.outputs = outputs
 	changes := change.NewService(change.Config{})
-	snapshots := snapshot.NewService(db, snapshot.Config{})
+	snapshots := snapshot.NewService(snapshotRoot(loaded.Config, paths), snapshot.Config{})
+	result.snapshots = snapshots
 	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs)})
 	if err != nil {
 		return nil, fmt.Errorf("app: process: %w", err)
@@ -368,7 +388,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: context registry: %w", err)
 	}
 	contexts := systemcontext.Manager{Registry: contextRegistry, Store: sessions}
-	compactionRepository := compaction.NewRepository(db, repository)
+	compactionRepository := compaction.NewRepository(sessionStore, repository)
 	compactionService, err := compaction.NewService(compactionRepository,
 		compaction.ProviderSummarizer{Providers: providerRegistry},
 		compactionContextObserver{manager: contexts}, compaction.Config{})
@@ -393,7 +413,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	subagentExecutor.coordinator = coordinator
 	result.coordinator = coordinator
 	backend := &httpapi.DomainBackend{
-		Version: options.Version, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
+		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Snapshots: snapshots,
 		Workspace: ws, Events: repository, Live: live, DefaultSelection: defaultSelection,
 		ProviderResolver: providerRegistry,
@@ -489,10 +509,9 @@ func (o compactionContextObserver) ObserveFull(ctx context.Context) (compaction.
 }
 
 type MaintenanceReport struct {
-	OutputsRemoved             int
-	TemporaryFilesRemoved      int
-	SnapshotBlobsPruned        int64
-	CompactionAttemptsRepaired int64
+	OutputsRemoved        int
+	TemporaryFilesRemoved int
+	SnapshotBlobsPruned   int64
 }
 
 // Maintain performs bounded, idempotent cleanup. Durable events, messages,
@@ -512,28 +531,19 @@ func (a *App) Maintain(ctx context.Context) (MaintenanceReport, error) {
 		report.TemporaryFilesRemoved = removed
 		maintenanceErr = errors.Join(maintenanceErr, err)
 	}
-	if a.db != nil {
-		result, err := a.db.SQL().ExecContext(ctx, `DELETE FROM snapshot_blob WHERE hash IN (
-			SELECT b.hash FROM snapshot_blob b
-			WHERE NOT EXISTS (SELECT 1 FROM snapshot_file f WHERE f.before_blob_hash=b.hash OR f.after_blob_hash=b.hash)
-			ORDER BY b.hash LIMIT 1000
-		)`)
-		if err == nil {
-			report.SnapshotBlobsPruned, err = result.RowsAffected()
-		}
+	if a.snapshots != nil {
+		pruned, err := a.snapshots.Sweep(SnapshotGracePeriod, 1000)
+		report.SnapshotBlobsPruned = pruned
 		maintenanceErr = errors.Join(maintenanceErr, err)
 	}
-	if a.compactions != nil {
-		repaired, err := a.compactions.InterruptAbandoned(ctx, 1000, "process restarted")
-		report.CompactionAttemptsRepaired = repaired
-		maintenanceErr = errors.Join(maintenanceErr, err)
-	}
+	// Abandoned compaction attempts are repaired per session when that session
+	// is opened. Sweeping every session here would repair sessions belonging to
+	// other machines, interrupting compactions those machines are still running.
 	attributes := []any{
 		"duration_ms", time.Since(started).Milliseconds(),
 		"outputs_removed", report.OutputsRemoved,
 		"temporary_files_removed", report.TemporaryFilesRemoved,
 		"snapshot_blobs_pruned", report.SnapshotBlobsPruned,
-		"compaction_attempts_repaired", report.CompactionAttemptsRepaired,
 	}
 	if maintenanceErr != nil {
 		diagnostics.Error("maintenance_finished", append(attributes, "status", "error", "error_type", diagnostics.ErrorType(maintenanceErr))...)
@@ -616,8 +626,8 @@ func (a *App) Close() error {
 		if a.lsp != nil {
 			a.closeErr = errors.Join(a.closeErr, a.lsp.Close())
 		}
-		if a.db != nil {
-			a.closeErr = errors.Join(a.closeErr, a.db.Close())
+		if a.sessionStore != nil {
+			a.closeErr = errors.Join(a.closeErr, a.sessionStore.Close())
 		}
 		attributes := []any{"active_sessions", activeSessions, "duration_ms", time.Since(started).Milliseconds()}
 		if a.closeErr != nil {
@@ -1033,7 +1043,7 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 		}
 	}
 	title := "Subtask " + execution.TaskID + " [" + execution.Request.Agent + "]"
-	child, err := e.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: parent.ProjectID, Title: title}, selection)
+	child, err := e.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: parent.ProjectID, ProjectRoot: parent.ProjectRoot, Title: title}, selection)
 	if err != nil {
 		return "", err
 	}

@@ -7,11 +7,26 @@ import (
 	"testing"
 )
 
-func TestFallbackHostKeyIncludesHostnameAndStableKey(t *testing.T) {
+func TestQualifiedHostKeyIncludesHostnameAndStableKey(t *testing.T) {
 	hostname, _ := os.Hostname()
-	got := fallbackHostKey("  key-value\n")
+	got := qualifiedHostKey("  key-value\n")
 	if got != strings.TrimSpace(hostname)+":key-value" {
-		t.Fatalf("fallback host key = %q", got)
+		t.Fatalf("qualified host key = %q", got)
+	}
+}
+
+// Every host key is hostname-qualified, including one derived from a machine
+// ID. Hosts cloned from an image, and containers sharing the host's
+// /etc/machine-id, report identical machine IDs; without the hostname they
+// would share a host key and so claim each other's sessions.
+func TestLoadQualifiesMachineIDDerivedHostKey(t *testing.T) {
+	identity, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	hostname, _ := os.Hostname()
+	if prefix := strings.TrimSpace(hostname) + ":"; !strings.HasPrefix(identity.HostKey, prefix) {
+		t.Fatalf("host key %q is not qualified with %q", identity.HostKey, prefix)
 	}
 }
 

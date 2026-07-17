@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -52,10 +51,7 @@ type harness struct {
 func newHarness(t *testing.T, baseline string, messages int) *harness {
 	t.Helper()
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "compaction.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { _ = db.Close() })
 	events := event.NewRepository(db)
 	sessions := session.NewService(db, events)
@@ -76,7 +72,11 @@ func newHarness(t *testing.T, baseline string, messages int) *harness {
 			t.Fatal(err)
 		}
 	}
-	return &harness{db: db, sessions: sessions, repo: NewRepository(db, events), id: created.ID}
+	sessionDB, err := db.Session(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &harness{db: sessionDB, sessions: sessions, repo: NewRepository(db, events), id: created.ID}
 }
 
 func TestBudgetTriggerAndDeterministicHeuristic(t *testing.T) {

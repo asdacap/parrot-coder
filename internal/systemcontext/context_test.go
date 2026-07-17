@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -197,10 +196,7 @@ func TestExplicitRemovalUsesPreviouslyStoredRenderer(t *testing.T) {
 
 func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
 	ctx := context.Background()
-	db, err := store.Open(ctx, filepath.Join(t.TempDir(), "context.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
+	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { db.Close() })
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
@@ -224,7 +220,11 @@ func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
 		t.Fatalf("unchanged snapshot appended an event: %d -> %d", len(eventsBefore), len(eventsAfterNoop))
 	}
 
-	if _, err := db.SQL().ExecContext(ctx, `CREATE TRIGGER reject_context_update BEFORE UPDATE ON session_context_epoch BEGIN SELECT RAISE(ABORT, 'reject'); END`); err != nil {
+	sessionDB, err := db.Session(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionDB.SQL().ExecContext(ctx, `CREATE TRIGGER reject_context_update BEFORE UPDATE ON session_context_epoch BEGIN SELECT RAISE(ABORT, 'reject'); END`); err != nil {
 		t.Fatal(err)
 	}
 	source.observation = observed("two", "two", "two update", "removed")
@@ -243,7 +243,7 @@ func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
 	if len(messages) != 0 || len(eventsAfter) != len(eventsBefore) {
 		t.Fatalf("failed transaction leaked message/event: messages=%d events=%d/%d", len(messages), len(eventsAfter), len(eventsBefore))
 	}
-	if _, err := db.SQL().ExecContext(ctx, `DROP TRIGGER reject_context_update`); err != nil {
+	if _, err := sessionDB.SQL().ExecContext(ctx, `DROP TRIGGER reject_context_update`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := manager.Reconcile(ctx, created.ID); err != nil {

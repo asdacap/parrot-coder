@@ -21,9 +21,26 @@ import (
 
 const migrationTable = "_parrot_migration"
 
+// Migration lineages. The legacy directory describes the single shared
+// database; the session directory describes one database per session.
+const (
+	legacyMigrations  = "migrations"
+	sessionMigrations = "migrations/session"
+)
+
+// Journal modes. Session databases avoid WAL deliberately: WAL coordinates
+// readers and writers through a memory-mapped -shm file, and two hosts mapping
+// one file over a network filesystem get incoherent private views of it rather
+// than shared state. TRUNCATE keeps everything the database needs inside the
+// file itself.
+const (
+	journalTruncate = "TRUNCATE"
+	journalWAL      = "WAL"
+)
+
 var ErrUnknownDatabase = errors.New("store: non-empty database is not a parrot database")
 
-//go:embed migrations/*.sql
+//go:embed migrations
 var migrationFiles embed.FS
 
 // DB is an opened, migrated Parrot SQLite database.
@@ -31,8 +48,37 @@ type DB struct {
 	sql *sql.DB
 }
 
-// Open opens a private SQLite file and applies all known migrations.
+// options describes one way to open a database file.
+type options struct {
+	journalMode string
+	migrations  string
+	readOnly    bool
+}
+
+// Open opens the legacy shared database and applies all known migrations. It
+// exists to read a pre-split installation during adoption; new writes belong in
+// a session database opened by [OpenSession].
 func Open(ctx context.Context, path string) (*DB, error) {
+	return open(ctx, path, options{journalMode: journalWAL, migrations: legacyMigrations})
+}
+
+// OpenSession opens one session's database and applies the session migrations.
+func OpenSession(ctx context.Context, path string) (*DB, error) {
+	return open(ctx, path, options{journalMode: journalTruncate, migrations: sessionMigrations})
+}
+
+// OpenReadOnly opens a session database owned by another host for reading.
+//
+// Every difference from [OpenSession] prevents a write to a file this process
+// does not own: the file is never created, the connection never takes the write
+// lock that _txlock=immediate would acquire at every BeginTx, and no journal
+// pragma is applied because setting a journal mode is itself a write. Migrations
+// are not applied for the same reason.
+func OpenReadOnly(ctx context.Context, path string) (*DB, error) {
+	return open(ctx, path, options{readOnly: true})
+}
+
+func open(ctx context.Context, path string, opts options) (*DB, error) {
 	if path == "" {
 		return nil, errors.New("store: database path is empty")
 	}
@@ -41,42 +87,61 @@ func Open(ctx context.Context, path string) (*DB, error) {
 	if err != nil {
 		return nil, fmt.Errorf("store: resolve database path: %w", err)
 	}
-	file, err := os.OpenFile(abs, os.O_CREATE|os.O_RDWR, 0o600)
-	if err != nil {
-		return nil, fmt.Errorf("store: create database: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return nil, fmt.Errorf("store: close database file: %w", err)
-	}
-	if err := os.Chmod(abs, 0o600); err != nil {
-		return nil, fmt.Errorf("store: restrict database permissions: %w", err)
+	if !opts.readOnly {
+		file, err := os.OpenFile(abs, os.O_CREATE|os.O_RDWR, 0o600)
+		if err != nil {
+			return nil, fmt.Errorf("store: create database: %w", err)
+		}
+		if err := file.Close(); err != nil {
+			return nil, fmt.Errorf("store: close database file: %w", err)
+		}
+		if err := os.Chmod(abs, 0o600); err != nil {
+			return nil, fmt.Errorf("store: restrict database permissions: %w", err)
+		}
 	}
 
-	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
-	q := u.Query()
-	q.Set("mode", "rwc")
-	q.Add("_pragma", "busy_timeout(5000)")
-	q.Add("_pragma", "foreign_keys(ON)")
-	q.Add("_pragma", "journal_mode(WAL)")
-	q.Add("_pragma", "synchronous(NORMAL)")
-	q.Set("_txlock", "immediate")
-	u.RawQuery = q.Encode()
-
-	sqldb, err := sql.Open("sqlite", u.String())
+	sqldb, err := sql.Open("sqlite", dataSource(abs, opts))
 	if err != nil {
 		return nil, fmt.Errorf("store: open sqlite: %w", err)
+	}
+	if opts.readOnly {
+		sqldb.SetMaxOpenConns(1)
+		sqldb.SetMaxIdleConns(1)
+		if err := sqldb.PingContext(ctx); err != nil {
+			sqldb.Close()
+			return nil, fmt.Errorf("store: connect: %w", err)
+		}
+		return &DB{sql: sqldb}, nil
 	}
 	sqldb.SetMaxOpenConns(8)
 	sqldb.SetMaxIdleConns(8)
 	db := &DB{sql: sqldb}
-	if err := db.initialize(ctx); err != nil {
+	if err := db.initialize(ctx, opts.migrations); err != nil {
 		sqldb.Close()
 		return nil, err
 	}
 	return db, nil
 }
 
-func (db *DB) initialize(ctx context.Context) error {
+func dataSource(abs string, opts options) string {
+	u := &url.URL{Scheme: "file", Path: filepath.ToSlash(abs)}
+	q := u.Query()
+	q.Add("_pragma", "busy_timeout(5000)")
+	q.Add("_pragma", "foreign_keys(ON)")
+	if opts.readOnly {
+		q.Set("mode", "ro")
+		u.RawQuery = q.Encode()
+		return u.String()
+	}
+	q.Set("mode", "rwc")
+	q.Add("_pragma", fmt.Sprintf("journal_mode(%s)", opts.journalMode))
+	q.Add("_pragma", "synchronous(NORMAL)")
+	q.Set("_txlock", "immediate")
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
+func (db *DB) initialize(ctx context.Context, dir string) error {
 	if err := db.sql.PingContext(ctx); err != nil {
 		return fmt.Errorf("store: connect: %w", err)
 	}
@@ -98,7 +163,7 @@ func (db *DB) initialize(ctx context.Context) error {
 			return fmt.Errorf("store: create migration journal: %w", err)
 		}
 	}
-	return db.migrate(ctx)
+	return db.migrate(ctx, dir)
 }
 
 func databaseIdentity(ctx context.Context, db *sql.DB) (known, empty bool, err error) {
@@ -136,8 +201,8 @@ type migration struct {
 	sql      string
 }
 
-func loadMigrations() ([]migration, error) {
-	entries, err := fs.ReadDir(migrationFiles, "migrations")
+func loadMigrations(dir string) ([]migration, error) {
+	entries, err := fs.ReadDir(migrationFiles, dir)
 	if err != nil {
 		return nil, fmt.Errorf("store: read migrations: %w", err)
 	}
@@ -156,7 +221,7 @@ func loadMigrations() ([]migration, error) {
 		if err != nil || version <= 0 {
 			return nil, fmt.Errorf("store: invalid migration version in %q", entry.Name())
 		}
-		body, err := migrationFiles.ReadFile("migrations/" + entry.Name())
+		body, err := migrationFiles.ReadFile(dir + "/" + entry.Name())
 		if err != nil {
 			return nil, fmt.Errorf("store: read migration %q: %w", entry.Name(), err)
 		}
@@ -173,8 +238,8 @@ func loadMigrations() ([]migration, error) {
 	return result, nil
 }
 
-func (db *DB) migrate(ctx context.Context) error {
-	migrations, err := loadMigrations()
+func (db *DB) migrate(ctx context.Context, dir string) error {
+	migrations, err := loadMigrations(dir)
 	if err != nil {
 		return err
 	}

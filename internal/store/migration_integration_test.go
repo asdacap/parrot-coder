@@ -13,7 +13,7 @@ import (
 func TestMigration001UpgradesThrough006AndReopens(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "parrot.db")
-	migrations, err := loadMigrations()
+	migrations, err := loadMigrations(legacyMigrations)
 	if err != nil {
 		t.Fatal(err)
 	}
