@@ -113,11 +113,16 @@ func TestOpenAICompatibleURLAndHeaderPolicy(t *testing.T) {
 
 func TestOpenAICompatibleHeaderTimeout(t *testing.T) {
 	startedRequest := make(chan struct{})
+	releaseRequest := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		close(startedRequest)
-		<-request.Context().Done()
+		select {
+		case <-request.Context().Done():
+		case <-releaseRequest:
+		}
 	}))
 	defer server.Close()
+	defer close(releaseRequest)
 	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
 		ID: "local", BaseURL: server.URL, Protocol: ProtocolResponses, APIKey: "key",
 		AllowInsecureLocalhost: true, HTTPClient: server.Client(), HeaderTimeout: 25 * time.Millisecond,
@@ -233,11 +238,16 @@ func TestOpenAICompatibleHeaderTimeoutStopsAfterHeaders(t *testing.T) {
 
 func TestOpenAICompatibleCallerCancellationWins(t *testing.T) {
 	started := make(chan struct{})
+	releaseRequest := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		close(started)
-		<-request.Context().Done()
+		select {
+		case <-request.Context().Done():
+		case <-releaseRequest:
+		}
 	}))
 	defer server.Close()
+	defer close(releaseRequest)
 	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
 		ID: "local", BaseURL: server.URL, Protocol: ProtocolResponses, APIKey: "key",
 		AllowInsecureLocalhost: true, HTTPClient: server.Client(), HeaderTimeout: time.Hour,
