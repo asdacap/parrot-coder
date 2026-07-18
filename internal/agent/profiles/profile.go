@@ -24,7 +24,7 @@ func (p Profile) AllowsTool(id string) bool {
 
 func readOnlyTool(id string) bool {
 	switch id {
-	case "read", "glob", "git_diff", "grep", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread":
+	case "read", "glob", "git_diff", "grep", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "agent_spawn", "agent_send", "agent_wait", "agent_interrupt", "agent_list", "todoread":
 		return true
 	default:
 		return false

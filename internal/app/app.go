@@ -91,6 +91,7 @@ type App struct {
 
 	sessionStore *store.Registry
 	coordinator  *agent.Coordinator
+	subagents    *subagent.Manager
 	compactions  *compaction.Repository
 	outputs      *tool.OutputStore
 	processes    *process.Runner
@@ -335,6 +336,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, Data: data})
 	}})
+	result.subagents = subagents
 	tools := tool.NewRegistry()
 	agentLookup := func(id string) (bool, error) {
 		profile, err := combinedProfileResolver{modes: modes, agents: taskAgents}.GetProfile(id)
@@ -539,6 +541,11 @@ func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		started := time.Now()
 		activeSessions := 0
+		if a.subagents != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			a.closeErr = errors.Join(a.closeErr, a.subagents.Shutdown(ctx))
+			cancel()
+		}
 		if a.coordinator != nil {
 			active := a.coordinator.Active()
 			activeSessions = len(active)
@@ -950,12 +957,61 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	if e.coordinator == nil {
 		return "", errors.New("app: subagent coordinator is unavailable")
 	}
+	childSession := execution.SessionID
+	if childSession == "" {
+		child, err := e.createSubagentSession(ctx, execution)
+		if err != nil {
+			return "", err
+		}
+		childSession = child.ID
+	}
+	messages, err := e.sessions.ListMessages(ctx, childSession)
+	if err != nil {
+		return "", err
+	}
+	var cutoff int64
+	for _, message := range messages {
+		cutoff = max(cutoff, message.Sequence)
+	}
+	stopEvents := e.forwardEvents(childSession, execution)
+	defer stopEvents()
+	if _, err := e.admit(ctx, childSession, execution.Request.Prompt); err != nil {
+		return "", err
+	}
+	if execution.SessionID == "" && execution.RegisterSession != nil {
+		execution.RegisterSession(childSession)
+	}
+	if err := e.coordinator.Resume(ctx, childSession); err != nil {
+		if ctx.Err() != nil {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = e.coordinator.Interrupt(cleanup, childSession)
+			cancel()
+		}
+		return "", err
+	}
+	messages, err = e.sessions.ListMessages(ctx, childSession)
+	if err != nil {
+		return "", err
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "assistant" || messages[i].Sequence <= cutoff {
+			continue
+		}
+		if messages[i].Error != "" {
+			return messages[i].Content, errors.New(messages[i].Error)
+		}
+		return messages[i].Content, nil
+	}
+	return "", errors.New("app: subagent produced no assistant output")
+}
+
+func (e *appSubagentExecutor) createSubagentSession(ctx context.Context, execution subagent.Execution) (session.Session, error) {
 	parent, err := e.sessions.Get(ctx, execution.ParentSession)
 	if err != nil {
-		return "", fmt.Errorf("app: subagent parent session: %w", err)
+		return session.Session{}, fmt.Errorf("app: subagent parent session: %w", err)
 	}
 	if parent.ProjectID != e.project.ID {
-		return "", errors.New("app: subagent parent belongs to another project")
+		return session.Session{}, errors.New("app: subagent parent belongs to another project")
 	}
 	selection := e.defaultSelection
 	if parent.Provider != "" && parent.Model != "" {
@@ -973,51 +1029,39 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 		selection.Variant = ""
 	}
 	if selection.Provider == "" || selection.Model == "" {
-		return "", errors.New("app: subagent has no default model")
+		return session.Session{}, errors.New("app: subagent has no default model")
 	}
 	if _, model, err := e.providers.Resolve(selection.Provider, selection.Model); err != nil {
-		return "", fmt.Errorf("app: subagent model: %w", err)
+		return session.Session{}, fmt.Errorf("app: subagent model: %w", err)
 	} else if selection.Variant != "" {
 		if _, ok := model.Capabilities.Variant(selection.Variant); !ok {
-			return "", fmt.Errorf("app: subagent model: unknown model variant %q", selection.Variant)
+			return session.Session{}, fmt.Errorf("app: subagent model: unknown model variant %q", selection.Variant)
 		}
 	}
 	title := "Subtask " + execution.TaskID + " [" + execution.Request.Agent + "]"
-	child, err := e.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: parent.ProjectID, ProjectRoot: parent.ProjectRoot, Title: title}, selection)
-	if err != nil {
-		return "", err
-	}
-	stopEvents := e.forwardEvents(child.ID, execution)
-	defer stopEvents()
+	return e.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: parent.ProjectID, ProjectRoot: parent.ProjectRoot, Title: title}, selection)
+}
+
+func (e *appSubagentExecutor) admit(ctx context.Context, childSession, content string) (string, error) {
 	messageID, err := id.New("msg")
 	if err != nil {
 		return "", err
 	}
-	if _, err := e.sessions.Admit(ctx, child.ID, session.AdmitParams{MessageID: messageID, Content: execution.Request.Prompt, Delivery: session.DeliverySteer}); err != nil {
+	if _, err := e.sessions.Admit(ctx, childSession, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
 		return "", err
 	}
-	if err := e.coordinator.Resume(ctx, child.ID); err != nil {
-		if ctx.Err() != nil {
-			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = e.coordinator.Interrupt(cleanup, child.ID)
-			cancel()
-		}
-		return "", err
+	return messageID, nil
+}
+
+func (e *appSubagentExecutor) Send(ctx context.Context, execution subagent.Execution, message string) (string, error) {
+	if execution.SessionID == "" {
+		return "", errors.New("app: subagent session is unavailable")
 	}
-	messages, err := e.sessions.ListMessages(ctx, child.ID)
-	if err != nil {
-		return "", err
+	messageID, err := e.admit(ctx, execution.SessionID, message)
+	if err == nil && e.coordinator != nil {
+		e.coordinator.Wake(execution.SessionID)
 	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "assistant" {
-			continue
-		}
-		if messages[i].Error != "" {
-			return messages[i].Content, errors.New(messages[i].Error)
-		}
-		return messages[i].Content, nil
-	}
-	return "", errors.New("app: subagent produced no assistant output")
+	return messageID, err
 }
 
 // forwardEvents projects both durable child lifecycle/tool events and

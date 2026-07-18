@@ -192,6 +192,9 @@ func TestLSPWrapperOpensWorkspaceFileBeforeRead(t *testing.T) {
 type subagentExecutorFunc func(context.Context, subagent.Execution) (string, error)
 
 func (f subagentExecutorFunc) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
+	if execution.SessionID == "" && execution.RegisterSession != nil {
+		execution.RegisterSession("session-" + execution.TaskID)
+	}
 	return f(ctx, execution)
 }
 

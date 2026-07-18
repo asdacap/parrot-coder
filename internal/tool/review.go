@@ -73,7 +73,7 @@ func (t *ReviewTool) Execute(ctx context.Context, plan Plan, call CallContext) (
 	if !ok {
 		return Result{}, errors.New("review: incompatible plan")
 	}
-	id, err := t.Manager.Launch(call.SessionID, []string{call.Agent}, subagent.Request{
+	id, err := t.Manager.Spawn(ctx, call.SessionID, call.Agent, subagent.Request{
 		Prompt: input.Prompt, Agent: reviewAgentID, Model: input.Model, ToolCallID: call.ToolCallID,
 	})
 	if err != nil {

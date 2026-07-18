@@ -72,6 +72,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 	}
 	items = append(items, NewTaskTools(services.Subagents, services.Agents)...)
 	items = append(items, NewReviewTool(services.Subagents, services.Agents))
+	items = append(items, NewAgentTools(services.Subagents, services.Agents)...)
 
 	definitions := append([]mcp.ToolDefinition(nil), services.MCPTools...)
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
