@@ -53,6 +53,22 @@ func TestExternalCapabilityAndPrefixSibling(t *testing.T) {
 	if _, err := w.ResolveCreate(filepath.Join(sibling, "x")); !errors.Is(err, ErrOutsideRoot) {
 		t.Fatalf("prefix sibling allowed: %v", err)
 	}
+	outsideFile := filepath.Join(sibling, "readable")
+	if err := os.WriteFile(outsideFile, []byte("ok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.ResolveRead(outsideFile); !errors.Is(err, ErrOutsideRoot) {
+		t.Fatalf("external read unexpectedly gained workspace capability: %v", err)
+	}
+	if resolved, err := w.ResolveReadOnly(outsideFile); err != nil || resolved != outsideFile {
+		t.Fatalf("read-only external path = %q, %v", resolved, err)
+	}
+	if _, err := w.ResolveReadOnlyWithin(w.Root(), outsideFile); !errors.Is(err, ErrOutsideRoot) {
+		t.Fatalf("external descendant escaped search root: %v", err)
+	}
+	if _, err := w.ResolveReadOnly(filepath.Join("..", filepath.Base(sibling), "readable")); !errors.Is(err, ErrOutsideRoot) {
+		t.Fatalf("relative read escaped workspace: %v", err)
+	}
 	capability, err := NewExternalRoot(sibling)
 	if err != nil {
 		t.Fatal(err)

@@ -46,7 +46,7 @@ func NewGrepTool(c GrepConfig) *GrepTool {
 }
 func (*GrepTool) ID() string { return "grep" }
 func (*GrepTool) Description() string {
-	return "Search workspace text files with Go RE2 regular expressions."
+	return "Search text files with Go RE2 regular expressions. Relative paths resolve within the workspace."
 }
 func (*GrepTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input grepInput
@@ -89,11 +89,15 @@ func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if path == "" {
 		path = "."
 	}
-	root, err := call.Workspace.ResolveRead(path)
+	root, err := call.Workspace.ResolveReadOnly(path)
 	if err != nil {
 		return Plan{}, err
 	}
-	req, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: "filesystem", Identifier: root, Operation: "search"}}, nil)
+	kind := "external_filesystem"
+	if call.Workspace.Contains(root) {
+		kind = "filesystem"
+	}
+	req, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: kind, Identifier: root, Operation: "search"}}, nil)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -105,7 +109,7 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	if requestedPath == "" {
 		requestedPath = "."
 	}
-	revalidated, err := call.Workspace.ResolveRead(requestedPath)
+	revalidated, err := call.Workspace.ResolveReadOnly(requestedPath)
 	if err != nil || revalidated != p.Root {
 		return Result{}, errors.New("grep root changed after planning")
 	}
@@ -132,7 +136,7 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 				return errors.New("grep traversal limit exceeded")
 			}
 			if d.Type().IsRegular() {
-				resolved, e := call.Workspace.ResolveRead(path)
+				resolved, e := call.Workspace.ResolveReadOnlyWithin(p.Root, path)
 				if e == nil {
 					files = append(files, resolved)
 					if len(files) > t.Config.MaxFiles {

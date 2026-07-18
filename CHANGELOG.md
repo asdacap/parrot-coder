@@ -26,6 +26,8 @@ All notable changes to Parrot Coder will be documented in this file.
 - Sandboxed shell commands may use readable directories outside the workspace
   as their working directory; those directories remain read-only unless write
   access is explicitly granted.
+- The bounded `read` and `grep` tools now accept explicit absolute paths outside
+  the workspace; relative paths remain workspace-confined.
 
 ### Added
 

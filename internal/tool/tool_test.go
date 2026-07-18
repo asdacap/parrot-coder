@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -256,6 +257,8 @@ func TestDefaultWorkspaceAndReadOnlyPolicies(t *testing.T) {
 		readOnly permission.Decision
 	}{
 		{name: "read", request: request("read", "filesystem", "read"), decision: permission.Allow, readOnly: permission.Allow},
+		{name: "external read", request: request("read", "external_filesystem", "read"), decision: permission.Allow, readOnly: permission.Allow},
+		{name: "external search", request: request("grep", "external_filesystem", "search"), decision: permission.Allow, readOnly: permission.Allow},
 		{name: "web fetch get", request: request("web_fetch", "network", "GET"), decision: permission.Allow, readOnly: permission.Allow},
 		{name: "web fetch head", request: request("web_fetch", "network", "HEAD"), decision: permission.Allow, readOnly: permission.Allow},
 		{name: "other network tool", request: request("other", "network", "GET"), decision: permission.Ask, readOnly: permission.Ask},
@@ -318,6 +321,40 @@ func TestReadBinaryHugeLineAndSymlinkSwap(t *testing.T) {
 		if _, err := read.Execute(context.Background(), p, call); err == nil {
 			t.Fatal("symlink swap accepted")
 		}
+	}
+}
+
+func TestReadAndGrepExplicitExternalPaths(t *testing.T) {
+	_, executor, call := toolHarness(t)
+	external := t.TempDir()
+	path := filepath.Join(external, "outside.txt")
+	if err := os.WriteFile(path, []byte("external match\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	readTool := NewReadTool(ReadConfig{})
+	grepTool := NewGrepTool(GrepConfig{})
+	readPlan, err := readTool.Plan(context.Background(), json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grepPlan, err := grepTool.Plan(context.Background(), json.RawMessage(fmt.Sprintf(`{"pattern":"match","path":%q}`, external)), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if readPlan.Permissions[0].Resources[0].Kind != "external_filesystem" || grepPlan.Permissions[0].Resources[0].Kind != "external_filesystem" {
+		t.Fatalf("external resources mislabeled: read = %q, grep = %q", readPlan.Permissions[0].Resources[0].Kind, grepPlan.Permissions[0].Resources[0].Kind)
+	}
+
+	read, err := executor.Execute(context.Background(), "read", json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	grep, err := executor.Execute(context.Background(), "grep", json.RawMessage(fmt.Sprintf(`{"pattern":"match","path":%q}`, external)), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Text != "1: external match\n" || !strings.Contains(grep.Text, "outside.txt:1:external match\n") {
+		t.Fatalf("read = %q, grep = %q", read.Text, grep.Text)
 	}
 }
 

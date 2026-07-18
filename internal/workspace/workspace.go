@@ -1,4 +1,5 @@
-// Package workspace resolves untrusted paths beneath canonical filesystem roots.
+// Package workspace resolves untrusted paths for workspace-scoped operations
+// and explicit read-only host access.
 package workspace
 
 import (
@@ -14,8 +15,9 @@ var (
 	ErrOutsideRoot = errors.New("path is outside permitted roots")
 )
 
-// ExternalRoot is an explicit capability to access a canonical root outside the workspace.
-// Values can only be constructed by NewExternalRoot.
+// ExternalRoot is an explicit capability for workspace-scoped operations on a
+// canonical root outside the workspace. Values can only be constructed by
+// NewExternalRoot.
 type ExternalRoot struct{ path string }
 
 func NewExternalRoot(path string) (ExternalRoot, error) {
@@ -51,6 +53,10 @@ func New(root string, external ...ExternalRoot) (*Workspace, error) {
 
 func (w *Workspace) Root() string { return w.root }
 
+// Contains reports whether path is within the canonical workspace root.
+// Explicit external root capabilities are not included.
+func (w *Workspace) Contains(path string) bool { return contains(w.root, path) }
+
 // ResolveRead resolves all symlinks and requires the target to exist.
 func (w *Workspace) ResolveRead(path string) (string, error) {
 	candidate, root, err := w.lexical(path)
@@ -69,6 +75,40 @@ func (w *Workspace) ResolveRead(path string) (string, error) {
 		return "", ErrOutsideRoot
 	}
 	return filepath.Clean(resolved), nil
+}
+
+// ResolveReadOnly resolves an existing path for a non-mutating operation.
+// Relative paths remain confined to the workspace, while an explicit absolute
+// path may identify any file readable by the process.
+func (w *Workspace) ResolveReadOnly(path string) (string, error) {
+	if !filepath.IsAbs(path) {
+		return w.ResolveRead(path)
+	}
+	if strings.IndexByte(path, 0) >= 0 {
+		return "", ErrInvalidPath
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(path))
+	if err != nil {
+		return "", err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(resolved), nil
+}
+
+// ResolveReadOnlyWithin resolves an existing path and requires the result to
+// remain within root. Root must already be canonical.
+func (w *Workspace) ResolveReadOnlyWithin(root, path string) (string, error) {
+	resolved, err := w.ResolveReadOnly(path)
+	if err != nil {
+		return "", err
+	}
+	if !contains(root, resolved) {
+		return "", ErrOutsideRoot
+	}
+	return resolved, nil
 }
 
 // ResolveCreate validates the nearest existing parent and returns a canonical

@@ -36,7 +36,10 @@ login, device login, refresh, text generation, and tool-call canaries.
 - New paths validate the nearest existing parent.
 - Paths and preimage hashes are revalidated immediately before mutation.
 - External roots require explicit canonical capabilities.
-- Structured file tools remain confined by canonical workspace capabilities.
+- `read` and `grep` accept explicit absolute host paths for bounded read-only
+  access; relative paths remain confined to the workspace.
+- Mutating structured file tools remain confined by canonical workspace
+  capabilities.
 
 ## Permissions
 
@@ -45,7 +48,8 @@ An approval is bound to an operation hash containing tool input, resolved
 resources, and review data. Changed arguments, paths, commands, or file hashes
 invalidate the approval.
 
-Canonical reads and searches, bounded `web_fetch` GET/HEAD requests, and
+Canonical reads and searches, including explicit absolute paths outside the
+workspace, bounded `web_fetch` GET/HEAD requests, and
 reviewed `edit`/`apply_patch` mutations inside the current workspace, and
 sandboxed `shell` execution are allowed by the default workspace policy. An
 explicit permission mode overrides the web fetch, mutation, and shell defaults.

@@ -34,7 +34,7 @@ func NewReadTool(config ReadConfig) *ReadTool {
 }
 func (*ReadTool) ID() string { return "read" }
 func (*ReadTool) Description() string {
-	return "Read a bounded line range from a workspace file or list a directory."
+	return "Read a bounded line range from a text file or list a directory. Relative paths resolve within the workspace."
 }
 func (*ReadTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input readInput
@@ -69,11 +69,15 @@ func (t *ReadTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	path, err := call.Workspace.ResolveRead(input.Path)
+	path, err := call.Workspace.ResolveReadOnly(input.Path)
 	if err != nil {
 		return Plan{}, err
 	}
-	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: "filesystem", Identifier: path, Operation: "read"}}, nil)
+	kind := "external_filesystem"
+	if call.Workspace.Contains(path) {
+		kind = "filesystem"
+	}
+	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: kind, Identifier: path, Operation: "read"}}, nil)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -82,7 +86,7 @@ func (t *ReadTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 
 func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	p := plan.Data.(readPlan)
-	revalidated, err := call.Workspace.ResolveRead(p.Input.Path)
+	revalidated, err := call.Workspace.ResolveReadOnly(p.Input.Path)
 	if err != nil || revalidated != p.Path {
 		return Result{}, errors.New("path changed after planning")
 	}
