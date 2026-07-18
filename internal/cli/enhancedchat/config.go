@@ -334,7 +334,7 @@ func slashParts(line string) (string, string) {
 }
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/compact", "/connect", "/thinking", "/status", "/exit":
+	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/compact", "/connect", "/thinking", "/goal", "/status", "/exit":
 		return true
 	default:
 		return false

@@ -12,7 +12,7 @@ func Review() Profile {
 	return Profile{
 		ID:             ReviewID,
 		Prompt:         reviewPrompt,
-		AllowedToolIDs: []string{"glob", "git_diff", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "todoread"},
+		AllowedToolIDs: []string{"get_goal", "glob", "git_diff", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "todoread"},
 		HardRules:      []string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."},
 		MaxTurns:       32,
 		ReadOnly:       true,

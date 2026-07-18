@@ -23,6 +23,7 @@ type BuiltinServices struct {
 	Changes   *change.Service
 	Processes *process.Runner
 	Todos     *session.TodoService
+	Goals     *session.GoalService
 	Questions *question.Broker
 
 	Skills     *skill.Registry
@@ -59,6 +60,9 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewWriteStdinTool(services.Processes),
 		NewTodoReadTool(services.Todos),
 		NewTodoWriteTool(services.Todos),
+		NewGetGoalTool(services.Goals),
+		NewCreateGoalTool(services.Goals),
+		NewUpdateGoalTool(services.Goals),
 		NewQuestionTool(services.Questions),
 		NewSkillTool(services.Skills),
 		NewWebFetchTool(services.WebFetch),

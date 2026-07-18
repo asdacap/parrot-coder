@@ -38,6 +38,9 @@ type Backend interface {
 	DeleteSession(context.Context, string) error
 	ListMessages(context.Context, string) (v1.MessageList, error)
 	ListTodos(context.Context, string) (v1.TodoList, error)
+	GetGoal(context.Context, string) (v1.Goal, error)
+	PutGoal(context.Context, string, v1.PutGoalRequest) (v1.Goal, error)
+	DeleteGoal(context.Context, string) error
 	AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error)
 	Wake(string)
 	Interrupt(context.Context, string) error

@@ -10,6 +10,10 @@ type Drainer interface {
 	Drain(context.Context, string) error
 }
 
+type ContinuationDrainer interface {
+	PrepareContinuation(context.Context, string) (bool, error)
+}
+
 type LifecycleObserver interface {
 	LifecycleComplete(sessionID string, err error)
 }
@@ -135,6 +139,15 @@ func (c *Coordinator) Active() []Active {
 func (c *Coordinator) run(ctx context.Context, sessionID string, state *drainState) {
 	for {
 		err := c.drainer.Drain(ctx, sessionID)
+		if err == nil && ctx.Err() == nil {
+			if continuation, ok := c.drainer.(ContinuationDrainer); ok {
+				var prepared bool
+				prepared, err = continuation.PrepareContinuation(ctx, sessionID)
+				if err == nil && prepared {
+					continue
+				}
+			}
+		}
 		c.mu.Lock()
 		state.err = err
 		if state.wake && ctx.Err() == nil {

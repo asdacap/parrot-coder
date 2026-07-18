@@ -29,7 +29,7 @@ func (m builtin) ID() string             { return m.profile.ID }
 func (m builtin) Profile() agent.Profile { return m.profile }
 
 func Builtins() []Mode {
-	readTools := []string{"agent_interrupt", "agent_list", "agent_send", "agent_spawn", "agent_wait", "glob", "git_diff", "grep", "read", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread"}
+	readTools := []string{"agent_interrupt", "agent_list", "agent_send", "agent_spawn", "agent_wait", "get_goal", "glob", "git_diff", "grep", "read", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "task", "task_status", "task_cancel", "todoread"}
 	return []Mode{
 		builtin{profile: agent.Profile{ID: BuildID, Prompt: "You are Parrot's build mode. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64}},
 		builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and produce an implementation plan.", AllowedToolIDs: readTools, HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, ReadOnly: true}},

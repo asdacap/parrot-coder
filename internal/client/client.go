@@ -128,6 +128,22 @@ func (c *Client) Todos(ctx context.Context, id string) (v1.TodoList, error) {
 	return out, err
 }
 
+func (c *Client) Goal(ctx context.Context, id string) (v1.Goal, error) {
+	var out v1.Goal
+	err := c.do(ctx, http.MethodGet, sessionPath(id)+"/goal", nil, http.StatusOK, &out)
+	return out, err
+}
+
+func (c *Client) PutGoal(ctx context.Context, id string, request v1.PutGoalRequest) (v1.Goal, error) {
+	var out v1.Goal
+	err := c.do(ctx, http.MethodPut, sessionPath(id)+"/goal", request, http.StatusOK, &out)
+	return out, err
+}
+
+func (c *Client) DeleteGoal(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, sessionPath(id)+"/goal", nil, http.StatusNoContent, nil)
+}
+
 // Prompt returns after durable admission (202), not model completion.
 func (c *Client) Prompt(ctx context.Context, id string, request v1.PromptRequest) (v1.PromptAccepted, error) {
 	var out v1.PromptAccepted

@@ -33,6 +33,7 @@ type DomainBackend struct {
 	Permissions        *permission.Broker
 	Questions          *question.Broker
 	Todos              *session.TodoService
+	Goals              *session.GoalService
 	Events             *event.Repository
 	Live               *event.Broker
 	EventQueue         int
@@ -40,6 +41,57 @@ type DomainBackend struct {
 	ProviderResolver   agent.ProviderResolver
 	CompactSessionFunc func(context.Context, string) (v1.Compaction, error)
 	Processes          ProcessLifecycle
+}
+
+func (b *DomainBackend) GetGoal(ctx context.Context, id string) (v1.Goal, error) {
+	goal, err := b.Goals.Get(ctx, id)
+	if errors.Is(err, session.ErrGoalNotFound) || errors.Is(err, session.ErrNotFound) {
+		return v1.Goal{}, ErrNotFound
+	}
+	return goalDTO(goal), err
+}
+
+func (b *DomainBackend) PutGoal(ctx context.Context, id string, request v1.PutGoalRequest) (v1.Goal, error) {
+	if _, err := b.GetSession(ctx, id); err != nil {
+		return v1.Goal{}, err
+	}
+	var goal session.Goal
+	var err error
+	_, getErr := b.Goals.Get(ctx, id)
+	if errors.Is(getErr, session.ErrGoalNotFound) {
+		if request.Objective == nil || request.Status != nil {
+			return v1.Goal{}, ErrInvalid
+		}
+		goal, err = b.Goals.Create(ctx, id, *request.Objective, request.TokenBudget)
+	} else if getErr != nil {
+		return v1.Goal{}, getErr
+	} else {
+		var status *session.GoalStatus
+		if request.Status != nil {
+			value := session.GoalStatus(*request.Status)
+			status = &value
+		}
+		goal, err = b.Goals.Update(ctx, id, session.GoalMutation{Objective: request.Objective, Status: status, TokenBudget: request.TokenBudget, ClearTokenBudget: request.ClearTokenBudget})
+	}
+	if errors.Is(err, session.ErrGoalExists) {
+		return v1.Goal{}, ErrConflict
+	}
+	if err != nil {
+		return v1.Goal{}, ErrInvalid
+	}
+	return goalDTO(goal), nil
+}
+
+func (b *DomainBackend) DeleteGoal(ctx context.Context, id string) error {
+	err := b.Goals.Clear(ctx, id)
+	if errors.Is(err, session.ErrGoalNotFound) || errors.Is(err, session.ErrNotFound) {
+		return ErrNotFound
+	}
+	return err
+}
+
+func goalDTO(goal session.Goal) v1.Goal {
+	return v1.Goal{ID: goal.ID, SessionID: goal.SessionID, Objective: goal.Objective, Status: string(goal.Status), TokenBudget: goal.TokenBudget, TokensUsed: goal.TokensUsed, RemainingTokens: goal.RemainingTokens(), ElapsedSeconds: goal.ElapsedSeconds, CreatedAt: goal.CreatedAt, UpdatedAt: goal.UpdatedAt}
 }
 
 type ProcessLifecycle interface {

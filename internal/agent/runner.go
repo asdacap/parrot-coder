@@ -97,6 +97,7 @@ type RunnerConfig struct {
 	Processes          *process.Runner
 	Live               LivePublisher
 	Compactor          Compactor
+	Goals              *session.GoalService
 	MaxConcurrentTools int
 	CleanupTimeout     time.Duration
 	// ToolPanicLogger, when set, receives diagnostics for a tool call whose
@@ -124,7 +125,17 @@ func NewRunner(config RunnerConfig) (*Runner, error) {
 	return &Runner{config}, nil
 }
 
-func (r *Runner) Drain(ctx context.Context, sessionID string) error {
+func (r *Runner) Drain(ctx context.Context, sessionID string) (runErr error) {
+	defer func() {
+		if runErr == nil || ctx.Err() != nil || r.config.Goals == nil || !provider.IsUsageLimitError(runErr) {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), r.config.CleanupTimeout)
+		defer cancel()
+		if _, _, err := r.config.Goals.MarkUsageLimited(cleanupCtx, sessionID); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+			runErr = errors.Join(runErr, err)
+		}
+	}()
 	if err := r.config.Sessions.RepairActive(ctx, sessionID); err != nil {
 		return err
 	}
@@ -279,6 +290,18 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) error {
 			if err := r.executeTools(ctx, sessionID, profile, snapshot, calls); err != nil {
 				return err
 			}
+			if r.config.Goals != nil {
+				goal, err := r.config.Goals.Get(ctx, sessionID)
+				if errors.Is(err, session.ErrGoalNotFound) {
+					continue
+				}
+				if err != nil {
+					return err
+				}
+				if goal.Status != session.GoalActive {
+					return nil
+				}
+			}
 			continue
 		}
 		if finish == protocol.FinishStop || finish == protocol.FinishLength || finish == protocol.FinishContentFilter || finish == protocol.FinishIncomplete {
@@ -293,6 +316,37 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) error {
 		}
 		return nil
 	}
+}
+
+// PrepareContinuation persists a new synthetic user turn when an active goal
+// remains after a successful drain. The coordinator invokes this only while
+// the session is otherwise idle, so each continuation is a normal new turn.
+func (r *Runner) PrepareContinuation(ctx context.Context, sessionID string) (bool, error) {
+	if r.config.Goals == nil {
+		return false, nil
+	}
+	goal, active, err := r.config.Goals.Active(ctx, sessionID)
+	if err != nil || !active {
+		return false, err
+	}
+	selected, err := r.config.Sessions.Get(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	profile, err := r.config.Profiles.GetProfile(selected.Agent)
+	if err != nil {
+		return false, err
+	}
+	if !profile.AllowsTool("get_goal") || !profile.AllowsTool("update_goal") {
+		return false, nil
+	}
+	remaining := "unlimited"
+	if value := goal.RemainingTokens(); value != nil {
+		remaining = fmt.Sprintf("%d", *value)
+	}
+	message := fmt.Sprintf("Continue working autonomously toward the active goal: %s\n\nThis is an automatic goal continuation turn. Remaining token budget: %s. Use get_goal to inspect current state. Mark the goal complete only when achieved; mark it blocked only for a genuine recurring blocker.", goal.Objective, remaining)
+	_, err = r.config.Sessions.AppendMessage(ctx, sessionID, protocol.Message{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: message}}})
+	return err == nil, err
 }
 
 type completedCall struct {
@@ -392,9 +446,11 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			finish = item.FinishReason
 		case protocol.EventProviderError:
 			message := "provider error"
+			kind := ""
 			code := ""
 			if item.ProviderError != nil {
 				message = item.ProviderError.Message
+				kind = item.ProviderError.Type
 				code = item.ProviderError.Code
 			}
 			// Tool calls from a failed provider turn are not executed, so they must
@@ -402,7 +458,8 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), nil)
 			finishErr := r.finishAssistantOnCleanup(sessionID, assistant.ID, session.AssistantFinal{Parts: parts, Usage: usage, FinishReason: protocol.FinishError, Error: message, Status: "error"})
 			overflow := item.ProviderError != nil && canonicalOverflow(item.ProviderError.Type, item.ProviderError.Code)
-			return nil, protocol.FinishError, &providerTurnFailure{err: errors.Join(errors.New(message), finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil && text.Len() == 0 && reasoning.Len() == 0 && reasoningSummary.Len() == 0 && len(calls) == 0}
+			responseErr := &provider.ResponseError{Type: kind, Code: code, Message: message}
+			return nil, protocol.FinishError, &providerTurnFailure{err: errors.Join(responseErr, finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil && text.Len() == 0 && reasoning.Len() == 0 && reasoningSummary.Len() == 0 && len(calls) == 0}
 		}
 	}
 	parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), calls)
@@ -417,6 +474,11 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			}
 		}
 		return nil, finish, err
+	}
+	if r.config.Goals != nil {
+		if _, err := r.config.Goals.AccountUsage(ctx, sessionID, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+			return nil, finish, err
+		}
 	}
 	for _, call := range calls {
 		if _, err := r.config.Sessions.AddToolCall(ctx, sessionID, assistant.ID, call.call); err != nil {

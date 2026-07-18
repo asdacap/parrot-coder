@@ -136,6 +136,7 @@ func (t *fakeTool) Execute(ctx context.Context, _ tool.Plan, _ tool.CallContext)
 type runnerHarness struct {
 	db         *store.DB
 	sessions   *session.Service
+	goals      *session.GoalService
 	repository *event.Repository
 	sessionID  string
 	runner     *Runner
@@ -161,6 +162,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	t.Cleanup(func() { db.Close() })
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
+	goals := session.NewGoalService(db, repository)
 	created, err := sessions.Create(ctx, session.CreateParams{Title: "runner"})
 	if err != nil {
 		t.Fatal(err)
@@ -195,6 +197,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		Providers:          providers,
 		ToolSnapshot:       func() tool.Snapshot { return snapshot },
 		ToolExecutor:       func(snapshot tool.Snapshot) tool.Executor { return tool.Executor{Snapshot: snapshot} },
+		Goals:              goals,
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
 	})
@@ -205,7 +208,42 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &runnerHarness{db: sessionDB, sessions: sessions, repository: repository, sessionID: created.ID, runner: runner}
+	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, sessionID: created.ID, runner: runner}
+}
+
+func TestRunnerMarksActiveGoalOnStructuredUsageExhaustionOnly(t *testing.T) {
+	tests := []struct {
+		name       string
+		stream     func(context.Context) (provider.Stream, error)
+		wantStatus session.GoalStatus
+	}{
+		{"http quota", func(context.Context) (provider.Stream, error) {
+			return nil, &provider.HTTPError{StatusCode: 429, Code: "insufficient_quota"}
+		}, session.GoalUsageLimited},
+		{"stream quota", func(context.Context) (provider.Stream, error) {
+			return events(protocol.Event{Type: protocol.EventProviderError, ProviderError: &protocol.ProviderError{Type: "usage_limit_reached", Message: "limited"}}), nil
+		}, session.GoalUsageLimited},
+		{"transient rate limit", func(context.Context) (provider.Stream, error) {
+			return nil, &provider.HTTPError{StatusCode: 429, Code: "rate_limit_exceeded"}
+		}, session.GoalActive},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeProvider{stream: func(_ int, ctx context.Context, _ protocol.Request) (provider.Stream, error) { return test.stream(ctx) }}
+			h := newRunnerHarness(t, fake, nil)
+			if _, err := h.goals.Create(context.Background(), h.sessionID, "continue", nil); err != nil {
+				t.Fatal(err)
+			}
+			h.admit(t, "user", "work", session.DeliverySteer)
+			if err := h.runner.Drain(context.Background(), h.sessionID); err == nil {
+				t.Fatal("Drain succeeded")
+			}
+			goal, err := h.goals.Get(context.Background(), h.sessionID)
+			if err != nil || goal.Status != test.wantStatus {
+				t.Fatalf("goal = %#v, %v; want %s", goal, err, test.wantStatus)
+			}
+		})
+	}
 }
 
 func (h *runnerHarness) admit(t *testing.T, id, content string, delivery session.Delivery) {

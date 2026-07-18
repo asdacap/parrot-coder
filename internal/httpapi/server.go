@@ -18,6 +18,7 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
+	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
 const defaultMaxBodyBytes int64 = 1 << 20
@@ -69,6 +70,9 @@ var routes = []Route{
 	{"PUT", "/api/v1/sessions/{id}/selection", "updateSessionSelection"},
 	{"GET", "/api/v1/sessions/{id}/messages", "listMessages"},
 	{"GET", "/api/v1/sessions/{id}/todos", "listTodos"},
+	{"GET", "/api/v1/sessions/{id}/goal", "getGoal"},
+	{"PUT", "/api/v1/sessions/{id}/goal", "putGoal"},
+	{"DELETE", "/api/v1/sessions/{id}/goal", "deleteGoal"},
 	{"POST", "/api/v1/sessions/{id}/prompts", "createPrompt"},
 	{"POST", "/api/v1/sessions/{id}/compact", "compactSession"},
 	{"POST", "/api/v1/sessions/{id}/interrupt", "interruptSession"},
@@ -103,6 +107,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/sessions/{id}/selection", s.selection)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/messages", s.messages)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/todos", s.todos)
+	s.mux.HandleFunc("/api/v1/sessions/{id}/goal", s.goal)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/prompts", s.prompts)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/compact", s.compact)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/interrupt", s.interrupt)
@@ -244,6 +249,31 @@ func (s *Server) todos(w http.ResponseWriter, r *http.Request) {
 	}
 	item, err := s.backend.ListTodos(r.Context(), r.PathValue("id"))
 	s.respond(w, r, http.StatusOK, item, err)
+}
+
+func (s *Server) goal(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		item, err := s.backend.GetGoal(r.Context(), r.PathValue("id"))
+		s.respond(w, r, http.StatusOK, item, err)
+	case http.MethodPut:
+		var request v1.PutGoalRequest
+		if !s.decode(w, r, &request) {
+			return
+		}
+		item, err := s.backend.PutGoal(r.Context(), r.PathValue("id"), request)
+		if err == nil && item.Status == string(session.GoalActive) {
+			s.backend.Wake(item.SessionID)
+		}
+		s.respond(w, r, http.StatusOK, item, err)
+	case http.MethodDelete:
+		if !s.requireEmptyBody(w, r) {
+			return
+		}
+		s.respondEmpty(w, r, s.backend.DeleteGoal(r.Context(), r.PathValue("id")))
+	default:
+		s.methodProblem(w, r, http.MethodGet+", "+http.MethodPut+", "+http.MethodDelete)
+	}
 }
 
 func (s *Server) prompts(w http.ResponseWriter, r *http.Request) {

@@ -19,6 +19,8 @@ const (
 	EventSessionInputAdmitted = "session.input.admitted"
 	EventSessionInputPromoted = "session.input.promoted"
 	EventTodoUpdated          = "todo.updated"
+	EventGoalUpdated          = "goal.updated"
+	EventGoalCleared          = "goal.cleared"
 	EventTaskProgress         = "task.progress"
 	EventSubagent             = "subagent.event"
 	EventToolOutputDelta      = "tool.output.delta"
@@ -131,6 +133,8 @@ var EventManifest = []EventDefinition{
 	{Name: EventSessionInputAdmitted, Durable: true, Payload: "SessionInputAdmitted"},
 	{Name: EventSessionInputPromoted, Durable: true, Payload: "SessionInputPromoted"},
 	{Name: EventTodoUpdated, Durable: true, Payload: "TodoUpdated"},
+	{Name: EventGoalUpdated, Durable: true, Payload: "Goal"},
+	{Name: EventGoalCleared, Durable: true, Payload: "Goal"},
 	{Name: EventTaskProgress, Payload: "TaskProgress"},
 	{Name: EventSubagent, Payload: "SubagentEvent"},
 	{Name: EventToolOutputDelta, Payload: "ToolOutputDelta"},
@@ -189,6 +193,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &SessionInputPromoted{}
 	case EventTodoUpdated:
 		target = &TodoUpdated{}
+	case EventGoalUpdated, EventGoalCleared:
+		target = &Goal{}
 	case EventTaskProgress:
 		target = &TaskProgress{}
 	case EventSubagent:

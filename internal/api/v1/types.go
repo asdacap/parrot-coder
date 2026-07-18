@@ -131,6 +131,26 @@ type TodoList struct {
 	Items []Todo `json:"items"`
 }
 
+type Goal struct {
+	ID              string    `json:"id"`
+	SessionID       string    `json:"session_id"`
+	Objective       string    `json:"objective"`
+	Status          string    `json:"status"`
+	TokenBudget     *int64    `json:"token_budget,omitempty"`
+	TokensUsed      int64     `json:"tokens_used"`
+	RemainingTokens *int64    `json:"remaining_tokens,omitempty"`
+	ElapsedSeconds  int64     `json:"elapsed_seconds"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+type PutGoalRequest struct {
+	Objective        *string `json:"objective,omitempty"`
+	Status           *string `json:"status,omitempty"`
+	TokenBudget      *int64  `json:"token_budget,omitempty"`
+	ClearTokenBudget bool    `json:"clear_token_budget,omitempty"`
+}
+
 type PromptRequest struct {
 	MessageID string `json:"message_id"`
 	Content   string `json:"content"`

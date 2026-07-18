@@ -13,6 +13,20 @@ type drainerFunc func(context.Context, string) error
 
 func (f drainerFunc) Drain(ctx context.Context, sessionID string) error { return f(ctx, sessionID) }
 
+type continuationDrainer struct {
+	drains   atomic.Int32
+	prepared atomic.Int32
+}
+
+func (d *continuationDrainer) Drain(context.Context, string) error {
+	d.drains.Add(1)
+	return nil
+}
+
+func (d *continuationDrainer) PrepareContinuation(context.Context, string) (bool, error) {
+	return d.prepared.Add(1) <= 2, nil
+}
+
 type lifecycleObserverFunc func(string, error)
 
 func (f lifecycleObserverFunc) LifecycleComplete(sessionID string, err error) {
@@ -48,6 +62,26 @@ func TestCoordinatorConcurrentResumeJoinsOneDrain(t *testing.T) {
 	}
 	if got := calls.Load(); got != 1 {
 		t.Fatalf("Drain calls = %d, want 1", got)
+	}
+}
+
+func TestCoordinatorDrainsPreparedContinuationsInOneLifecycle(t *testing.T) {
+	drainer := &continuationDrainer{}
+	completed := make(chan error, 1)
+	coordinator := NewCoordinator(drainer, lifecycleObserverFunc(func(_ string, err error) { completed <- err }))
+	if err := coordinator.Resume(context.Background(), "session"); err != nil {
+		t.Fatal(err)
+	}
+	if drainer.drains.Load() != 3 || drainer.prepared.Load() != 3 {
+		t.Fatalf("drains = %d, continuation checks = %d", drainer.drains.Load(), drainer.prepared.Load())
+	}
+	select {
+	case err := <-completed:
+		if err != nil {
+			t.Fatal(err)
+		}
+	default:
+		t.Fatal("lifecycle completion was not reported")
 	}
 }
 

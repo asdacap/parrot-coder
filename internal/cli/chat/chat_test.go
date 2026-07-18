@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,7 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
+	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
@@ -234,7 +236,7 @@ func TestChatCompletionCandidatesIncludeBuiltinsAndCustomCommands(t *testing.T) 
 	for _, item := range items {
 		seen[item.Value] = item.Description
 	}
-	for _, name := range []string{"/help", "/version", "/run", "/chat", "/models", "/model", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/status", "/exit", "/review"} {
+	for _, name := range []string{"/help", "/version", "/run", "/chat", "/models", "/model", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/goal", "/status", "/exit", "/review"} {
 		if seen[name] == "" {
 			t.Errorf("missing completion %s in %#v", name, items)
 		}
@@ -243,6 +245,54 @@ func TestChatCompletionCandidatesIncludeBuiltinsAndCustomCommands(t *testing.T) 
 		if !isBuiltinSlash(item.Value) {
 			t.Errorf("advertised command %s is not dispatched as a builtin", item.Value)
 		}
+	}
+}
+
+type goalAPI struct {
+	apiClient
+	goal     v1.Goal
+	err      error
+	requests []v1.PutGoalRequest
+	deleted  int
+}
+
+func (a *goalAPI) Goal(context.Context, string) (v1.Goal, error) { return a.goal, a.err }
+func (a *goalAPI) PutGoal(_ context.Context, _ string, request v1.PutGoalRequest) (v1.Goal, error) {
+	a.requests = append(a.requests, request)
+	return a.goal, a.err
+}
+func (a *goalAPI) DeleteGoal(context.Context, string) error { a.deleted++; return a.err }
+
+func TestGoalSlashControlsAndStatus(t *testing.T) {
+	budget, remaining := int64(100), int64(70)
+	api := &goalAPI{goal: v1.Goal{Objective: "ship it", Status: "active", TokenBudget: &budget, TokensUsed: 30, RemainingTokens: &remaining, ElapsedSeconds: 90}}
+	var stdout, stderr bytes.Buffer
+	shell := chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, selection: chatSelection{agent: "build"}, stdout: &stdout, stderr: &stderr}
+	for _, action := range []string{"", "show", "set --tokens 200 improve tests", "budget none", "pause", "resume", "clear"} {
+		shell.slash("/goal", action)
+	}
+	if api.deleted != 1 || len(api.requests) != 4 {
+		t.Fatalf("requests = %#v, deleted = %d", api.requests, api.deleted)
+	}
+	if api.requests[0].Objective == nil || *api.requests[0].Objective != "improve tests" || api.requests[0].TokenBudget == nil || *api.requests[0].TokenBudget != 200 {
+		t.Fatalf("set request = %#v", api.requests[0])
+	}
+	if !api.requests[1].ClearTokenBudget || api.requests[2].Status == nil || *api.requests[2].Status != "paused" || api.requests[3].Status == nil || *api.requests[3].Status != "active" {
+		t.Fatalf("mutation requests = %#v", api.requests)
+	}
+	if output := stdout.String(); !strings.Contains(output, "objective: ship it") || !strings.Contains(output, "30/100 tokens (70 remaining)") || !strings.Contains(output, "elapsed: 1m30s") {
+		t.Fatalf("goal output = %q", output)
+	}
+	stdout.Reset()
+	shell.slash("/status", "")
+	if output := stdout.String(); !strings.Contains(output, "goal: active — ship it") || !strings.Contains(output, "goal usage: 30/100 tokens (70 remaining), elapsed 1m30s") {
+		t.Fatalf("status output = %q", output)
+	}
+	api.err = &client.APIError{Problem: v1.Problem{Status: http.StatusNotFound}}
+	stdout.Reset()
+	shell.slash("/goal", "")
+	if !strings.Contains(stdout.String(), "no goal configured") {
+		t.Fatalf("missing goal output = %q", stdout.String())
 	}
 }
 

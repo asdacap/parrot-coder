@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -324,6 +325,30 @@ func TestNonSuccessErrorIsStructuredBoundedAndRedacted(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "secret-token") || len(providerError.Message) > 1024 {
 		t.Fatalf("unsafe error = %v", err)
+	}
+}
+
+func TestUsageLimitClassificationUsesOnlyStructuredPermanentCodes(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"http type", &HTTPError{StatusCode: 429, Type: "usage_limit_reached"}, true},
+		{"http code", &HTTPError{Code: " insufficient_quota "}, true},
+		{"stream code", &ResponseError{Code: "BILLING_HARD_LIMIT_REACHED"}, true},
+		{"wrapped", fmt.Errorf("request: %w", &ResponseError{Code: "usage_limit_exceeded"}), true},
+		{"joined second branch", errors.Join(errors.New("first"), &HTTPError{Code: "insufficient_quota"}), true},
+		{"plain 429", &HTTPError{StatusCode: 429}, false},
+		{"transient rate limit", &HTTPError{StatusCode: 429, Code: "rate_limit_exceeded"}, false},
+		{"message text", &ResponseError{Message: "usage limit reached"}, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := IsUsageLimitError(test.err); got != test.want {
+				t.Fatalf("IsUsageLimitError(%v) = %t, want %t", test.err, got, test.want)
+			}
+		})
 	}
 }
 

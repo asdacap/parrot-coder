@@ -251,6 +251,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 	}
 	todos := session.NewTodoService(sessionStore, repository)
+	goals := session.NewGoalService(sessionStore, repository)
 	ws, err := workspace.New(info.Root)
 	if err != nil {
 		return nil, fmt.Errorf("app: workspace: %w", err)
@@ -350,7 +351,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return profile.ReadOnly, err
 	}
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
-		Changes: changes, Processes: processes, Todos: todos, Questions: questions,
+		Changes: changes, Processes: processes, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages}, Formatters: formatterRegistry,
 		Subagents: subagents, Agents: agentLookup,
@@ -393,7 +394,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
 		},
-		Workspace: ws, Outputs: outputs, Processes: processes, Live: live, Compactor: compactionService,
+		Workspace: ws, Outputs: outputs, Processes: processes, Live: live, Compactor: compactionService, Goals: goals,
 		ToolPanicLogger: toolPanicLogger(),
 	})
 	if err != nil {
@@ -405,7 +406,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	result.coordinator = coordinator
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
-		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos,
+		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
 		Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: processes,
 		ProviderResolver: providerRegistry,
 	}
@@ -598,6 +599,14 @@ func (b *compositionBackend) Wake(sessionID string) {
 type statusDrainer struct {
 	runner agent.Drainer
 	live   *event.Broker
+}
+
+func (d statusDrainer) PrepareContinuation(ctx context.Context, sessionID string) (bool, error) {
+	continuation, ok := d.runner.(agent.ContinuationDrainer)
+	if !ok {
+		return false, nil
+	}
+	return continuation.PrepareContinuation(ctx, sessionID)
 }
 
 func (d statusDrainer) Drain(ctx context.Context, sessionID string) error {

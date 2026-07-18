@@ -56,6 +56,13 @@ func (b *stubBackend) ListMessages(context.Context, string) (v1.MessageList, err
 func (b *stubBackend) ListTodos(context.Context, string) (v1.TodoList, error) {
 	return v1.TodoList{Items: []v1.Todo{}}, b.backendErr
 }
+func (b *stubBackend) GetGoal(context.Context, string) (v1.Goal, error) {
+	return v1.Goal{ID: "goal_test", SessionID: "ses_test", Objective: "ship it", Status: "active"}, b.backendErr
+}
+func (b *stubBackend) PutGoal(context.Context, string, v1.PutGoalRequest) (v1.Goal, error) {
+	return v1.Goal{ID: "goal_test", SessionID: "ses_test", Objective: "ship it", Status: "active"}, b.backendErr
+}
+func (b *stubBackend) DeleteGoal(context.Context, string) error { return b.backendErr }
 func (b *stubBackend) AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error) {
 	b.mu.Lock()
 	b.order = append(b.order, "admit")
@@ -113,6 +120,9 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"PUT", "/api/v1/sessions/ses_test/selection", `{"agent":"plan"}`, 200},
 		{"GET", "/api/v1/sessions/ses_test/messages", "", 200},
 		{"GET", "/api/v1/sessions/ses_test/todos", "", 200},
+		{"GET", "/api/v1/sessions/ses_test/goal", "", 200},
+		{"PUT", "/api/v1/sessions/ses_test/goal", `{"objective":"ship it"}`, 200},
+		{"DELETE", "/api/v1/sessions/ses_test/goal", "", 204},
 		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello","delivery":"steer"}`, 202},
 		{"POST", "/api/v1/sessions/ses_test/interrupt", "", 204},
 		{"GET", "/api/v1/sessions/ses_test/permissions", "", 200},
@@ -167,13 +177,46 @@ func newSelectionBackend(t *testing.T) (*DomainBackend, *session.Service) {
 	t.Helper()
 	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { _ = db.Close() })
-	sessions := session.NewService(db, event.NewRepository(db))
+	repository := event.NewRepository(db)
+	sessions := session.NewService(db, repository)
 	agents, err := agent.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &DomainBackend{Sessions: sessions, Agents: agents, ProviderResolver: selectionResolver{}}, sessions
+	return &DomainBackend{Sessions: sessions, Goals: session.NewGoalService(db, repository), Agents: agents, ProviderResolver: selectionResolver{}}, sessions
 }
+
+func TestGoalCRUDThroughTypedClient(t *testing.T) {
+	backend, _ := newSelectionBackend(t)
+	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
+	ctx := context.Background()
+	created, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{Title: "goal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := int64(100)
+	goal, err := apiClient.PutGoal(ctx, created.ID, v1.PutGoalRequest{Objective: pointer("ship it"), TokenBudget: &budget})
+	if err != nil || goal.Objective != "ship it" || goal.Status != "active" || goal.RemainingTokens == nil || *goal.RemainingTokens != budget {
+		t.Fatalf("PutGoal create = %#v, %v", goal, err)
+	}
+	loaded, err := apiClient.Goal(ctx, created.ID)
+	if err != nil || loaded.ID != goal.ID {
+		t.Fatalf("Goal = %#v, %v", loaded, err)
+	}
+	paused := "paused"
+	loaded, err = apiClient.PutGoal(ctx, created.ID, v1.PutGoalRequest{Status: &paused, ClearTokenBudget: true})
+	if err != nil || loaded.Status != paused || loaded.TokenBudget != nil {
+		t.Fatalf("PutGoal update = %#v, %v", loaded, err)
+	}
+	if err := apiClient.DeleteGoal(ctx, created.ID); err != nil {
+		t.Fatal(err)
+	}
+	_, err = apiClient.Goal(ctx, created.ID)
+	assertAPIProblem(t, err, http.StatusNotFound, "session_not_found")
+}
+
+func pointer[T any](value T) *T { return &value }
 
 func TestSelectedCreationIsValidatedAndAtomic(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)

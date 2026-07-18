@@ -64,8 +64,8 @@ func (s ProviderSummarizer) Summarize(ctx context.Context, request SummaryReques
 				usage = *item.Usage
 			}
 		case protocol.EventProviderError:
-			if item.ProviderError != nil && item.ProviderError.Message != "" {
-				return SummaryResult{}, errors.New(item.ProviderError.Message)
+			if item.ProviderError != nil {
+				return SummaryResult{}, &provider.ResponseError{Type: item.ProviderError.Type, Code: item.ProviderError.Code, Message: item.ProviderError.Message}
 			}
 			return SummaryResult{}, errors.New("compaction: provider error")
 		}

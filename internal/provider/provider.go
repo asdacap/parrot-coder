@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
@@ -22,6 +23,68 @@ const (
 type Stream interface {
 	Next(context.Context) (protocol.Event, error)
 	Close() error
+}
+
+// ResponseError preserves the structured failure returned inside an otherwise
+// successful provider response stream.
+type ResponseError struct {
+	Type    string
+	Code    string
+	Message string
+}
+
+func (e *ResponseError) Error() string {
+	message := e.Message
+	if message == "" {
+		message = "provider error"
+	}
+	if e.Type != "" {
+		message += " (" + e.Type + ")"
+	}
+	if e.Code != "" {
+		message += " [" + e.Code + "]"
+	}
+	return message
+}
+
+// IsUsageLimitError reports permanent account/quota exhaustion from structured
+// provider fields. HTTP status and message text are intentionally ignored so
+// transient rate limiting cannot suspend autonomous work.
+func IsUsageLimitError(err error) bool {
+	if err == nil {
+		return false
+	}
+	switch current := err.(type) {
+	case *HTTPError:
+		if usageLimitValue(current.Type) || usageLimitValue(current.Code) {
+			return true
+		}
+	case *ResponseError:
+		if usageLimitValue(current.Type) || usageLimitValue(current.Code) {
+			return true
+		}
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if IsUsageLimitError(child) {
+				return true
+			}
+		}
+		return false
+	}
+	if wrapped, ok := err.(interface{ Unwrap() error }); ok {
+		return IsUsageLimitError(wrapped.Unwrap())
+	}
+	return false
+}
+
+func usageLimitValue(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "usage_limit_reached", "usage_limit_exceeded", "insufficient_quota", "billing_hard_limit_reached":
+		return true
+	default:
+		return false
+	}
 }
 
 type redactingStream struct {

@@ -473,6 +473,12 @@ type apiClient interface {
 	Agents(context.Context) (v1.AgentList, error)
 }
 
+type goalClient interface {
+	Goal(context.Context, string) (v1.Goal, error)
+	PutGoal(context.Context, string, v1.PutGoalRequest) (v1.Goal, error)
+	DeleteGoal(context.Context, string) error
+}
+
 type sessionClaimer interface {
 	ClaimSession(context.Context, v1.ClaimSessionRequest) (v1.ClaimSessionResponse, error)
 }
@@ -1557,6 +1563,7 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/compact", Description: "compact the current conversation"},
 	{Value: "/connect", Description: "connect to an API server"},
 	{Value: "/thinking", Description: "toggle reasoning status"},
+	{Value: "/goal", Description: "show or control the current goal"},
 	{Value: "/status", Description: "show chat state"},
 	{Value: "/exit", Description: "exit chat"},
 }
@@ -1809,6 +1816,8 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		} else {
 			s.commitStatus("✓ Compaction: " + result.Status)
 		}
+	case "/goal":
+		s.goalAction(argument)
 	case "/status":
 		sessionID := s.current.ID
 		if sessionID == "" {
@@ -1822,14 +1831,150 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		if effort == "" {
 			effort = "default"
 		}
-		s.commit(fmt.Sprintf("project: %s\nsession: %s\nagent: %s\nmodel: %s\neffort: %s\nthinking: %t",
-			s.projectRoot, sessionID, s.selection.agent, model, effort, s.options.thinking))
+		status := fmt.Sprintf("project: %s\nsession: %s\nagent: %s\nmodel: %s\neffort: %s\nthinking: %t",
+			s.projectRoot, sessionID, s.selection.agent, model, effort, s.options.thinking)
+		var goalErr error
+		if s.current.ID == "" {
+			status += "\ngoal: none"
+		} else if goals, ok := s.api.(goalClient); !ok {
+			status += "\ngoal: unavailable"
+			goalErr = errors.New("connected server does not support goals")
+		} else if goal, err := goals.Goal(s.ctx, s.current.ID); goalNotFound(err) {
+			status += "\ngoal: none"
+		} else if err != nil {
+			status += "\ngoal: unavailable"
+			goalErr = err
+		} else {
+			status += fmt.Sprintf("\ngoal: %s — %s\ngoal usage: %s, elapsed %s", goal.Status, goal.Objective, formatGoalTokens(goal), formatGoalElapsed(goal.ElapsedSeconds))
+		}
+		s.commit(status)
+		if goalErr != nil {
+			s.commitError(goalErr.Error())
+		}
 	case "/exit":
 		return true, finish(s.ctx, exitOK, "chat_exited", nil)
 	default:
 		s.commitError(fmt.Sprintf("unknown slash command %q", command))
 	}
 	return false, exitOK
+}
+
+const goalUsage = "usage: /goal [show|set [--tokens N] OBJECTIVE|budget N|none|pause|resume|clear]"
+
+func (s *chatShell) goalAction(argument string) {
+	if s.current.ID == "" {
+		s.commitError("no active session")
+		return
+	}
+	goals, ok := s.api.(goalClient)
+	if !ok {
+		s.commitError("connected server does not support goals")
+		return
+	}
+	fields := strings.Fields(argument)
+	if len(fields) == 0 || len(fields) == 1 && fields[0] == "show" {
+		goal, err := goals.Goal(s.ctx, s.current.ID)
+		if goalNotFound(err) {
+			s.commit("no goal configured")
+		} else if err != nil {
+			s.commitError(err.Error())
+		} else {
+			s.commit(formatGoal(goal))
+		}
+		return
+	}
+	var request v1.PutGoalRequest
+	verb := fields[0]
+	switch verb {
+	case "set":
+		rest := strings.TrimSpace(strings.TrimPrefix(argument, "set"))
+		if strings.HasPrefix(rest, "--tokens") {
+			parts := strings.Fields(rest)
+			if len(parts) < 3 || parts[0] != "--tokens" {
+				s.commitError(goalUsage)
+				return
+			}
+			budget, err := strconv.ParseInt(parts[1], 10, 64)
+			if err != nil || budget <= 0 {
+				s.commitError(goalUsage)
+				return
+			}
+			request.TokenBudget = &budget
+			rest = strings.Join(parts[2:], " ")
+		}
+		if rest == "" || strings.HasPrefix(rest, "--") {
+			s.commitError(goalUsage)
+			return
+		}
+		request.Objective = &rest
+	case "budget":
+		if len(fields) != 2 {
+			s.commitError(goalUsage)
+			return
+		}
+		if fields[1] == "none" {
+			request.ClearTokenBudget = true
+		} else {
+			budget, err := strconv.ParseInt(fields[1], 10, 64)
+			if err != nil || budget <= 0 {
+				s.commitError(goalUsage)
+				return
+			}
+			request.TokenBudget = &budget
+		}
+	case "pause", "resume":
+		if len(fields) != 1 {
+			s.commitError(goalUsage)
+			return
+		}
+		status := map[string]string{"pause": "paused", "resume": "active"}[verb]
+		request.Status = &status
+	case "clear":
+		if len(fields) != 1 {
+			s.commitError(goalUsage)
+			return
+		}
+		if err := goals.DeleteGoal(s.ctx, s.current.ID); err != nil {
+			s.commitError(err.Error())
+		} else {
+			s.commitStatus("✓ Goal cleared")
+		}
+		return
+	default:
+		s.commitError(goalUsage)
+		return
+	}
+	goal, err := goals.PutGoal(s.ctx, s.current.ID, request)
+	if err != nil {
+		s.commitError(err.Error())
+		return
+	}
+	s.commitStatus("✓ Goal updated")
+	s.commit(formatGoal(goal))
+}
+
+func goalNotFound(err error) bool {
+	var apiErr *client.APIError
+	return errors.As(err, &apiErr) && apiErr.Problem.Status == http.StatusNotFound
+}
+
+func formatGoal(goal v1.Goal) string {
+	return fmt.Sprintf("objective: %s\nstatus: %s\ntokens: %s\nelapsed: %s", goal.Objective, goal.Status, formatGoalTokens(goal), formatGoalElapsed(goal.ElapsedSeconds))
+}
+
+func formatGoalTokens(goal v1.Goal) string {
+	if goal.TokenBudget == nil {
+		return fmt.Sprintf("%d tokens (unlimited)", goal.TokensUsed)
+	}
+	remaining := max(*goal.TokenBudget-goal.TokensUsed, 0)
+	if goal.RemainingTokens != nil {
+		remaining = *goal.RemainingTokens
+	}
+	return fmt.Sprintf("%d/%d tokens (%d remaining)", goal.TokensUsed, *goal.TokenBudget, remaining)
+}
+
+func formatGoalElapsed(seconds int64) string {
+	return (time.Duration(max(seconds, 0)) * time.Second).String()
 }
 
 // sessionAction implements the management forms of the CLI session command.
@@ -2351,7 +2496,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/compact", "/connect", "/thinking", "/status", "/exit":
+	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/compact", "/connect", "/thinking", "/goal", "/status", "/exit":
 		return true
 	default:
 		return false
