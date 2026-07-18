@@ -166,7 +166,7 @@ parrot run [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
 parrot models [--format lines|json]
 parrot usage [--format lines|json]
 parrot modes
-parrot agents  # task subagents, including the built-in read-only reviewer
+parrot agents  # task subagents: explorer, worker, and read-only reviewer
 parrot session list
 parrot session show ID
 parrot session compact ID

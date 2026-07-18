@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amirulashraf/parrot-coder/internal/agent"
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
 	"github.com/amirulashraf/parrot-coder/internal/client"
@@ -253,19 +254,26 @@ func TestOpenModelLessCatalogsAndExplicitSessionSelection(t *testing.T) {
 	}
 
 	model := models.Items[0]
-	created, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
-		Title: "selected", Agent: agents.Items[0].ID, Model: model.Provider + "/" + model.ID,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if created.Agent != agents.Items[0].ID || created.Provider != model.Provider || created.Model != model.ID {
-		t.Fatalf("created selection = %#v", created)
+	qualifiedModel := model.Provider + "/" + model.ID
+	for _, agentID := range []string{agent.ExploreID, agent.ExplorerID} {
+		created, createErr := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
+			Title: "selected", Agent: agentID, Model: qualifiedModel,
+		})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if created.Agent != agentID || created.Provider != model.Provider || created.Model != model.ID {
+			t.Fatalf("%s selection = %#v", agentID, created)
+		}
+		selected, updateErr := runtime.Client.UpdateSessionSelection(context.Background(), created.ID, v1.UpdateSessionSelectionRequest{Model: qualifiedModel})
+		if updateErr != nil || selected.Agent != agentID {
+			t.Fatalf("update %s selection = %#v, %v", agentID, selected, updateErr)
+		}
 	}
 	_, err = runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{Agent: "build", Model: model.Provider + "/missing"})
 	assertAppProblem(t, err, "invalid_selection")
 	listed, err = runtime.Client.Sessions(context.Background())
-	if err != nil || len(listed.Items) != 1 {
+	if err != nil || len(listed.Items) != 2 {
 		t.Fatalf("sessions after invalid selection = %#v, %v", listed, err)
 	}
 
@@ -459,7 +467,7 @@ func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
 		case bytes.Contains(body, []byte("child prompt")):
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		default:
-			arguments := `{"prompt":"child prompt","agent":"explore"}`
+			arguments := `{"prompt":"child prompt","agent":"explorer"}`
 			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_task\",\"type\":\"function_call\",\"call_id\":\"call_task\",\"name\":\"task\",\"arguments\":%q}}\n\n", arguments)
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		}
@@ -505,7 +513,7 @@ func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
 					t.Fatalf("sessions = %#v", sessions.Items)
 				}
 				for _, item := range sessions.Items {
-					if item.ID != parent.ID && (!strings.HasPrefix(item.Title, "Subtask ") || item.ProjectID != parent.ProjectID || item.Agent != "explore") {
+					if item.ID != parent.ID && (!strings.HasPrefix(item.Title, "Subtask ") || item.ProjectID != parent.ProjectID || item.Agent != "explorer") {
 						t.Fatalf("child session = %#v", item)
 					}
 				}

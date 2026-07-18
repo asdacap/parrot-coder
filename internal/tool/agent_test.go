@@ -73,7 +73,7 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 		return result
 	}
 
-	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explore"}`)
+	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer"}`)
 	id, ok := spawned.Metadata["agent_id"].(string)
 	if !ok || id == "" || spawned.Metadata["status"] != subagent.StatusRunning {
 		t.Fatalf("spawned = %#v", spawned)

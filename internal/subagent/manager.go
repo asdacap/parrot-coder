@@ -84,6 +84,7 @@ type Config struct {
 	MaxPromptBytes         int
 	MaxResultBytes         int
 	Timeout                time.Duration
+	AgentIdentity          func(string) string
 	OnProgress             func(Task)
 }
 
@@ -181,11 +182,12 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 	if len(lineage)+1 > m.config.MaxDepth {
 		return "", ErrDepth
 	}
+	targetIdentity := m.agentIdentity(request.Agent)
 	for _, ancestor := range lineage {
 		if !validAgent(ancestor) {
 			return "", ErrInvalid
 		}
-		if ancestor == request.Agent {
+		if m.agentIdentity(ancestor) == targetIdentity {
 			return "", ErrCycle
 		}
 	}
@@ -225,6 +227,16 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 		m.run(ctx, state)
 	}()
 	return id, nil
+}
+
+func (m *Manager) agentIdentity(id string) string {
+	if m.config.AgentIdentity == nil {
+		return id
+	}
+	if identity := m.config.AgentIdentity(id); identity != "" {
+		return identity
+	}
+	return id
 }
 
 // Spawn derives durable ancestry from the caller session and waits only until

@@ -116,8 +116,8 @@ func TestChatHelpListsCustomCommandsAndSubtaskUsesNormalPrompt(t *testing.T) {
 	if exit || code != exitOK || !strings.Contains(stdout.String(), "Ctrl-A/Ctrl-E line start/end") || !strings.Contains(stdout.String(), "Ctrl-K clear to end of line") || !strings.Contains(stdout.String(), "/review\tReview changes") {
 		t.Fatalf("help = %q, exit=%t, code=%d", stdout.String(), exit, code)
 	}
-	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explore", Model: "local/model", Subtask: true})
-	if !strings.Contains(prompt, "using the task tool") || !strings.Contains(prompt, `agent "explore"`) || !strings.HasSuffix(prompt, "Inspect this") {
+	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explorer", Model: "local/model", Subtask: true})
+	if !strings.Contains(prompt, "using the task tool") || !strings.Contains(prompt, `agent "explorer"`) || !strings.HasSuffix(prompt, "Inspect this") {
 		t.Fatalf("subtask prompt = %q", prompt)
 	}
 }
@@ -248,7 +248,7 @@ func TestChatCompletionCandidatesIncludeBuiltinsAndCustomCommands(t *testing.T) 
 
 func TestSlashVersionAndAgentModeActionsMatchCLIConcepts(t *testing.T) {
 	api := &agentModeAPI{
-		agents: v1.AgentList{Items: []v1.Agent{{ID: "explore", MaxTurns: 12}}},
+		agents: v1.AgentList{Items: []v1.Agent{{ID: "explorer", MaxTurns: 12}}},
 		modes:  v1.ModeList{Items: []v1.Mode{{ID: "build", MaxTurns: 64}}},
 	}
 	var stdout bytes.Buffer
@@ -257,7 +257,7 @@ func TestSlashVersionAndAgentModeActionsMatchCLIConcepts(t *testing.T) {
 	shell.slash("/agents", "")
 	shell.slash("/modes", "")
 	output := stdout.String()
-	for _, want := range []string{"parrot 1.2.3", "commit: abc", "explore", "build"} {
+	for _, want := range []string{"parrot 1.2.3", "commit: abc", "explorer", "build"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("slash output missing %q: %q", want, output)
 		}
