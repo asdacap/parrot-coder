@@ -43,7 +43,7 @@ not report the Nix gate as locally passed.
 ```sh
 go test -race ./...
 go test -count=20 ./internal/event ./internal/session ./internal/agent \
-  ./internal/change ./internal/snapshot ./internal/process ./internal/httpapi \
+  ./internal/change ./internal/process ./internal/httpapi \
   ./internal/transport/inproc ./internal/compaction ./internal/app \
   ./internal/cli ./internal/mcp ./internal/lsp ./internal/webfetch
 ```

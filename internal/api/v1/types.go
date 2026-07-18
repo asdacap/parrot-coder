@@ -218,14 +218,6 @@ type QuestionReply struct {
 	Reject  bool     `json:"reject,omitempty"`
 }
 
-type SnapshotTransaction struct {
-	ID        string    `json:"id"`
-	SessionID string    `json:"session_id"`
-	Position  int       `json:"position"`
-	CreatedAt time.Time `json:"created_at"`
-	Paths     []string  `json:"paths"`
-}
-
 type Model struct {
 	Provider        string         `json:"provider"`
 	ID              string         `json:"id"`

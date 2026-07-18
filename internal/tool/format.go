@@ -10,18 +10,16 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/change"
 	"github.com/amirulashraf/parrot-coder/internal/formatter"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
-	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 	"os"
 )
 
 type FormatTool struct {
 	Formatters *formatter.Registry
 	Changes    *change.Service
-	Snapshots  *snapshot.Service
 }
 
-func NewFormatTool(formatters *formatter.Registry, changes *change.Service, snapshots *snapshot.Service) *FormatTool {
-	return &FormatTool{Formatters: formatters, Changes: changes, Snapshots: snapshots}
+func NewFormatTool(formatters *formatter.Registry, changes *change.Service) *FormatTool {
+	return &FormatTool{Formatters: formatters, Changes: changes}
 }
 func (*FormatTool) ID() string { return "format" }
 func (*FormatTool) Description() string {
@@ -99,7 +97,7 @@ func (t *FormatTool) Execute(ctx context.Context, plan Plan, call CallContext) (
 		}
 		return Result{Text: "File is already formatted.", Metadata: map[string]any{"path": noop.Path, "formatter": noop.Formatter, "changed": false}}, nil
 	}
-	return executeMutation(ctx, t.Changes, t.Snapshots, plan, call)
+	return executeMutation(ctx, t.Changes, plan, call)
 }
 
 type formatNoop struct {

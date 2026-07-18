@@ -6,17 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"github.com/amirulashraf/parrot-coder/internal/change"
-	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 )
 
 type EditTool struct {
-	Changes   *change.Service
-	Snapshots *snapshot.Service
+	Changes *change.Service
 }
 
-func NewEditTool(changes *change.Service, snapshots *snapshot.Service) *EditTool {
-	return &EditTool{Changes: changes, Snapshots: snapshots}
-}
+func NewEditTool(changes *change.Service) *EditTool { return &EditTool{Changes: changes} }
 
 func (*EditTool) ID() string { return "edit" }
 func (*EditTool) Description() string {
@@ -61,5 +57,5 @@ func (t *EditTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 }
 
 func (t *EditTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	return executeMutation(ctx, t.Changes, t.Snapshots, plan, call)
+	return executeMutation(ctx, t.Changes, plan, call)
 }

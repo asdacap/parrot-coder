@@ -11,8 +11,6 @@ var (
 	ErrNotFound            = errors.New("httpapi: resource not found")
 	ErrConflict            = errors.New("httpapi: conflict")
 	ErrInvalid             = errors.New("httpapi: invalid request")
-	ErrNoUndo              = errors.New("httpapi: nothing to undo")
-	ErrNoRedo              = errors.New("httpapi: nothing to redo")
 	ErrIdempotencyConflict = errors.New("httpapi: idempotency conflict")
 	ErrPermissionNotFound  = errors.New("httpapi: permission request not found")
 	ErrQuestionNotFound    = errors.New("httpapi: question request not found")
@@ -48,8 +46,6 @@ type Backend interface {
 	ReplyPermission(context.Context, string, string, v1.PermissionReply) error
 	ListQuestions(context.Context, string) (v1.QuestionList, error)
 	ReplyQuestion(context.Context, string, string, v1.QuestionReply) error
-	Undo(context.Context, string) (v1.SnapshotTransaction, error)
-	Redo(context.Context, string) (v1.SnapshotTransaction, error)
 	ListModels(context.Context) (v1.ModelList, error)
 	SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error)
 	ListAgents(context.Context) (v1.AgentList, error)

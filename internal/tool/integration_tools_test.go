@@ -392,8 +392,8 @@ func TestFormatterHelper(t *testing.T) {
 	os.Exit(0)
 }
 
-func TestFormatToolCommitsReviewedBytesAndSnapshot(t *testing.T) {
-	ctx, ws, changes, snapshots, sessionID := workspaceToolHarness(t)
+func TestFormatToolCommitsReviewedBytes(t *testing.T) {
+	ctx, ws, changes := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), "source.go")
 	before := []byte("package p\n")
 	if err := os.WriteFile(path, before, 0o600); err != nil {
@@ -407,29 +407,22 @@ func TestFormatToolCommitsReviewedBytesAndSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := NewFormatTool(formatters, changes, snapshots)
+	item := NewFormatTool(formatters, changes)
 	registry := NewRegistry()
 	_ = registry.Register(item)
 	authorizer := &recordingAuthorizer{}
 	raw := json.RawMessage(`{"path":"source.go","expected_sha256":"` + change.SHA256(before) + `"}`)
-	result, err := (Executor{Snapshot: registry.Materialize(), Permissions: authorizer}).Execute(ctx, item.ID(), raw, CallContext{Workspace: ws, SessionID: sessionID})
+	result, err := (Executor{Snapshot: registry.Materialize(), Permissions: authorizer}).Execute(ctx, item.ID(), raw, CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)
 	}
 	after, _ := os.ReadFile(path)
-	if string(after) != "PACKAGE P\n" || result.Metadata["transaction_id"] == "" || !strings.Contains(string(authorizer.request.Review), `"command"`) {
+	if string(after) != "PACKAGE P\n" || result.Metadata["files"] != 1 || !strings.Contains(string(authorizer.request.Review), `"command"`) {
 		t.Fatalf("after/result/review = %q / %#v / %s", after, result, authorizer.request.Review)
-	}
-	if _, err := snapshots.Undo(ctx, ws, sessionID); err != nil {
-		t.Fatal(err)
-	}
-	restored, _ := os.ReadFile(path)
-	if !bytes.Equal(restored, before) {
-		t.Fatalf("restored = %q", restored)
 	}
 }
 
-func TestFormatToolNoopDoesNotRequireSnapshot(t *testing.T) {
+func TestFormatToolNoopDoesNotRequireCommit(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "file.txt")
 	before := []byte("already\n")
@@ -448,7 +441,7 @@ func TestFormatToolNoopDoesNotRequireSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := NewFormatTool(formatters, change.NewService(change.Config{}), nil)
+	item := NewFormatTool(formatters, change.NewService(change.Config{}))
 	raw := json.RawMessage(`{"path":"file.txt","expected_sha256":"` + change.SHA256(before) + `"}`)
 	plan, err := item.Plan(context.Background(), raw, CallContext{Workspace: ws})
 	if err != nil {

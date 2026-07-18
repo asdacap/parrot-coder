@@ -5,16 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/amirulashraf/parrot-coder/internal/change"
-	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 )
 
 type ApplyPatchTool struct {
-	Changes   *change.Service
-	Snapshots *snapshot.Service
+	Changes *change.Service
 }
 
-func NewApplyPatchTool(changes *change.Service, snapshots *snapshot.Service) *ApplyPatchTool {
-	return &ApplyPatchTool{Changes: changes, Snapshots: snapshots}
+func NewApplyPatchTool(changes *change.Service) *ApplyPatchTool {
+	return &ApplyPatchTool{Changes: changes}
 }
 
 func (*ApplyPatchTool) ID() string { return "apply_patch" }
@@ -56,5 +54,5 @@ func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call Cal
 }
 
 func (t *ApplyPatchTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	return executeMutation(ctx, t.Changes, t.Snapshots, plan, call)
+	return executeMutation(ctx, t.Changes, plan, call)
 }

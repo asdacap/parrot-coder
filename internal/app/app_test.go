@@ -21,12 +21,9 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/event"
-	"github.com/amirulashraf/parrot-coder/internal/project"
 	"github.com/amirulashraf/parrot-coder/internal/session"
-	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
-	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type appDrainerFunc func(context.Context, string) error
@@ -603,51 +600,16 @@ func decodeSubagentEvent(t *testing.T, item v1.Event) *v1.SubagentEvent {
 	return payload.(*v1.SubagentEvent)
 }
 
-func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
+func TestMaintainCleansOnlyManagedOutputs(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()
-	snapshotDir := t.TempDir()
-	now := time.Now().UTC()
-	old := now.Add(-48 * time.Hour)
-
-	// A recorded edit, whose blob the sweep must keep so undo still works.
-	ws, err := workspace.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshots := snapshot.NewService(snapshotDir, snapshot.Config{})
-	kept := filepath.Join(root, "file")
-	before, err := snapshots.Capture(kept)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(kept, []byte("content"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	after, err := snapshots.Capture(kept)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := snapshots.Record(ctx, ws, "ses", []snapshot.Entry{{Path: kept, Before: before, After: after}}); err != nil {
-		t.Fatal(err)
-	}
-	// An unreferenced blob, older than the grace period.
-	orphan := filepath.Join(snapshotDir, "blobs", "ff", "ff00000000000000000000000000000000000000000000000000000000000000")
-	if err := os.MkdirAll(filepath.Dir(orphan), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(orphan, []byte("x"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chtimes(orphan, old, old); err != nil {
-		t.Fatal(err)
-	}
-
 	outputDir := filepath.Join(root, "outputs")
 	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: outputDir, PreviewBytes: 16, PreviewLines: 4, PerOutput: 1024, Total: 4096, Retention: time.Hour})
 	if err != nil {
 		t.Fatal(err)
 	}
+	now := time.Now().UTC()
+	old := now.Add(-48 * time.Hour)
 	files := map[string]time.Time{
 		"0123456789abcdef0123456789abcdef": old,
 		".parrot-output-stale":             old,
@@ -663,36 +625,19 @@ func TestMaintainCleansOnlyManagedArtifacts(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	staleTemp := filepath.Join(root, ".parrot-snapshot-stale")
-	freshTemp := filepath.Join(root, ".parrot-snapshot-fresh")
-	for path, modified := range map[string]time.Time{staleTemp: old, freshTemp: now} {
-		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chtimes(path, modified, modified); err != nil {
-			t.Fatal(err)
-		}
-	}
 
-	application := &App{Project: project.Info{ID: "prj", Root: root}, outputs: outputs, snapshots: snapshots}
+	application := &App{outputs: outputs}
 	report, err := application.Maintain(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if report.OutputsRemoved != 2 || report.TemporaryFilesRemoved != 1 || report.SnapshotBlobsPruned != 1 {
+	if report.OutputsRemoved != 2 {
 		t.Fatalf("report = %#v", report)
 	}
-	for _, path := range []string{filepath.Join(outputDir, ".parrot-output-fresh"), filepath.Join(outputDir, "unmanaged"), freshTemp} {
-		if _, err := os.Stat(path); err != nil {
-			t.Fatalf("preserved file %s: %v", path, err)
+	for _, name := range []string{".parrot-output-fresh", "unmanaged"} {
+		if _, err := os.Stat(filepath.Join(outputDir, name)); err != nil {
+			t.Fatalf("preserved file %s: %v", name, err)
 		}
-	}
-	if _, err := os.Stat(orphan); !os.IsNotExist(err) {
-		t.Fatal("unreferenced blob survived the sweep")
-	}
-	// The referenced blob is what undo depends on.
-	if _, err := snapshots.Undo(ctx, ws, "ses"); err != nil {
-		t.Fatalf("undo after maintenance: %v", err)
 	}
 	second, err := application.Maintain(ctx)
 	if err != nil {

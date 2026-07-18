@@ -86,12 +86,6 @@ func (b *stubBackend) ListQuestions(context.Context, string) (v1.QuestionList, e
 func (b *stubBackend) ReplyQuestion(context.Context, string, string, v1.QuestionReply) error {
 	return b.backendErr
 }
-func (b *stubBackend) Undo(context.Context, string) (v1.SnapshotTransaction, error) {
-	return v1.SnapshotTransaction{ID: "snp_test", Paths: []string{}}, b.backendErr
-}
-func (b *stubBackend) Redo(context.Context, string) (v1.SnapshotTransaction, error) {
-	return v1.SnapshotTransaction{ID: "snp_test", Paths: []string{}}, b.backendErr
-}
 func (b *stubBackend) ListModels(context.Context) (v1.ModelList, error) {
 	return v1.ModelList{Items: []v1.Model{}}, b.backendErr
 }
@@ -126,8 +120,6 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"POST", "/api/v1/sessions/ses_test/permissions/per_test/reply", `{"decision":"allow","scope":"yolo"}`, 204},
 		{"GET", "/api/v1/sessions/ses_test/questions", "", 200},
 		{"POST", "/api/v1/sessions/ses_test/questions/qst_test/reply", `{"reject":true}`, 204},
-		{"POST", "/api/v1/sessions/ses_test/undo", "", 200},
-		{"POST", "/api/v1/sessions/ses_test/redo", "", 200},
 		{"GET", "/api/v1/models", "", 200},
 		{"GET", "/api/v1/usage", "", 200},
 		{"GET", "/api/v1/agents", "", 200},

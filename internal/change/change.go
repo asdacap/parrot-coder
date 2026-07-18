@@ -341,24 +341,6 @@ func (s *Service) Commit(ctx context.Context, ws *workspace.Workspace, plan Plan
 	return nil
 }
 
-// Rollback restores a successfully committed plan if a coupled journal write
-// fails. It performs the same path and hash revalidation as a normal commit.
-func (s *Service) Rollback(ctx context.Context, ws *workspace.Workspace, plan Plan) error {
-	reverse := Plan{Mutations: make([]Mutation, len(plan.Mutations))}
-	for i, mutation := range plan.Mutations {
-		reverse.Mutations[i] = Mutation{
-			RequestedPath: mutation.RequestedPath,
-			Path:          mutation.Path,
-			Before:        mutation.After.clone(),
-			After:         mutation.Before.clone(),
-		}
-	}
-	if err := s.Commit(ctx, ws, reverse); err != nil {
-		return err
-	}
-	return removeDirectories(plan.Directories)
-}
-
 func pathDepth(path string) int {
 	return strings.Count(filepath.Clean(path), string(filepath.Separator))
 }
