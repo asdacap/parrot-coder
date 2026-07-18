@@ -429,9 +429,19 @@ func TestEnhancedReasoningSummaryStripsAdjacentBoldDelimiters(t *testing.T) {
 		}
 	}
 
-	want := "Investigating summary stripping issue Analyzing reasoning summary handling flaws"
+	want := "**Investigating summary stripping issue**\n\n**Analyzing reasoning summary handling flaws**"
 	if got := runtime.activity[0].label; got != want {
 		t.Fatalf("activity label = %q, want %q", got, want)
+	}
+
+	for input, want := range map[string]string{
+		"****":                              "****",
+		"`**one****two**`":                  "`**one****two**`",
+		"````go\n```\n**one****two**\n````": "````go\n```\n**one****two**\n````",
+	} {
+		if got := cleanReasoningActivityLabel(input); got != want {
+			t.Errorf("cleanReasoningActivityLabel(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
@@ -451,7 +461,7 @@ func TestEnhancedReasoningSummaryPartsUpdateIndependently(t *testing.T) {
 		}
 	}
 
-	if len(runtime.activity) != 2 || runtime.activity[0].label != "First item" || runtime.activity[1].label != "Second item" {
+	if len(runtime.activity) != 2 || runtime.activity[0].label != "**First item**" || runtime.activity[1].label != "**Second item**" {
 		t.Fatalf("activity = %#v", runtime.activity)
 	}
 	if runtime.activity[0].messageID != "assistant" || runtime.activity[1].messageID != "assistant" {
@@ -595,14 +605,14 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 	}
 }
 
-func TestEnhancedReasoningSummaryIsPlainSingleLineAndRetainedBeforeAnswer(t *testing.T) {
+func TestEnhancedReasoningSummaryRendersMarkdownAndIsRetainedBeforeAnswer(t *testing.T) {
 	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Content: "final answer", Status: "complete"}}}}
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})
 	shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer}
 	runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")
-	runtime.startReasoningActivity("assistant", "", "- **Verifying\ncomplete suite**", true)
+	runtime.startReasoningActivity("assistant", "", "# Verifying\n\n- **complete suite**", true)
 	runtime.updateAssistantUsage("assistant", &v1.Usage{OutputTokens: 30, ReasoningTokens: 12})
 	runtime.completeAssistantActivity("assistant", "success")
 
@@ -610,9 +620,10 @@ func TestEnhancedReasoningSummaryIsPlainSingleLineAndRetainedBeforeAnswer(t *tes
 		t.Fatal(err)
 	}
 	got := output.String()
-	summary := strings.Index(got, "✓ Verifying complete suite · 12 tokens")
+	summary := strings.Index(got, "✓ Verifying")
+	list := strings.Index(got, "• complete suite · 12 tokens")
 	answer := strings.Index(got, "final answer")
-	if summary < 0 || answer < summary || strings.Contains(got, "**") {
+	if summary < 0 || list < summary || answer < list || strings.Contains(got, "# Verifying") || strings.Contains(got, "**") {
 		t.Fatalf("output = %q", got)
 	}
 }

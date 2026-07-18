@@ -549,7 +549,11 @@ func (r *enhancedChatRuntime) activityRows(now time.Time, columns int) []string 
 	styled := r.styledActivityRows(now, columns)
 	rows := make([]string, len(styled))
 	for i := range styled {
-		rows[i] = styled[i].Text
+		text := styled[i].Text
+		if styled[i].Markdown {
+			text = singleLineReasoningSummary(text)
+		}
+		rows[i] = styled[i].Prefix + text + styled[i].Suffix
 	}
 	return rows
 }
@@ -571,6 +575,10 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 		start = len(visible) - 4
 	}
 	for _, item := range visible[start:] {
+		if item.reasoningSummary {
+			rows = append(rows, reasoningSummaryActivity(item, now))
+			continue
+		}
 		line := formatActivity(item, now)
 		if item.reasoning && item.status == "thinking" {
 			line = formatReasoningActivity(item, now, columns)
@@ -581,6 +589,26 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 		rows = append(rows, terminal.StyledText{Text: line, Style: item.style})
 	}
 	return rows
+}
+
+func reasoningSummaryActivity(item enhancedActivityItem, now time.Time) terminal.StyledText {
+	end := now
+	if !item.ended.IsZero() {
+		end = item.ended
+	}
+	elapsed := end.Sub(item.started)
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	separator := " "
+	if item.status != "success" && item.status != "failure" {
+		separator = ": "
+	}
+	return terminal.StyledText{
+		Text: item.label, Style: item.style, Markdown: true,
+		Prefix: activityTitle(item.status, elapsed) + separator,
+		Suffix: formatActivityUsage(item) + fmt.Sprintf(" · %.1fs", elapsed.Seconds()),
+	}
 }
 
 // modelineThinking moves the one untitled thinking placeholder out of the
@@ -826,7 +854,7 @@ func (r *enhancedChatRuntime) finishReasoningSummaryPart(messageID, partID strin
 			return nil
 		}
 		if singleLineReasoningSummary(item.label) != "" {
-			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Text: formatActivity(*item, now), Style: item.style}); err != nil {
+			if err := r.shell.renderer.CommitStyled(reasoningSummaryActivity(*item, now)); err != nil {
 				return err
 			}
 			r.borderCommitted = false
@@ -838,9 +866,106 @@ func (r *enhancedChatRuntime) finishReasoningSummaryPart(messageID, partID strin
 }
 
 func cleanReasoningActivityLabel(label string) string {
-	label = strings.ReplaceAll(label, "****", " ")
-	label = strings.ReplaceAll(label, "**", "")
-	return strings.Join(strings.Fields(label), " ")
+	lines := strings.Split(label, "\n")
+	var fenceChar rune
+	fenceLength := 0
+	for i, line := range lines {
+		if fenceChar != 0 {
+			if reasoningFenceClosing(line, fenceChar, fenceLength) {
+				fenceChar = 0
+				fenceLength = 0
+			}
+			continue
+		}
+		if marker, length, ok := reasoningFenceOpening(line); ok {
+			fenceChar = marker
+			fenceLength = length
+			continue
+		}
+		lines[i] = separateAdjacentBold(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func reasoningFenceOpening(line string) (rune, int, bool) {
+	trimmed, ok := trimReasoningFenceIndent(line)
+	if !ok {
+		return 0, 0, false
+	}
+	if trimmed == "" || trimmed[0] != '`' && trimmed[0] != '~' {
+		return 0, 0, false
+	}
+	marker := rune(trimmed[0])
+	count := 0
+	for count < len(trimmed) && rune(trimmed[count]) == marker {
+		count++
+	}
+	if count < 3 || marker == '`' && strings.ContainsRune(trimmed[count:], '`') {
+		return 0, 0, false
+	}
+	return marker, count, true
+}
+
+func reasoningFenceClosing(line string, marker rune, minimum int) bool {
+	trimmed, ok := trimReasoningFenceIndent(line)
+	if !ok {
+		return false
+	}
+	count := 0
+	for count < len(trimmed) && rune(trimmed[count]) == marker {
+		count++
+	}
+	return count >= minimum && strings.TrimSpace(trimmed[count:]) == ""
+}
+
+func trimReasoningFenceIndent(line string) (string, bool) {
+	spaces := 0
+	for spaces < len(line) && line[spaces] == ' ' {
+		spaces++
+	}
+	return line[spaces:], spaces <= 3
+}
+
+func separateAdjacentBold(line string) string {
+	var output strings.Builder
+	codeTicks := 0
+	for position := 0; position < len(line); {
+		if line[position] == '`' {
+			end := position
+			for end < len(line) && line[end] == '`' {
+				end++
+			}
+			count := end - position
+			if codeTicks == 0 {
+				codeTicks = count
+			} else if codeTicks == count {
+				codeTicks = 0
+			}
+			output.WriteString(line[position:end])
+			position = end
+			continue
+		}
+		if codeTicks == 0 && strings.HasPrefix(line[position:], "****") &&
+			(position == 0 || line[position-1] != '*') && position+4 < len(line) && line[position+4] != '*' &&
+			strings.Contains(line[:position], "**") && strings.Contains(line[position+4:], "**") &&
+			!markdownMarkerEscaped(line, position) {
+			output.WriteString("**\n\n**")
+			position += 4
+			continue
+		}
+		output.WriteByte(line[position])
+		position++
+	}
+	return output.String()
+}
+
+func markdownMarkerEscaped(value string, position int) bool {
+	backslashes := 0
+	for position > 0 && value[position-1] == '\\' {
+		backslashes++
+		position--
+	}
+	return backslashes%2 != 0
 }
 
 func (r *enhancedChatRuntime) resetReasoning() {
@@ -924,7 +1049,13 @@ func (r *enhancedChatRuntime) finishAssistantActivity(id string, noContent bool)
 			continue
 		}
 		if r.shouldFlushActivityItem(r.activity[i], noContent) && r.shell != nil && r.shell.renderer != nil {
-			if err := r.shell.renderer.Commit(formatActivity(r.activity[i], time.Now())); err != nil {
+			var err error
+			if r.activity[i].reasoningSummary {
+				err = r.shell.renderer.CommitStyled(reasoningSummaryActivity(r.activity[i], time.Now()))
+			} else {
+				err = r.shell.renderer.Commit(formatActivity(r.activity[i], time.Now()))
+			}
+			if err != nil {
 				return err
 			}
 			r.borderCommitted = false
@@ -935,8 +1066,8 @@ func (r *enhancedChatRuntime) finishAssistantActivity(id string, noContent bool)
 }
 
 // shouldFlushActivityItem decides whether a completed assistant row is kept as
-// ordinary one-line transcript output. A reasoning summary with visible text is
-// retained (rendered above the answer); raw chain-of-thought is discarded. A
+// transcript output. A reasoning summary with visible text is retained as
+// Markdown above the answer; raw chain-of-thought is discarded. A
 // plain assistant row is only flushed when the message carried no content.
 func (r *enhancedChatRuntime) shouldFlushActivityItem(item enhancedActivityItem, noContent bool) bool {
 	if item.reasoning {
@@ -1061,7 +1192,7 @@ func (r *enhancedChatRuntime) flushReasoningBeforeAnswer(messageID string) error
 			item.status = "success"
 			item.terminal = true
 			item.ended = now
-			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Text: formatActivity(*item, now), Style: item.style}); err != nil {
+			if err := r.shell.renderer.CommitStyled(reasoningSummaryActivity(*item, now)); err != nil {
 				return err
 			}
 			r.borderCommitted = false
@@ -2684,9 +2815,8 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		if item.Role != "assistant" || item.Status == "active" || r.knownMessages[item.ID] || messageID != "" && item.ID != messageID {
 			continue
 		}
-		// Keep any retained reasoning summary as ordinary one-line transcript
-		// output before the answer instead of rendering it as a multiline block,
-		// and drop raw chain-of-thought rows without emitting them.
+		// Keep any retained reasoning summary as Markdown transcript output before
+		// the answer, and drop raw chain-of-thought rows without emitting them.
 		if err := r.finishAssistantActivity(item.ID, item.Content == ""); err != nil {
 			return err
 		}

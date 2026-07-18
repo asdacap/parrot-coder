@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"unicode"
@@ -82,10 +83,15 @@ const (
 	textStyleAssistantMessage
 )
 
-// StyledText is plain terminal text with a semantic renderer-owned style.
+// StyledText is terminal text with semantic renderer-owned presentation.
+// Markdown enables the same safe Markdown subset used for assistant messages;
+// Prefix and Suffix are renderer-owned plain-text decorations around it.
 type StyledText struct {
-	Text  string
-	Style TextStyle
+	Text     string
+	Style    TextStyle
+	Markdown bool
+	Prefix   string
+	Suffix   string
 }
 
 // MutedText marks a report for muted grey presentation when color is enabled.
@@ -272,12 +278,12 @@ func (r *LiveRenderer) UpdateStyled(lines []StyledText) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	rows, styles := r.layoutStyledLines(lines)
+	content, styles := r.layoutStyledLinesRich(lines)
 	if !r.tty {
-		return r.writePlain(rows)
+		return r.writePlain(content.rows)
 	}
-	row, col := lastPosition(rows)
-	return r.redrawStyled(rows, styles, row, col)
+	row, col := lastPosition(content.rows)
+	return r.redrawRich(content.rows, styles, content.spans, row, col)
 }
 
 // Prompt redraws the independent input region and any completion choices.
@@ -397,15 +403,18 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	var activity []string
 	var activityStyles []TextStyle
 	assistantMessage := false
+	var activitySpans [][]textSpan
 	for _, item := range frame.Activity {
 		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.columns)
 		activity = append(activity, itemRows...)
 		activityStyles = append(activityStyles, make([]TextStyle, len(itemRows))...)
+		activitySpans = append(activitySpans, make([][]textSpan, len(itemRows))...)
 	}
 	for _, item := range frame.StyledActivity {
-		itemRows, itemStyles := r.layoutStyledContentAtColumns([]StyledText{item}, r.columns)
-		activity = append(activity, itemRows...)
+		content, itemStyles := r.layoutLiveStyledTextAtColumns(item, r.columns)
+		activity = append(activity, content.rows...)
 		activityStyles = append(activityStyles, itemStyles...)
+		activitySpans = append(activitySpans, content.spans...)
 	}
 	if frame.Message != "" || frame.MessagePrefix != "" {
 		messageRows := r.messageRowsAtColumns(frame.MessagePrefix, frame.Message, r.columns)
@@ -416,11 +425,13 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 			messageStyle = textStyleAssistantMessage
 		}
 		activityStyles = append(activityStyles, repeatedStyle(messageStyle, len(messageRows))...)
+		activitySpans = append(activitySpans, make([][]textSpan, len(messageRows))...)
 	}
 	if len(activity) > remaining {
 		start := len(activity) - remaining
 		activity = activity[start:]
 		activityStyles = activityStyles[start:]
+		activitySpans = activitySpans[start:]
 	}
 	rows := append(streamRows, contextRows...)
 	rows = append(rows, activity...)
@@ -428,7 +439,8 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	styles = append(styles, make([]TextStyle, len(contextRows))...)
 	styles = append(styles, activityStyles...)
 	spans := append([][]textSpan(nil), streamSpans...)
-	spans = append(spans, make([][]textSpan, len(contextRows)+len(activity))...)
+	spans = append(spans, make([][]textSpan, len(contextRows))...)
+	spans = append(spans, activitySpans...)
 	// Permanent transcript blocks and transient output are separate visual
 	// regions. Keep an ordinary block gap before transient activity so it appears
 	// immediately after a submitted user message or settled response. Assistant
@@ -771,8 +783,8 @@ func (r *LiveRenderer) CommitStyled(text StyledText) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	rows, styles := r.layoutStyledContent([]StyledText{text})
-	return r.commitRowsAsStyled(rows, styles, commitCompact)
+	content, styles := r.layoutStyledTextAtColumns(text, r.columns)
+	return r.commitRowsAsRich(content.rows, styles, content.spans, commitCompact)
 }
 
 // CommitStyledBlock appends one spaced styled multiline report.
@@ -783,8 +795,8 @@ func (r *LiveRenderer) CommitStyledBlock(text StyledText) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	rows, styles := r.layoutStyledContent([]StyledText{text})
-	return r.commitRowsAsStyled(rows, styles, commitBlock)
+	content, styles := r.layoutStyledTextAtColumns(text, r.columns)
+	return r.commitRowsAsRich(content.rows, styles, content.spans, commitBlock)
 }
 
 // CommitDivider appends one permanent input-boundary rule.
@@ -1005,11 +1017,16 @@ func (r *LiveRenderer) commitRowsAs(rows []string, kind commitKind) error {
 }
 
 func (r *LiveRenderer) commitRowsAsStyled(rows []string, styles []TextStyle, kind commitKind) error {
+	return r.commitRowsAsRich(rows, styles, nil, kind)
+}
+
+func (r *LiveRenderer) commitRowsAsRich(rows []string, styles []TextStyle, spans [][]textSpan, kind commitKind) error {
 	if r.committed && (r.lastCommit == commitBlock || kind == commitBlock) {
 		rows = append([]string{""}, rows...)
 		styles = append([]TextStyle{TextStyleDefault}, styles...)
+		spans = append([][]textSpan{nil}, spans...)
 	}
-	if err := r.commitRowsStyled(rows, styles); err != nil {
+	if err := r.commitRowsRich(rows, styles, spans); err != nil {
 		return err
 	}
 	r.committed = true
@@ -1322,26 +1339,84 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 }
 
 func (r *LiveRenderer) decorateRich(row string, style TextStyle, spans []textSpan) string {
-	if !r.color || len(spans) == 0 || style != TextStyleDefault && style != textStyleAssistantMessage {
+	if !r.color || style != TextStyleDefault && style != textStyleAssistantMessage {
 		return r.decorateStyled(row, style)
 	}
 	base := ansiStyle{}
 	if style == textStyleAssistantMessage {
 		base = ansiStyle{color: "38;5;195", background: "48;5;22"}
 	}
-	var output strings.Builder
-	position := 0
-	for _, span := range spans {
-		start := clamp(span.start, position, len(row))
-		end := clamp(span.end, start, len(row))
-		output.WriteString(ansiStyled(row[position:start], base))
-		if start < end {
-			output.WriteString(ansiStyled(row[start:end], mergeANSIStyle(base, span.style)))
-		}
-		position = end
+	var semantic []textSpan
+	if style == TextStyleDefault {
+		semantic = semanticTextSpans(row)
 	}
-	output.WriteString(ansiStyled(row[position:], base))
+	if len(spans) == 0 && len(semantic) == 0 {
+		return ansiStyled(row, base)
+	}
+	boundaries := []int{0, len(row)}
+	for _, group := range [][]textSpan{spans, semantic} {
+		for _, span := range group {
+			boundaries = append(boundaries, clamp(span.start, 0, len(row)), clamp(span.end, 0, len(row)))
+		}
+	}
+	slices.Sort(boundaries)
+	var output strings.Builder
+	for i := 1; i < len(boundaries); i++ {
+		start, end := boundaries[i-1], boundaries[i]
+		if start == end {
+			continue
+		}
+		combined := mergeANSIStyle(base, spanStyleAt(spans, start))
+		combined = mergeANSIStyle(combined, spanStyleAt(semantic, start))
+		output.WriteString(ansiStyled(row[start:end], combined))
+	}
 	return output.String()
+}
+
+func semanticTextSpans(row string) []textSpan {
+	span := func(end int, style ansiStyle) []textSpan { return []textSpan{{start: 0, end: end, style: style}} }
+	cyan := ansiStyle{color: "36"}
+	switch {
+	case hasSpinnerPrefix(row):
+		_, rest := firstRune(row)
+		spinnerEnd := len(row) - len(rest)
+		spans := span(spinnerEnd, cyan)
+		if strings.HasPrefix(rest, " $ ") {
+			start := spinnerEnd + len(" ")
+			spans = append(spans, textSpan{start: start, end: start + len("$"), style: cyan})
+		}
+		return spans
+	case strings.HasPrefix(row, "$ "):
+		return span(len("$"), cyan)
+	case strings.HasPrefix(row, "● ") || strings.HasPrefix(row, "- "):
+		_, rest := firstRune(row)
+		return span(len(row)-len(rest), ansiStyle{color: "32"})
+	case strings.HasPrefix(row, "✓ "):
+		return span(len("✓"), ansiStyle{color: "32"})
+	case strings.HasPrefix(row, "✗ "):
+		return span(len(row), ansiStyle{color: "31"})
+	case strings.HasPrefix(row, "○ ") || strings.HasPrefix(row, "◌ ") || strings.HasPrefix(row, "■ "):
+		return span(len(row), ansiStyle{dim: true})
+	case strings.Trim(row, "─") == "":
+		return span(len(row), ansiStyle{color: "90", dim: true})
+	case strings.HasPrefix(row, "error:"):
+		return span(len(row), ansiStyle{color: "31"})
+	case strings.HasPrefix(row, "status:") || strings.HasPrefix(row, "tool:"):
+		return span(len(row), ansiStyle{dim: true})
+	case strings.HasPrefix(row, "> "):
+		return span(len(">"), cyan)
+	default:
+		return nil
+	}
+}
+
+func spanStyleAt(spans []textSpan, position int) ansiStyle {
+	for _, span := range spans {
+		if position >= span.start && position < span.end {
+			return span.style
+		}
+	}
+	return ansiStyle{}
 }
 
 func ansiStyled(value string, style ansiStyle) string {
@@ -1459,13 +1534,25 @@ func (r *LiveRenderer) layoutLines(lines []string) []string {
 }
 
 func (r *LiveRenderer) layoutStyledLines(lines []StyledText) ([]string, []TextStyle) {
-	rows, styles := r.layoutStyledContent(lines)
-	if len(rows) > r.maxRows {
-		start := len(rows) - r.maxRows
-		rows = rows[start:]
+	content, styles := r.layoutStyledLinesRich(lines)
+	return content.rows, styles
+}
+
+func (r *LiveRenderer) layoutStyledLinesRich(lines []StyledText) (richRows, []TextStyle) {
+	var content richRows
+	var styles []TextStyle
+	for _, line := range lines {
+		item, itemStyles := r.layoutLiveStyledTextAtColumns(line, r.columns)
+		content.append(item)
+		styles = append(styles, itemStyles...)
+	}
+	if len(content.rows) > r.maxRows {
+		start := len(content.rows) - r.maxRows
+		content.rows = content.rows[start:]
+		content.spans = content.spans[start:]
 		styles = styles[start:]
 	}
-	return rows, styles
+	return content, styles
 }
 
 func (r *LiveRenderer) layoutStyledContent(lines []StyledText) ([]string, []TextStyle) {
@@ -1485,6 +1572,52 @@ func (r *LiveRenderer) layoutStyledContentAtColumns(lines []StyledText, columns 
 		}
 	}
 	return rows, styles
+}
+
+func (r *LiveRenderer) layoutStyledTextAtColumns(line StyledText, columns int) (richRows, []TextStyle) {
+	if !line.Markdown {
+		rows, styles := r.layoutStyledContentAtColumns([]StyledText{line}, columns)
+		return richRows{rows: rows, spans: make([][]textSpan, len(rows))}, styles
+	}
+	content := renderMarkdown(line.Prefix, line.Text, line.Suffix, columns, r.color)
+	styles := make([]TextStyle, len(content.rows))
+	for i := range styles {
+		styles[i] = line.Style
+	}
+	return content, styles
+}
+
+func (r *LiveRenderer) layoutLiveStyledTextAtColumns(line StyledText, columns int) (richRows, []TextStyle) {
+	if !line.Markdown {
+		return r.layoutStyledTextAtColumns(line, columns)
+	}
+	if preview, truncated := liveMarkdownPreview(line.Text); truncated {
+		prefix := hangingIndent(Sanitize(line.Prefix))
+		content := renderPlainCodeTail(prefix, strings.Split(Sanitize(preview+line.Suffix), "\n"), columns, r.maxRows)
+		styles := make([]TextStyle, len(content.rows))
+		for i := range styles {
+			styles[i] = line.Style
+		}
+		return content, styles
+	}
+	return r.layoutStyledTextAtColumns(line, columns)
+}
+
+func liveMarkdownPreview(source string) (string, bool) {
+	end := len(source)
+	start := end
+	lines := 1
+	for runes := 0; start > 0 && runes < maxLiveMarkdownRunes; runes++ {
+		value, size := utf8.DecodeLastRuneInString(source[:start])
+		if value == '\n' {
+			if lines == maxLiveMarkdownLines {
+				break
+			}
+			lines++
+		}
+		start -= size
+	}
+	return source[start:end], start > 0
 }
 
 func styleAt(styles []TextStyle, index int) TextStyle {

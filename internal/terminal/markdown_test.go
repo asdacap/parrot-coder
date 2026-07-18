@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 var sgrPattern = regexp.MustCompile("\\x1b\\[[0-9;]*m")
@@ -46,6 +47,54 @@ func TestRenderAssistantMarkdownFormatsBlockAndInlineSyntax(t *testing.T) {
 	}
 }
 
+func TestStyledMarkdownRendersInLiveAndCommittedActivity(t *testing.T) {
+	activity := StyledText{Text: "# Checking\n\n- **tests**", Markdown: true, Prefix: "✓ ", Suffix: " · 2 tokens"}
+	for _, test := range []struct {
+		name   string
+		render func(*LiveRenderer) error
+	}{
+		{name: "live", render: func(renderer *LiveRenderer) error {
+			return renderer.Frame(LiveFrame{StyledActivity: []StyledText{activity}})
+		}},
+		{name: "committed", render: func(renderer *LiveRenderer) error {
+			return renderer.CommitStyled(activity)
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 80})
+			if err := test.render(renderer); err != nil {
+				t.Fatal(err)
+			}
+			plain := sgrPattern.ReplaceAllString(output.String(), "")
+			if !strings.Contains(plain, "✓ Checking") || !strings.Contains(plain, "  • tests · 2 tokens") || strings.Contains(plain, "# Checking") || strings.Contains(plain, "**") {
+				t.Fatalf("styled Markdown output = %q", plain)
+			}
+			if !strings.Contains(output.String(), "\x1b[1;36mChecking\x1b[0m") || !strings.Contains(output.String(), "\x1b[1mtests\x1b[0m") {
+				t.Fatalf("styled Markdown metadata was not rendered: %q", output.String())
+			}
+		})
+	}
+}
+
+func TestLiveStyledMarkdownPreviewIsBounded(t *testing.T) {
+	source := "```go\n" + strings.Repeat("old_line()\n", maxLiveMarkdownLines*4) + "```\n# Latest"
+	preview, truncated := liveMarkdownPreview(source)
+	if !truncated || utf8.RuneCountInString(preview) > maxLiveMarkdownRunes || strings.Count(preview, "\n") >= maxLiveMarkdownLines {
+		t.Fatalf("live preview was not bounded: truncated=%v, runes=%d, lines=%d", truncated, utf8.RuneCountInString(preview), strings.Count(preview, "\n")+1)
+	}
+
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 80})
+	if err := renderer.UpdateStyled([]StyledText{{Text: source, Markdown: true, Prefix: "✓ "}}); err != nil {
+		t.Fatal(err)
+	}
+	plain := sgrPattern.ReplaceAllString(output.String(), "")
+	if !strings.Contains(plain, "# Latest") || len(renderer.rows) > renderer.maxRows {
+		t.Fatalf("bounded Markdown preview = %q", plain)
+	}
+}
+
 func TestLiveRendererHighlightsFencedCodeAndHidesDelimiters(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 80})
@@ -65,6 +114,16 @@ func TestLiveRendererHighlightsFencedCodeAndHidesDelimiters(t *testing.T) {
 	if !strings.Contains(output.String(), "\x1b[1;35;48;5;22mpackage\x1b[0m") ||
 		!strings.Contains(output.String(), "\x1b[32;48;5;22m\"hello\"\x1b[0m") {
 		t.Fatalf("Go syntax was not highlighted: %q", output.String())
+	}
+}
+
+func TestAssistantMarkdownKeepsRoleColorsOnPrefix(t *testing.T) {
+	rendered := renderAssistantMarkdown("- ", "**answer**", 80, true)
+	renderer := NewLiveRenderer(&bytes.Buffer{}, RendererConfig{TTY: true, Color: true, Columns: 80})
+	got := renderer.decorateRich(rendered.rows[0], textStyleAssistantMessage, rendered.spans[0])
+	want := "\x1b[38;5;195;48;5;22m- \x1b[0m\x1b[1;38;5;195;48;5;22manswer\x1b[0m"
+	if got != want {
+		t.Fatalf("styled assistant Markdown = %q; want %q", got, want)
 	}
 }
 

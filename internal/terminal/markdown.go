@@ -61,28 +61,62 @@ type markdownState struct {
 }
 
 func renderAssistantMarkdown(prefix, source string, columns int, color bool) richRows {
+	return renderMarkdown(prefix, source, "", columns, color)
+}
+
+func renderMarkdown(prefix, source, suffix string, columns int, color bool) richRows {
 	prefix = Sanitize(prefix)
 	clean := strings.TrimRight(Sanitize(source), "\r\n")
+	suffix = Sanitize(suffix)
 	lines := strings.Split(clean, "\n")
 	state := markdownState{}
 	started := false
 	var output richRows
-	for _, line := range lines {
+	for index, line := range lines {
 		linePrefix := markdownPrefix(prefix, started)
-		rendered := renderMarkdownLine(linePrefix, line, columns, &state, color)
+		last := index == len(lines)-1
+		var rendered richRows
+		if last {
+			rendered = renderMarkdownLineWithSuffix(linePrefix, line, suffix, columns, &state, color)
+		} else {
+			rendered = renderMarkdownLine(linePrefix, line, columns, &state, color)
+		}
 		output.append(rendered)
 		started = started || len(rendered.rows) > 0
 	}
 	if state.inFence {
 		if !state.plainFence {
-			output.append(renderCodeBlock(markdownPrefix(prefix, started), state, columns, color))
-			started = started || len(state.code) > 0
+			rendered := renderCodeBlock(markdownPrefix(prefix, started), state, columns, color)
+			output.append(rendered)
+			started = started || len(rendered.rows) > 0
+		}
+		if suffix != "" {
+			output.append(layoutRichRuns(withMarkdownPrefix(markdownPrefix(prefix, started), []textRun{{text: suffix}}), hangingIndent(prefix), columns))
+			started = true
 		}
 	}
 	if !started {
 		output.append(layoutRichRuns([]textRun{{text: prefix}}, hangingIndent(prefix), columns))
 	}
 	return output
+}
+
+func renderMarkdownLineWithSuffix(prefix, line, suffix string, columns int, state *markdownState, color bool) richRows {
+	line = strings.TrimSuffix(line, "\r")
+	if state.inFence {
+		rendered := renderMarkdownLine(prefix, line, columns, state, color)
+		if !state.inFence && suffix != "" {
+			indent := hangingIndent(prefix)
+			rendered.append(layoutRichRuns(withMarkdownPrefix(indent, []textRun{{text: suffix}}), indent, columns))
+		}
+		return rendered
+	}
+	if _, ok := parseFenceOpening(line); ok {
+		return renderMarkdownLine(prefix, line, columns, state, color)
+	}
+	runs := markdownLineRuns(line, columns-displayWidth(prefix))
+	appendTextRun(&runs, suffix, ansiStyle{})
+	return layoutRichRuns(withMarkdownPrefix(prefix, runs), hangingIndent(prefix), columns)
 }
 
 func renderMarkdownLine(prefix, line string, columns int, state *markdownState, color bool) richRows {
