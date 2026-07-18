@@ -494,6 +494,62 @@ func TestChatGPTFixedEndpointHeadersAndModels(t *testing.T) {
 	}
 }
 
+func TestChatGPTRefreshModels(t *testing.T) {
+	var requests atomic.Int32
+	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.Method != http.MethodGet || request.URL.Scheme+"://"+request.URL.Host+request.URL.Path != chatGPTModelsEndpoint || request.URL.Query().Get("client_version") != chatGPTModelsClientVersion {
+			t.Errorf("request = %s %s", request.Method, request.URL)
+		}
+		wantHeaders := map[string]string{
+			"Authorization": "Bearer oauth-token", "Chatgpt-Account-Id": "account-1",
+			"Originator": "parrot", "User-Agent": "parrot", "Accept": "application/json",
+		}
+		for name, want := range wantHeaders {
+			if got := request.Header.Get(name); got != want {
+				t.Errorf("header %s = %q, want %q", name, got, want)
+			}
+		}
+		body := `{"models":[
+			{"slug":"gpt-valid","display_name":"Valid","visibility":"list","context_window":272000,"supported_reasoning_levels":[]},
+			{"slug":"gpt-invalid","display_name":"Invalid","visibility":"list","context_window":null,"supported_reasoning_levels":[]}
+		]}`
+		if requests.Add(1) == 2 {
+			body = `{"models":[
+				{"slug":"gpt-remote","display_name":"GPT Remote","visibility":"list","context_window":272000,"supported_reasoning_levels":[{"effort":"low"},{"effort":"high"},{"effort":"high"}]},
+				{"slug":"gpt-max-only","display_name":"","visibility":"list","context_window":null,"max_context_window":400000,"supported_reasoning_levels":[]},
+				{"slug":"gpt-hidden","display_name":"Hidden","visibility":"hide","context_window":500000,"supported_reasoning_levels":[]},
+				{"slug":"gpt-remote","display_name":"Duplicate","visibility":"list","context_window":1,"supported_reasoning_levels":[]}
+			]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": []string{"application/json"}}, Body: io.NopCloser(strings.NewReader(body)), Request: request}, nil
+	})}
+	value, err := NewChatGPT(ChatGPTOptions{
+		TokenSource: fixedTokenSource{auth.OAuthCredential{AccessToken: "oauth-token", AccountID: "account-1", ExpiresAt: time.Now().Add(time.Hour)}},
+		HTTPClient:  client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fallback := value.Models()
+	if err := value.RefreshModels(context.Background()); err == nil || len(value.Models()) != len(fallback) {
+		t.Fatalf("failed refresh error = %v, models = %#v", err, value.Models())
+	}
+	if err := value.RefreshModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	models := value.Models()
+	if len(models) != 2 || models[0].ID != "gpt-remote" || models[0].ContextWindow != 272000 || models[0].MaxOutputTokens != 0 || models[0].Name != "GPT Remote" || !models[0].Capabilities.Tools || !models[0].Capabilities.Reasoning || len(models[0].Capabilities.Variants) != 2 {
+		t.Fatalf("remote model = %#v", models)
+	}
+	if models[1].ID != "gpt-max-only" || models[1].Name != "gpt-max-only" || models[1].ContextWindow != 400000 || models[1].Capabilities.Reasoning {
+		t.Fatalf("max-only model = %#v", models[1])
+	}
+	models[0].Capabilities.Variants[0].Name = "mutated"
+	if value.Models()[0].Capabilities.Variants[0].Name == "mutated" {
+		t.Fatal("Models exposed mutable refreshed metadata")
+	}
+}
+
 func TestChatGPTSubscriptionUsage(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 		if request.URL.String() != chatGPTUsageEndpoint || request.Method != http.MethodGet {

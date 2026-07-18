@@ -97,6 +97,8 @@ selected model. Durations are integer milliseconds.
 
 The built-in provider ID is `chatgpt`; it is not configured in `providers`.
 `parrot auth login openai` stores its OAuth credential under `chatgpt`.
+Parrot refreshes this provider's model metadata from the ChatGPT Codex model
+catalog at startup and uses bundled metadata if that refresh is unavailable.
 
 Each configured provider ID must have a nonempty API key from `api_key_env` or
 the credential store. The environment wins. `base_url` may contain a path but

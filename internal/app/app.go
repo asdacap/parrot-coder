@@ -748,6 +748,12 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 	if err != nil {
 		return nil, fmt.Errorf("app: ChatGPT provider: %w", err)
 	}
+	if err := chatgpt.RefreshModels(ctx); err != nil {
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		diagnostics.Warn("chatgpt_models_refresh_failed", "error_type", diagnostics.ErrorType(err))
+	}
 	result := []provider.Provider{chatgpt}
 	ids := make([]string, 0, len(cfg.Providers))
 	for id := range cfg.Providers {
