@@ -14,7 +14,9 @@ import (
 	"testing"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
+	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -290,8 +292,9 @@ type effortSwitchAPI struct {
 
 type agentModeAPI struct {
 	apiClient
-	agents v1.AgentList
-	modes  v1.ModeList
+	agents  v1.AgentList
+	modes   v1.ModeList
+	updates []v1.UpdateSessionSelectionRequest
 }
 
 type catalogOnlyAPI struct {
@@ -318,6 +321,47 @@ func (a *effortSwitchAPI) UpdateSessionSelection(_ context.Context, _ string, re
 func (a *agentModeAPI) Agents(context.Context) (v1.AgentList, error) { return a.agents, nil }
 
 func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error) { return a.modes, nil }
+
+func (a *agentModeAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
+	a.updates = append(a.updates, request)
+	return v1.SessionSelection{Agent: request.Agent}, nil
+}
+
+func TestPlanTurnCompletePolicy(t *testing.T) {
+	for _, test := range []struct {
+		name, answer, wantPrompt, wantValidation, wantMode string
+		wantUpdates                                        int
+	}{
+		{name: "approve", answer: " YES ", wantPrompt: "Implement the approved plan.", wantMode: mode.BuildID, wantUpdates: 1},
+		{name: "decline", answer: "no", wantMode: mode.PlanID},
+		{name: "feedback", answer: " revise error handling ", wantPrompt: "revise error handling", wantMode: mode.PlanID},
+		{name: "empty", answer: "  ", wantValidation: "enter yes, no, or feedback", wantMode: mode.PlanID},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := &agentModeAPI{modes: v1.ModeList{Items: []v1.Mode{{ID: mode.BuildID}, {ID: mode.PlanID}}}}
+			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: mode.PlanID}, selection: chatSelection{agent: mode.PlanID}}
+			dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.PlanID})
+			if dialog == nil || dialog.Handle == nil || len(dialog.Context) != 1 {
+				t.Fatalf("dialog = %#v", dialog)
+			}
+			result, err := dialog.Handle(test.answer)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Prompt != test.wantPrompt || result.ValidationError != test.wantValidation || shell.selection.agent != test.wantMode || len(api.updates) != test.wantUpdates {
+				t.Fatalf("result=%#v mode=%q updates=%#v", result, shell.selection.agent, api.updates)
+			}
+			if test.wantUpdates == 1 && api.updates[0].Agent != mode.BuildID {
+				t.Fatalf("updated mode = %#v", api.updates[0])
+			}
+		})
+	}
+
+	shell := &chatShell{}
+	if dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.BuildID}); dialog != nil {
+		t.Fatalf("build completion dialog = %#v", dialog)
+	}
+}
 
 func (a catalogOnlyAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
 

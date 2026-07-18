@@ -43,6 +43,23 @@ type Expansion struct {
 	Subtask              bool
 }
 
+type TurnComplete struct {
+	Session   v1.Session
+	Mode      string
+	MessageID string
+}
+
+type TurnCompleteDialog struct {
+	Prompt  string
+	Context []string
+	Handle  func(string) (TurnCompleteResult, error)
+}
+
+type TurnCompleteResult struct {
+	Prompt          string
+	ValidationError string
+}
+
 type Config struct {
 	Context            context.Context
 	Interrupts         <-chan os.Signal
@@ -72,6 +89,7 @@ type Config struct {
 	CommitError        func(string)
 	Expand             func(string, string) (Expansion, error)
 	Slash              func(string, string) (bool, int)
+	OnTurnComplete     func(TurnComplete) *TurnCompleteDialog
 }
 
 type Result struct {

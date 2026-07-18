@@ -199,6 +199,7 @@ type enhancedModal struct {
 	state           *terminal.EditorState
 	permission      *v1.Permission
 	question        *v1.QuestionRequest
+	turnComplete    *TurnCompleteDialog
 	index           int
 	selected        int
 	choices         []terminal.Candidate
@@ -233,7 +234,7 @@ type enhancedChatRuntime struct {
 	knownMessages     map[string]bool
 	activity          []enhancedActivityItem
 	completedTools    []enhancedActivityItem
-	planReviewID      string
+	turnCompleteID    string
 	lastCompleteID    string
 	borderCommitted   bool
 	contextTokens     int
@@ -1377,24 +1378,20 @@ func (r *enhancedChatRuntime) answerModal(value string) error {
 	}
 	modal := r.modal
 	switch modal.kind {
-	case "plan_complete":
-		answer := strings.TrimSpace(value)
-		switch strings.ToLower(answer) {
-		case "yes", "y":
-			r.finishModal()
-			if err := r.shell.applyAgent("build", false); err != nil {
-				return err
-			}
-			return r.submitPrompt("Implement the approved plan.")
-		case "no", "n":
-			r.finishModal()
-			return nil
-		case "":
-			return fmt.Errorf("%w: enter yes, no, or feedback", errInvalidModalAnswer)
-		default:
-			r.finishModal()
-			return r.submitPrompt(answer)
+	case "turn_complete":
+		result, err := modal.turnComplete.Handle(value)
+		if err != nil {
+			return err
 		}
+		r.shell.refreshState()
+		if result.ValidationError != "" {
+			return fmt.Errorf("%w: %s", errInvalidModalAnswer, result.ValidationError)
+		}
+		r.finishModal()
+		if result.Prompt != "" {
+			return r.submitPrompt(result.Prompt)
+		}
+		return nil
 	case "permission":
 		var reply v1.PermissionReply
 		if modal.permission.ToolID == "request_write_permission" {
@@ -1720,6 +1717,8 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		r.eventSessionID = sessionID
 		r.eventAfter = -1
 		r.contextTokens = 0
+		r.lastCompleteID = ""
+		r.turnCompleteID = ""
 		r.knownMessages = make(map[string]bool, len(messages.Items))
 		for _, item := range messages.Items {
 			if item.Sequence > r.eventAfter {
@@ -1727,8 +1726,9 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 			}
 			if item.Status != "active" {
 				r.knownMessages[item.ID] = true
-				if item.Error == "" {
+				if item.Role == "assistant" && item.Status == "complete" {
 					r.lastCompleteID = item.ID
+					r.turnCompleteID = item.ID
 				}
 			}
 			if item.Role == "assistant" && item.Status != "active" {
@@ -2075,6 +2075,9 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 				status = "interrupted"
 			}
 			r.completeAssistantActivity(payload.MessageID, status)
+			if item.Type == "session.assistant.complete" {
+				r.lastCompleteID = payload.MessageID
+			}
 		}
 		if err := r.commitCompletedAssistants(payload.MessageID); err != nil {
 			return err
@@ -2643,13 +2646,24 @@ func (r *enhancedChatRuntime) settleIdle() error {
 	r.idleSeen = false
 	r.status = ""
 	r.interruptCount = 0
-	if r.shell.selection.agent == "plan" && r.lastCompleteID != "" && r.planReviewID != r.lastCompleteID && r.modal == nil {
+	var callback func(TurnComplete) *TurnCompleteDialog
+	if r.shell != nil && r.shell.config != nil {
+		callback = r.shell.config.OnTurnComplete
+	}
+	if callback != nil && r.lastCompleteID != "" && r.turnCompleteID != r.lastCompleteID && r.modal == nil {
+		r.turnCompleteID = r.lastCompleteID
+		dialog := callback(TurnComplete{Session: r.shell.current, Mode: r.shell.selection.agent, MessageID: r.lastCompleteID})
+		if dialog == nil {
+			return nil
+		}
+		if dialog.Handle == nil {
+			return errors.New("turn completion dialog handler is required")
+		}
 		state, err := r.shell.editor.Start("")
 		if err != nil {
 			return err
 		}
-		r.planReviewID = r.lastCompleteID
-		r.modal = &enhancedModal{kind: "plan_complete", state: state, prompt: "Plan complete — yes to implement, no to stop, or type feedback: ", context: []string{"Review the plan before implementation."}}
+		r.modal = &enhancedModal{kind: "turn_complete", state: state, prompt: dialog.Prompt, context: dialog.Context, turnComplete: dialog}
 		r.inputMode.advance()
 	}
 	return nil

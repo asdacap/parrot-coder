@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"regexp"
@@ -167,6 +168,81 @@ func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
 	second := strings.Index(text, "second answer")
 	if first < 0 || queued < first || second < queued || runtime.busy {
 		t.Fatalf("turn order first=%d queued=%d second=%d busy=%t output=%q", first, queued, second, runtime.busy, text)
+	}
+}
+
+func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testing.T) {
+	for _, test := range []struct {
+		name, eventType, status, messageError string
+		wantCallback                          bool
+	}{
+		{name: "complete", eventType: "session.assistant.complete", status: "complete", wantCallback: true},
+		{name: "error", eventType: "session.assistant.error", status: "error", messageError: "failed"},
+		{name: "interrupted", eventType: "session.assistant.interrupted", status: "interrupted"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Status: test.status, Error: test.messageError}}}}
+			var output bytes.Buffer
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+			editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
+			calls := 0
+			var completed TurnComplete
+			shell := &chatShell{
+				ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: "custom"}, selection: chatSelection{agent: "custom"},
+				renderer: renderer, editor: editor,
+				config: &Config{OnTurnComplete: func(item TurnComplete) *TurnCompleteDialog {
+					calls++
+					completed = item
+					return &TurnCompleteDialog{Prompt: "continue? ", Context: []string{"turn finished"}, Handle: func(value string) (TurnCompleteResult, error) {
+						if strings.TrimSpace(value) == "" {
+							return TurnCompleteResult{ValidationError: "answer required"}, nil
+						}
+						return TurnCompleteResult{}, nil
+					}}
+				}},
+			}
+			runtime := &enhancedChatRuntime{shell: shell, busy: true, idleSeen: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
+			payload, _ := json.Marshal(map[string]string{"message_id": "assistant"})
+			if err := runtime.handleEvent(v1.Event{Type: test.eventType, Data: payload}); err != nil {
+				t.Fatal(err)
+			}
+
+			if !test.wantCallback {
+				if calls != 0 || runtime.modal != nil {
+					t.Fatalf("callback calls=%d modal=%#v", calls, runtime.modal)
+				}
+				return
+			}
+			if calls != 1 || completed.Session.ID != "session" || completed.Mode != "custom" || completed.MessageID != "assistant" || runtime.modal == nil || runtime.modal.kind != "turn_complete" {
+				t.Fatalf("calls=%d completed=%#v modal=%#v", calls, completed, runtime.modal)
+			}
+			runtime.idleSeen = true
+			if err := runtime.settleIdle(); err != nil {
+				t.Fatal(err)
+			}
+			if calls != 1 {
+				t.Fatalf("callback called %d times", calls)
+			}
+			if err := runtime.answerModal(""); !errors.Is(err, errInvalidModalAnswer) || runtime.modal == nil {
+				t.Fatalf("empty answer err=%v modal=%#v", err, runtime.modal)
+			}
+			if err := runtime.answerModal("done"); err != nil || runtime.modal != nil {
+				t.Fatalf("valid answer err=%v modal=%#v", err, runtime.modal)
+			}
+		})
+	}
+
+	calls := 0
+	shell := &chatShell{ctx: context.Background(), api: &enhancedQueueAPI{}, current: v1.Session{ID: "restored"}, config: &Config{OnTurnComplete: func(TurnComplete) *TurnCompleteDialog {
+		calls++
+		return nil
+	}}}
+	runtime := &enhancedChatRuntime{shell: shell, busy: true, idleSeen: true, lastCompleteID: "historical", turnCompleteID: "historical", knownMessages: map[string]bool{}}
+	if err := runtime.settleIdle(); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("callback ran %d times for restored history", calls)
 	}
 }
 
