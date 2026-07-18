@@ -210,7 +210,7 @@ func TestModelLessChatHelpThenExit(t *testing.T) {
 	}
 }
 
-func TestChatStartupReportsLoadedAgentsFiles(t *testing.T) {
+func TestChatDoesNotReportAgentsFilesBeforeSessionInitialization(t *testing.T) {
 	configHome := configureCLIConfig(t, `{}`)
 	path := filepath.Join(configHome, "parrot", "AGENTS.md")
 	if err := os.WriteFile(path, []byte("Use project conventions."), 0o600); err != nil {
@@ -221,11 +221,8 @@ func TestChatStartupReportsLoadedAgentsFiles(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	if want := "✓ Loaded AGENTS.md from " + path; !strings.Contains(stderr.String(), want) {
-		t.Fatalf("startup output %q does not contain %q", stderr.String(), want)
-	}
-	if strings.Contains(stderr.String(), "No AGENTS.md files loaded") {
-		t.Fatalf("startup output incorrectly reported no files: %q", stderr.String())
+	if strings.Contains(stderr.String(), path) || strings.Contains(stderr.String(), "No AGENTS.md files loaded") {
+		t.Fatalf("startup output reported AGENTS.md before session initialization: %q", stderr.String())
 	}
 }
 

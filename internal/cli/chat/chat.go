@@ -345,7 +345,6 @@ func command(ctx context.Context, config Config) int {
 		return finish(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
-	writeAgentsStartupActivity(stderr, runtime.AgentsFiles)
 	api := apiClient(runtime.Client)
 	models, err := api.Models(ctx)
 	if err != nil {
