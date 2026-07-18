@@ -1,0 +1,513 @@
+package enhancedchat
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"strings"
+	"time"
+
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/terminal"
+)
+
+func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
+	if r.stream != nil && r.streamSessionID == sessionID {
+		return nil
+	}
+	r.stopStream()
+	messages, err := r.shell.api.Messages(r.shell.ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	newSession := r.eventSessionID != sessionID
+	if newSession {
+		r.eventSessionID = sessionID
+		r.eventAfter = -1
+		r.contextTokens = 0
+		r.lastCompleteID = ""
+		r.turnCompleteID = ""
+		r.knownMessages = make(map[string]bool, len(messages.Items))
+		for _, item := range messages.Items {
+			if item.Sequence > r.eventAfter {
+				r.eventAfter = item.Sequence
+			}
+			if item.Status != "active" {
+				r.knownMessages[item.ID] = true
+				if item.Role == "assistant" && item.Status == "complete" {
+					r.lastCompleteID = item.ID
+					r.turnCompleteID = item.ID
+				}
+			}
+			if item.Role == "assistant" && item.Status != "active" {
+				var usage v1.Usage
+				if json.Unmarshal(item.Usage, &usage) == nil {
+					if tokens := contextTokenCount(usage); tokens > 0 {
+						r.contextTokens = tokens
+					}
+				}
+			}
+		}
+	}
+	after := r.eventAfter
+	stream, err := r.shell.api.Events(r.shell.ctx, sessionID, &after)
+	if err != nil {
+		return err
+	}
+	connected, err := stream.Next()
+	if err != nil || connected.Type != v1.EventServerConnected {
+		_ = stream.Close()
+		if err == nil {
+			err = errors.New("event stream did not send server.connected")
+		}
+		return err
+	}
+	r.stream = stream
+	r.streamSessionID = sessionID
+	r.streamGeneration++
+	generation := r.streamGeneration
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	r.streamDone = done
+	r.streamExited = exited
+	go func() {
+		defer close(exited)
+		for {
+			item, nextErr := stream.Next()
+			select {
+			case r.events <- enhancedSessionEvent{generation: generation, event: item, err: nextErr}:
+			case <-done:
+				return
+			}
+			if nextErr != nil {
+				return
+			}
+		}
+	}()
+	return r.reconcileRuntime()
+}
+
+func (r *enhancedChatRuntime) reconcileRuntime() error {
+	if !r.busy {
+		return nil
+	}
+	runtimeState, err := r.shell.api.Runtime(r.shell.ctx)
+	if err != nil {
+		return err
+	}
+	active := false
+	for _, item := range runtimeState.Active {
+		if item.SessionID == r.shell.current.ID {
+			active = true
+			break
+		}
+	}
+	if active {
+		return nil
+	}
+	if err := r.commitCompletedAssistants(""); err != nil {
+		return err
+	}
+	r.busy = false
+	r.idleSeen = false
+	r.status = ""
+	r.interruptCount = 0
+	return nil
+}
+
+func (r *enhancedChatRuntime) stopStream() {
+	if r.stream == nil {
+		return
+	}
+	close(r.streamDone)
+	_ = r.stream.Close()
+	<-r.streamExited
+	r.stream = nil
+	r.streamDone = nil
+	r.streamExited = nil
+	r.streamSessionID = ""
+	r.streamGeneration++
+}
+
+func (r *enhancedChatRuntime) handleSubagentEvent(item *v1.SubagentEvent) error {
+	thinking := r.shell != nil && r.shell.options.thinking
+	reports, err := r.subagents.describe(item, thinking)
+	if err != nil {
+		return err
+	}
+	for _, report := range reports {
+		text := report.line
+		if report.block != "" {
+			text += "\n" + report.block
+		}
+		if report.terminal {
+			for i := 0; i < len(r.activity); i++ {
+				if r.activity[i].id == report.id {
+					r.activity = append(r.activity[:i], r.activity[i+1:]...)
+					break
+				}
+			}
+			if report.skip {
+				continue
+			}
+			if r.shell == nil || r.shell.renderer == nil {
+				continue
+			}
+			styled := terminal.StyledText{Text: text, Style: report.style}
+			if report.block != "" {
+				err = r.shell.renderer.CommitStyledBlock(styled)
+			} else {
+				err = r.shell.renderer.CommitStyled(styled)
+			}
+			if err != nil {
+				return err
+			}
+			r.borderCommitted = false
+			continue
+		}
+		found := false
+		for i := range r.activity {
+			if r.activity[i].id != report.id {
+				continue
+			}
+			r.activity[i].rendered = text
+			r.activity[i].style = report.style
+			found = true
+			break
+		}
+		if !found {
+			r.insertSubagentActivity(enhancedActivityItem{id: report.id, rendered: text, style: report.style, status: "running", started: time.Now()})
+		}
+	}
+	return nil
+}
+
+func (r *enhancedChatRuntime) insertSubagentActivity(item enhancedActivityItem) {
+	for i := range r.activity {
+		if r.activity[i].toolName == "task" {
+			r.activity = append(r.activity, enhancedActivityItem{})
+			copy(r.activity[i+1:], r.activity[i:])
+			r.activity[i] = item
+			return
+		}
+	}
+	r.activity = append(r.activity, item)
+}
+
+func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
+	switch item.Type {
+	case v1.EventSubagent:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		return r.handleSubagentEvent(payload.(*v1.SubagentEvent))
+	case v1.EventMessagePartDelta:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		delta := payload.(*v1.MessagePartDelta)
+		if delta.MessageID != "" && r.knownMessages[delta.MessageID] {
+			return r.settleIdle()
+		}
+		accepted, err := r.beginAssistantMessage(delta.MessageID)
+		if err != nil {
+			return err
+		}
+		if !accepted {
+			return r.settleIdle()
+		}
+		if delta.Kind == "text" {
+			if delta.Delta != "" && r.streamed.Len() == 0 {
+				if err := r.flushReasoningBeforeAnswer(delta.MessageID); err != nil {
+					return err
+				}
+			}
+			r.streamed.WriteString(delta.Delta)
+			r.status = ""
+		} else if delta.Kind == "reasoning_summary" {
+			// Once answer text has started, complete rows may already be permanent
+			// scrollback. A delayed summary can no longer be placed before them, so
+			// discard it rather than rendering a misleading transcript order.
+			if r.streamed.Len() != 0 {
+				break
+			}
+			if !r.reasoningSummary {
+				r.reasoningText.Reset()
+				r.reasoningSummary = true
+			}
+			if delta.Done {
+				// The done event carries the provider's authoritative complete text.
+				// Use it when present rather than appending it to prior deltas.
+				if delta.Delta != "" {
+					if delta.PartID == "" {
+						r.reasoningText.Reset()
+						r.reasoningText.WriteString(delta.Delta)
+						r.startReasoningActivity(delta.MessageID, "", delta.Delta, true)
+					} else {
+						if r.reasoningParts == nil {
+							r.reasoningParts = make(map[string]string)
+						}
+						r.reasoningParts[delta.PartID] = delta.Delta
+						r.startReasoningActivity(delta.MessageID, delta.PartID, delta.Delta, true)
+					}
+				}
+				if err := r.finishReasoningSummaryPart(delta.MessageID, delta.PartID); err != nil {
+					return err
+				}
+			} else if delta.PartID == "" {
+				r.reasoningText.WriteString(delta.Delta)
+				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String(), true)
+			} else {
+				if r.reasoningParts == nil {
+					r.reasoningParts = make(map[string]string)
+				}
+				r.reasoningParts[delta.PartID] += delta.Delta
+				r.startReasoningActivity(delta.MessageID, delta.PartID, r.reasoningParts[delta.PartID], true)
+			}
+			if r.shell.options.thinking {
+				r.status = "reasoning"
+			}
+		} else if delta.Kind == "reasoning" {
+			if !r.reasoningSummary {
+				r.reasoningText.WriteString(delta.Delta)
+				r.startReasoningActivity(delta.MessageID, "", r.reasoningText.String(), false)
+			}
+			if r.shell.options.thinking {
+				r.status = delta.Kind
+			}
+		} else if delta.Kind != "reasoning" && delta.Kind != "reasoning_summary" || r.shell.options.thinking {
+			r.status = delta.Kind
+		}
+	case v1.EventSessionStatus:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		status := payload.(*v1.SessionStatus)
+		switch status.Kind {
+		case "running":
+			r.busy = true
+			r.idleSeen = false
+		case "idle":
+			r.idleSeen = true
+		case "usage":
+			r.updateAssistantUsage(status.MessageID, status.Usage)
+		case "finish":
+		case "interrupted":
+			r.busy = false
+			r.idleSeen = false
+			r.status = ""
+			r.interruptCount = 0
+		case "error":
+			r.busy = false
+			r.idleSeen = false
+			r.interruptCount = 0
+			if err := r.commitCompletedAssistants(""); err != nil {
+				return err
+			}
+			r.status = "error"
+		case "provider_error":
+			r.status = status.Kind
+		default:
+			r.status = status.Kind
+		}
+	case v1.EventSessionInputAdmitted:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		admitted := payload.(*v1.SessionInputAdmitted)
+		if admitted.Delivery == "queue" {
+			r.addPending(queuedChatInput{inputID: admitted.InputID, messageID: admitted.MessageID, content: admitted.Content})
+		}
+	case v1.EventSessionInputPromoted:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		promoted := payload.(*v1.SessionInputPromoted)
+		if err := r.promotePending(promoted.InputID, promoted.MessageID); err != nil {
+			return err
+		}
+		r.status = "working"
+	case v1.EventTaskProgress:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		r.updateTaskProgress(payload.(*v1.TaskProgress))
+	case v1.EventToolOutputDelta:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		r.updateToolOutput(payload.(*v1.ToolOutputDelta))
+	case "session.context.initialized", "session.context.changed", "session.context.replaced":
+		for _, line := range agentsLoadedActivities(item) {
+			if r.shell != nil && r.shell.renderer != nil {
+				if err := r.shell.renderer.CommitStyled(terminal.MutedText(line)); err != nil {
+					return err
+				}
+			}
+		}
+	case "session.assistant.started":
+		var payload struct {
+			MessageID string `json:"message_id"`
+		}
+		if err := json.Unmarshal(item.Data, &payload); err != nil {
+			return err
+		}
+		accepted, err := r.beginAssistantMessage(payload.MessageID)
+		if err != nil {
+			return err
+		}
+		if !accepted {
+			return r.settleIdle()
+		}
+		r.startAssistantActivity(payload.MessageID)
+		r.status = "working"
+	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
+		var payload struct {
+			MessageID string `json:"message_id"`
+		}
+		if err := json.Unmarshal(item.Data, &payload); err != nil {
+			return err
+		}
+		if payload.MessageID != "" {
+			status := "success"
+			if item.Type == "session.assistant.error" {
+				status = "failure"
+			} else if item.Type == "session.assistant.interrupted" {
+				status = "interrupted"
+			}
+			r.completeAssistantActivity(payload.MessageID, status)
+			if item.Type == "session.assistant.complete" {
+				r.lastCompleteID = payload.MessageID
+			}
+		}
+		if err := r.commitCompletedAssistants(payload.MessageID); err != nil {
+			return err
+		}
+	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
+		r.handleToolActivity(item)
+		r.status = "tool " + strings.TrimPrefix(item.Type, "session.tool.")
+	}
+	return r.settleIdle()
+}
+
+func (r *enhancedChatRuntime) settleIdle() error {
+	if !r.idleSeen || len(r.pending) > 0 {
+		return nil
+	}
+	if err := r.commitCompletedAssistants(""); err != nil {
+		return err
+	}
+	r.busy = false
+	r.idleSeen = false
+	r.status = ""
+	r.interruptCount = 0
+	var callback func(TurnComplete) *TurnCompleteDialog
+	if r.shell != nil && r.shell.config != nil {
+		callback = r.shell.config.OnTurnComplete
+	}
+	if callback != nil && r.lastCompleteID != "" && r.turnCompleteID != r.lastCompleteID && r.modal == nil {
+		r.turnCompleteID = r.lastCompleteID
+		dialog := callback(TurnComplete{Session: r.shell.current, Mode: r.shell.selection.agent, MessageID: r.lastCompleteID})
+		if dialog == nil {
+			return nil
+		}
+		if dialog.Handle == nil {
+			return errors.New("turn completion dialog handler is required")
+		}
+		state, err := r.shell.editor.Start("")
+		if err != nil {
+			return err
+		}
+		r.modal = &enhancedModal{kind: "turn_complete", state: state, prompt: dialog.Prompt, context: dialog.Context, turnComplete: dialog}
+		r.inputMode.advance()
+	}
+	return nil
+}
+
+func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error {
+	ctx, cancel := context.WithTimeout(r.shell.ctx, 5*time.Second)
+	defer cancel()
+	messages, err := r.shell.api.Messages(ctx, r.shell.current.ID)
+	if err != nil {
+		return err
+	}
+	currentStreamSettled := r.streamMessageID == ""
+	for _, item := range messages.Items {
+		if item.ID == r.streamMessageID {
+			currentStreamSettled = item.Status != "active"
+		}
+		if item.Role != "assistant" || item.Status == "active" || r.knownMessages[item.ID] || messageID != "" && item.ID != messageID {
+			continue
+		}
+		// Keep any retained reasoning summary as Markdown transcript output before
+		// the answer, and drop raw chain-of-thought rows without emitting them.
+		if err := r.finishAssistantActivity(item.ID, item.Content == ""); err != nil {
+			return err
+		}
+		if item.Content != "" {
+			if item.ID == r.streamMessageID {
+				if err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "● ", Text: item.Content}, false); err != nil {
+					return err
+				}
+			} else if err := r.shell.renderer.CommitMessage("● ", item.Content, false); err != nil {
+				return err
+			}
+			// The live labeled modeline owns the response/input boundary. Leaving
+			// it uncommitted keeps that boundary heavy and avoids a thin rule above
+			// the modeline once the response settles.
+			r.borderCommitted = false
+		}
+		if item.Error != "" {
+			r.commitError(item.Error)
+		}
+		r.knownMessages[item.ID] = true
+	}
+	if currentStreamSettled && (messageID == "" || messageID == r.streamMessageID) {
+		r.streamed.Reset()
+		r.resetReasoning()
+		r.streamMessageID = ""
+	}
+	if err := r.flushCompletedTools(); err != nil {
+		return err
+	}
+	r.status = ""
+	return nil
+}
+
+// beginAssistantMessage synchronizes the CLI's cumulative buffer with the
+// renderer before accepting a different message ID. Durable lifecycle events
+// and disposable provider deltas travel through separate queues, so events for
+// different assistants can be observed out of order. The repository is
+// authoritative at this boundary: settle the prior assistant from its stored
+// final message instead of discarding the local prefix.
+//
+// If the repository still considers the current assistant active, the
+// conflicting event is stale or has raced persistence. Ignore it and retain
+// the current stream. Returning an error here used to close and reconnect the
+// event stream; the same conflicting event could then produce an endless row
+// of "previous assistant message is still active" errors.
+func (r *enhancedChatRuntime) beginAssistantMessage(messageID string) (bool, error) {
+	if messageID == "" || messageID == r.streamMessageID {
+		return true, nil
+	}
+	if r.streamMessageID != "" {
+		previousID := r.streamMessageID
+		if err := r.commitCompletedAssistants(previousID); err != nil {
+			return false, err
+		}
+		if r.streamMessageID == previousID {
+			return false, nil
+		}
+	}
+	r.streamed.Reset()
+	r.resetReasoning()
+	r.streamMessageID = messageID
+	return true, nil
+}
