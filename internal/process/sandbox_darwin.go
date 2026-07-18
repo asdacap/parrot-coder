@@ -21,7 +21,7 @@ func platformSandbox(ws *workspace.Workspace, workingDirectory string) sandbox {
 	return darwinSandbox{workspace: ws.Root(), workingDirectory: workingDirectory}
 }
 
-func (s darwinSandbox) command(shell, script, cwd string, writablePaths []string) (string, []string, error) {
+func (s darwinSandbox) command(shell, script, cwd string, writablePaths []string, temporaryDirectory string) (string, []string, error) {
 	info, err := os.Stat(seatbeltExecutable)
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return "", nil, errors.New("macOS Seatbelt is required but /usr/bin/sandbox-exec is unavailable")
@@ -33,8 +33,7 @@ func (s darwinSandbox) command(shell, script, cwd string, writablePaths []string
 (allow process-info* (target same-sandbox))
 (allow file-read* file-ioctl)
 (allow file-write* (subpath (param "WORKSPACE")))
-(allow file-write* (subpath "/private/tmp"))
-(allow file-write* (subpath "/tmp"))
+(allow file-write* (subpath (param "TEMPORARY_DIRECTORY")))
 (allow file-write-data (literal "/dev/null"))
 (allow network*)
 (allow sysctl-read)
@@ -57,7 +56,7 @@ func (s darwinSandbox) command(shell, script, cwd string, writablePaths []string
 		name := fmt.Sprintf("PROTECTED_%d", i)
 		profile += fmt.Sprintf("(deny file-write* (subpath (param %q)))\n", name)
 	}
-	args := []string{"-p", profile, "-D", "WORKSPACE=" + s.workspace}
+	args := []string{"-p", profile, "-D", "WORKSPACE=" + s.workspace, "-D", "TEMPORARY_DIRECTORY=" + temporaryDirectory}
 	for i, path := range writablePaths {
 		args = append(args, "-D", fmt.Sprintf("WRITABLE_%d=%s", i, path))
 	}
@@ -70,3 +69,5 @@ func (s darwinSandbox) command(shell, script, cwd string, writablePaths []string
 	args = append(args, shell, "-c", script)
 	return seatbeltExecutable, args, nil
 }
+
+func (darwinSandbox) temporaryDirectory(path string) string { return path }

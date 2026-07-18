@@ -76,8 +76,9 @@ Bubblewrap. macOS uses the system Seatbelt executable. The host filesystem is
 read-only, the workspace and its Git metadata are writable except for existing
 `.parrot` and project configuration metadata along the startup working-directory
 path, and host network access is retained. Linked-worktree Git metadata is also
-made writable outside the workspace. Linux provides a private `/tmp`; macOS
-grants the sandboxed command a writable `/tmp`. Shell commands fail closed when
+made writable outside the workspace. Sandboxed shell commands in the same
+session share a private temporary directory, exposed as `/tmp` on Linux and
+through `TMPDIR` on macOS. Shell commands fail closed when
 the sandbox is unavailable.
 
 ## Quick Start

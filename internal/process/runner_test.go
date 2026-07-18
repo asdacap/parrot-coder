@@ -22,16 +22,24 @@ type memoryOutputStore struct{ data []byte }
 
 type directSandbox struct{}
 
-func (directSandbox) command(shell, script, _ string, _ []string) (string, []string, error) {
+func (directSandbox) command(shell, script, _ string, _ []string, _ string) (string, []string, error) {
 	return shell, []string{"-c", script}, nil
 }
 
-type recordingSandbox struct{ writable []string }
+func (directSandbox) temporaryDirectory(path string) string { return path }
 
-func (s *recordingSandbox) command(shell, script, _ string, writable []string) (string, []string, error) {
+type recordingSandbox struct {
+	writable     []string
+	temporaryDir string
+}
+
+func (s *recordingSandbox) command(shell, script, _ string, writable []string, temporaryDirectory string) (string, []string, error) {
 	s.writable = append([]string(nil), writable...)
+	s.temporaryDir = temporaryDirectory
 	return shell, []string{"-c", script}, nil
 }
+
+func (*recordingSandbox) temporaryDirectory(path string) string { return path }
 
 func TestRunnerWritablePathsAreExactAndSessionScoped(t *testing.T) {
 	root := t.TempDir()
@@ -76,6 +84,74 @@ func TestRunnerWritablePathsAreExactAndSessionScoped(t *testing.T) {
 	}
 	if len(sandbox.writable) != 0 {
 		t.Fatalf("session-b inherited writable paths: %q", sandbox.writable)
+	}
+}
+
+func TestRunnerTemporaryDirectoriesAreSharedWithinSessionAndCleanedUp(t *testing.T) {
+	temporaryRoot := t.TempDir()
+	temporaryAlias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(temporaryRoot, temporaryAlias); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("TMPDIR", temporaryAlias)
+	runner := testRunner(t, Config{})
+	for _, request := range []Request{
+		{Shell: "/bin/sh", Command: `printf shared > "$TMPDIR/marker"`, SessionID: "session-a"},
+		{Shell: "/bin/sh", Command: `test "$(cat "$TMPDIR/marker")" = shared`, SessionID: "session-a"},
+		{Shell: "/bin/sh", Command: `test ! -e "$TMPDIR/marker"`, SessionID: "session-b"},
+	} {
+		result, err := runner.Run(context.Background(), request)
+		if err != nil || result.ExitCode != 0 {
+			t.Fatalf("Run(%q) = %#v, %v", request.SessionID, result, err)
+		}
+	}
+	first, second := runner.temporaryDirs["session-a"].path, runner.temporaryDirs["session-b"].path
+	if first == "" || second == "" || first == second {
+		t.Fatalf("temporary directories = %q, %q", first, second)
+	}
+	if !isPathWithin(first, temporaryRoot) || !isPathWithin(second, temporaryRoot) {
+		t.Fatalf("temporary directories were not canonicalized: %q, %q", first, second)
+	}
+	if err := runner.DeleteSession("session-a"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(first); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("deleted session temporary directory stat error = %v", err)
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(second); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("closed runner temporary directory stat error = %v", err)
+	}
+}
+
+func TestRunnerTemporaryDirectoryCleanupHandlesRestrictedContentsAndClosedRunner(t *testing.T) {
+	runner := testRunner(t, Config{})
+	result, err := runner.Run(context.Background(), Request{
+		Shell: "/bin/sh", Command: `mkdir "$TMPDIR/locked"; touch "$TMPDIR/locked/file"; chmod 000 "$TMPDIR/locked"`, SessionID: "session",
+	})
+	if err != nil || result.ExitCode != 0 {
+		t.Fatalf("Run() = %#v, %v", result, err)
+	}
+	path := runner.temporaryDirs["session"].path
+	if err := runner.DeleteSession("session"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary directory stat error = %v", err)
+	}
+	if _, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "true", SessionID: "session"}); err == nil || !strings.Contains(err.Error(), "deleted") {
+		t.Fatalf("persistent run after deletion error = %v", err)
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "true", SessionID: "new"}); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("persistent run after close error = %v", err)
+	}
+	if len(runner.temporaryDirs) != 0 {
+		t.Fatalf("temporary directories after rejected run = %v", runner.temporaryDirs)
 	}
 }
 

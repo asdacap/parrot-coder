@@ -66,13 +66,16 @@ type Result struct {
 }
 
 type Runner struct {
-	config        Config
-	sandbox       sandbox
-	mu            sync.RWMutex
-	writablePaths map[string]map[string]struct{}
-	processes     map[int32]*persistentProcess
-	reservedIDs   map[int32]string
-	closed        bool
+	config          Config
+	sandbox         sandbox
+	mu              sync.RWMutex
+	cleanup         sync.Mutex
+	writablePaths   map[string]map[string]struct{}
+	temporaryDirs   map[string]*sessionTemporaryDirectory
+	deletedSessions map[string]struct{}
+	processes       map[int32]*persistentProcess
+	reservedIDs     map[int32]string
+	closed          bool
 }
 
 // DefaultShell returns the user's configured shell when it is an absolute,
@@ -157,7 +160,8 @@ func NewRunner(config Config) (*Runner, error) {
 	return &Runner{
 		config: config, sandbox: implementation,
 		writablePaths: make(map[string]map[string]struct{}),
-		processes:     make(map[int32]*persistentProcess), reservedIDs: make(map[int32]string),
+		temporaryDirs: make(map[string]*sessionTemporaryDirectory), deletedSessions: make(map[string]struct{}),
+		processes: make(map[int32]*persistentProcess), reservedIDs: make(map[int32]string),
 	}, nil
 }
 
@@ -179,6 +183,12 @@ func (r *Runner) AllowWrite(sessionID, path string) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.closed {
+		return errors.New("process: runner is closed")
+	}
+	if _, deleted := r.deletedSessions[sessionID]; deleted {
+		return errors.New("process: session is deleted")
+	}
 	if r.writablePaths[sessionID] == nil {
 		r.writablePaths[sessionID] = make(map[string]struct{})
 	}
@@ -212,6 +222,58 @@ func (r *Runner) writableForSession(sessionID string) ([]string, error) {
 	}
 	sort.Strings(paths)
 	return paths, nil
+}
+
+type sessionTemporaryDirectory struct {
+	path     string
+	users    int
+	idle     chan struct{}
+	deleting bool
+}
+
+func (r *Runner) acquireTemporaryDirectory(sessionID string) (string, func(), error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return "", nil, errors.New("process: runner is closed")
+	}
+	if _, deleted := r.deletedSessions[sessionID]; deleted {
+		return "", nil, errors.New("process: session is deleted")
+	}
+	state := r.temporaryDirs[sessionID]
+	if state == nil {
+		path, err := os.MkdirTemp("", "parrot-session-*")
+		if err != nil {
+			return "", nil, fmt.Errorf("process: create session temporary directory: %w", err)
+		}
+		resolvedPath, err := filepath.EvalSymlinks(path)
+		if err != nil {
+			_ = os.RemoveAll(path)
+			return "", nil, fmt.Errorf("process: resolve session temporary directory: %w", err)
+		}
+		path = resolvedPath
+		state = &sessionTemporaryDirectory{path: path}
+		r.temporaryDirs[sessionID] = state
+	}
+	if state.deleting {
+		return "", nil, errors.New("process: session is being deleted")
+	}
+	if state.users == 0 {
+		state.idle = make(chan struct{})
+	}
+	state.users++
+	var once sync.Once
+	release := func() {
+		once.Do(func() {
+			r.mu.Lock()
+			state.users--
+			if state.users == 0 {
+				close(state.idle)
+			}
+			r.mu.Unlock()
+		})
+	}
+	return state.path, release, nil
 }
 
 // Run treats the command as arbitrary process execution. The shell path is an
@@ -274,6 +336,16 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 	}
 	program, arguments := resolvedShell, []string{"-c", request.Command}
 	if sandboxed {
+		temporaryDirectory, releaseTemporaryDirectory, temporaryErr := r.acquireTemporaryDirectory(request.SessionID)
+		if temporaryErr != nil {
+			if outputPipe != nil {
+				_ = outputPipe.CloseWithError(temporaryErr)
+				<-stored
+			}
+			return Result{}, temporaryErr
+		}
+		defer releaseTemporaryDirectory()
+		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
 		writablePaths, writableErr := r.writableForSession(request.SessionID)
 		if writableErr != nil {
 			if outputPipe != nil {
@@ -282,7 +354,7 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 			}
 			return Result{}, writableErr
 		}
-		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, writablePaths)
+		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, writablePaths, temporaryDirectory)
 		if err != nil {
 			if outputPipe != nil {
 				_ = outputPipe.CloseWithError(err)
@@ -343,6 +415,16 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		return result, fmt.Errorf("process: wait: %w", waitErr)
 	}
 	return result, nil
+}
+
+func setEnvironment(environment []string, name, value string) {
+	prefix := name + "="
+	for i := range environment {
+		if strings.HasPrefix(environment[i], prefix) {
+			environment[i] = prefix + value
+			return
+		}
+	}
 }
 
 func executableFile(path string) (string, error) {
