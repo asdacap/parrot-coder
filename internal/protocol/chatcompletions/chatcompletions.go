@@ -73,11 +73,11 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 	}
 
 	body := struct {
-		Model    string `json:"model"`
-		Messages []any  `json:"messages"`
-		Tools    []tool `json:"tools,omitempty"`
-		Stream   bool   `json:"stream"`
-		Options  any    `json:"stream_options"`
+		Model           string `json:"model"`
+		Messages        []any  `json:"messages"`
+		Tools           []tool `json:"tools,omitempty"`
+		Stream          bool   `json:"stream"`
+		Options         any    `json:"stream_options"`
 		ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	}{Model: request.Model, Messages: messages, Tools: tools, Stream: true, Options: map[string]bool{"include_usage": true}}
 	if request.Reasoning != nil {

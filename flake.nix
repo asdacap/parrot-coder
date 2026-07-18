@@ -68,7 +68,7 @@
         vet =
           pkgs.runCommand "parrot-vet"
           {
-            nativeBuildInputs = [go];
+            nativeBuildInputs = [go pkgs.stdenv.cc];
             src = ./.;
           }
           ''
@@ -76,22 +76,25 @@
             cp -R "$src" source
             chmod -R u+w source
             cd source
-            go vet ./...
+            ln -s ${self.packages.${system}.default.goModules} vendor
+            go vet -mod=vendor ./...
             touch "$out"
           '';
 
         test =
           pkgs.runCommand "parrot-test"
           {
-            nativeBuildInputs = [go];
+            nativeBuildInputs = [go pkgs.stdenv.cc pkgs.git];
             src = ./.;
           }
           ''
             export HOME="$TMPDIR"
+            ${pkgs.lib.optionalString pkgs.stdenv.isLinux "export TMPDIR=/tmp"}
             cp -R "$src" source
             chmod -R u+w source
             cd source
-            go test ./...
+            ln -s ${self.packages.${system}.default.goModules} vendor
+            go test -mod=vendor ./...
             touch "$out"
           '';
       }
