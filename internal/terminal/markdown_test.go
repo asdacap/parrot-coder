@@ -104,15 +104,15 @@ func TestLiveRendererHighlightsFencedCodeAndHidesDelimiters(t *testing.T) {
 	}
 
 	plain := sgrPattern.ReplaceAllString(output.String(), "")
-	want := "- Before\n  package main\n  func main() { println(\"hello\") }\n  After\n"
+	want := "\n- Before\n  package main\n  func main() { println(\"hello\") }\n  After\n"
 	if plain != want {
 		t.Fatalf("highlighted code plain text = %q; want %q", plain, want)
 	}
 	if strings.Contains(output.String(), "```") {
 		t.Fatalf("fence delimiter was rendered: %q", output.String())
 	}
-	if !strings.Contains(output.String(), "\x1b[1;35;48;5;22mpackage\x1b[0m") ||
-		!strings.Contains(output.String(), "\x1b[32;48;5;22m\"hello\"\x1b[0m") {
+	if !strings.Contains(output.String(), "\x1b[1;35mpackage\x1b[0m") ||
+		!strings.Contains(output.String(), "\x1b[32m\"hello\"\x1b[0m") {
 		t.Fatalf("Go syntax was not highlighted: %q", output.String())
 	}
 }
@@ -121,7 +121,7 @@ func TestAssistantMarkdownKeepsRoleColorsOnPrefix(t *testing.T) {
 	rendered := renderAssistantMarkdown("- ", "**answer**", 80, true)
 	renderer := NewLiveRenderer(&bytes.Buffer{}, RendererConfig{TTY: true, Color: true, Columns: 80})
 	got := renderer.decorateRich(rendered.rows[0], textStyleAssistantMessage, rendered.spans[0])
-	want := "\x1b[38;5;195;48;5;22m- \x1b[0m\x1b[1;38;5;195;48;5;22manswer\x1b[0m"
+	want := "\x1b[38;5;195m- \x1b[0m\x1b[1;38;5;195manswer\x1b[0m"
 	if got != want {
 		t.Fatalf("styled assistant Markdown = %q; want %q", got, want)
 	}
@@ -155,7 +155,7 @@ func TestStreamBuffersFencedCodeUntilClosingFence(t *testing.T) {
 	if renderer.stream.started || !renderer.stream.markdown.inFence || len(renderer.stream.markdown.code) != 1 {
 		t.Fatalf("open fence state = %#v", renderer.stream)
 	}
-	if len(renderer.rows) < 2 || renderer.rows[0] != "- value = \"\"\"hello" {
+	if len(renderer.rows) < 3 || renderer.rows[0] != "" || renderer.rows[1] != "- value = \"\"\"hello" {
 		t.Fatalf("open fence preview = %#v", renderer.rows)
 	}
 
@@ -243,7 +243,7 @@ func TestAssistantMarkdownNoColorNonTTYAndSanitization(t *testing.T) {
 	if err := plainRenderer.CommitMessage("- ", "**bold**\n```go\npackage main\n```", false); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := plainOutput.String(), "- bold\n  package main\n"; got != want {
+	if got, want := plainOutput.String(), "\n- bold\n  package main\n"; got != want {
 		t.Fatalf("non-TTY Markdown = %q; want %q", got, want)
 	}
 	if strings.ContainsRune(plainOutput.String(), '\x1b') {

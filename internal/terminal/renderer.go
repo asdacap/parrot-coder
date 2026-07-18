@@ -377,7 +377,12 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	inputRows = append(inputRows, pendingRows...)
 	inputRows = append(inputRows, promptContextRows...)
 	inputRows = append(inputRows, promptRows...)
+	assistantMessage := frame.Message != "" && isAssistantPrefix(frame.MessagePrefix)
+	assistantGap := !r.streamBlock && len(promoted.rows) == 0 && len(streamRows) > 0
 	remaining := r.maxRows
+	if assistantGap || assistantMessage {
+		remaining = max(1, remaining-1)
+	}
 
 	// Keep the unfinished streaming row at the top of the live region. A row
 	// promoted on the next frame is written at this same boundary before the
@@ -402,8 +407,8 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 
 	var activity []string
 	var activityStyles []TextStyle
-	assistantMessage := false
 	var activitySpans [][]textSpan
+	messageRowCount := 0
 	for _, item := range frame.Activity {
 		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.columns)
 		activity = append(activity, itemRows...)
@@ -418,10 +423,10 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	}
 	if frame.Message != "" || frame.MessagePrefix != "" {
 		messageRows := r.messageRowsAtColumns(frame.MessagePrefix, frame.Message, r.columns)
+		messageRowCount = len(messageRows)
 		activity = append(activity, messageRows...)
 		messageStyle := TextStyleDefault
 		if isAssistantPrefix(frame.MessagePrefix) {
-			assistantMessage = true
 			messageStyle = textStyleAssistantMessage
 		}
 		activityStyles = append(activityStyles, repeatedStyle(messageStyle, len(messageRows))...)
@@ -433,6 +438,12 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		activityStyles = activityStyles[start:]
 		activitySpans = activitySpans[start:]
 	}
+	if assistantMessage && len(activity) > 0 {
+		messageStart := max(0, len(activity)-messageRowCount)
+		activity = slices.Insert(activity, messageStart, "")
+		activityStyles = slices.Insert(activityStyles, messageStart, TextStyleDefault)
+		activitySpans = slices.Insert(activitySpans, messageStart, nil)
+	}
 	rows := append(streamRows, contextRows...)
 	rows = append(rows, activity...)
 	styles := repeatedStyle(textStyleAssistantMessage, len(streamRows))
@@ -443,10 +454,9 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	spans = append(spans, activitySpans...)
 	// Permanent transcript blocks and transient output are separate visual
 	// regions. Keep an ordinary block gap before transient activity so it appears
-	// immediately after a submitted user message or settled response. Assistant
-	// messages use their role colors instead of a leading separator or gap.
+	// immediately after a submitted user message or settled response.
 	blockGap := 0
-	if r.committed && !r.streamBlock && len(promoted.rows) == 0 && len(streamRows) == 0 && !assistantMessage && r.lastCommit == commitBlock && (len(rows) > 0 || len(inputRows) > 0) {
+	if !r.streamBlock && len(promoted.rows) == 0 && (assistantGap || r.committed && !assistantMessage && r.lastCommit == commitBlock) && (len(rows) > 0 || len(inputRows) > 0) {
 		rows = append([]string{""}, rows...)
 		styles = append([]TextStyle{TextStyleDefault}, styles...)
 		spans = append([][]textSpan{nil}, spans...)
@@ -461,6 +471,9 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	spans = append(spans, make([][]textSpan, len(inputRows))...)
 	cursorRow := len(streamRows) + len(contextRows) + len(activity) + blockGap + dividerRows + barRows + len(pendingRows) + len(promptContextRows) + promptCursorRow
 	if !r.tty {
+		if len(promoted.rows) > 0 && !r.streamBlock {
+			promoted.rows = append([]string{""}, promoted.rows...)
+		}
 		if err := r.writePlain(append(promoted.rows, rows...)); err != nil {
 			r.stream = streamBefore
 			return err
@@ -504,7 +517,15 @@ func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 	if divider {
 		styles[len(styles)-1] = TextStyleDefault
 	}
-	if err := r.commitRowsRich(content.rows, styles, content.spans); err != nil {
+	if r.streamBlock {
+		err = r.commitRowsRich(content.rows, styles, content.spans)
+	} else {
+		content.rows = append([]string{""}, content.rows...)
+		styles = append([]TextStyle{TextStyleDefault}, styles...)
+		content.spans = append([][]textSpan{nil}, content.spans...)
+		err = r.commitRowsRich(content.rows, styles, content.spans)
+	}
+	if err != nil {
 		r.stream = before
 		return err
 	}
@@ -697,6 +718,9 @@ func (r *LiveRenderer) UpdateMessage(prefix, text string) error {
 	if len(rows) > r.maxRows {
 		rows = rows[len(rows)-r.maxRows:]
 	}
+	if isAssistantPrefix(prefix) {
+		rows = append([]string{""}, rows...)
+	}
 	if !r.tty {
 		return r.writePlain(rows)
 	}
@@ -708,7 +732,7 @@ func (r *LiveRenderer) UpdateMessage(prefix, text string) error {
 }
 
 // CommitMessage appends a permanent hanging-indented message. Assistant
-// messages use a role-specific foreground and background. When divider is true,
+// messages use a role-specific foreground. When divider is true,
 // a dim rule is committed beneath the message before the live response begins.
 func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	r.mu.Lock()
@@ -727,6 +751,9 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 		if divider {
 			styles[len(styles)-1] = TextStyleDefault
 		}
+		content.rows = append([]string{""}, content.rows...)
+		styles = append([]TextStyle{TextStyleDefault}, styles...)
+		content.spans = append([][]textSpan{nil}, content.spans...)
 		if err := r.commitRowsRich(content.rows, styles, content.spans); err != nil {
 			return err
 		}
@@ -742,7 +769,7 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 }
 
 // CommitUserMessage appends a permanent user message with a role-specific
-// foreground and background.
+// foreground.
 func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -750,8 +777,9 @@ func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	rows := r.messageRows(prefix, text)
-	if err := r.commitRowsStyled(rows, repeatedStyle(textStyleUserMessage, len(rows))); err != nil {
+	rows := append([]string{""}, r.messageRows(prefix, text)...)
+	styles := append([]TextStyle{TextStyleDefault}, repeatedStyle(textStyleUserMessage, len(rows)-1)...)
+	if err := r.commitRowsStyled(rows, styles); err != nil {
 		return err
 	}
 	r.committed = true
@@ -1243,6 +1271,10 @@ func (r *LiveRenderer) renderStreamLine(line string, state *markdownState, start
 func (r *LiveRenderer) promoteAndRedraw(promoted richRows, rows []string, styles []TextStyle, spans [][]textSpan, cursorRow, cursorCol int) error {
 	var output strings.Builder
 	r.buildRedraw(&output, nil, 0, 0)
+	if !r.streamBlock {
+		promoted.rows = append([]string{""}, promoted.rows...)
+		promoted.spans = append([][]textSpan{nil}, promoted.spans...)
+	}
 	for index, row := range promoted.rows {
 		output.WriteString(r.decorateRich(row, textStyleAssistantMessage, spansAt(promoted.spans, index)))
 		output.WriteByte('\n')
@@ -1303,9 +1335,9 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 	case textStyleGreen:
 		return color("32", row)
 	case textStyleUserMessage:
-		return ansiStyled(row, ansiStyle{color: "38;5;230", background: "48;5;24"})
+		return ansiStyled(row, ansiStyle{color: "38;5;230"})
 	case textStyleAssistantMessage:
-		return ansiStyled(row, ansiStyle{color: "38;5;195", background: "48;5;22"})
+		return ansiStyled(row, ansiStyle{color: "38;5;195"})
 	}
 	switch {
 	case hasSpinnerPrefix(row):
@@ -1344,7 +1376,7 @@ func (r *LiveRenderer) decorateRich(row string, style TextStyle, spans []textSpa
 	}
 	base := ansiStyle{}
 	if style == textStyleAssistantMessage {
-		base = ansiStyle{color: "38;5;195", background: "48;5;22"}
+		base = ansiStyle{color: "38;5;195"}
 	}
 	var semantic []textSpan
 	if style == TextStyleDefault {

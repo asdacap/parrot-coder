@@ -68,8 +68,8 @@ func TestEnhancedSubmissionCommitsUserMessage(t *testing.T) {
 	if strings.Count(committed, "$ keep this") != 1 {
 		t.Fatalf("submitted user message was not committed once: %q", output.String())
 	}
-	if strings.Contains(committed, "─") || !strings.Contains(committed, "\x1b[38;5;230;48;5;24m$ keep this\x1b[0m") {
-		t.Fatalf("submitted user message did not use its role colors without a separator: %q", committed)
+	if strings.Contains(committed, "─") || !strings.Contains(committed, "\n\x1b[38;5;230m$ keep this\x1b[0m") {
+		t.Fatalf("submitted user message did not use its role colors after an empty line: %q", committed)
 	}
 }
 

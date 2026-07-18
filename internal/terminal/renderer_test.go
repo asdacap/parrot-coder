@@ -180,13 +180,13 @@ func TestLiveRendererColoredMessagesAlignAndSanitize(t *testing.T) {
 	}
 }
 
-func TestLiveRendererStylesUserMessageWithoutStartRule(t *testing.T) {
+func TestLiveRendererStylesUserMessageAfterEmptyLine(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 8})
 	if err := renderer.CommitUserMessage("$ ", "request"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := output.String(), "\x1b[38;5;230;48;5;24m$ reques\x1b[0m\n\x1b[38;5;230;48;5;24m  t\x1b[0m\n"; got != want {
+	if got, want := output.String(), "\n\x1b[38;5;230m$ reques\x1b[0m\n\x1b[38;5;230m  t\x1b[0m\n"; got != want {
 		t.Fatalf("colored user message = %q; want %q", got, want)
 	}
 }
@@ -283,7 +283,7 @@ func TestLiveRendererPromptUsesHangingIndentAndExplicitResize(t *testing.T) {
 	if err := renderer.UpdateMessage("- ", "abcdef"); err != nil {
 		t.Fatal(err)
 	}
-	if len(renderer.rows) != 2 || renderer.rows[0] != "- abc" || renderer.rows[1] != "  def" {
+	if len(renderer.rows) != 3 || renderer.rows[0] != "" || renderer.rows[1] != "- abc" || renderer.rows[2] != "  def" {
 		t.Fatalf("resized message rows = %#v", renderer.rows)
 	}
 }
@@ -351,7 +351,7 @@ func TestLiveRendererCompositeFrameShowsInputStatusBar(t *testing.T) {
 	if renderer.cursorRow != len(renderer.rows)-1 {
 		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
 	}
-	if got := renderer.rows[1]; !strings.Contains(got, "─ mode: build ") || !strings.HasSuffix(got, " local/test ") {
+	if got := renderer.rows[2]; !strings.Contains(got, "─ mode: build ") || !strings.HasSuffix(got, " local/test ") {
 		t.Fatalf("modeline labels are not padded: %q", got)
 	}
 }
@@ -365,14 +365,14 @@ func TestLiveRendererAlignsRowsAboveModeline(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if len(renderer.rows) != 5 || renderer.rows[0] != "context" || renderer.rows[1] != "✓ activity" ||
-		renderer.rows[2] != "● response" || !strings.HasPrefix(renderer.rows[3], "─ mode: build ") || renderer.rows[4] != "$ draft" {
+	if len(renderer.rows) != 6 || renderer.rows[0] != "context" || renderer.rows[1] != "✓ activity" || renderer.rows[2] != "" ||
+		renderer.rows[3] != "● response" || !strings.HasPrefix(renderer.rows[4], "─ mode: build ") || renderer.rows[5] != "$ draft" {
 		t.Fatalf("live rows, modeline, and input are not aligned as expected: %#v", renderer.rows)
 	}
-	if got := output.String(); !strings.Contains(got, "\x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "\x1b[38;5;195;48;5;22m● response\x1b[0m") {
+	if got := output.String(); !strings.Contains(got, "\x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "\x1b[38;5;195m● response\x1b[0m") {
 		t.Fatalf("live rows lost semantic color: %q", got)
 	}
-	if got, modeline := output.String(), renderer.rows[3]; !strings.Contains(got, "\x1b[32m"+modeline+"\x1b[0m") {
+	if got, modeline := output.String(), renderer.rows[4]; !strings.Contains(got, "\x1b[32m"+modeline+"\x1b[0m") {
 		t.Fatalf("modeline was not green: %q", got)
 	}
 }
@@ -435,7 +435,7 @@ func TestLiveRendererSpacesWorkingActivityFromUserMessageImmediately(t *testing.
 	}
 }
 
-func TestLiveRendererStylesLiveAssistantWithoutSeparator(t *testing.T) {
+func TestLiveRendererStylesLiveAssistantAfterEmptyLine(t *testing.T) {
 	tests := []struct {
 		name  string
 		frame LiveFrame
@@ -454,17 +454,17 @@ func TestLiveRendererStylesLiveAssistantWithoutSeparator(t *testing.T) {
 			if err := renderer.Frame(test.frame); err != nil {
 				t.Fatal(err)
 			}
-			if len(renderer.rows) == 0 || renderer.rows[0] != "- final answer" {
-				t.Fatalf("final assistant boundary = %#v, want answer without separator", renderer.rows)
+			if len(renderer.rows) < 2 || renderer.rows[0] != "" || renderer.rows[1] != "- final answer" {
+				t.Fatalf("final assistant boundary = %#v, want empty line then answer", renderer.rows)
 			}
-			if got := output.String(); !strings.Contains(got, "\x1b[38;5;195;48;5;22m- final answer\x1b[0m") || strings.Contains(got, "─") {
-				t.Fatalf("final assistant did not use its role colors without a separator: %q", got)
+			if got := output.String(); !strings.Contains(got, "\x1b[38;5;195m- final answer\x1b[0m") || strings.Contains(got, "─") {
+				t.Fatalf("final assistant did not use its role colors after an empty line: %q", got)
 			}
 		})
 	}
 }
 
-func TestLiveRendererStylesCommittedAssistantWithoutSeparator(t *testing.T) {
+func TestLiveRendererStylesCommittedAssistantAfterEmptyLine(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20})
 	if err := renderer.CommitStyled(MutedText("✓ summary")); err != nil {
@@ -473,7 +473,7 @@ func TestLiveRendererStylesCommittedAssistantWithoutSeparator(t *testing.T) {
 	if err := renderer.CommitMessage("- ", "final answer", false); err != nil {
 		t.Fatal(err)
 	}
-	want := "\x1b[90m✓ summary\x1b[0m\n\x1b[38;5;195;48;5;22m- final answer\x1b[0m\n"
+	want := "\x1b[90m✓ summary\x1b[0m\n\n\x1b[38;5;195m- final answer\x1b[0m\n"
 	if got := output.String(); got != want {
 		t.Fatalf("committed final assistant = %q; want %q", got, want)
 	}
@@ -523,7 +523,7 @@ func TestLiveRendererPromotesCompleteStreamingLinesAndCommitsOnlySuffix(t *testi
 	if string(renderer.stream.pending) != "abcdefghijklmnop" {
 		t.Fatalf("stream state = %#v", renderer.stream)
 	}
-	if len(renderer.rows) < 2 || renderer.rows[0] != "- abcdefgh" || renderer.rows[1] != "  ijklmnop" {
+	if len(renderer.rows) < 3 || renderer.rows[0] != "" || renderer.rows[1] != "- abcdefgh" || renderer.rows[2] != "  ijklmnop" {
 		t.Fatalf("wrapped unfinished source is not live: %#v", renderer.rows)
 	}
 	if renderer.cursorRow != len(renderer.rows)-1 || !strings.Contains(strings.Join(renderer.rows, "\n"), "$ draft") {
@@ -569,7 +569,7 @@ func TestLiveRendererKeepsStreamingRowAtTopOfCompositeFrame(t *testing.T) {
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := renderer.rows[0], "- partial"; got != want {
+	if got, want := renderer.rows[1], "- partial"; len(renderer.rows) < 2 || renderer.rows[0] != "" || got != want {
 		t.Fatalf("highest live row = %q; want %q; rows=%#v", got, want, renderer.rows)
 	}
 	if context, activity := indexOf(renderer.rows, "question context"), indexOf(renderer.rows, "Tool: running"); context <= 0 || activity <= context {
@@ -731,7 +731,7 @@ func TestLiveRendererSpacesBlockAndCompactCommits(t *testing.T) {
 	}
 }
 
-func TestLiveRendererDoesNotSeparateStreamAfterCompactCommit(t *testing.T) {
+func TestLiveRendererSeparatesStreamAfterCompactCommitWithEmptyLine(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 10, MaxRows: 6})
 	if err := renderer.CommitStyled(MutedText("✓ summary")); err != nil {
@@ -741,8 +741,8 @@ func TestLiveRendererDoesNotSeparateStreamAfterCompactCommit(t *testing.T) {
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
-	if len(renderer.rows) == 0 || renderer.rows[0] != "- abc" {
-		t.Fatalf("live stream has an unexpected separator: %#v", renderer.rows)
+	if len(renderer.rows) < 2 || renderer.rows[0] != "" || renderer.rows[1] != "- abc" {
+		t.Fatalf("live stream is not preceded by an empty line: %#v", renderer.rows)
 	}
 	frame.Stream.Text = "abcdefghijklmnop"
 	if err := renderer.Frame(frame); err != nil {
