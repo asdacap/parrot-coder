@@ -491,6 +491,39 @@ func TestStreamToolTrackerCommitsEditAndFailureBlocks(t *testing.T) {
 	}
 }
 
+func TestJSONLRedactorOnlyRedactsWriteStdinAndKeepsLateOutputPrivate(t *testing.T) {
+	redactor := &jsonlRedactor{}
+	deltaEvent := func(callID, name, value string) v1.Event {
+		data, _ := json.Marshal(v1.MessagePartDelta{Kind: "tool_input", ToolCallID: callID, ToolName: name, Delta: value})
+		return v1.Event{Type: v1.EventMessagePartDelta, Data: data}
+	}
+	decodeDelta := func(item v1.Event) string {
+		var delta v1.MessagePartDelta
+		if err := json.Unmarshal(item.Data, &delta); err != nil {
+			t.Fatal(err)
+		}
+		return delta.Delta
+	}
+	if got := decodeDelta(redactor.redact(deltaEvent("read-call", "read", `{"path":"file.go"}`))); got != `{"path":"file.go"}` {
+		t.Fatalf("ordinary input delta = %q", got)
+	}
+	if got := decodeDelta(redactor.redact(deltaEvent("stdin-call", "write_stdin", `{"chars":"secret"}`))); got != "<redacted>" {
+		t.Fatalf("stdin input delta = %q", got)
+	}
+	terminal := v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"stdin-call","result":"secret"}`)}
+	if text := string(redactor.redact(terminal).Data); strings.Contains(text, "secret") {
+		t.Fatalf("terminal event exposed stdin: %s", text)
+	}
+	late, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "stdin-call", Delta: "secret"})
+	var output v1.ToolOutputDelta
+	if err := json.Unmarshal(redactor.redact(v1.Event{Type: v1.EventToolOutputDelta, Data: late}).Data, &output); err != nil {
+		t.Fatal(err)
+	}
+	if output.Delta != "<redacted>" {
+		t.Fatalf("late stdin output = %q", output.Delta)
+	}
+}
+
 func TestStreamSubagentEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	var output bytes.Buffer
 	options := streamOptions{stderr: &output}

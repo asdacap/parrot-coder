@@ -88,6 +88,98 @@ func opaqueID(prefix string) (string, error) {
 func writeJSONLine(output io.Writer, item v1.Event) error {
 	return json.NewEncoder(output).Encode(item)
 }
+
+type jsonlRedactor struct{ tools map[string]string }
+
+func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
+	if item.Type == v1.EventSubagent {
+		var nested v1.SubagentEvent
+		if json.Unmarshal(item.Data, &nested) == nil {
+			nested.Event = r.redact(nested.Event)
+			item.Data, _ = json.Marshal(nested)
+		}
+		return item
+	}
+	if item.Type == v1.EventPermission {
+		var request v1.Permission
+		if json.Unmarshal(item.Data, &request) == nil && request.ToolID == "write_stdin" {
+			request.Description = "write_stdin"
+			var input map[string]any
+			if json.Unmarshal(request.CanonicalInput, &input) == nil {
+				request.CanonicalInput, _ = json.Marshal(chatview.RedactToolInputForDisplay(request.ToolID, input))
+			}
+			request.Review = json.RawMessage(`{"redacted":true}`)
+			item.Data, _ = json.Marshal(request)
+		}
+		return item
+	}
+	if strings.HasPrefix(item.Type, "session.tool.") {
+		callID, name, input, _ := chatview.ToolActivityPayload(item.Data)
+		if r.tools == nil {
+			r.tools = make(map[string]string)
+		}
+		if name == "write_stdin" && callID != "" {
+			r.tools[callID] = name
+		}
+		effectiveName := name
+		if effectiveName == "" {
+			effectiveName = r.tools[callID]
+		}
+		if effectiveName == "write_stdin" {
+			var raw map[string]any
+			if json.Unmarshal(item.Data, &raw) == nil {
+				if input != nil {
+					redactToolEventInput(raw, input)
+				}
+				for _, key := range []string{"result", "Result", "error", "error_message", "message", "output_tail"} {
+					if _, exists := raw[key]; exists {
+						raw[key] = "<redacted>"
+					}
+				}
+				item.Data, _ = json.Marshal(raw)
+			}
+		}
+		return item
+	}
+	if item.Type == v1.EventMessagePartDelta {
+		var delta v1.MessagePartDelta
+		if json.Unmarshal(item.Data, &delta) == nil && delta.Kind == "tool_input" {
+			if delta.ToolName == "write_stdin" {
+				if r.tools == nil {
+					r.tools = make(map[string]string)
+				}
+				r.tools[delta.ToolCallID] = delta.ToolName
+			}
+			if r.tools[delta.ToolCallID] == "write_stdin" {
+				delta.Delta = "<redacted>"
+				item.Data, _ = json.Marshal(delta)
+			}
+		}
+	}
+	if item.Type == v1.EventToolOutputDelta {
+		var delta v1.ToolOutputDelta
+		if json.Unmarshal(item.Data, &delta) == nil && r.tools[delta.ToolCallID] == "write_stdin" {
+			delta.Delta = "<redacted>"
+			item.Data, _ = json.Marshal(delta)
+		}
+	}
+	return item
+}
+
+func redactToolEventInput(raw map[string]any, input map[string]any) {
+	for _, key := range []string{"input", "Input", "arguments", "Arguments"} {
+		if _, exists := raw[key]; exists {
+			raw[key] = input
+		}
+	}
+	if call, ok := raw["call"].(map[string]any); ok {
+		for _, key := range []string{"input", "Input", "arguments", "Arguments"} {
+			if _, exists := call[key]; exists {
+				call[key] = input
+			}
+		}
+	}
+}
 func formatTokenCount(tokens int) string { return chatview.FormatTokenCount(tokens) }
 func cleanupEnhancedRenderer(renderer *terminal.LiveRenderer, code int) {
 	if renderer != nil && (code == exitOK || code == exitInterrupt) {
@@ -655,6 +747,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 		}()
 		return nil
 	}
+	var jsonl jsonlRedactor
 	for {
 		select {
 		case <-interrupts:
@@ -694,7 +787,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 			}
 			item := result.event
 			if options.format == "jsonl" {
-				if err := writeJSONLine(options.stdout, item); err != nil {
+				if err := writeJSONLine(options.stdout, jsonl.redact(item)); err != nil {
 					return streamResult{err: err}
 				}
 			}

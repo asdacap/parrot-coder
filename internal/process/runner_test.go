@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -316,6 +317,129 @@ func TestStartFailureClosesManagedOutput(t *testing.T) {
 	case <-store.done:
 	case <-time.After(time.Second):
 		t.Fatal("managed output reader was not closed after start failure")
+	}
+}
+
+func TestPersistentProcessPTYInputPollingOwnershipAndCleanup(t *testing.T) {
+	runner := testRunner(t, Config{TerminationGrace: 50 * time.Millisecond})
+	result, err := runner.RunPersistent(context.Background(), PersistentRequest{
+		Shell: "/bin/sh", Command: `printf ready; read value; printf ':got:%s' "$value"`,
+		SessionID: "owner", TTY: true, Yield: MinYieldTime,
+	})
+	if err != nil || result.ProcessID == nil || !strings.Contains(result.Output, "ready") {
+		t.Fatalf("start = %#v, %v", result, err)
+	}
+	id := *result.ProcessID
+	if _, err := runner.WritePersistent(context.Background(), PersistentWriteRequest{SessionID: "other", ProcessID: id, Chars: "secret\n", Yield: MinYieldTime}); err == nil || !strings.Contains(err.Error(), "unknown process") {
+		t.Fatalf("cross-owner write error = %v", err)
+	}
+	result, err = runner.WritePersistent(context.Background(), PersistentWriteRequest{SessionID: "owner", ProcessID: id, Chars: "hello\n", Yield: time.Second})
+	if err != nil || result.ProcessID != nil || result.ExitCode == nil || *result.ExitCode != 0 || !strings.Contains(result.Output, ":got:hello") {
+		t.Fatalf("write = %#v, %v", result, err)
+	}
+	if _, err := runner.WritePersistent(context.Background(), PersistentWriteRequest{SessionID: "owner", ProcessID: id}); err == nil || !strings.Contains(err.Error(), "unknown process") {
+		t.Fatalf("completed process retained: %v", err)
+	}
+
+	pipe, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: `sleep 5`, SessionID: "owner", Yield: MinYieldTime})
+	if err != nil || pipe.ProcessID == nil {
+		t.Fatalf("pipe start = %#v, %v", pipe, err)
+	}
+	if _, err := runner.WritePersistent(context.Background(), PersistentWriteRequest{SessionID: "owner", ProcessID: *pipe.ProcessID, Chars: "x", Yield: MinYieldTime}); err == nil || !strings.Contains(err.Error(), "stdin is closed") {
+		t.Fatalf("pipe write error = %v", err)
+	}
+	if err := runner.InterruptSession("owner"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.WritePersistent(context.Background(), PersistentWriteRequest{SessionID: "owner", ProcessID: *pipe.ProcessID}); err == nil {
+		t.Fatal("interrupted process retained")
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "true", SessionID: "owner", Yield: MinYieldTime}); err == nil || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("run after close = %v", err)
+	}
+}
+
+func TestPersistentProcessLimitsReapCompletedAndBoundConcurrentReservations(t *testing.T) {
+	runner := testRunner(t, Config{MaxProcesses: 2, MaxSessionProcesses: 1, TerminationGrace: 50 * time.Millisecond})
+	first, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "sleep .35", SessionID: "a", Yield: MinYieldTime})
+	if err != nil || first.ProcessID == nil {
+		t.Fatalf("first = %#v, %v", first, err)
+	}
+	if _, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "sleep 1", SessionID: "a", Yield: MinYieldTime}); err == nil || !strings.Contains(err.Error(), "session process limit") {
+		t.Fatalf("session limit error = %v", err)
+	}
+	time.Sleep(150 * time.Millisecond)
+	second, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "sleep 1", SessionID: "a", Yield: MinYieldTime})
+	if err != nil || second.ProcessID == nil {
+		t.Fatalf("completed process was not reaped: %#v, %v", second, err)
+	}
+	if err := runner.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	limited := testRunner(t, Config{MaxProcesses: 1, MaxSessionProcesses: 2})
+	limited.mu.Lock()
+	limited.reservedIDs[1000] = "a"
+	limited.mu.Unlock()
+	if _, _, err := limited.reserveProcessID("b"); err == nil || !strings.Contains(err.Error(), "global process limit") {
+		t.Fatalf("global reservation limit error = %v", err)
+	}
+}
+
+func TestPersistentProcessRejectsCrossSessionEvictionAndCleansExitedGroups(t *testing.T) {
+	runner := testRunner(t, Config{MaxProcesses: 1, MaxSessionProcesses: 1, TerminationGrace: 50 * time.Millisecond})
+	first, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "sleep 5", SessionID: "a", Yield: MinYieldTime})
+	if err != nil || first.ProcessID == nil {
+		t.Fatalf("first = %#v, %v", first, err)
+	}
+	if _, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "sleep 5", SessionID: "b", Yield: MinYieldTime}); err == nil || !strings.Contains(err.Error(), "global process limit") {
+		t.Fatalf("cross-session limit error = %v", err)
+	}
+	if _, err := runner.WritePersistent(context.Background(), PersistentWriteRequest{SessionID: "a", ProcessID: *first.ProcessID, Chars: "\x03", Yield: time.Second}); err != nil {
+		t.Fatalf("first process was evicted: %v", err)
+	}
+
+	result, err := runner.RunPersistent(context.Background(), PersistentRequest{
+		Shell: "/bin/sh", Command: `sleep 5 & printf %d $!`, SessionID: "a", Yield: time.Second,
+	})
+	if err != nil || result.ProcessID != nil || result.ExitCode == nil || *result.ExitCode != 0 {
+		t.Fatalf("detached child result = %#v, %v", result, err)
+	}
+	child, err := strconv.Atoi(strings.TrimSpace(result.Output))
+	if err != nil {
+		t.Fatalf("child pid %q: %v", result.Output, err)
+	}
+	deadline := time.Now().Add(time.Second)
+	for processExists(child) && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if processExists(child) {
+		t.Fatalf("descendant %d survived shell exit", child)
+	}
+}
+
+func processExists(pid int) bool {
+	err := syscall.Kill(pid, 0)
+	return err == nil || errors.Is(err, syscall.EPERM)
+}
+
+func TestPersistentOutputFormattingPreservesHeadTailAndUTF8(t *testing.T) {
+	buffer := newHeadTailBuffer(8)
+	buffer.push([]byte("ab世界cd"))
+	output := buffer.text()
+	if !utf8.ValidString(output) || !strings.Contains(output, "bytes omitted") {
+		t.Fatalf("output = %q", output)
+	}
+	tokens := 1
+	truncated := truncatePersistentOutput("abcdefgh", &tokens, 2, 0)
+	if !strings.Contains(truncated, "Warning: truncated output") || !strings.Contains(truncated, "tokens truncated") {
+		t.Fatalf("truncated = %q", truncated)
 	}
 }
 

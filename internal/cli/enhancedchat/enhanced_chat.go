@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
@@ -2115,6 +2116,9 @@ func (r *enhancedChatRuntime) updateToolOutput(output *v1.ToolOutputDelta) {
 	}
 	for i := range r.activity {
 		if r.activity[i].id == output.ToolCallID {
+			if r.activity[i].toolName == "write_stdin" {
+				return
+			}
 			r.activity[i].output.Write(output.Delta)
 			return
 		}
@@ -2162,6 +2166,9 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		}
 		if name != "" {
 			r.activity[i].toolName = name
+			if name == "write_stdin" {
+				r.activity[i].output = shellOutputTail{}
+			}
 		}
 		if status == "failure" || status == "interrupted" {
 			r.activity[i].style = terminal.TextStyleDefault
@@ -2204,6 +2211,9 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			break
 		}
 	}
+	if name == "write_stdin" {
+		errorText = ""
+	}
 	if errorText != "" {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
@@ -2222,7 +2232,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	}
 	if terminalEvent {
 		for i := range r.activity {
-			if r.activity[i].id == callID && r.activity[i].toolName == "shell" {
+			if r.activity[i].id == callID && (r.activity[i].toolName == "shell" || r.activity[i].toolName == "exec_command") {
 				output := toolActivityOutputTail(item.Data)
 				if output == "" {
 					output = r.activity[i].output.String()
@@ -2412,7 +2422,7 @@ func toolActivityPayload(data json.RawMessage) (string, string, map[string]any, 
 			result = firstString(nested, "result", "Result")
 		}
 	}
-	return callID, name, input, result
+	return callID, name, chatview.RedactToolInputForDisplay(name, input), result
 }
 
 func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
@@ -2453,6 +2463,9 @@ func todoWriteActivityLabel(_ string, count int) string {
 }
 
 func toolActivityLabel(name string, input map[string]any) string {
+	if name == "exec_command" || name == "write_stdin" {
+		return chatview.ToolActivityLabel(name, chatview.RedactToolInputForDisplay(name, input))
+	}
 	var details []string
 	add := func(value string) {
 		if value = cleanActivityDetail(value); value != "" {

@@ -14,6 +14,7 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
+	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -93,6 +94,7 @@ type RunnerConfig struct {
 	ToolExecutor       func(tool.Snapshot) tool.Executor
 	Workspace          *workspace.Workspace
 	Outputs            *tool.OutputStore
+	Processes          *process.Runner
 	Live               LivePublisher
 	Compactor          Compactor
 	MaxConcurrentTools int
@@ -608,7 +610,7 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 					logger(ctx, sessionID, call.call.Name, recovered, stack)
 				}
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

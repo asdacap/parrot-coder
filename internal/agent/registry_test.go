@@ -14,7 +14,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !build.AllowsTool("write") || !build.AllowsTool("shell") {
+	if !build.AllowsTool("write") || !build.AllowsTool("shell") || !build.AllowsTool("exec_command") || !build.AllowsTool("write_stdin") {
 		t.Fatal("build agent unexpectedly denied mutation tools")
 	}
 	for _, id := range []string{PlanID, ExploreID, ReviewID} {
@@ -27,7 +27,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 				t.Fatalf("%s denied %s", id, allowed)
 			}
 		}
-		for _, denied := range []string{"write", "apply_patch", "shell", "custom_mutation"} {
+		for _, denied := range []string{"write", "apply_patch", "shell", "exec_command", "write_stdin", "custom_mutation"} {
 			if profile.AllowsTool(denied) {
 				t.Fatalf("%s allowed %s", id, denied)
 			}

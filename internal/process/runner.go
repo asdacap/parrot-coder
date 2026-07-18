@@ -29,6 +29,8 @@ type Config struct {
 	Output                 io.Writer
 	OutputStore            OutputStore
 	AllowUnsafeEnvironment bool
+	MaxProcesses           int
+	MaxSessionProcesses    int
 	sandbox                sandbox
 }
 
@@ -68,6 +70,9 @@ type Runner struct {
 	sandbox       sandbox
 	mu            sync.RWMutex
 	writablePaths map[string]map[string]struct{}
+	processes     map[int32]*persistentProcess
+	reservedIDs   map[int32]string
+	closed        bool
 }
 
 // DefaultShell returns the user's configured shell when it is an absolute,
@@ -128,6 +133,15 @@ func NewRunner(config Config) (*Runner, error) {
 	if config.TerminationGrace <= 0 {
 		config.TerminationGrace = 500 * time.Millisecond
 	}
+	if config.WorkingDirectory == "" {
+		config.WorkingDirectory = config.Workspace.Root()
+	}
+	if config.MaxProcesses <= 0 {
+		config.MaxProcesses = 64
+	}
+	if config.MaxSessionProcesses <= 0 {
+		config.MaxSessionProcesses = 64
+	}
 	implementation := config.sandbox
 	if implementation == nil {
 		workingDirectory := config.WorkingDirectory
@@ -140,8 +154,15 @@ func NewRunner(config Config) (*Runner, error) {
 		}
 		implementation = platformSandbox(config.Workspace, resolved)
 	}
-	return &Runner{config: config, sandbox: implementation, writablePaths: make(map[string]map[string]struct{})}, nil
+	return &Runner{
+		config: config, sandbox: implementation,
+		writablePaths: make(map[string]map[string]struct{}),
+		processes:     make(map[int32]*persistentProcess), reservedIDs: make(map[int32]string),
+	}, nil
 }
+
+// WorkingDirectory returns the canonical default cwd used by process tools.
+func (r *Runner) WorkingDirectory() string { return r.config.WorkingDirectory }
 
 // AllowWrite grants sandboxed commands in one session write access to an exact
 // existing file or directory. Grants are held only for this Runner's lifetime.

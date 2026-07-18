@@ -39,7 +39,7 @@ func DefaultWorkspacePolicy() permission.Policy {
 		}
 		return true
 	}, Decision: permission.Allow, Reason: "reviewed workspace mutation"}, {Match: func(r permission.Request) bool {
-		if r.ToolID != "shell" || len(r.Resources) == 0 {
+		if r.ToolID != "shell" && r.ToolID != "exec_command" || len(r.Resources) == 0 {
 			return false
 		}
 		for _, resource := range r.Resources {
