@@ -332,14 +332,21 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
 	subagentExecutor := &appSubagentExecutor{sessions: sessions, events: repository, project: info, providers: providerRegistry, defaultSelection: defaultSelection, live: live}
-	subagents := subagent.NewManager(subagentExecutor, subagent.Config{OnProgress: func(task subagent.Task) {
+	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
+	subagents := subagent.NewManager(subagentExecutor, subagent.Config{AgentIdentity: func(id string) string {
+		profile, resolveErr := profileResolver.GetProfile(id)
+		if resolveErr != nil {
+			return id
+		}
+		return profile.ID
+	}, OnProgress: func(task subagent.Task) {
 		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, Data: data})
 	}})
 	result.subagents = subagents
 	tools := tool.NewRegistry()
 	agentLookup := func(id string) (bool, error) {
-		profile, err := combinedProfileResolver{modes: modes, agents: taskAgents}.GetProfile(id)
+		profile, err := profileResolver.GetProfile(id)
 		return profile.ReadOnly, err
 	}
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
@@ -381,7 +388,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.compactions = compactionRepository
 	runner, err := agent.NewRunner(agent.RunnerConfig{
-		Sessions: sessions, Contexts: contexts, Profiles: combinedProfileResolver{modes: modes, agents: taskAgents}, Providers: providerRegistry,
+		Sessions: sessions, Contexts: contexts, Profiles: profileResolver, Providers: providerRegistry,
 		ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}

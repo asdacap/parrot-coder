@@ -288,6 +288,26 @@ func TestReusableAgentLifecycleOwnershipAndSelectiveWait(t *testing.T) {
 	}
 }
 
+func TestLaunchDetectsCyclesAcrossEquivalentAgentNames(t *testing.T) {
+	manager := NewManager(executorFunc(func(context.Context, Execution) (string, error) { return "", nil }), Config{AgentIdentity: func(id string) string {
+		if id == "explore" {
+			return "explorer"
+		}
+		return id
+	}})
+	for _, test := range []struct {
+		ancestor string
+		target   string
+	}{
+		{ancestor: "explore", target: "explorer"},
+		{ancestor: "explorer", target: "explore"},
+	} {
+		if _, err := manager.Launch("root", []string{test.ancestor}, Request{Prompt: "cycle", Agent: test.target}); !errors.Is(err, ErrCycle) {
+			t.Fatalf("Launch(%q -> %q) error = %v", test.ancestor, test.target, err)
+		}
+	}
+}
+
 func TestSpawnFailureAndCancellationDoNotRetainUnreachableAgents(t *testing.T) {
 	for _, test := range []struct {
 		name     string

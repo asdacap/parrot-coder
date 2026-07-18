@@ -193,7 +193,7 @@ rejected, and the content hash is rechecked when a skill is loaded.
 ---
 name: review
 description: Review code and report concrete findings
-agent: explore
+agent: explorer
 model: local/code-model
 allowed-tools:
   - read
@@ -205,7 +205,15 @@ Review the requested code and report concrete findings first.
 `name` and `description` are required. `agent`, `model`, and `allowed-tools` are
 optional. Names contain only ASCII letters, digits, `_`, or `-`.
 
-## Review subagent
+## Built-in subagents
+
+Parrot includes the task-only `explorer`, `worker`, and `review` profiles. Use
+`explorer` for specific, well-scoped codebase questions; it is
+runtime-enforced read-only. Use `worker` for implementation and production
+work; it can modify files and run commands within the authorized workspace.
+`explore` is accepted as an alias of `explorer`.
+
+### Review subagent
 
 Parrot includes a built-in `review` worker and a parent-callable `review` tool.
 The tool accepts a review prompt and an optional model override, launches an
@@ -225,7 +233,7 @@ relative path without `.md`, for example `commands/review/security.md` becomes
 ```markdown
 ---
 description: Review a change
-agent: explore
+agent: explorer
 model: local/code-model
 subtask: false
 ---

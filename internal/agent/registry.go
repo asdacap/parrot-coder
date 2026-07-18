@@ -11,10 +11,12 @@ import (
 )
 
 const (
-	BuildID   = profiles.BuildID
-	PlanID    = profiles.PlanID
-	ExploreID = profiles.ExploreID
-	ReviewID  = profiles.ReviewID
+	BuildID    = profiles.BuildID
+	PlanID     = profiles.PlanID
+	ExploreID  = "explore"
+	ExplorerID = profiles.ExplorerID
+	ReviewID   = profiles.ReviewID
+	WorkerID   = profiles.WorkerID
 )
 
 type Profile = profiles.Profile
@@ -45,16 +47,18 @@ func Builtins() []Profile {
 	return []Profile{
 		profiles.Build(),
 		profiles.Plan(),
-		profiles.Explore(),
+		profiles.Explorer(),
 		profiles.Review(),
+		profiles.Worker(),
 	}
 }
 
 // Subagents returns task-only profiles, not foreground modes.
 func Subagents() []Profile {
 	return []Profile{
-		profiles.Explore(),
+		profiles.Explorer(),
 		profiles.Review(),
+		profiles.Worker(),
 	}
 }
 
@@ -81,6 +85,9 @@ func (r *Registry) Get(id string) (Profile, error) {
 	}
 	r.mu.RLock()
 	profile, ok := r.profiles[id]
+	if !ok && id == ExploreID {
+		profile, ok = r.profiles[ExplorerID]
+	}
 	r.mu.RUnlock()
 	if !ok {
 		return Profile{}, fmt.Errorf("agent: unknown profile %q", id)

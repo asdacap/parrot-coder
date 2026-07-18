@@ -17,7 +17,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 	if !build.AllowsTool("write") || !build.AllowsTool("shell") || !build.AllowsTool("exec_command") || !build.AllowsTool("write_stdin") {
 		t.Fatal("build agent unexpectedly denied mutation tools")
 	}
-	for _, id := range []string{PlanID, ExploreID, ReviewID} {
+	for _, id := range []string{PlanID, ExploreID, ExplorerID, ReviewID} {
 		profile, err := registry.Get(id)
 		if err != nil {
 			t.Fatal(err)
@@ -42,15 +42,26 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 			t.Fatalf("review agent allowed nested delegation tool %s", denied)
 		}
 	}
-	if got := []string{registry.List()[0].ID, registry.List()[1].ID, registry.List()[2].ID, registry.List()[3].ID}; !reflect.DeepEqual(got, []string{BuildID, ExploreID, PlanID, ReviewID}) {
+	if got := []string{registry.List()[0].ID, registry.List()[1].ID, registry.List()[2].ID, registry.List()[3].ID, registry.List()[4].ID}; !reflect.DeepEqual(got, []string{BuildID, ExplorerID, PlanID, ReviewID, WorkerID}) {
 		t.Fatalf("profile order = %#v", got)
+	}
+	worker, err := registry.Get(WorkerID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if worker.ReadOnly || !worker.AllowsTool("apply_patch") || !worker.AllowsTool("exec_command") {
+		t.Fatalf("worker profile = %#v", worker)
 	}
 }
 
-func TestSubagentsIncludeDedicatedReviewProfile(t *testing.T) {
+func TestSubagentsIncludeExplorerWorkerAndDedicatedReviewProfiles(t *testing.T) {
 	registry, err := NewRegistry(Subagents()...)
 	if err != nil {
 		t.Fatal(err)
+	}
+	explore, err := registry.Get(ExploreID)
+	if err != nil || explore.ID != ExplorerID || !explore.ReadOnly {
+		t.Fatalf("explore alias = %#v, %v", explore, err)
 	}
 	review, err := registry.Get(ReviewID)
 	if err != nil {
@@ -61,6 +72,21 @@ func TestSubagentsIncludeDedicatedReviewProfile(t *testing.T) {
 	}
 	if review.Prompt == "" || review.MaxTurns <= 0 {
 		t.Fatalf("incomplete review profile = %#v", review)
+	}
+	for _, test := range []struct {
+		id       string
+		readOnly bool
+	}{
+		{id: ExplorerID, readOnly: true},
+		{id: WorkerID},
+	} {
+		profile, profileErr := registry.Get(test.id)
+		if profileErr != nil {
+			t.Fatal(profileErr)
+		}
+		if profile.ReadOnly != test.readOnly || profile.Prompt == "" || profile.MaxTurns <= 0 {
+			t.Fatalf("%s profile = %#v", test.id, profile)
+		}
 	}
 }
 
