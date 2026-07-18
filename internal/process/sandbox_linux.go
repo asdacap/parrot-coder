@@ -21,7 +21,7 @@ func platformSandbox(ws *workspace.Workspace, workingDirectory string) sandbox {
 	return linuxSandbox{workspace: ws.Root(), workingDirectory: workingDirectory}
 }
 
-func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string) (string, []string, error) {
+func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string, temporaryDirectory string) (string, []string, error) {
 	bwrap, err := executableOutsideWorkspace("bwrap", s.workspace)
 	if err != nil {
 		return "", nil, errors.New("bubblewrap is required; install bwrap and ensure unprivileged user namespaces are enabled")
@@ -40,7 +40,7 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string)
 		"--ro-bind", "/", "/",
 		"--dev", "/dev",
 		"--proc", "/proc",
-		"--tmpfs", "/tmp",
+		"--bind", temporaryDirectory, "/tmp",
 		"--setenv", "TMPDIR", "/tmp",
 	}
 	if externalTmpCwd {
@@ -62,6 +62,8 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string)
 	args = append(args, "--chdir", cwd, "--", shell, "-c", script)
 	return bwrap, args, nil
 }
+
+func (linuxSandbox) temporaryDirectory(string) string { return "/tmp" }
 
 func maskedBySandbox(path string) bool {
 	for _, root := range []string{"/tmp", "/dev", "/proc"} {

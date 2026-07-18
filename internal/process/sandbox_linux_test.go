@@ -34,9 +34,10 @@ func TestLinuxSandboxCommand(t *testing.T) {
 		t.Fatal(err)
 	}
 	externalCwd := t.TempDir()
+	temporaryDirectory := t.TempDir()
 
 	implementation := linuxSandbox{workspace: root, workingDirectory: nested}
-	program, args, err := implementation.command("/bin/sh", "printf ok", externalCwd, []string{writable})
+	program, args, err := implementation.command("/bin/sh", "printf ok", externalCwd, []string{writable}, temporaryDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -45,7 +46,7 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	}
 	for _, expected := range [][]string{
 		{"--unshare-user"}, {"--unshare-pid"}, {"--cap-drop", "ALL"},
-		{"--ro-bind", "/", "/"}, {"--bind", root, root}, {"--tmpfs", "/tmp"},
+		{"--ro-bind", "/", "/"}, {"--bind", root, root}, {"--bind", temporaryDirectory, "/tmp"},
 		{"--bind", writable, writable},
 		{"--dir", externalCwd, "--ro-bind", externalCwd, externalCwd},
 		{"--ro-bind", filepath.Join(root, ".parrot"), filepath.Join(root, ".parrot")},
@@ -72,7 +73,7 @@ func TestLinuxSandboxMountsExternalWorkingDirectory(t *testing.T) {
 	t.Setenv("PATH", bin)
 	external := t.TempDir()
 
-	_, args, err := (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "pwd", external, nil)
+	_, args, err := (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "pwd", external, nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +84,7 @@ func TestLinuxSandboxMountsExternalWorkingDirectory(t *testing.T) {
 		t.Fatalf("workspace must be mounted after external cwd: %q", args)
 	}
 
-	_, args, err = (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "pwd", filepath.Dir(root), nil)
+	_, args, err = (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "pwd", filepath.Dir(root), nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -116,7 +117,7 @@ func TestLinuxSandboxAllowsLinkedWorktreeGitMetadata(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 
-	_, args, err := (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "git commit", root, nil)
+	_, args, err := (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "git commit", root, nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,10 +138,10 @@ func TestLinuxSandboxDoesNotShadowPrivateTmp(t *testing.T) {
 	t.Setenv("PATH", bin)
 	root := t.TempDir()
 	implementation := linuxSandbox{workspace: root, workingDirectory: root}
-	if _, _, err := implementation.command("/bin/sh", "true", "/tmp", nil); err == nil {
+	if _, _, err := implementation.command("/bin/sh", "true", "/tmp", nil, t.TempDir()); err == nil {
 		t.Fatal("host /tmp accepted as working directory")
 	}
-	_, args, err := implementation.command("/bin/sh", "true", "/", nil)
+	_, args, err := implementation.command("/bin/sh", "true", "/", nil, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

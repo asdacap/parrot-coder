@@ -8,14 +8,17 @@ import (
 )
 
 type sandbox interface {
-	command(shell, script, cwd string, writablePaths []string) (string, []string, error)
+	command(shell, script, cwd string, writablePaths []string, temporaryDirectory string) (string, []string, error)
+	temporaryDirectory(string) string
 }
 
 type unsupportedSandbox struct{ platform string }
 
-func (s unsupportedSandbox) command(_, _, _ string, _ []string) (string, []string, error) {
+func (s unsupportedSandbox) command(_, _, _ string, _ []string, _ string) (string, []string, error) {
 	return "", nil, errors.New("no sandbox backend is available for " + s.platform)
 }
+
+func (unsupportedSandbox) temporaryDirectory(path string) string { return path }
 
 func protectedWorkspacePaths(root, cwd string) []string {
 	relative, err := filepath.Rel(root, cwd)

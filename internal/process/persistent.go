@@ -117,12 +117,24 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 		return PersistentResult{}, fmt.Errorf("process: shell: %w", err)
 	}
 	program, arguments := resolvedShell, []string{"-c", request.Command}
+	var releaseTemporaryDirectory func()
 	if !request.Unrestricted {
+		temporaryDirectory, release, temporaryErr := r.acquireTemporaryDirectory(request.SessionID)
+		if temporaryErr != nil {
+			return PersistentResult{}, temporaryErr
+		}
+		releaseTemporaryDirectory = release
+		defer func() {
+			if releaseTemporaryDirectory != nil {
+				releaseTemporaryDirectory()
+			}
+		}()
+		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
 		writablePaths, writableErr := r.writableForSession(request.SessionID)
 		if writableErr != nil {
 			return PersistentResult{}, writableErr
 		}
-		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, writablePaths)
+		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, writablePaths, temporaryDirectory)
 		if err != nil {
 			return PersistentResult{}, fmt.Errorf("process: sandbox: %w", err)
 		}
@@ -149,6 +161,10 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 	if !r.storePersistent(item) {
 		r.terminatePersistent(item)
 		return PersistentResult{}, errors.New("process: runner is closed")
+	}
+	if releaseTemporaryDirectory != nil {
+		releaseTemporaryDirectory()
+		releaseTemporaryDirectory = nil
 	}
 	result, err := r.collectPersistent(ctx, item, clampExecYield(request.Yield), request.MaxOutputTokens, request.Output)
 	if err != nil {
@@ -649,11 +665,40 @@ func (r *Runner) InterruptSession(sessionID string) error {
 
 // DeleteSession terminates retained processes and forgets sandbox write grants.
 func (r *Runner) DeleteSession(sessionID string) error {
+	r.cleanup.Lock()
+	defer r.cleanup.Unlock()
+	temporaryDirectory, wait := r.beginTemporaryDirectoryDeletion(sessionID)
+	if wait != nil {
+		<-wait
+	}
 	items := r.takeSessionProcesses(sessionID, true)
 	for _, item := range items {
 		r.terminatePersistent(item)
 	}
+	if temporaryDirectory != "" {
+		if err := removeTemporaryDirectory(temporaryDirectory); err != nil {
+			return err
+		}
+		r.mu.Lock()
+		delete(r.temporaryDirs, sessionID)
+		r.mu.Unlock()
+	}
 	return nil
+}
+
+func (r *Runner) beginTemporaryDirectoryDeletion(sessionID string) (string, <-chan struct{}) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deletedSessions[sessionID] = struct{}{}
+	state := r.temporaryDirs[sessionID]
+	if state == nil {
+		return "", nil
+	}
+	state.deleting = true
+	if state.users == 0 {
+		return state.path, nil
+	}
+	return state.path, state.idle
 }
 
 func (r *Runner) takeSessionProcesses(sessionID string, deleteGrants bool) []*persistentProcess {
@@ -678,11 +723,9 @@ func (r *Runner) Close() error {
 	if r == nil {
 		return nil
 	}
+	r.cleanup.Lock()
+	defer r.cleanup.Unlock()
 	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
-		return nil
-	}
 	r.closed = true
 	items := make([]*persistentProcess, 0, len(r.processes))
 	for _, item := range r.processes {
@@ -691,9 +734,56 @@ func (r *Runner) Close() error {
 	r.processes = make(map[int32]*persistentProcess)
 	r.reservedIDs = make(map[int32]string)
 	r.writablePaths = make(map[string]map[string]struct{})
+	type temporaryDirectoryCleanup struct {
+		path string
+		wait <-chan struct{}
+	}
+	temporaryDirectories := make(map[string]temporaryDirectoryCleanup, len(r.temporaryDirs))
+	for sessionID, state := range r.temporaryDirs {
+		state.deleting = true
+		var wait <-chan struct{}
+		if state.users > 0 {
+			wait = state.idle
+		}
+		temporaryDirectories[sessionID] = temporaryDirectoryCleanup{path: state.path, wait: wait}
+	}
 	r.mu.Unlock()
 	for _, item := range items {
 		r.terminatePersistent(item)
+	}
+	var err error
+	for sessionID, temporaryDirectory := range temporaryDirectories {
+		if temporaryDirectory.wait != nil {
+			<-temporaryDirectory.wait
+		}
+		if removeErr := removeTemporaryDirectory(temporaryDirectory.path); removeErr != nil {
+			err = errors.Join(err, removeErr)
+			continue
+		}
+		r.mu.Lock()
+		delete(r.temporaryDirs, sessionID)
+		r.mu.Unlock()
+	}
+	return err
+}
+
+func removeTemporaryDirectory(path string) error {
+	if err := filepath.WalkDir(path, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if err := clearTemporaryDirectoryFlags(path, entry); err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return os.Chmod(path, 0o700)
+		}
+		return nil
+	}); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("process: prepare session temporary directory for removal: %w", err)
+	}
+	if err := os.RemoveAll(path); err != nil {
+		return fmt.Errorf("process: remove session temporary directory: %w", err)
 	}
 	return nil
 }

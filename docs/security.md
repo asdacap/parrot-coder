@@ -83,13 +83,14 @@ The default `shell` tool allows arbitrary process execution inside a mandatory
 platform sandbox. On Linux, Parrot uses Bubblewrap with a read-only host
 filesystem, a writable workspace and Git metadata, read-only existing Parrot
 metadata (`.parrot` and project `parrot.jsonc` along the configuration path), a
-private `/tmp`, user and PID namespaces, and no capabilities. Linked-worktree
+session-private `/tmp` shared across that session's shell commands, user and
+PID namespaces, and no capabilities. Linked-worktree
 common Git directories outside the workspace are writable. On macOS it applies
 equivalent filesystem
 write restrictions through the system `/usr/bin/sandbox-exec` and grants a
-writable `/tmp`. Both backends retain host network access. Parrot fails shell
-execution when the platform sandbox is unavailable; permission approval does
-not bypass that tool's sandbox.
+session-private writable `TMPDIR`. Both backends retain host network access.
+Parrot fails shell execution when the platform sandbox is unavailable;
+permission approval does not bypass that tool's sandbox.
 
 The separate `unrestricted_shell` tool remains at `ask` under the default
 workspace policy. Once approved, it executes directly with the invoking user's
