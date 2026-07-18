@@ -80,17 +80,17 @@ Committed turns use aligned role markers and hanging indentation:
 ```text
 $ User message
   continuation line
-───────────────────────────────────────
 - Assistant response
   continuation line
 ───────────────────────────────────────
 ⠋ $ Editable while the agent works
 ```
 
-The `$` marker is the user accent, `-` is the assistant accent, and the divider
-is dim. A divider replaces the otherwise empty block gap before the final
-assistant message. The divider after an assistant response is also the input
-area's top border. Pending follow-ups appear below it with a written
+The `$` marker is the user accent. User messages use a dark-blue background with
+pale-yellow text. The `-` marker is the assistant accent, and assistant messages
+use a dark-green background with pale-cyan text. Neither message has a leading
+divider. The divider after an assistant response is the input area's top border.
+Pending follow-ups appear below it with a written
 `(○ pending)` label.
 Human-oriented state uses an icon plus a written label where practical: the
 Braille spinner means working, `✓ Done` means success, `✗ Failed` or `✗ Error`
@@ -100,11 +100,11 @@ remain present without color, so meaning never depends on styling or symbols.
 
 Permanent transcript output has compact and block entries. Consecutive one-line
 tool statuses are compact and have no padding between them. Assistant responses
-and successful `edit` output are blocks. A final assistant response starts with
-a dim rule instead of an empty line; other block boundaries retain one empty
-line. An edit block contains its completion status followed immediately by the
-first 10 lines of the reviewed unified before/after diff; no empty line splits
-that status and diff. Failed tool request blocks use the same 10-line limit.
+and successful `edit` output are blocks. Role colors distinguish user and
+assistant messages without a leading rule; other block boundaries retain one
+empty line. An edit block contains its completion status followed immediately
+by the first 10 lines of the reviewed unified before/after diff; no empty line
+splits that status and diff. Failed tool request blocks use the same 10-line limit.
 Longer blocks end with the number of omitted lines.
 
 ### Flush boundaries

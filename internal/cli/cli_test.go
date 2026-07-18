@@ -177,10 +177,13 @@ func TestChatTranscriptAndSlashCommands(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, value := range []string{"$ hello", "● answer", "───", "/model"} {
+	for _, value := range []string{"$ hello", "● answer", "/model"} {
 		if !strings.Contains(stdout.String(), value) {
 			t.Errorf("transcript missing %q: %q", value, stdout.String())
 		}
+	}
+	if strings.Contains(stdout.String(), "───") {
+		t.Fatalf("transcript retained a message separator: %q", stdout.String())
 	}
 	if strings.Contains(stdout.String(), "\x1b") || strings.Contains(stderr.String(), "\x1b") {
 		t.Fatalf("escape leaked into transcript")

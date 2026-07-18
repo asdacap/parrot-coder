@@ -62,8 +62,8 @@ func TestLiveRendererHighlightsFencedCodeAndHidesDelimiters(t *testing.T) {
 	if strings.Contains(output.String(), "```") {
 		t.Fatalf("fence delimiter was rendered: %q", output.String())
 	}
-	if !strings.Contains(output.String(), "\x1b[1;35mpackage\x1b[0m") ||
-		!strings.Contains(output.String(), "\x1b[32m\"hello\"\x1b[0m") {
+	if !strings.Contains(output.String(), "\x1b[1;35;48;5;22mpackage\x1b[0m") ||
+		!strings.Contains(output.String(), "\x1b[32;48;5;22m\"hello\"\x1b[0m") {
 		t.Fatalf("Go syntax was not highlighted: %q", output.String())
 	}
 }

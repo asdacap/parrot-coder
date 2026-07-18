@@ -180,13 +180,13 @@ func TestLiveRendererColoredMessagesAlignAndSanitize(t *testing.T) {
 	}
 }
 
-func TestLiveRendererKeepsUserStartRuleAtNormalBrightness(t *testing.T) {
+func TestLiveRendererStylesUserMessageWithoutStartRule(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 8})
 	if err := renderer.CommitUserMessage("$ ", "request"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := output.String(), "\x1b[37m───────\x1b[0m\n\x1b[36m$\x1b[0m reques\n  t\n"; got != want {
+	if got, want := output.String(), "\x1b[38;5;230;48;5;24m$ reques\x1b[0m\n\x1b[38;5;230;48;5;24m  t\x1b[0m\n"; got != want {
 		t.Fatalf("colored user message = %q; want %q", got, want)
 	}
 }
@@ -369,7 +369,7 @@ func TestLiveRendererAlignsRowsAboveModeline(t *testing.T) {
 		renderer.rows[2] != "● response" || !strings.HasPrefix(renderer.rows[3], "─ mode: build ") || renderer.rows[4] != "$ draft" {
 		t.Fatalf("live rows, modeline, and input are not aligned as expected: %#v", renderer.rows)
 	}
-	if got := output.String(); !strings.Contains(got, "\x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "\x1b[32m●\x1b[0m response") {
+	if got := output.String(); !strings.Contains(got, "\x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "\x1b[38;5;195;48;5;22m● response\x1b[0m") {
 		t.Fatalf("live rows lost semantic color: %q", got)
 	}
 	if got, modeline := output.String(), renderer.rows[3]; !strings.Contains(got, "\x1b[32m"+modeline+"\x1b[0m") {
@@ -435,28 +435,36 @@ func TestLiveRendererSpacesWorkingActivityFromUserMessageImmediately(t *testing.
 	}
 }
 
-func TestLiveRendererSeparatesFinalAssistantFromUserWithDimRule(t *testing.T) {
-	var output bytes.Buffer
-	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20, MaxRows: 6})
-	if err := renderer.CommitUserMessage("$ ", "request"); err != nil {
-		t.Fatal(err)
+func TestLiveRendererStylesLiveAssistantWithoutSeparator(t *testing.T) {
+	tests := []struct {
+		name  string
+		frame LiveFrame
+	}{
+		{name: "stream", frame: LiveFrame{Stream: &StreamMessage{ID: "answer", Prefix: "- ", Text: "final answer"}}},
+		{name: "message", frame: LiveFrame{MessagePrefix: "- ", Message: "final answer"}},
 	}
-	if err := renderer.Frame(LiveFrame{
-		Stream: &StreamMessage{ID: "answer", Prefix: "- ", Text: "final answer"},
-		Prompt: PromptState{Prefix: "$ "},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	wantRule := strings.Repeat("─", 19)
-	if len(renderer.rows) < 2 || renderer.rows[0] != wantRule || renderer.rows[1] != "- final answer" {
-		t.Fatalf("final assistant boundary = %#v, want rule then answer", renderer.rows)
-	}
-	if got := output.String(); !strings.Contains(got, "\x1b[2;90m"+wantRule+"\x1b[0m") {
-		t.Fatalf("final assistant rule was not dim grey: %q", got)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20, MaxRows: 6})
+			if err := renderer.CommitUserMessage("$ ", "request"); err != nil {
+				t.Fatal(err)
+			}
+			test.frame.Prompt = PromptState{Prefix: "$ "}
+			if err := renderer.Frame(test.frame); err != nil {
+				t.Fatal(err)
+			}
+			if len(renderer.rows) == 0 || renderer.rows[0] != "- final answer" {
+				t.Fatalf("final assistant boundary = %#v, want answer without separator", renderer.rows)
+			}
+			if got := output.String(); !strings.Contains(got, "\x1b[38;5;195;48;5;22m- final answer\x1b[0m") || strings.Contains(got, "─") {
+				t.Fatalf("final assistant did not use its role colors without a separator: %q", got)
+			}
+		})
 	}
 }
 
-func TestLiveRendererSeparatesCommittedFinalAssistantWithDimRule(t *testing.T) {
+func TestLiveRendererStylesCommittedAssistantWithoutSeparator(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20})
 	if err := renderer.CommitStyled(MutedText("✓ summary")); err != nil {
@@ -465,8 +473,7 @@ func TestLiveRendererSeparatesCommittedFinalAssistantWithDimRule(t *testing.T) {
 	if err := renderer.CommitMessage("- ", "final answer", false); err != nil {
 		t.Fatal(err)
 	}
-	wantRule := strings.Repeat("─", 19)
-	want := "\x1b[90m✓ summary\x1b[0m\n\x1b[2;90m" + wantRule + "\x1b[0m\n\x1b[32m-\x1b[0m final answer\n"
+	want := "\x1b[90m✓ summary\x1b[0m\n\x1b[38;5;195;48;5;22m- final answer\x1b[0m\n"
 	if got := output.String(); got != want {
 		t.Fatalf("committed final assistant = %q; want %q", got, want)
 	}
@@ -724,7 +731,7 @@ func TestLiveRendererSpacesBlockAndCompactCommits(t *testing.T) {
 	}
 }
 
-func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
+func TestLiveRendererDoesNotSeparateStreamAfterCompactCommit(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 10, MaxRows: 6})
 	if err := renderer.CommitStyled(MutedText("✓ summary")); err != nil {
@@ -734,9 +741,8 @@ func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
 	if err := renderer.Frame(frame); err != nil {
 		t.Fatal(err)
 	}
-	wantRule := strings.Repeat("─", 9)
-	if len(renderer.rows) < 2 || renderer.rows[0] != wantRule || renderer.rows[1] != "- abc" {
-		t.Fatalf("live stream is not separated from compact summary: %#v", renderer.rows)
+	if len(renderer.rows) == 0 || renderer.rows[0] != "- abc" {
+		t.Fatalf("live stream has an unexpected separator: %#v", renderer.rows)
 	}
 	frame.Stream.Text = "abcdefghijklmnop"
 	if err := renderer.Frame(frame); err != nil {
@@ -752,8 +758,8 @@ func TestLiveRendererSpacesStreamOnceAfterCompactCommit(t *testing.T) {
 	}
 	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(output.String()[before:], "")
 	plain = strings.ReplaceAll(plain, "\r", "")
-	if got := strings.Count(plain, wantRule+"\n- abcdefgh\n  ijklmnop\n"); got != 1 {
-		t.Fatalf("stream block separator count = %d; output=%q", got, output.String())
+	if strings.Contains(plain, "─") || !strings.Contains(plain, "- abcdefgh\n  ijklmnop\n") {
+		t.Fatalf("stream promotion added a separator or lost content: output=%q", output.String())
 	}
 	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "abcdefghijklmnop\nnext!"}, false); err != nil {
 		t.Fatal(err)

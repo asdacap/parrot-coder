@@ -23,12 +23,13 @@ const (
 // before it is converted to runs, and ANSI is introduced only when a row is
 // finally written to a color-capable TTY.
 type ansiStyle struct {
-	color     string
-	bold      bool
-	dim       bool
-	italic    bool
-	underline bool
-	strike    bool
+	color      string
+	background string
+	bold       bool
+	dim        bool
+	italic     bool
+	underline  bool
+	strike     bool
 }
 
 type textRun struct {
@@ -145,10 +146,6 @@ func hangingIndent(prefix string) string {
 func withMarkdownPrefix(prefix string, content []textRun) []textRun {
 	if prefix == "" {
 		return content
-	}
-	if strings.HasPrefix(prefix, "● ") || strings.HasPrefix(prefix, "- ") {
-		runs := []textRun{{text: prefix[:len(prefix)-1], style: ansiStyle{color: "32"}}, {text: " "}}
-		return append(runs, content...)
 	}
 	return append([]textRun{{text: prefix}}, content...)
 }
@@ -597,6 +594,9 @@ func isWordRune(value rune) bool {
 func mergeANSIStyle(base, overlay ansiStyle) ansiStyle {
 	if overlay.color != "" {
 		base.color = overlay.color
+	}
+	if overlay.background != "" {
+		base.background = overlay.background
 	}
 	base.bold = base.bold || overlay.bold
 	base.dim = base.dim || overlay.dim

@@ -78,6 +78,8 @@ const (
 	TextStyleMuted
 	textStyleWhite
 	textStyleGreen
+	textStyleUserMessage
+	textStyleAssistantMessage
 )
 
 // StyledText is plain terminal text with a semantic renderer-owned style.
@@ -120,8 +122,7 @@ type LiveFrame struct {
 // Complete source lines are moved into normal terminal scrollback while the
 // unfinished source line remains in the renderer-owned live region. A fenced
 // code block remains live until its closing fence so highlighting can preserve
-// multiline lexer state. When prior transcript output exists, the renderer
-// places a dim rule before the first answer row.
+// multiline lexer state.
 type StreamMessage struct {
 	ID     string
 	Prefix string
@@ -395,6 +396,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 
 	var activity []string
 	var activityStyles []TextStyle
+	assistantMessage := false
 	for _, item := range frame.Activity {
 		itemRows, _ := r.layoutStyledContentAtColumns([]StyledText{{Text: item}}, r.columns)
 		activity = append(activity, itemRows...)
@@ -408,7 +410,12 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	if frame.Message != "" || frame.MessagePrefix != "" {
 		messageRows := r.messageRowsAtColumns(frame.MessagePrefix, frame.Message, r.columns)
 		activity = append(activity, messageRows...)
-		activityStyles = append(activityStyles, make([]TextStyle, len(messageRows))...)
+		messageStyle := TextStyleDefault
+		if isAssistantPrefix(frame.MessagePrefix) {
+			assistantMessage = true
+			messageStyle = textStyleAssistantMessage
+		}
+		activityStyles = append(activityStyles, repeatedStyle(messageStyle, len(messageRows))...)
 	}
 	if len(activity) > remaining {
 		start := len(activity) - remaining
@@ -417,23 +424,18 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	}
 	rows := append(streamRows, contextRows...)
 	rows = append(rows, activity...)
-	styles := make([]TextStyle, len(streamRows)+len(contextRows))
+	styles := repeatedStyle(textStyleAssistantMessage, len(streamRows))
+	styles = append(styles, make([]TextStyle, len(contextRows))...)
 	styles = append(styles, activityStyles...)
 	spans := append([][]textSpan(nil), streamSpans...)
 	spans = append(spans, make([][]textSpan, len(contextRows)+len(activity))...)
 	// Permanent transcript blocks and transient output are separate visual
-	// regions. Keep their boundary in the live region so it appears immediately
-	// both after a submitted user message and after a response settles. A new
-	// assistant answer uses a dim rule in place of the ordinary empty block gap;
-	// other transient output retains the gap. The rule must appear before the
-	// answer's first row is old enough to be promoted to scrollback.
+	// regions. Keep an ordinary block gap before transient activity so it appears
+	// immediately after a submitted user message or settled response. Assistant
+	// messages use their role colors instead of a leading separator or gap.
 	blockGap := 0
-	if r.committed && !r.streamBlock && len(promoted.rows) == 0 && (r.lastCommit == commitBlock || len(streamRows) > 0) {
-		boundary := ""
-		if len(streamRows) > 0 {
-			boundary = assistantSeparatorRow(r.columns)
-		}
-		rows = append([]string{boundary}, rows...)
+	if r.committed && !r.streamBlock && len(promoted.rows) == 0 && len(streamRows) == 0 && !assistantMessage && r.lastCommit == commitBlock && (len(rows) > 0 || len(inputRows) > 0) {
+		rows = append([]string{""}, rows...)
 		styles = append([]TextStyle{TextStyleDefault}, styles...)
 		spans = append([][]textSpan{nil}, spans...)
 		blockGap = 1
@@ -486,10 +488,11 @@ func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 		content.rows = append(content.rows, strings.Repeat("─", max(3, r.columns-1)))
 		content.spans = append(content.spans, nil)
 	}
-	if !r.streamBlock {
-		content = r.separateAssistantRichRows(content)
+	styles := repeatedStyle(textStyleAssistantMessage, len(content.rows))
+	if divider {
+		styles[len(styles)-1] = TextStyleDefault
 	}
-	if err := r.commitRowsRich(content.rows, nil, content.spans); err != nil {
+	if err := r.commitRowsRich(content.rows, styles, content.spans); err != nil {
 		r.stream = before
 		return err
 	}
@@ -686,13 +689,15 @@ func (r *LiveRenderer) UpdateMessage(prefix, text string) error {
 		return r.writePlain(rows)
 	}
 	row, col := lastPosition(rows)
+	if isAssistantPrefix(prefix) {
+		return r.redrawStyled(rows, repeatedStyle(textStyleAssistantMessage, len(rows)), row, col)
+	}
 	return r.redraw(rows, row, col)
 }
 
 // CommitMessage appends a permanent hanging-indented message. Assistant
-// messages (identified by the "● " prefix) replace their leading block gap
-// with a dim rule. When divider is true, another dim rule is committed beneath
-// the message before the live response begins.
+// messages use a role-specific foreground and background. When divider is true,
+// a dim rule is committed beneath the message before the live response begins.
 func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -700,14 +705,17 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	if cleanPrefix := Sanitize(prefix); cleanPrefix == "● " || cleanPrefix == "- " {
+	if isAssistantPrefix(prefix) {
 		content := renderAssistantMarkdown(prefix, text, r.columns, r.color)
 		if divider {
 			content.rows = append(content.rows, strings.Repeat("─", max(1, r.columns-1)))
 			content.spans = append(content.spans, nil)
 		}
-		content = r.separateAssistantRichRows(content)
-		if err := r.commitRowsRich(content.rows, nil, content.spans); err != nil {
+		styles := repeatedStyle(textStyleAssistantMessage, len(content.rows))
+		if divider {
+			styles[len(styles)-1] = TextStyleDefault
+		}
+		if err := r.commitRowsRich(content.rows, styles, content.spans); err != nil {
 			return err
 		}
 		r.committed = true
@@ -721,8 +729,8 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 	return r.commitRowsAs(rows, commitBlock)
 }
 
-// CommitUserMessage appends a permanent user message with the same thin rule
-// used by the modeline immediately above it.
+// CommitUserMessage appends a permanent user message with a role-specific
+// foreground and background.
 func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -730,11 +738,13 @@ func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	rows := []string{strings.Repeat("─", max(1, r.columns-1))}
-	rows = append(rows, r.messageRows(prefix, text)...)
-	styles := make([]TextStyle, len(rows))
-	styles[0] = textStyleWhite
-	return r.commitRowsAsStyled(rows, styles, commitBlock)
+	rows := r.messageRows(prefix, text)
+	if err := r.commitRowsStyled(rows, repeatedStyle(textStyleUserMessage, len(rows))); err != nil {
+		return err
+	}
+	r.committed = true
+	r.lastCommit = commitBlock
+	return nil
 }
 
 // CommitBlock appends permanent multiline output as one spaced transcript block.
@@ -1007,26 +1017,6 @@ func (r *LiveRenderer) commitRowsAsStyled(rows []string, styles []TextStyle, kin
 	return nil
 }
 
-func (r *LiveRenderer) separateAssistantRows(rows []string) []string {
-	if r.committed {
-		return append([]string{assistantSeparatorRow(r.columns)}, rows...)
-	}
-	return rows
-}
-
-func (r *LiveRenderer) separateAssistantRichRows(rows richRows) richRows {
-	if !r.committed {
-		return rows
-	}
-	rows.rows = append([]string{assistantSeparatorRow(r.columns)}, rows.rows...)
-	rows.spans = append([][]textSpan{nil}, rows.spans...)
-	return rows
-}
-
-func assistantSeparatorRow(columns int) string {
-	return strings.Repeat("─", max(1, columns-1))
-}
-
 func cloneLiveStream(value liveStream) liveStream {
 	value.pending = append([]rune(nil), value.pending...)
 	value.markdown.code = append([]string(nil), value.markdown.code...)
@@ -1236,11 +1226,8 @@ func (r *LiveRenderer) renderStreamLine(line string, state *markdownState, start
 func (r *LiveRenderer) promoteAndRedraw(promoted richRows, rows []string, styles []TextStyle, spans [][]textSpan, cursorRow, cursorCol int) error {
 	var output strings.Builder
 	r.buildRedraw(&output, nil, 0, 0)
-	if !r.streamBlock {
-		promoted = r.separateAssistantRichRows(promoted)
-	}
 	for index, row := range promoted.rows {
-		output.WriteString(r.decorateRich(row, TextStyleDefault, spansAt(promoted.spans, index)))
+		output.WriteString(r.decorateRich(row, textStyleAssistantMessage, spansAt(promoted.spans, index)))
 		output.WriteByte('\n')
 	}
 	oldRows, oldStyles, oldSpans := r.rows, r.styles, r.spans
@@ -1298,6 +1285,10 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 		return color("37", row)
 	case textStyleGreen:
 		return color("32", row)
+	case textStyleUserMessage:
+		return ansiStyled(row, ansiStyle{color: "38;5;230", background: "48;5;24"})
+	case textStyleAssistantMessage:
+		return ansiStyled(row, ansiStyle{color: "38;5;195", background: "48;5;22"})
 	}
 	switch {
 	case hasSpinnerPrefix(row):
@@ -1331,21 +1322,25 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 }
 
 func (r *LiveRenderer) decorateRich(row string, style TextStyle, spans []textSpan) string {
-	if !r.color || len(spans) == 0 || style != TextStyleDefault {
+	if !r.color || len(spans) == 0 || style != TextStyleDefault && style != textStyleAssistantMessage {
 		return r.decorateStyled(row, style)
+	}
+	base := ansiStyle{}
+	if style == textStyleAssistantMessage {
+		base = ansiStyle{color: "38;5;195", background: "48;5;22"}
 	}
 	var output strings.Builder
 	position := 0
 	for _, span := range spans {
 		start := clamp(span.start, position, len(row))
 		end := clamp(span.end, start, len(row))
-		output.WriteString(row[position:start])
+		output.WriteString(ansiStyled(row[position:start], base))
 		if start < end {
-			output.WriteString(ansiStyled(row[start:end], span.style))
+			output.WriteString(ansiStyled(row[start:end], mergeANSIStyle(base, span.style)))
 		}
 		position = end
 	}
-	output.WriteString(row[position:])
+	output.WriteString(ansiStyled(row[position:], base))
 	return output.String()
 }
 
@@ -1371,6 +1366,9 @@ func ansiStyled(value string, style ansiStyle) string {
 	}
 	if style.color != "" {
 		codes = append(codes, style.color)
+	}
+	if style.background != "" {
+		codes = append(codes, style.background)
 	}
 	if len(codes) == 0 {
 		return value
@@ -1494,6 +1492,19 @@ func styleAt(styles []TextStyle, index int) TextStyle {
 		return TextStyleDefault
 	}
 	return styles[index]
+}
+
+func repeatedStyle(style TextStyle, count int) []TextStyle {
+	styles := make([]TextStyle, count)
+	for index := range styles {
+		styles[index] = style
+	}
+	return styles
+}
+
+func isAssistantPrefix(prefix string) bool {
+	prefix = Sanitize(prefix)
+	return prefix == "● " || prefix == "- "
 }
 
 func layoutText(text string, cursor, columns int) ([]string, int, int) {

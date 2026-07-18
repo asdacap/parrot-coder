@@ -1418,11 +1418,6 @@ func (s *chatShell) commitUser(text string) error {
 	if s.renderer != nil {
 		return s.renderer.CommitUserMessage("$ ", text)
 	}
-	columns := s.columns
-	if columns <= 0 {
-		columns = 80
-	}
-	fmt.Fprintln(s.stdout, strings.Repeat("─", max(3, columns-1)))
 	if !s.inputEchoed || !s.outputTTY {
 		fmt.Fprintln(s.stdout, "$ "+strings.ReplaceAll(text, "\n", "\n  "))
 	}

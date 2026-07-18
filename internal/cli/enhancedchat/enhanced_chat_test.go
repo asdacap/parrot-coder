@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -55,7 +54,7 @@ func TestShellCallbacksSynchronizeExtractedState(t *testing.T) {
 
 func TestEnhancedSubmissionCommitsUserMessage(t *testing.T) {
 	var output bytes.Buffer
-	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, MaxRows: 6})
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Color: true, MaxRows: 6})
 	if err := renderer.Prompt(terminal.PromptState{Prefix: "$ ", Text: "keep this", Cursor: 9}); err != nil {
 		t.Fatal(err)
 	}
@@ -65,12 +64,11 @@ func TestEnhancedSubmissionCommitsUserMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 	committed := output.String()[before:]
-	if strings.Count(committed, "$ keep this") != 1 || !strings.Contains(committed, "───") {
+	if strings.Count(committed, "$ keep this") != 1 {
 		t.Fatalf("submitted user message was not committed once: %q", output.String())
 	}
-	plain := regexp.MustCompile("\\x1b(?:\\[\\?25[lh]|\\[2K|\\[[0-9]+[AB])").ReplaceAllString(committed, "")
-	if !strings.Contains(plain, "───\n$ keep this") {
-		t.Fatalf("thin rule is not immediately before user message: %q", plain)
+	if strings.Contains(committed, "─") || !strings.Contains(committed, "\x1b[38;5;230;48;5;24m$ keep this\x1b[0m") {
+		t.Fatalf("submitted user message did not use its role colors without a separator: %q", committed)
 	}
 }
 
