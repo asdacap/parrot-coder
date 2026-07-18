@@ -39,7 +39,7 @@ func TestDiscoverPrecedenceAndExpand(t *testing.T) {
 	if len(expansion.SourceHashes) != 2 {
 		t.Fatalf("hashes = %#v", expansion.SourceHashes)
 	}
-	if got := Builtins(); len(got) != 4 || got[0].Name != "compact" {
+	if got := Builtins(); len(got) != 2 || got[0].Name != "compact" || got[1].Name != "new" {
 		t.Fatalf("builtins = %#v", got)
 	}
 }

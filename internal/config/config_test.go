@@ -164,9 +164,13 @@ func TestLoadToolIntegrationMapsMergeAndDecode(t *testing.T) {
 func TestLoadRejectsUnknownTypedField(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
-	writeFile(t, filepath.Join(configDir, FileName), `{"web_fecth":{"allow_private":true}}`)
+	writeFile(t, filepath.Join(configDir, FileName), `{"snapshot":{"root":"/legacy/journal"},"web_fecth":{"allow_private":true}}`)
 	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("Load error = %v", err)
+	}
+	writeFile(t, filepath.Join(configDir, FileName), `{"snapshot":{"root":"/legacy/journal"}}`)
+	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err != nil {
+		t.Fatalf("Load rejected obsolete snapshot config: %v", err)
 	}
 }
 

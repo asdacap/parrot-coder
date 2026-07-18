@@ -18,8 +18,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/session"
-	"github.com/amirulashraf/parrot-coder/internal/snapshot"
-	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 // DomainBackend maps the existing application services to the stable API.
@@ -35,8 +33,6 @@ type DomainBackend struct {
 	Permissions        *permission.Broker
 	Questions          *question.Broker
 	Todos              *session.TodoService
-	Snapshots          *snapshot.Service
-	Workspace          *workspace.Workspace
 	Events             *event.Repository
 	Live               *event.Broker
 	EventQueue         int
@@ -198,12 +194,6 @@ func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
 	}
 	if err != nil {
 		return err
-	}
-	// Undo history lives beside the session rather than in it, so removing the
-	// session no longer discards it as a cascade. Its blobs are left to the
-	// sweep because another session may reference the same content.
-	if b.Snapshots != nil {
-		return b.Snapshots.RemoveSession(id)
 	}
 	return nil
 }
@@ -493,47 +483,6 @@ func (b *DomainBackend) ReplyQuestion(ctx context.Context, sessionID, requestID 
 		b.Live.PublishEvent(v1.Event{Type: v1.EventQuestionReply, SessionID: sessionID, Data: data})
 	}
 	return nil
-}
-
-func (b *DomainBackend) Undo(ctx context.Context, id string) (v1.SnapshotTransaction, error) {
-	return b.moveSnapshot(ctx, id, false)
-}
-
-func (b *DomainBackend) Redo(ctx context.Context, id string) (v1.SnapshotTransaction, error) {
-	return b.moveSnapshot(ctx, id, true)
-}
-
-func (b *DomainBackend) moveSnapshot(ctx context.Context, id string, redo bool) (v1.SnapshotTransaction, error) {
-	if _, err := b.GetSession(ctx, id); err != nil {
-		return v1.SnapshotTransaction{}, err
-	}
-	if b.Snapshots == nil || b.Workspace == nil {
-		return v1.SnapshotTransaction{}, errors.New("httpapi: snapshot service is unavailable")
-	}
-	var item snapshot.Transaction
-	var err error
-	if redo {
-		item, err = b.Snapshots.Redo(ctx, b.Workspace, id)
-	} else {
-		item, err = b.Snapshots.Undo(ctx, b.Workspace, id)
-	}
-	if errors.Is(err, snapshot.ErrNoUndo) {
-		return v1.SnapshotTransaction{}, ErrNoUndo
-	}
-	if errors.Is(err, snapshot.ErrNoRedo) {
-		return v1.SnapshotTransaction{}, ErrNoRedo
-	}
-	if errors.Is(err, snapshot.ErrConflict) {
-		return v1.SnapshotTransaction{}, ErrConflict
-	}
-	if err != nil {
-		return v1.SnapshotTransaction{}, err
-	}
-	paths := make([]string, len(item.Entries))
-	for i, entry := range item.Entries {
-		paths[i] = entry.Path
-	}
-	return v1.SnapshotTransaction{ID: item.ID, SessionID: item.SessionID, Position: item.Position, CreatedAt: item.CreatedAt, Paths: paths}, nil
 }
 
 func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {

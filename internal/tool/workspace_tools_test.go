@@ -13,12 +13,8 @@ import (
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/change"
-	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/question"
-	"github.com/amirulashraf/parrot-coder/internal/session"
-	"github.com/amirulashraf/parrot-coder/internal/snapshot"
-	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -39,33 +35,26 @@ func (a *recordingAuthorizer) Authorize(_ context.Context, request permission.Re
 	return permission.Allow, nil
 }
 
-func workspaceToolHarness(t *testing.T) (context.Context, *workspace.Workspace, *change.Service, *snapshot.Service, string) {
+func workspaceToolHarness(t *testing.T) (context.Context, *workspace.Workspace, *change.Service) {
 	t.Helper()
 	ctx := context.Background()
-	db := store.NewRegistry(t.TempDir(), "host-test")
-	t.Cleanup(func() { _ = db.Close() })
-	sessions := session.NewService(db, event.NewRepository(db))
-	created, err := sessions.Create(ctx, session.CreateParams{Title: "tools"})
-	if err != nil {
-		t.Fatal(err)
-	}
 	ws, err := workspace.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	return ctx, ws, change.NewService(change.Config{}), snapshot.NewService(t.TempDir(), snapshot.Config{}), created.ID
+	return ctx, ws, change.NewService(change.Config{})
 }
 
-func TestEditPermissionReviewHashAndSnapshotIntegration(t *testing.T) {
-	ctx, ws, changes, snapshots, sessionID := workspaceToolHarness(t)
+func TestEditPermissionReviewHashAndCommitIntegration(t *testing.T) {
+	ctx, ws, changes := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), "file")
 	before := []byte("before\n")
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","old":"before","new":"after"}`)
-	edit := NewEditTool(changes, snapshots)
-	planned, err := edit.Plan(ctx, raw, CallContext{Workspace: ws, SessionID: sessionID})
+	edit := NewEditTool(changes)
+	planned, err := edit.Plan(ctx, raw, CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,11 +71,11 @@ func TestEditPermissionReviewHashAndSnapshotIntegration(t *testing.T) {
 	}
 	authorizer := &recordingAuthorizer{}
 	executor := Executor{Snapshot: registry.Materialize(), Permissions: authorizer}
-	result, err := executor.Execute(ctx, "edit", raw, CallContext{Workspace: ws, SessionID: sessionID})
+	result, err := executor.Execute(ctx, "edit", raw, CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Metadata["transaction_id"] == "" || authorizer.request.OperationHash == "" {
+	if result.Metadata["files"] != 1 || authorizer.request.OperationHash == "" {
 		t.Fatalf("result/request = %#v / %#v", result, authorizer.request)
 	}
 	if authorizer.request.Description != `Edit workspace file "file"` {
@@ -99,17 +88,14 @@ func TestEditPermissionReviewHashAndSnapshotIntegration(t *testing.T) {
 		!strings.Contains(result.Text, "-before") || !strings.Contains(result.Text, "+after") {
 		t.Fatalf("edit result lacks before/after diff: %q", result.Text)
 	}
-	if _, err := snapshots.Undo(ctx, ws, sessionID); err != nil {
-		t.Fatal(err)
-	}
 	data, _ := os.ReadFile(path)
-	if string(data) != string(before) {
-		t.Fatalf("undo = %q", data)
+	if string(data) != "after\n" {
+		t.Fatalf("committed file = %q", data)
 	}
 }
 
 func TestEditRevalidatesAfterPermission(t *testing.T) {
-	ctx, ws, changes, snapshots, sessionID := workspaceToolHarness(t)
+	ctx, ws, changes := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), "file")
 	before := []byte("before")
 	if err := os.WriteFile(path, before, 0o600); err != nil {
@@ -117,10 +103,10 @@ func TestEditRevalidatesAfterPermission(t *testing.T) {
 	}
 	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","old":"before","new":"after"}`)
 	registry := NewRegistry()
-	_ = registry.Register(NewEditTool(changes, snapshots))
+	_ = registry.Register(NewEditTool(changes))
 	authorizer := &recordingAuthorizer{before: func() { _ = os.WriteFile(path, []byte("changed while asking"), 0o600) }}
 	executor := Executor{Snapshot: registry.Materialize(), Permissions: authorizer}
-	if _, err := executor.Execute(ctx, "edit", raw, CallContext{Workspace: ws, SessionID: sessionID}); !errors.Is(err, change.ErrStale) {
+	if _, err := executor.Execute(ctx, "edit", raw, CallContext{Workspace: ws}); !errors.Is(err, change.ErrStale) {
 		t.Fatalf("stale execution error = %v", err)
 	}
 	data, _ := os.ReadFile(path)
@@ -180,7 +166,7 @@ func TestWritePermissionDescriptionUsesCanonicalPath(t *testing.T) {
 }
 
 func TestWritePermissionRejectsWorkspacePath(t *testing.T) {
-	_, ws, _, _, _ := workspaceToolHarness(t)
+	_, ws, _ := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), ".git")
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -192,7 +178,7 @@ func TestWritePermissionRejectsWorkspacePath(t *testing.T) {
 }
 
 func TestUnrestrictedShellRequiresDefaultPermission(t *testing.T) {
-	_, ws, _, _, _ := workspaceToolHarness(t)
+	_, ws, _ := workspaceToolHarness(t)
 	planned, err := NewUnrestrictedShellTool(nil).Plan(context.Background(), json.RawMessage(`{"shell":"/bin/sh","command":"true"}`), CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)
@@ -207,7 +193,7 @@ func TestUnrestrictedShellRequiresDefaultPermission(t *testing.T) {
 }
 
 func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T) {
-	_, ws, _, _, _ := workspaceToolHarness(t)
+	_, ws, _ := workspaceToolHarness(t)
 	raw := json.RawMessage(`{"shell":"/bin/sh","command":"printf ok","env":{"API_TOKEN":"top-secret"}}`)
 	tool := NewShellTool(nil)
 	planned, err := tool.Plan(context.Background(), raw, CallContext{Workspace: ws})
@@ -238,7 +224,7 @@ func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T
 }
 
 func TestShellDefaultsShellAndWorkingDirectory(t *testing.T) {
-	_, ws, _, _, _ := workspaceToolHarness(t)
+	_, ws, _ := workspaceToolHarness(t)
 	t.Setenv("SHELL", "/bin/sh")
 	planned, err := NewShellTool(nil).Plan(context.Background(), json.RawMessage(`{"command":"printf ok"}`), CallContext{Workspace: ws})
 	if err != nil {
@@ -255,7 +241,7 @@ func TestShellDefaultsShellAndWorkingDirectory(t *testing.T) {
 }
 
 func TestShellAllowsExternalWorkingDirectory(t *testing.T) {
-	_, ws, _, _, _ := workspaceToolHarness(t)
+	_, ws, _ := workspaceToolHarness(t)
 	external := t.TempDir()
 	external, err := filepath.EvalSymlinks(external)
 	if err != nil {
@@ -274,8 +260,8 @@ func TestShellAllowsExternalWorkingDirectory(t *testing.T) {
 }
 
 func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
-	_, ws, changes, _, _ := workspaceToolHarness(t)
-	tool := NewApplyPatchTool(changes, nil)
+	_, ws, changes := workspaceToolHarness(t)
+	tool := NewApplyPatchTool(changes)
 	schema := string(tool.JSONSchema())
 	if !strings.Contains(schema, `"required":["patchText"]`) || strings.Contains(schema, `"required":["patch"]`) {
 		t.Fatalf("apply_patch schema is not OpenCode-compatible: %s", schema)

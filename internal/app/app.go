@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/fs"
 	"net/http"
 	"net/url"
 	"os"
@@ -43,7 +42,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
-	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
@@ -57,21 +55,6 @@ const (
 	CredentialFile = "credentials.json"
 	DatabaseFile   = "parrot.db"
 )
-
-// SnapshotGracePeriod is how long an unreferenced blob is kept before the sweep
-// removes it. The blob store is shared with other machines, which may have
-// written a blob but not yet the journal record naming it; this process cannot
-// see that record and cannot coordinate with the write, so it waits well past
-// the window instead.
-const SnapshotGracePeriod = 24 * time.Hour
-
-// snapshotRoot resolves where undo history is stored.
-func snapshotRoot(loaded config.Config, paths appdirs.Paths) string {
-	if root := strings.TrimSpace(loaded.Snapshot.Root); root != "" {
-		return root
-	}
-	return paths.Config
-}
 
 // Options controls process-local composition. Model accepts provider/model or
 // a model ID from the configured default provider.
@@ -107,7 +90,6 @@ type App struct {
 	DefaultSelection v1.SessionSelection
 
 	sessionStore *store.Registry
-	snapshots    *snapshot.Service
 	coordinator  *agent.Coordinator
 	compactions  *compaction.Repository
 	outputs      *tool.OutputStore
@@ -287,8 +269,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.outputs = outputs
 	changes := change.NewService(change.Config{})
-	snapshots := snapshot.NewService(snapshotRoot(loaded.Config, paths), snapshot.Config{})
-	result.snapshots = snapshots
 	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs)})
 	if err != nil {
 		return nil, fmt.Errorf("app: process: %w", err)
@@ -361,7 +341,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return profile.ReadOnly, err
 	}
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
-		Changes: changes, Snapshots: snapshots, Processes: processes, Todos: todos, Questions: questions,
+		Changes: changes, Processes: processes, Todos: todos, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages}, Formatters: formatterRegistry,
 		Subagents: subagents, Agents: agentLookup,
@@ -416,8 +396,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	result.coordinator = coordinator
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
-		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Snapshots: snapshots,
-		Workspace: ws, Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: processes,
+		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos,
+		Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: processes,
 		ProviderResolver: providerRegistry,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
@@ -511,9 +491,7 @@ func (o compactionContextObserver) ObserveFull(ctx context.Context) (compaction.
 }
 
 type MaintenanceReport struct {
-	OutputsRemoved        int
-	TemporaryFilesRemoved int
-	SnapshotBlobsPruned   int64
+	OutputsRemoved int
 }
 
 // Maintain performs bounded, idempotent cleanup. Durable events, messages,
@@ -528,24 +506,12 @@ func (a *App) Maintain(ctx context.Context) (MaintenanceReport, error) {
 		report.OutputsRemoved = removed
 		maintenanceErr = errors.Join(maintenanceErr, err)
 	}
-	if a.Project.Root != "" {
-		removed, err := cleanupSnapshotTemps(ctx, a.Project.Root, time.Now(), 24*time.Hour, 10000, 1000)
-		report.TemporaryFilesRemoved = removed
-		maintenanceErr = errors.Join(maintenanceErr, err)
-	}
-	if a.snapshots != nil {
-		pruned, err := a.snapshots.Sweep(SnapshotGracePeriod, 1000)
-		report.SnapshotBlobsPruned = pruned
-		maintenanceErr = errors.Join(maintenanceErr, err)
-	}
 	// Abandoned compaction attempts are repaired per session when that session
 	// is opened. Sweeping every session here would repair sessions belonging to
 	// other machines, interrupting compactions those machines are still running.
 	attributes := []any{
 		"duration_ms", time.Since(started).Milliseconds(),
 		"outputs_removed", report.OutputsRemoved,
-		"temporary_files_removed", report.TemporaryFilesRemoved,
-		"snapshot_blobs_pruned", report.SnapshotBlobsPruned,
 	}
 	if maintenanceErr != nil {
 		diagnostics.Error("maintenance_finished", append(attributes, "status", "error", "error_type", diagnostics.ErrorType(maintenanceErr))...)
@@ -553,43 +519,6 @@ func (a *App) Maintain(ctx context.Context) (MaintenanceReport, error) {
 		diagnostics.Event("maintenance_finished", append(attributes, "status", "success")...)
 	}
 	return report, maintenanceErr
-}
-
-var errMaintenanceBound = errors.New("app: maintenance traversal bound reached")
-
-func cleanupSnapshotTemps(ctx context.Context, root string, now time.Time, staleAfter time.Duration, visitLimit, removeLimit int) (int, error) {
-	visited, removed := 0, 0
-	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		visited++
-		if visited > visitLimit {
-			return errMaintenanceBound
-		}
-		if entry.IsDir() || removed >= removeLimit || !strings.HasPrefix(entry.Name(), ".parrot-snapshot-") {
-			return nil
-		}
-		info, err := entry.Info()
-		if err != nil {
-			return err
-		}
-		if !info.Mode().IsRegular() || now.Sub(info.ModTime()) <= staleAfter {
-			return nil
-		}
-		if err := os.Remove(path); err != nil {
-			return err
-		}
-		removed++
-		return nil
-	})
-	if errors.Is(err, errMaintenanceBound) {
-		return removed, nil
-	}
-	return removed, err
 }
 
 // toolPanicLogger routes the original tool-goroutine stack into the process

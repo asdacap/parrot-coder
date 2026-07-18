@@ -52,11 +52,9 @@ therefore structural, not lock-based.
 <state>/sessions/<session_id>/session.db   one database per session
 <state>/sessions/<session_id>/meta.json    published index entry
 <state>/owners/<hash>/v<N>.json            interactive owner, per host
-<config>/blobs/<hh>/<hash>                 content-addressed undo blobs
-<config>/snapshots/<session_id>/           per-session undo journal
 ```
 
-Four rules keep it correct:
+Three rules keep it correct:
 
 1. **A session database is written by one machine.** It holds every table
    belonging to that session, so its foreign keys stay inside one file and
@@ -72,11 +70,6 @@ Four rules keep it correct:
    never read to decide a claim and never written. Claims use `link()` onto a
    version-named target, which reports `EEXIST` instead of overwriting: rename
    would silently discard a competing claim, and no lock manager is involved.
-4. **Blobs are addressed by content.** A name asserts its bytes, so concurrent
-   writers cannot conflict and nothing is modified after publication. Unreferenced
-   blobs are swept only after a grace period, because another machine may have
-   written a blob whose journal record is not yet visible here.
-
 Anything abandoned by a dead process is repaired per session, when that session
 is opened. Repair must not range across sessions: a process cannot tell whether
 work in another machine's session is abandoned or in flight.

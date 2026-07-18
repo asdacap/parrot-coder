@@ -94,8 +94,6 @@ func Builtins() []Builtin {
 	return []Builtin{
 		{Name: "compact", Description: "compact the current conversation"},
 		{Name: "new", Description: "start a new session"},
-		{Name: "redo", Description: "redo the last undone change"},
-		{Name: "undo", Description: "undo the last change"},
 	}
 }
 

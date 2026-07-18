@@ -12,7 +12,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
-	"github.com/amirulashraf/parrot-coder/internal/snapshot"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
 )
@@ -22,7 +21,6 @@ import (
 // present.
 type BuiltinServices struct {
 	Changes   *change.Service
-	Snapshots *snapshot.Service
 	Processes *process.Runner
 	Todos     *session.TodoService
 	Questions *question.Broker
@@ -52,8 +50,8 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewGlobTool(GlobConfig{}),
 		NewGrepTool(GrepConfig{}),
 		NewReadOutputTool(1 << 20),
-		NewEditTool(services.Changes, services.Snapshots),
-		NewApplyPatchTool(services.Changes, services.Snapshots),
+		NewEditTool(services.Changes),
+		NewApplyPatchTool(services.Changes),
 		NewExecCommandTool(services.Processes),
 		NewShellTool(services.Processes),
 		NewUnrestrictedShellTool(services.Processes),
@@ -70,7 +68,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		items = append(items, NewLSPTools(services.LSP)...)
 	}
 	if services.Formatters != nil {
-		items = append(items, NewFormatTool(services.Formatters, services.Changes, services.Snapshots))
+		items = append(items, NewFormatTool(services.Formatters, services.Changes))
 	}
 	items = append(items, NewTaskTools(services.Subagents, services.Agents)...)
 	items = append(items, NewReviewTool(services.Subagents, services.Agents))

@@ -177,7 +177,7 @@ func TestChatTranscriptAndSlashCommands(t *testing.T) {
 	if code != exitOK {
 		t.Fatalf("code = %d, stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
-	for _, value := range []string{"$ hello", "● answer", "───", "/model", "/undo"} {
+	for _, value := range []string{"$ hello", "● answer", "───", "/model"} {
 		if !strings.Contains(stdout.String(), value) {
 			t.Errorf("transcript missing %q: %q", value, stdout.String())
 		}

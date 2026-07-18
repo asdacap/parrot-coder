@@ -468,8 +468,6 @@ type apiClient interface {
 	ReplyPermission(context.Context, string, string, v1.PermissionReply) error
 	Questions(context.Context, string) (v1.QuestionList, error)
 	ReplyQuestion(context.Context, string, string, v1.QuestionReply) error
-	Undo(context.Context, string) (v1.SnapshotTransaction, error)
-	Redo(context.Context, string) (v1.SnapshotTransaction, error)
 	Models(context.Context) (v1.ModelList, error)
 	SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error)
 	Agents(context.Context) (v1.AgentList, error)
@@ -1538,8 +1536,6 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/compact", Description: "compact the current conversation"},
 	{Value: "/connect", Description: "connect to an API server"},
 	{Value: "/thinking", Description: "toggle reasoning status"},
-	{Value: "/undo", Description: "undo the last change"},
-	{Value: "/redo", Description: "redo the last undone change"},
 	{Value: "/status", Description: "show chat state"},
 	{Value: "/exit", Description: "exit chat"},
 }
@@ -1791,23 +1787,6 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 			s.commitError(err.Error())
 		} else {
 			s.commitStatus("✓ Compaction: " + result.Status)
-		}
-	case "/undo", "/redo":
-		if s.current.ID == "" {
-			s.commitError("no active session")
-			break
-		}
-		var err error
-		if command == "/undo" {
-			_, err = s.api.Undo(s.ctx, s.current.ID)
-		} else {
-			_, err = s.api.Redo(s.ctx, s.current.ID)
-		}
-		if err != nil {
-			s.commitError(err.Error())
-		} else {
-			action := strings.TrimPrefix(command, "/")
-			s.commitStatus("✓ " + strings.ToUpper(action[:1]) + action[1:] + " complete")
 		}
 	case "/status":
 		sessionID := s.current.ID
@@ -2351,7 +2330,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/compact", "/connect", "/thinking", "/undo", "/redo", "/status", "/exit":
+	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/compact", "/connect", "/thinking", "/status", "/exit":
 		return true
 	default:
 		return false

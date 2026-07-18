@@ -167,18 +167,6 @@ func (c *Client) ReplyQuestion(ctx context.Context, sessionID, requestID string,
 	return c.do(ctx, http.MethodPost, path, reply, http.StatusNoContent, nil)
 }
 
-func (c *Client) Undo(ctx context.Context, id string) (v1.SnapshotTransaction, error) {
-	var out v1.SnapshotTransaction
-	err := c.do(ctx, http.MethodPost, sessionPath(id)+"/undo", nil, http.StatusOK, &out)
-	return out, err
-}
-
-func (c *Client) Redo(ctx context.Context, id string) (v1.SnapshotTransaction, error) {
-	var out v1.SnapshotTransaction
-	err := c.do(ctx, http.MethodPost, sessionPath(id)+"/redo", nil, http.StatusOK, &out)
-	return out, err
-}
-
 func (c *Client) Models(ctx context.Context) (v1.ModelList, error) {
 	var out v1.ModelList
 	err := c.do(ctx, http.MethodGet, "/api/v1/models", nil, http.StatusOK, &out)

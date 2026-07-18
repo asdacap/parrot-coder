@@ -77,8 +77,6 @@ var routes = []Route{
 	{"POST", "/api/v1/sessions/{id}/permissions/{request}/reply", "replyPermission"},
 	{"GET", "/api/v1/sessions/{id}/questions", "listQuestions"},
 	{"POST", "/api/v1/sessions/{id}/questions/{request}/reply", "replyQuestion"},
-	{"POST", "/api/v1/sessions/{id}/undo", "undo"},
-	{"POST", "/api/v1/sessions/{id}/redo", "redo"},
 	{"GET", "/api/v1/models", "listModels"},
 	{"GET", "/api/v1/usage", "getSubscriptionUsage"},
 	{"GET", "/api/v1/agents", "listAgents"},
@@ -113,8 +111,6 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/sessions/{id}/permissions/{request}/reply", s.permissionReply)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/questions", s.questions)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/questions/{request}/reply", s.questionReply)
-	s.mux.HandleFunc("/api/v1/sessions/{id}/undo", s.undo)
-	s.mux.HandleFunc("/api/v1/sessions/{id}/redo", s.redo)
 	s.mux.HandleFunc("/api/v1/models", s.models)
 	s.mux.HandleFunc("/api/v1/usage", s.subscriptionUsage)
 	s.mux.HandleFunc("/api/v1/agents", s.agents)
@@ -340,22 +336,6 @@ func (s *Server) questionReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.respondEmpty(w, r, s.backend.ReplyQuestion(r.Context(), r.PathValue("id"), r.PathValue("request"), request))
-}
-
-func (s *Server) undo(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPost) || !s.requireEmptyBody(w, r) {
-		return
-	}
-	item, err := s.backend.Undo(r.Context(), r.PathValue("id"))
-	s.respond(w, r, http.StatusOK, item, err)
-}
-
-func (s *Server) redo(w http.ResponseWriter, r *http.Request) {
-	if !s.requireMethod(w, r, http.MethodPost) || !s.requireEmptyBody(w, r) {
-		return
-	}
-	item, err := s.backend.Redo(r.Context(), r.PathValue("id"))
-	s.respond(w, r, http.StatusOK, item, err)
 }
 
 func (s *Server) models(w http.ResponseWriter, r *http.Request) {
@@ -773,10 +753,6 @@ func (s *Server) writeBackendError(w http.ResponseWriter, r *http.Request, err e
 		s.writeProblem(w, r, problem(id, http.StatusNotFound, "permission_not_found", "Permission request not found", "The permission request does not exist or is already settled."))
 	case errors.Is(err, ErrQuestionNotFound):
 		s.writeProblem(w, r, problem(id, http.StatusNotFound, "question_not_found", "Question request not found", "The question request does not exist or is already settled."))
-	case errors.Is(err, ErrNoUndo):
-		s.writeProblem(w, r, problem(id, http.StatusConflict, "nothing_to_undo", "Nothing to undo", "There is no transaction to undo."))
-	case errors.Is(err, ErrNoRedo):
-		s.writeProblem(w, r, problem(id, http.StatusConflict, "nothing_to_redo", "Nothing to redo", "There is no transaction to redo."))
 	default:
 		s.writeProblem(w, r, internalProblem(id))
 	}

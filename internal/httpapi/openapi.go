@@ -34,8 +34,6 @@ var operationSchemas = map[string]operationSchema{
 	"replyPermission":        {request: v1.PermissionReply{}, status: "204"},
 	"listQuestions":          {response: v1.QuestionList{}, status: "200"},
 	"replyQuestion":          {request: v1.QuestionReply{}, status: "204"},
-	"undo":                   {response: v1.SnapshotTransaction{}, status: "200"},
-	"redo":                   {response: v1.SnapshotTransaction{}, status: "200"},
 	"listModels":             {response: v1.ModelList{}, status: "200"},
 	"getSubscriptionUsage":   {response: v1.SubscriptionUsage{}, status: "200"},
 	"listAgents":             {response: v1.AgentList{}, status: "200"},

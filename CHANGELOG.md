@@ -6,6 +6,7 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Changed
 
+- Removed filesystem journaling and the public undo/redo commands and API.
 - Interactive assistant output now renders a terminal-safe Markdown subset and
   syntax-highlights recognized fenced code on color-capable TTYs, with bounded
   plain-text fallback for large, unknown-language, no-color, and non-TTY code.
@@ -40,7 +41,7 @@ All notable changes to Parrot Coder will be documented in this file.
 - Durable SQLite projects, sessions, event projections, context epochs, tool
   state, compaction, recovery, and idempotent prompt admission.
 - Canonical permission binding, bounded read/search/process tools,
-  transactional edits and strict patches, snapshots, undo, and redo.
+  transactional edits and strict patches.
 - Versioned HTTP/JSON/SSE API with in-process transport and loopback-only server.
 - Skills, custom commands, subagents, MCP stdio/HTTP, LSP, formatter proposals,
   managed output, and SSRF-resistant web fetch.

@@ -21,8 +21,6 @@ GET    /api/v1/sessions/{id}/events
 GET    /api/v1/sessions/{id}/permissions
 POST   /api/v1/sessions/{id}/permissions/{request}/reply
 POST   /api/v1/sessions/{id}/questions/{request}/reply
-POST   /api/v1/sessions/{id}/undo
-POST   /api/v1/sessions/{id}/redo
 GET    /api/v1/models
 GET    /api/v1/agents
 GET    /openapi.json

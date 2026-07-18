@@ -53,8 +53,7 @@ workspace, bounded `web_fetch` GET/HEAD requests, and
 reviewed `edit`/`apply_patch` mutations inside the current workspace, and
 sandboxed `shell` execution are allowed by the default workspace policy. An
 explicit permission mode overrides the web fetch, mutation, and shell defaults.
-Workspace containment, SSRF protections, preimage revalidation, snapshots, and
-undo/redo still apply.
+Workspace containment, SSRF protections, and preimage revalidation still apply.
 
 Permission dialogs show only the tool's human-readable description, flattened
 to one line. They do not show policy metadata, resource records, canonical
@@ -122,9 +121,6 @@ Edits and patches are planned before permission. The approved operation includes
 the exact diff and preimage hashes. Multi-file changes are staged and runtime
 failures trigger reverse rollback. Filesystem state is not transactionally
 atomic across a process or machine crash.
-
-Undo and redo refuse to overwrite divergent current state. Snapshot blobs are
-private, bounded, and retained according to policy.
 
 Tool calls are durable before side effects. Cancellation and restart repair all
 nonterminal local tool calls to an explicit terminal failure. Uncertain provider

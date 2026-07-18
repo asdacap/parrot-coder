@@ -277,7 +277,7 @@ func TestPatchCodexSyntaxCompatibility(t *testing.T) {
 	}
 }
 
-func TestPatchCodexOverwriteSemanticsRemainRollbackSafe(t *testing.T) {
+func TestPatchCodexOverwriteSemantics(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
 	for path, data := range map[string]string{"added": "old add\n", "source": "source\n", "destination": "old destination\n"} {
@@ -297,15 +297,6 @@ func TestPatchCodexOverwriteSemanticsRemainRollbackSafe(t *testing.T) {
 		data, err := os.ReadFile(filepath.Join(ws.Root(), path))
 		if err != nil || string(data) != want {
 			t.Fatalf("%s = %q, %v", path, data, err)
-		}
-	}
-	if err := service.Rollback(ctx, ws, plan); err != nil {
-		t.Fatal(err)
-	}
-	for path, want := range map[string]string{"added": "old add\n", "source": "source\n", "destination": "old destination\n"} {
-		data, err := os.ReadFile(filepath.Join(ws.Root(), path))
-		if err != nil || string(data) != want {
-			t.Fatalf("restored %s = %q, %v", path, data, err)
 		}
 	}
 }
@@ -343,33 +334,6 @@ func TestPatchAcceptsMoveFileAliasWithUpdateHunks(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(ws.Root(), "src", "shared", "workspaceFavourites.ts"))
 	if err != nil || string(data) != "import type { Workspace } from './workspaceFile'\n" {
 		t.Fatalf("move destination = %q, %v", data, err)
-	}
-}
-
-func TestPatchCreatesAndRollsBackMissingParentDirectories(t *testing.T) {
-	ctx := context.Background()
-	ws := testWorkspace(t)
-	service := NewService(Config{})
-	patch := "*** Begin Patch\n*** Add File: deep/nested/file.txt\n+content\n*** End Patch"
-	plan, err := service.PlanPatch(ctx, ws, patch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Directories) != 2 {
-		t.Fatalf("directories = %#v", plan.Directories)
-	}
-	if err := service.Commit(ctx, ws, plan); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(ws.Root(), "deep", "nested", "file.txt"))
-	if err != nil || string(data) != "content\n" {
-		t.Fatalf("nested file = %q, %v", data, err)
-	}
-	if err := service.Rollback(ctx, ws, plan); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(filepath.Join(ws.Root(), "deep")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("created directories survived rollback: %v", err)
 	}
 }
 

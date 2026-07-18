@@ -3,7 +3,7 @@
 Parrot Coder is a local-first coding agent for macOS and Linux, implemented as
 a single Go binary. It provides scrollback-preserving terminal chat, durable SQLite
 sessions and event history, ChatGPT subscription OAuth, OpenAI-compatible
-providers, permission-bound tools, transactional file changes with undo/redo,
+providers, permission-bound tools, transactional file changes,
 session compaction, MCP, LSP, formatters, and bounded web fetching.
 
 Local CLI commands use the same versioned HTTP/SSE API as `parrot serve`, but
@@ -207,7 +207,7 @@ Interactive chat has an equivalent for every top-level CLI action: `/help`,
 `/version`, `/run PROMPT`, `/chat`, `/models`, `/usage`, `/modes`, `/agents`,
 `/session`, `/auth`, and `/serve`. It also supports `/model`, `/effort`,
 `/mode`, `/sessions`, `/resume`, `/new`, `/clear`, `/compact`, `/connect`, `/thinking`,
-`/undo`, `/redo`, `/status`, custom commands, and `/exit`.
+`/status`, custom commands, and `/exit`.
 
 The management namespaces mirror their CLI forms: `/session list`, `/session
 show ID`, `/session compact [ID]`, `/session delete ID`, `/auth list`, `/auth
@@ -275,7 +275,7 @@ Parrot bounds network bodies and streams, rejects cross-origin authenticated
 provider redirects, pins validated DNS answers for each web-fetch host, strips
 terminal controls, and binds approvals to canonical inputs, resources, and
 operation hashes. File mutations revalidate canonical paths and preimage hashes,
-stage writes in destination directories, and journal undo/redo state.
+stage writes in destination directories, and roll back runtime commit failures.
 
 Permission to run an MCP server, LSP server, or formatter is permission to run
 local code with the invoking user's authority. Parrot's shell sandbox cannot
