@@ -24,6 +24,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
+	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
@@ -1260,9 +1261,35 @@ func (s *chatShell) runEnhanced(first string) int {
 			expansion, err := s.commands.Expand(name, arguments)
 			return enhancedchat.Expansion{Prompt: expansion.Prompt, Agent: expansion.Agent, Model: expansion.Model, Subtask: expansion.Subtask}, err
 		},
-		Slash: s.slash,
+		Slash:          s.slash,
+		OnTurnComplete: s.onTurnComplete,
 	}, first)
 	return finish(s.ctx, result.Code, result.Reason, result.Err)
+}
+
+func (s *chatShell) onTurnComplete(completed enhancedchat.TurnComplete) *enhancedchat.TurnCompleteDialog {
+	if completed.Mode != mode.PlanID {
+		return nil
+	}
+	return &enhancedchat.TurnCompleteDialog{
+		Prompt: "Plan complete — yes to implement, no to stop, or type feedback: ", Context: []string{"Review the plan before implementation."},
+		Handle: func(value string) (enhancedchat.TurnCompleteResult, error) {
+			answer := strings.TrimSpace(value)
+			switch strings.ToLower(answer) {
+			case "yes", "y":
+				if err := s.applyAgent(mode.BuildID, false); err != nil {
+					return enhancedchat.TurnCompleteResult{}, err
+				}
+				return enhancedchat.TurnCompleteResult{Prompt: "Implement the approved plan."}, nil
+			case "no", "n":
+				return enhancedchat.TurnCompleteResult{}, nil
+			case "":
+				return enhancedchat.TurnCompleteResult{ValidationError: "enter yes, no, or feedback"}, nil
+			default:
+				return enhancedchat.TurnCompleteResult{Prompt: answer}, nil
+			}
+		},
+	}
 }
 
 func (s *chatShell) enhancedRenderError(err error) int {

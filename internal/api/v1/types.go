@@ -272,10 +272,9 @@ type AgentList struct {
 }
 
 type Mode struct {
-	ID         string `json:"id"`
-	ReadOnly   bool   `json:"read_only"`
-	MaxTurns   int    `json:"max_turns"`
-	ReviewPlan bool   `json:"review_plan"`
+	ID       string `json:"id"`
+	ReadOnly bool   `json:"read_only"`
+	MaxTurns int    `json:"max_turns"`
 }
 
 type ModeList struct {

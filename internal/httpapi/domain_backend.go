@@ -567,7 +567,7 @@ func (b *DomainBackend) ListModes(context.Context) (v1.ModeList, error) {
 	}
 	for _, item := range b.Modes.List() {
 		profile := item.Profile()
-		out.Items = append(out.Items, v1.Mode{ID: item.ID(), ReadOnly: profile.ReadOnly, MaxTurns: profile.MaxTurns, ReviewPlan: item.ReviewPlan()})
+		out.Items = append(out.Items, v1.Mode{ID: item.ID(), ReadOnly: profile.ReadOnly, MaxTurns: profile.MaxTurns})
 	}
 	return out, nil
 }
