@@ -111,6 +111,7 @@ type App struct {
 	coordinator  *agent.Coordinator
 	compactions  *compaction.Repository
 	outputs      *tool.OutputStore
+	processes    *process.Runner
 	mcp          *mcp.Manager
 	lsp          *lsp.Manager
 	closeOnce    sync.Once
@@ -292,6 +293,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: process: %w", err)
 	}
+	result.processes = processes
 	var questionHandler question.Prompter
 	if options.NonInteractive {
 		questionHandler = questionPrompter{}
@@ -402,7 +404,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
 		},
-		Workspace: ws, Outputs: outputs, Live: live, Compactor: compactionService,
+		Workspace: ws, Outputs: outputs, Processes: processes, Live: live, Compactor: compactionService,
 		ToolPanicLogger: toolPanicLogger(),
 	})
 	if err != nil {
@@ -415,7 +417,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Snapshots: snapshots,
-		Workspace: ws, Events: repository, Live: live, DefaultSelection: defaultSelection,
+		Workspace: ws, Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: processes,
 		ProviderResolver: providerRegistry,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
@@ -619,6 +621,9 @@ func (a *App) Close() error {
 			}
 		} else {
 			diagnostics.Event("app_close_started", "active_sessions", activeSessions)
+		}
+		if a.processes != nil {
+			a.closeErr = errors.Join(a.closeErr, a.processes.Close())
 		}
 		if a.mcp != nil {
 			a.closeErr = errors.Join(a.closeErr, a.mcp.Close())

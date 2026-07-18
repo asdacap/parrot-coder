@@ -432,6 +432,10 @@ func validateValue(s schema, value any, path string) error {
 		if _, err := n.Int64(); err != nil {
 			return fmt.Errorf("%s must be integer", path)
 		}
+	case "number":
+		if _, ok := value.(json.Number); !ok {
+			return fmt.Errorf("%s must be number", path)
+		}
 	case "boolean":
 		if _, ok := value.(bool); !ok {
 			return fmt.Errorf("%s must be boolean", path)

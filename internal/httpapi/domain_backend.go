@@ -43,6 +43,12 @@ type DomainBackend struct {
 	DefaultSelection   session.Selection
 	ProviderResolver   agent.ProviderResolver
 	CompactSessionFunc func(context.Context, string) (v1.Compaction, error)
+	Processes          ProcessLifecycle
+}
+
+type ProcessLifecycle interface {
+	InterruptSession(string) error
+	DeleteSession(string) error
 }
 
 func (b *DomainBackend) CompactSession(ctx context.Context, id string) (v1.Compaction, error) {
@@ -173,6 +179,19 @@ func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, r
 }
 
 func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
+	if _, err := b.GetSession(ctx, id); err != nil {
+		return err
+	}
+	var cleanupErr error
+	if b.Coordinator != nil {
+		cleanupErr = b.Coordinator.Interrupt(ctx, id)
+	}
+	if b.Processes != nil {
+		cleanupErr = errors.Join(cleanupErr, b.Processes.DeleteSession(id))
+	}
+	if cleanupErr != nil {
+		return cleanupErr
+	}
 	err := b.Sessions.Delete(ctx, id)
 	if errors.Is(err, session.ErrNotFound) {
 		return ErrNotFound
@@ -265,13 +284,14 @@ func (b *DomainBackend) Interrupt(ctx context.Context, id string) error {
 	if _, err := b.GetSession(ctx, id); err != nil {
 		return err
 	}
-	if b.Coordinator == nil {
-		return nil
+	var err error
+	if b.Coordinator != nil {
+		err = b.Coordinator.Interrupt(ctx, id)
 	}
-	if err := b.Coordinator.Interrupt(ctx, id); err != nil {
-		return err
+	if b.Processes != nil {
+		err = errors.Join(err, b.Processes.InterruptSession(id))
 	}
-	return nil
+	return err
 }
 
 func (b *DomainBackend) OpenEvents(ctx context.Context, id string, after int64) (*EventStream, error) {

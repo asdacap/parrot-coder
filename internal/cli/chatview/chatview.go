@@ -130,6 +130,30 @@ func FormatFailedToolRequest(input map[string]any) string {
 	return strings.Join(lines, "\n")
 }
 
+// RedactToolInputForDisplay returns a presentation-only copy. Exact tool input
+// remains available to authorization and execution but stdin is never rendered.
+func RedactToolInputForDisplay(name string, input map[string]any) map[string]any {
+	if input == nil || name != "write_stdin" {
+		return input
+	}
+	redacted := make(map[string]any, len(input))
+	for key, value := range input {
+		redacted[key] = value
+	}
+	for _, key := range []string{"chars", "input"} {
+		value, exists := redacted[key]
+		if !exists {
+			continue
+		}
+		if text, ok := value.(string); ok {
+			redacted[key] = fmt.Sprintf("<redacted: %d chars>", len([]rune(text)))
+		} else {
+			redacted[key] = "<redacted>"
+		}
+	}
+	return redacted
+}
+
 type todoActivityItem struct {
 	content  string
 	status   string
@@ -267,7 +291,7 @@ func ToolActivityPayload(data json.RawMessage) (string, string, map[string]any, 
 			result = firstString(nested, "result", "Result")
 		}
 	}
-	return callID, name, input, result
+	return callID, name, RedactToolInputForDisplay(name, input), result
 }
 
 func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
@@ -338,6 +362,13 @@ func ToolActivityLabel(name string, input map[string]any) string {
 		details = append(details, patchActivityTargets(firstString(input, "patchText", "patch"))...)
 	case "shell":
 		add(firstString(input, "command"))
+	case "exec_command":
+		add(firstString(input, "cmd"))
+	case "write_stdin":
+		if value, ok := input["session_id"]; ok {
+			add(fmt.Sprint(value))
+		}
+		add(firstString(input, "chars"))
 	case "todowrite", "todo_write":
 		if todos, ok := input["todos"].([]any); ok {
 			return todoWriteActivityLabel(name, len(todos))
@@ -801,7 +832,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	} else if status == "failure" && call.input != nil {
 		block = TruncateToolBlock(FormatFailedToolRequest(call.input), MaxToolBlockLines)
 	}
-	if terminalEvent && call.name == "shell" {
+	if terminalEvent && (call.name == "shell" || call.name == "exec_command") {
 		output := ToolActivityOutputTail(item.Data)
 		if output == "" {
 			output = call.output.String()
@@ -826,8 +857,12 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		delete(t.pending, callID)
 		delete(t.calls, callID)
 	}
+	errorText := ToolActivityError(item.Data)
+	if call.name == "write_stdin" {
+		errorText, block = "", ""
+	}
 	return StreamToolReport{
-		Line: StreamToolStatus(status, ToolActivityError(item.Data)), Label: ToolActivityLabel(call.name, call.input), Block: block,
+		Line: StreamToolStatus(status, errorText), Label: ToolActivityLabel(call.name, call.input), Block: block,
 		Terminal: terminalEvent, Style: style,
 	}
 }
@@ -848,6 +883,9 @@ func (t *StreamToolTracker) Output(item *v1.ToolOutputDelta) StreamToolReport {
 		pending.Write(item.Delta)
 		t.pending[item.ToolCallID] = pending
 		return StreamToolReport{}
+	}
+	if call.name == "write_stdin" {
+		return StreamToolReport{Line: "  ◐ Running " + ToolActivityLabel(call.name, call.input), Style: call.style}
 	}
 	call.output.Write(item.Delta)
 	t.calls[item.ToolCallID] = call
@@ -948,6 +986,13 @@ func setYAMLBlockStyle(node *yaml.Node) {
 }
 
 func PermissionContextLines(item v1.Permission) []string {
+	if item.ToolID == "write_stdin" {
+		var input map[string]any
+		if json.Unmarshal(item.CanonicalInput, &input) == nil {
+			return []string{ToolActivityLabel(item.ToolID, RedactToolInputForDisplay(item.ToolID, input))}
+		}
+		return []string{"write_stdin"}
+	}
 	description := strings.TrimSpace(strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(item.Description))
 	if description == "" {
 		return nil

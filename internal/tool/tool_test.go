@@ -266,6 +266,8 @@ func TestDefaultWorkspaceAndReadOnlyPolicies(t *testing.T) {
 		{name: "formatter write", request: request("format", "filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "edit external capability", request: request("edit", "external_filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "shell", request: request("shell", "process", "execute"), decision: permission.Allow, readOnly: permission.Ask},
+		{name: "exec command", request: request("exec_command", "process", "execute"), decision: permission.Allow, readOnly: permission.Ask},
+		{name: "exec command unrestricted", request: request("exec_command", "process", "execute_unrestricted"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "other process tool", request: request("other", "process", "execute"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "shell non-process resource", request: request("shell", "filesystem", "execute"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "shell unsupported operation", request: request("shell", "process", "inspect"), decision: permission.Ask, readOnly: permission.Ask},
