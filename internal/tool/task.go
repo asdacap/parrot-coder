@@ -110,7 +110,7 @@ func (t *TaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		task, err := t.Manager.Status(call.SessionID, input.TaskID)
 		return taskResult(task), err
 	}
-	id, err := t.Manager.Launch(call.SessionID, []string{call.Agent}, subagent.Request{Prompt: input.Prompt, Agent: input.Agent, Model: input.Model, ToolCallID: call.ToolCallID})
+	id, err := t.Manager.Spawn(ctx, call.SessionID, call.Agent, subagent.Request{Prompt: input.Prompt, Agent: input.Agent, Model: input.Model, ToolCallID: call.ToolCallID})
 	if err != nil {
 		return Result{}, err
 	}
