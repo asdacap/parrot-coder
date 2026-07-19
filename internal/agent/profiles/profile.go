@@ -8,6 +8,7 @@ type Profile struct {
 	AllowedToolIDs []string
 	HardRules      []string
 	MaxTurns       int
+	RecursionLimit int
 	ReadOnly       bool
 }
 
