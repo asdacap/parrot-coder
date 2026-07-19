@@ -2124,7 +2124,7 @@ func (s *chatShell) authAction(argument string) {
 		return
 	}
 	if len(fields) == 0 {
-		s.commitError("usage: /auth list|login PROVIDER [--no-browser]|logout PROVIDER")
+		s.commitError("usage: /auth list|login PROVIDER [KEY|--no-browser]|logout PROVIDER")
 		return
 	}
 	switch fields[0] {
@@ -2162,18 +2162,25 @@ func (s *chatShell) authAction(argument string) {
 		s.commitStatus("✓ Credential removed; restart chat to reload providers")
 	case "login":
 		if len(fields) < 2 || len(fields) > 3 {
-			s.commitError("usage: /auth login PROVIDER [--no-browser]")
+			s.commitError("usage: /auth login PROVIDER [KEY|--no-browser]")
 			return
 		}
 		name := fields[1]
 		if name != "openai" && name != "chatgpt" {
-			if len(fields) != 2 {
+			if len(fields) == 3 && fields[2] == "--no-browser" {
 				s.commitError("--no-browser is only valid for OpenAI")
 				return
 			}
+			// A key typed here stays local: builtin slash commands never reach
+			// the model or the session transcript, and input history is only
+			// held in memory. It is still visible on screen and in terminal
+			// scrollback, so PARROT_API_KEY remains the quieter option.
 			key := os.Getenv("PARROT_API_KEY")
+			if len(fields) == 3 {
+				key = fields[2]
+			}
 			if key == "" {
-				s.commitError("compatible provider login requires PARROT_API_KEY; secrets are not accepted in slash-command text")
+				s.commitError("compatible provider login requires a key argument or PARROT_API_KEY")
 				return
 			}
 			if err := s.credentials.Put(s.ctx, name, auth.NewAPIKeyCredential(key)); err != nil {
@@ -2212,7 +2219,7 @@ func (s *chatShell) authAction(argument string) {
 		}
 		s.commitStatus("✓ OpenAI OAuth credential stored; restart chat to reload providers")
 	default:
-		s.commitError("usage: /auth list|login PROVIDER [--no-browser]|logout PROVIDER")
+		s.commitError("usage: /auth list|login PROVIDER [KEY|--no-browser]|logout PROVIDER")
 	}
 }
 

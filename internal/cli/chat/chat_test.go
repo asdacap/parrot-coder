@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/auth"
 	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
@@ -1037,4 +1038,44 @@ func (a *promptReplyAPI) ReplyPermission(_ context.Context, _, _ string, reply v
 func (a *promptReplyAPI) ReplyQuestion(_ context.Context, _, _ string, reply v1.QuestionReply) error {
 	a.questionReplies = append(a.questionReplies, reply)
 	return nil
+}
+
+func TestAuthLoginAcceptsKeyArgumentOrEnvironment(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		argument  string
+		env       string
+		wantKey   string
+		wantError string
+	}{
+		{name: "key argument", argument: "login local sk-typed", wantKey: "sk-typed"},
+		{name: "key argument wins over the environment", argument: "login local sk-typed", env: "sk-env", wantKey: "sk-typed"},
+		{name: "environment fallback", argument: "login local", env: "sk-env", wantKey: "sk-env"},
+		{name: "neither", argument: "login local", wantError: "requires a key argument or PARROT_API_KEY"},
+		{name: "no-browser is OAuth only", argument: "login local --no-browser", wantError: "only valid for OpenAI"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			t.Setenv("PARROT_API_KEY", testCase.env)
+			var stdout, stderr bytes.Buffer
+			store := auth.NewFileStore(filepath.Join(t.TempDir(), "credentials.json"))
+			shell := &chatShell{ctx: context.Background(), credentials: store, stdout: &stdout, stderr: &stderr}
+			shell.authAction(testCase.argument)
+			if testCase.wantError != "" {
+				if !strings.Contains(stderr.String(), testCase.wantError) {
+					t.Fatalf("stderr = %q, want it to contain %q", stderr.String(), testCase.wantError)
+				}
+				return
+			}
+			stored, err := store.Get(context.Background(), "local")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.APIKey == nil || stored.APIKey.Key.Value() != testCase.wantKey {
+				t.Fatalf("stored credential = %#v, want key %q", stored, testCase.wantKey)
+			}
+			if strings.Contains(stdout.String()+stderr.String(), testCase.wantKey) {
+				t.Fatalf("output echoed the key: %q %q", stdout.String(), stderr.String())
+			}
+		})
+	}
 }

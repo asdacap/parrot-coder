@@ -232,9 +232,14 @@ Interactive chat has an equivalent for every top-level CLI action: `/help`,
 
 The management namespaces mirror their CLI forms: `/session list`, `/session
 show ID`, `/session compact [ID]`, `/session delete ID`, `/auth list`, `/auth
-login PROVIDER [--no-browser]`, and `/auth logout PROVIDER`. Compatible-provider
-slash login reads `PARROT_API_KEY`; secrets are never accepted in slash-command
-text. `/serve` starts the existing local runtime in the background and supports
+login PROVIDER [KEY|--no-browser]`, and `/auth logout PROVIDER`.
+Compatible-provider slash login takes the key as an argument, or reads
+`PARROT_API_KEY` when the argument is omitted. A key typed as an argument is
+handled locally: builtin slash commands never reach the model or the session
+transcript, and chat input history is only held in memory. It is still visible
+on screen and in terminal scrollback, so `PARROT_API_KEY` or the CLI's
+`--api-key-stdin` remains the quieter option on a shared display.
+`/serve` starts the existing local runtime in the background and supports
 `/serve status` and `/serve stop`. Credential changes take effect in a new chat.
 Use `/effort` to pick from the active model's reasoning levels, or pass one
 directly, for example `/effort high`.
