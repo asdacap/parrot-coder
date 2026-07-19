@@ -142,11 +142,17 @@ func TestTimeout(t *testing.T) {
 
 func TestProgressAccumulatesAndReportsSnapshots(t *testing.T) {
 	var snapshots []Task
+	terminalProgress := make(chan struct{})
 	manager := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {
 		execution.ReportProgress(Progress{Usage: Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12}, ToolUses: 1})
 		execution.ReportProgress(Progress{Usage: Usage{InputTokens: 20, OutputTokens: 3, TotalTokens: 23}, ToolUses: 2})
 		return "done", nil
-	}), Config{OnProgress: func(task Task) { snapshots = append(snapshots, task) }})
+	}), Config{OnProgress: func(task Task) {
+		snapshots = append(snapshots, task)
+		if task.Status != StatusRunning {
+			close(terminalProgress)
+		}
+	}})
 	id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore", ToolCallID: "call"})
 	if err != nil {
 		t.Fatal(err)
@@ -158,9 +164,118 @@ func TestProgressAccumulatesAndReportsSnapshots(t *testing.T) {
 	if task.Usage.TotalTokens != 35 || task.Usage.InputTokens != 30 || task.Usage.OutputTokens != 5 || task.ToolUses != 3 || task.ToolCallID != "call" {
 		t.Fatalf("task progress = %#v", task)
 	}
-	if len(snapshots) != 2 || snapshots[0].Usage.TotalTokens != 12 || snapshots[1].ToolUses != 3 {
+	<-terminalProgress
+	if len(snapshots) != 3 || snapshots[0].Usage.TotalTokens != 12 || snapshots[1].ToolUses != 3 || snapshots[2].Status != StatusSucceeded {
 		t.Fatalf("snapshots = %#v", snapshots)
 	}
+}
+
+func TestTerminalProgressCallbackIsReentrantAndPrecedesWait(t *testing.T) {
+	callbackStarted := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	callbackDone := make(chan error, 1)
+	var manager *Manager
+	manager = NewManager(executorFunc(func(context.Context, Execution) (string, error) { return "done", nil }), Config{OnProgress: func(task Task) {
+		if task.Status == StatusRunning {
+			return
+		}
+		close(callbackStarted)
+		_, err := manager.Await(context.Background(), "parent", task.ID)
+		callbackDone <- err
+		<-releaseCallback
+	}})
+	id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-callbackStarted
+	waitDone := make(chan error, 1)
+	go func() {
+		_, waitErr := manager.Wait(context.Background(), "parent", []string{id})
+		waitDone <- waitErr
+	}()
+	select {
+	case err := <-waitDone:
+		t.Fatalf("Wait returned before terminal callback completed: %v", err)
+	case <-time.After(10 * time.Millisecond):
+	}
+	close(releaseCallback)
+	if err := <-callbackDone; err != nil {
+		t.Fatalf("callback Await error = %v", err)
+	}
+	if err := <-waitDone; err != nil {
+		t.Fatalf("Wait error = %v", err)
+	}
+}
+
+func TestOlderTerminalCallbackCannotReleaseNewTurnWait(t *testing.T) {
+	firstStarted := make(chan struct{})
+	firstRelease := make(chan struct{})
+	secondStarted := make(chan struct{})
+	secondRelease := make(chan struct{})
+	manager := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {
+		if execution.Turn == 2 {
+			close(secondStarted)
+			<-secondRelease
+		}
+		return "done", nil
+	}), Config{OnProgress: func(task Task) {
+		if task.Turn == 1 {
+			close(firstStarted)
+			<-firstRelease
+		}
+	}})
+	id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-firstStarted
+	manager.mu.Lock()
+	firstCallbackDone := manager.tasks[id].callbackDone
+	manager.mu.Unlock()
+	if _, err := manager.FollowUp("parent", id, Request{Prompt: "again"}); err != nil {
+		t.Fatal(err)
+	}
+	<-secondStarted
+	waitObserved := make(chan struct{})
+	waitCtx := &observedDoneContext{Context: context.Background(), observed: waitObserved}
+	waitDone := make(chan error, 1)
+	go func() {
+		_, waitErr := manager.Wait(waitCtx, "parent", []string{id})
+		waitDone <- waitErr
+	}()
+	<-waitObserved
+	manager.mu.Lock()
+	revision := manager.tasks[id].revision
+	manager.mu.Unlock()
+	close(firstRelease)
+	<-firstCallbackDone
+	manager.mu.Lock()
+	if current := manager.tasks[id].revision; current != revision {
+		manager.mu.Unlock()
+		t.Fatalf("stale callback changed revision from %d to %d", revision, current)
+	}
+	manager.mu.Unlock()
+	select {
+	case err := <-waitDone:
+		t.Fatalf("Wait returned after stale callback activity: %v", err)
+	default:
+	}
+	close(secondRelease)
+	if err := <-waitDone; err != nil {
+		t.Fatalf("Wait error = %v", err)
+	}
+}
+
+type observedDoneContext struct {
+	context.Context
+	once     sync.Once
+	observed chan struct{}
+}
+
+func (c *observedDoneContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.observed) })
+	return c.Context.Done()
 }
 
 type reusableExecutor struct {

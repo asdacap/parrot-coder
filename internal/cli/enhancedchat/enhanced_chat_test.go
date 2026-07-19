@@ -370,7 +370,7 @@ func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
 }
 
 func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
-	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
+	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-task": true}}
 	runtime.upsertActivity("call-task", "task · explore", "running", false, false, false)
 	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-task", Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
@@ -382,6 +382,30 @@ func TestEnhancedTaskProgressUpdatesToolActivity(t *testing.T) {
 	line := formatActivity(runtime.activity[0], runtime.activity[0].started)
 	if !strings.Contains(line, "35 tokens · 3 tools") {
 		t.Fatalf("line = %q", line)
+	}
+
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-task", Agent: "explore", Status: "succeeded", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 {
+		t.Fatalf("completed task remains live: %#v", runtime.activity)
+	}
+
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-task", Agent: "explore", Status: "running"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 {
+		t.Fatalf("late task progress recreated activity: %#v", runtime.activity)
+	}
+
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-task-2", Agent: "explore", Status: "running"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 || runtime.activity[0].id != "call-task-2" {
+		t.Fatalf("follow-up task progress = %#v", runtime.activity)
 	}
 }
 
@@ -407,6 +431,45 @@ func TestEnhancedSubagentEventUsesDepthAndTaskPrefix(t *testing.T) {
 	}
 	if got := formatActivity(runtime.activity[2], runtime.activity[2].started); !strings.Contains(got, "Working: task · review") {
 		t.Fatalf("task activity = %q", got)
+	}
+}
+
+func TestEnhancedSubagentCompletionRemovesAllRowsAndIgnoresLateEvents(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{options: codingFlags{thinking: true}}, knownMessages: map[string]bool{}}
+	item := v1.SubagentEvent{TaskID: "task-review", TaskName: "review", Depth: 1}
+	for _, delta := range []v1.MessagePartDelta{
+		{MessageID: "child-message", Kind: "reasoning", Delta: "checking"},
+		{MessageID: "child-message", Kind: "text", Delta: "result"},
+	} {
+		item.Event.Type = v1.EventMessagePartDelta
+		item.Event.Data, _ = json.Marshal(delta)
+		data, _ := json.Marshal(item)
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: data}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(runtime.activity) != 2 {
+		t.Fatalf("live subagent activity = %#v", runtime.activity)
+	}
+
+	item.Event.Type = "session.assistant.complete"
+	item.Event.Data, _ = json.Marshal(map[string]string{"message_id": "child-message"})
+	data, _ := json.Marshal(item)
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 {
+		t.Fatalf("completed subagent activity remains live: %#v", runtime.activity)
+	}
+
+	item.Event.Type = v1.EventMessagePartDelta
+	item.Event.Data, _ = json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "late"})
+	data, _ = json.Marshal(item)
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 {
+		t.Fatalf("late subagent event recreated activity: %#v", runtime.activity)
 	}
 }
 

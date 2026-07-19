@@ -23,6 +23,10 @@ func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
 	if id == "" {
 		id = progress.TaskID
 	}
+	if r.completedTaskIDs[id] {
+		return
+	}
+	terminalEvent := progress.Status != "pending" && progress.Status != "running"
 	for i := range r.activity {
 		if r.activity[i].id != id {
 			continue
@@ -33,6 +37,20 @@ func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
 		}
 		r.activity[i].hasUsage = r.activity[i].tokens > 0
 		r.activity[i].toolUses = progress.ToolUses
+		if terminalEvent {
+			if r.completedTaskIDs == nil {
+				r.completedTaskIDs = make(map[string]bool)
+			}
+			r.completedTaskIDs[id] = true
+			r.activity = append(r.activity[:i], r.activity[i+1:]...)
+		}
+		return
+	}
+	if terminalEvent {
+		if r.completedTaskIDs == nil {
+			r.completedTaskIDs = make(map[string]bool)
+		}
+		r.completedTaskIDs[id] = true
 		return
 	}
 	r.upsertActivity(id, "task · "+progress.Agent, "running", false, false, false)
