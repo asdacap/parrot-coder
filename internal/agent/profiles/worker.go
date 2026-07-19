@@ -8,9 +8,10 @@ Typical tasks include implementing part of a feature, fixing tests or bugs, and 
 
 func Worker() Profile {
 	return Profile{
-		ID:        WorkerID,
-		Prompt:    workerPrompt,
-		HardRules: []string{"Keep tool side effects within the authorized workspace."},
-		MaxTurns:  64,
+		ID:             WorkerID,
+		Prompt:         workerPrompt,
+		HardRules:      []string{"Keep tool side effects within the authorized workspace."},
+		MaxTurns:       64,
+		RecursionLimit: 3,
 	}
 }
