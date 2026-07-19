@@ -425,7 +425,10 @@ func (r *enhancedChatRuntime) settleIdle() error {
 		if err != nil {
 			return err
 		}
-		r.modal = &enhancedModal{kind: "turn_complete", state: state, prompt: dialog.Prompt, context: dialog.Context, turnComplete: dialog}
+		r.modal = &enhancedModal{
+			kind: "turn_complete", state: state, prompt: dialog.Prompt, context: dialog.Context,
+			choices: append([]terminal.Candidate(nil), dialog.Choices...), turnComplete: dialog,
+		}
 		r.inputMode.advance()
 	}
 	return nil

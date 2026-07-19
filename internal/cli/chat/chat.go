@@ -1278,7 +1278,13 @@ func (s *chatShell) onTurnComplete(completed enhancedchat.TurnComplete) *enhance
 		return nil
 	}
 	return &enhancedchat.TurnCompleteDialog{
-		Prompt: "Plan complete — yes to implement, no to stop, or type feedback: ", Context: []string{"Review the plan before implementation."},
+		Prompt: "Plan complete: ", Context: []string{"Review the plan before implementation."},
+		Choices: []terminal.Candidate{
+			{Value: "yes", Description: "Implement the approved plan"},
+			{Value: "no", Description: "Stop after planning"},
+			{Value: "feedback", Description: "Provide feedback and revise the plan"},
+		},
+		CustomChoice: "feedback", CustomPrompt: "plan feedback: ",
 		Handle: func(value string) (enhancedchat.TurnCompleteResult, error) {
 			answer := strings.TrimSpace(value)
 			switch strings.ToLower(answer) {
