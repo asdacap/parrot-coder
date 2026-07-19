@@ -20,7 +20,6 @@ var (
 	ErrRecursion    = errors.New("subagent: agent recursion limit reached")
 	ErrNotFound     = errors.New("subagent: task not found")
 	ErrCanceled     = errors.New("subagent: task canceled")
-	ErrTimeout      = errors.New("subagent: task timed out")
 	ErrTaskLimit    = errors.New("subagent: retained task limit reached")
 	ErrRequestLimit = errors.New("subagent: request limit reached")
 	ErrRunning      = errors.New("subagent: agent is already running")
@@ -83,7 +82,6 @@ type Config struct {
 	MaxTasks               int
 	MaxPromptBytes         int
 	MaxResultBytes         int
-	Timeout                time.Duration
 	AgentIdentity          func(string) string
 	AgentRecursionLimit    func(string) int
 	OnProgress             func(Task)
@@ -97,7 +95,6 @@ const (
 	StatusSucceeded Status = "succeeded"
 	StatusFailed    Status = "failed"
 	StatusCanceled  Status = "canceled"
-	StatusTimedOut  Status = "timed_out"
 )
 
 type Task struct {
@@ -175,9 +172,6 @@ func NewManager(executor Executor, config Config) *Manager {
 	if config.MaxResultBytes <= 0 {
 		config.MaxResultBytes = 1 << 20
 	}
-	if config.Timeout <= 0 {
-		config.Timeout = 10 * time.Minute
-	}
 	return &Manager{executor: executor, config: config, tasks: make(map[string]*taskState), bySession: make(map[string]*taskState), byParent: make(map[string]int)}
 }
 
@@ -229,7 +223,7 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 	if parent := m.bySession[parentSession]; parent != nil {
 		rootSession, parentAgentID = parent.task.RootSession, parent.task.ID
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), m.config.Timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	state := &taskState{task: Task{ID: id, ParentSession: parentSession, RootSession: rootSession, ParentAgentID: parentAgentID, Agent: request.Agent, Model: request.Model, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, registered: make(chan struct{}), cancel: cancel}
 	m.tasks[id] = state
 	m.running++
@@ -346,9 +340,6 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	errText := ""
 	if executeErr != nil {
 		status, errText = StatusFailed, executeErr.Error()
-	}
-	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
-		status, errText = StatusTimedOut, ErrTimeout.Error()
 	}
 	if errors.Is(ctx.Err(), context.Canceled) {
 		status, errText = StatusCanceled, ErrCanceled.Error()
@@ -517,7 +508,7 @@ func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, err
 		m.mu.Unlock()
 		return Task{}, ErrConcurrency
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), m.config.Timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	state.task.Turn++
 	state.task.Status = StatusRunning
 	state.task.StartedAt = time.Now().UTC()
@@ -712,8 +703,6 @@ func taskError(task Task) error {
 	switch task.Status {
 	case StatusCanceled:
 		return ErrCanceled
-	case StatusTimedOut:
-		return ErrTimeout
 	case StatusFailed:
 		return errors.New(task.Error)
 	default:
