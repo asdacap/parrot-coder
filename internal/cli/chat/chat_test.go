@@ -212,8 +212,11 @@ func TestSelectingModelDefaultsEffortUnlessAlreadySelected(t *testing.T) {
 			if len(api.updates) != 1 || api.updates[0].Model != "chatgpt/gpt" {
 				t.Fatalf("updates = %#v", api.updates)
 			}
-			if test.want == "" && api.updates[0].Variant != nil || test.want != "" && (api.updates[0].Variant == nil || *api.updates[0].Variant != test.want) {
-				t.Fatalf("update variant = %#v; want %q", api.updates[0].Variant, test.want)
+			// A model switch always states the variant, including the empty
+			// one: omitting it left a stale variant on the session, which the
+			// server then rejected as an invalid selection.
+			if api.updates[0].Variant == nil || *api.updates[0].Variant != test.want {
+				t.Fatalf("update variant = %v; want explicit %q", api.updates[0].Variant, test.want)
 			}
 		})
 	}
@@ -1142,5 +1145,46 @@ func TestEnhancedAuthLoginPicksProviderThenReadsKey(t *testing.T) {
 	}
 	if stored.APIKey == nil || stored.APIKey.Key.Value() != "sk-enhanced" {
 		t.Fatalf("stored credential = %#v", stored)
+	}
+}
+
+func TestApplyModelClearsVariantForModelsWithoutVariants(t *testing.T) {
+	models := v1.ModelList{Items: []v1.Model{
+		{Provider: "chatgpt", ID: "sol", Variants: []v1.ModelVariant{{Name: "low"}, {Name: "high"}}},
+		{Provider: "kimi", ID: "k2"},
+	}}
+	for _, testCase := range []struct {
+		name    string
+		current string
+		target  string
+		want    string
+	}{
+		{name: "variantless target clears a carried variant", current: "high", target: "kimi/k2", want: ""},
+		{name: "target keeps a variant it offers", current: "high", target: "chatgpt/sol", want: "high"},
+		{name: "target replaces a variant it does not offer", current: "bogus", target: "chatgpt/sol", want: "low"},
+		{name: "empty variant takes the target default", current: "", target: "chatgpt/sol", want: "low"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			api := &effortSwitchAPI{models: models}
+			shell := &chatShell{
+				ctx: context.Background(), api: api, models: models.Items,
+				current: v1.Session{ID: "session"}, selection: chatSelection{variant: testCase.current},
+				stdout: io.Discard, stderr: io.Discard,
+			}
+			if err := shell.applyModel(testCase.target); err != nil {
+				t.Fatal(err)
+			}
+			if shell.selection.variant != testCase.want {
+				t.Fatalf("selection variant = %q, want %q", shell.selection.variant, testCase.want)
+			}
+			if len(api.updates) != 1 {
+				t.Fatalf("updates = %#v", api.updates)
+			}
+			// The variant must always be sent explicitly, so an empty value
+			// clears the stored one instead of leaving it in place.
+			if api.updates[0].Variant == nil || *api.updates[0].Variant != testCase.want {
+				t.Fatalf("patched variant = %v, want explicit %q", api.updates[0].Variant, testCase.want)
+			}
+		})
 	}
 }

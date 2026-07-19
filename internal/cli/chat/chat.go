@@ -291,7 +291,7 @@ func promptCommand(ctx context.Context, config PromptConfig) int {
 		fmt.Fprintln(config.Stderr, err)
 		return finish(ctx, exitError, "session_selection_failed", err)
 	}
-	if err := applySelection(ctx, runtime.Client, sessionItem.ID, options.agent, options.model, options.variant); err != nil {
+	if err := applySelection(ctx, runtime.Client, sessionItem.ID, options.agent, options.model, optionalVariant(options.variant)); err != nil {
 		fmt.Fprintln(config.Stderr, err)
 		return finish(ctx, exitError, "selection_update_failed", err)
 	}
@@ -360,7 +360,7 @@ func command(ctx context.Context, config Config) int {
 			fmt.Fprintln(stderr, err)
 			return finish(ctx, exitError, "session_selection_failed", err)
 		}
-		if err := applySelection(ctx, api, current.ID, options.agent, options.model, options.variant); err != nil {
+		if err := applySelection(ctx, api, current.ID, options.agent, options.model, optionalVariant(options.variant)); err != nil {
 			fmt.Fprintln(stderr, err)
 			return finish(ctx, exitError, "selection_update_failed", err)
 		}
@@ -390,7 +390,7 @@ func command(ctx context.Context, config Config) int {
 			return finish(ctx, exitError, "session_claim_failed", claimErr)
 		}
 		current = claimed.Session
-		if err := applySelection(ctx, api, current.ID, options.agent, options.model, options.variant); err != nil {
+		if err := applySelection(ctx, api, current.ID, options.agent, options.model, optionalVariant(options.variant)); err != nil {
 			fmt.Fprintln(stderr, err)
 			return finish(ctx, exitError, "selection_update_failed", err)
 		}
@@ -489,16 +489,24 @@ type resumableClient interface {
 	Resume(context.Context, string) error
 }
 
-func applySelection(ctx context.Context, api apiClient, sessionID, agentID, model, variant string) error {
-	if agentID == "" && model == "" && variant == "" {
+// applySelection patches a session's selection. A nil variant leaves the
+// current one alone; a non-nil empty variant clears it, which is what switching
+// to a model without reasoning variants requires.
+func applySelection(ctx context.Context, api apiClient, sessionID, agentID, model string, variant *string) error {
+	if agentID == "" && model == "" && variant == nil {
 		return nil
 	}
-	request := v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model}
-	if variant != "" {
-		request.Variant = &variant
-	}
+	request := v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model, Variant: variant}
 	_, err := api.UpdateSessionSelection(ctx, sessionID, request)
 	return err
+}
+
+// optionalVariant treats an unset command-line variant as "leave unchanged".
+func optionalVariant(value string) *string {
+	if value == "" {
+		return nil
+	}
+	return &value
 }
 
 func chooseSession(ctx context.Context, api apiClient, projectID string, continued bool, sessionID, title string) (v1.Session, error) {
@@ -2349,19 +2357,15 @@ func (s *chatShell) applyModel(value string) error {
 		return fmt.Errorf("invalid model %q", value)
 	}
 	variant := s.selection.variant
-	if variant == "" {
-		for _, item := range s.models {
-			if item.Provider != provider || item.ID != model {
-				continue
-			}
-			if len(item.Variants) > 0 {
-				variant = item.Variants[0].Name
-			}
-			break
+	for _, item := range s.models {
+		if item.Provider != provider || item.ID != model {
+			continue
 		}
+		variant = resolveVariant(variant, item)
+		break
 	}
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, "", value, variant); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, "", value, &variant); err != nil {
 			return err
 		}
 	}
@@ -2369,6 +2373,21 @@ func (s *chatShell) applyModel(value string) error {
 	s.current.Provider, s.current.Model, s.current.Variant = provider, model, variant
 	s.commitStatus("✓ Model selected: " + value)
 	return nil
+}
+
+// resolveVariant keeps a carried-over reasoning variant only when the target
+// model offers it. A model with no variants clears it, rather than sending a
+// selection the server rejects as invalid.
+func resolveVariant(current string, model v1.Model) string {
+	if len(model.Variants) == 0 {
+		return ""
+	}
+	for _, item := range model.Variants {
+		if item.Name == current {
+			return current
+		}
+	}
+	return model.Variants[0].Name
 }
 
 func modelVariantOrder(model v1.Model) []string {
@@ -2427,7 +2446,7 @@ func (s *chatShell) selectEffort(value string) error {
 		return fmt.Errorf("unknown effort %q for model %s (available: %s)", value, s.selection.modelName(), strings.Join(efforts, ", "))
 	}
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, "", "", value); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, "", "", &value); err != nil {
 			return err
 		}
 	}
@@ -2468,7 +2487,7 @@ func (s *chatShell) applyAgent(argument string, announce bool) error {
 		return fmt.Errorf("unknown mode %q", argument)
 	}
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, argument, "", ""); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, argument, "", nil); err != nil {
 			return err
 		}
 	}
