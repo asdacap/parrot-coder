@@ -121,8 +121,10 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 	if name == "/new" || name == "/clear" || name == "/session" || name == "/connect" || r.shell.current.ID != previousSession {
 		r.stopStream()
 	}
+	// A builtin command commits at most a short status line, so the live frame's
+	// own boundary is enough. Committing a permanent rule here left a divider
+	// stranded above and below every status line in the transcript.
 	r.borderCommitted = false
-	_ = r.ensureInputBorder()
 	return enhancedInputOutcome{exit: exit, code: code}
 }
 
