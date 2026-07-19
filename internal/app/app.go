@@ -721,12 +721,6 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 	if err != nil {
 		return nil, fmt.Errorf("app: ChatGPT provider: %w", err)
 	}
-	if err := chatgpt.RefreshModels(ctx); err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
-		}
-		diagnostics.Warn("chatgpt_models_refresh_failed", "error_type", diagnostics.ErrorType(err))
-	}
 	result := []provider.Provider{chatgpt}
 	ids := make([]string, 0, len(cfg.Providers))
 	for id := range cfg.Providers {
@@ -779,32 +773,10 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 			}
 			return nil, fmt.Errorf("app: provider %q requires an API key from %s", id, where)
 		}
-		models := make([]provider.Model, 0, len(item.Models))
-		modelIDs := make([]string, 0, len(item.Models))
-		for modelID := range item.Models {
-			modelIDs = append(modelIDs, modelID)
-		}
-		sort.Strings(modelIDs)
-		for _, modelID := range modelIDs {
-			model := item.Models[modelID]
-			name := model.Name
-			if name == "" {
-				name = modelID
-			}
-			variantNames := make([]string, 0, len(model.Variants))
-			for name := range model.Variants {
-				variantNames = append(variantNames, name)
-			}
-			sort.Strings(variantNames)
-			variants := make([]provider.Variant, 0, len(variantNames))
-			for _, name := range variantNames {
-				variants = append(variants, provider.Variant{Name: name, ReasoningEffort: model.Variants[name].ReasoningEffort})
-			}
-			models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...), Variants: variants}})
-		}
 		options := provider.OpenAICompatibleOptions{
 			ID: id, BaseURL: item.BaseURL, Protocol: provider.CompatibleProtocol(item.Protocol), APIKey: auth.Secret(key),
-			Headers: item.Headers, AllowInsecureLocalhost: item.AllowInsecureLocalhost, Models: models, HTTPClient: httpClient,
+			Headers: item.Headers, AllowInsecureLocalhost: item.AllowInsecureLocalhost, HTTPClient: httpClient,
+			Models: convertModels(item.Models), ModelDefaults: convertModels(presetModelDefaults(id)),
 			HeaderTimeout: headerTimeout,
 		}
 		var compatible provider.Provider
@@ -821,7 +793,85 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 		}
 		result = append(result, compatible)
 	}
+	if err := refreshProviderModels(ctx, result); err != nil {
+		return nil, err
+	}
 	return result, nil
+}
+
+// convertModels turns configured model metadata into provider models, ordered
+// by ID so provider catalogs are deterministic.
+func convertModels(configured map[string]config.Model) []provider.Model {
+	modelIDs := make([]string, 0, len(configured))
+	for modelID := range configured {
+		modelIDs = append(modelIDs, modelID)
+	}
+	sort.Strings(modelIDs)
+	models := make([]provider.Model, 0, len(modelIDs))
+	for _, modelID := range modelIDs {
+		model := configured[modelID]
+		name := model.Name
+		if name == "" {
+			name = modelID
+		}
+		variantNames := make([]string, 0, len(model.Variants))
+		for name := range model.Variants {
+			variantNames = append(variantNames, name)
+		}
+		sort.Strings(variantNames)
+		variants := make([]provider.Variant, 0, len(variantNames))
+		for _, name := range variantNames {
+			variants = append(variants, provider.Variant{Name: name, ReasoningEffort: model.Variants[name].ReasoningEffort})
+		}
+		models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...), Variants: variants}})
+	}
+	return models
+}
+
+// modelRefresher is implemented by providers that can replace their bundled or
+// configured catalog with the one their endpoint serves.
+type modelRefresher interface {
+	RefreshModels(context.Context) error
+}
+
+// refreshProviderModels loads every catalog concurrently, because the requests
+// are independent and each one may wait out its own timeout. A refresh failure
+// is a warning: the provider keeps its configured catalog. Only cancellation of
+// the parent context aborts startup.
+func refreshProviderModels(ctx context.Context, providers []provider.Provider) error {
+	var group sync.WaitGroup
+	for _, item := range providers {
+		refresher, ok := item.(modelRefresher)
+		if !ok {
+			continue
+		}
+		group.Add(1)
+		go func(id string, refresher modelRefresher) {
+			defer group.Done()
+			if err := refresher.RefreshModels(ctx); err != nil {
+				diagnostics.Warn("provider_models_refresh_failed", "provider", id, "error_type", diagnostics.ErrorType(err))
+			}
+		}(item.ID(), refresher)
+	}
+	group.Wait()
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	for _, item := range providers {
+		unknown := make([]string, 0)
+		for _, model := range item.Models() {
+			if model.ContextWindow == 0 {
+				unknown = append(unknown, model.ID)
+			}
+		}
+		if len(unknown) > 0 {
+			// A model list gives no context window, so compaction cannot plan
+			// ahead for these; the session still compacts once the provider
+			// reports an overflow.
+			diagnostics.Warn("provider_models_missing_context_window", "provider", item.ID(), "models", strings.Join(unknown, ","))
+		}
+	}
+	return nil
 }
 
 func selectModel(configured, override string, providers []provider.Provider) (string, string, error) {

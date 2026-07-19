@@ -80,10 +80,17 @@ func applyProviderPreset(id string, item config.Provider) config.Provider {
 		milliseconds := int(preset.HeaderTimeout / time.Millisecond)
 		item.HeaderTimeoutMS = &milliseconds
 	}
-	if len(item.Models) == 0 {
-		item.Models = preset.Models
-	}
+	// Models are deliberately untouched. A preset describes models rather than
+	// declaring them, so its metadata is supplied separately through
+	// presetModelDefaults and never adds entries to a fetched catalog.
 	return item
+}
+
+// presetModelDefaults returns the metadata a preset knows for models its
+// endpoint may serve — context windows and reasoning variants a model list
+// cannot express. Callers treat these as descriptions, not as a catalog.
+func presetModelDefaults(id string) map[string]config.Model {
+	return providerPresets[id].Models
 }
 
 // presetOnlyProviderIDs are preset providers with a usable base URL that the

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -606,5 +607,115 @@ func TestChatGPTSubscriptionUsage(t *testing.T) {
 	}
 	if usage.PlanType != "plus" || usage.PrimaryWindow == nil || usage.PrimaryWindow.UsedPercent != 27.5 || usage.SecondaryWindow == nil || usage.Credits == nil || usage.Credits.Balance != "12.50" {
 		t.Fatalf("usage = %#v", usage)
+	}
+}
+
+func TestOpenAICompatibleRefreshModelsMergesServedCatalog(t *testing.T) {
+	declared := []Model{{ID: "declared-only", Name: "Declared", ContextWindow: 1000}}
+	defaults := []Model{
+		{ID: "known", Name: "Known", ContextWindow: 262144, MaxOutputTokens: 32768,
+			Capabilities: Capabilities{Tools: true, Variants: []Variant{{Name: "high", ReasoningEffort: "high"}}}},
+		{ID: "not-served", Name: "Stale Guess", ContextWindow: 5},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/models" {
+			t.Errorf("path = %q", request.URL.Path)
+		}
+		if got := request.Header.Get("Authorization"); got != "Bearer key" {
+			t.Errorf("authorization = %q", got)
+		}
+		_, _ = io.WriteString(response, `{"data":[
+			{"id":"fetched-only"},
+			{"id":"known","context_window":1,"max_output_tokens":1,"name":"Ignored"},
+			{"id":"vendor-filled","name":"Vendor","context_length":128000,"max_output_tokens":4096},
+			{"id":"known"}
+		]}`)
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolChatCompletions,
+		APIKey: "key", AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+		Models: declared, ModelDefaults: defaults,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Before any fetch the defaults stand in for a catalog, so an offline start
+	// can still select a model.
+	if got := len(value.Models()); got != 3 {
+		t.Fatalf("pre-refresh catalog has %d models, want declared plus defaults", got)
+	}
+	if err := value.RefreshModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	models := value.Models()
+	byID := make(map[string]Model, len(models))
+	ids := make([]string, 0, len(models))
+	for _, item := range models {
+		byID[item.ID] = item
+		ids = append(ids, item.ID)
+	}
+	// "not-served" is a built-in guess the endpoint does not list, so it is
+	// gone; "declared-only" is the user's assertion, so it stays.
+	if want := []string{"declared-only", "fetched-only", "known", "vendor-filled"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("ids = %v, want %v", ids, want)
+	}
+	// Known metadata wins: the endpoint cannot report a real window, and
+	// variants never appear in a model list at all.
+	if got := byID["known"]; got.Name != "Known" || got.ContextWindow != 262144 || got.MaxOutputTokens != 32768 ||
+		len(got.Capabilities.Variants) != 1 || !got.Capabilities.Reasoning {
+		t.Fatalf("known = %#v", got)
+	}
+	// Vendor extensions fill only what nothing else describes.
+	if got := byID["vendor-filled"]; got.Name != "Vendor" || got.ContextWindow != 128000 || got.MaxOutputTokens != 4096 {
+		t.Fatalf("vendor-filled = %#v", got)
+	}
+	// A served model nothing describes keeps a zero window, which disables
+	// proactive compaction rather than inventing a budget.
+	if got := byID["fetched-only"]; got.ContextWindow != 0 || got.Name != "fetched-only" || !got.Capabilities.Tools {
+		t.Fatalf("fetched-only = %#v", got)
+	}
+	if got := byID["declared-only"]; got.ContextWindow != 1000 {
+		t.Fatalf("declared model was dropped: %#v", got)
+	}
+}
+
+func TestOpenAICompatibleRefreshModelsKeepsCatalogOnFailure(t *testing.T) {
+	for _, testCase := range []struct {
+		name    string
+		status  int
+		body    string
+		wantErr string
+	}{
+		{name: "http error", status: http.StatusUnauthorized, body: `{"error":{"message":"bad key"}}`, wantErr: "401"},
+		{name: "empty catalog", status: http.StatusOK, body: `{"data":[]}`, wantErr: "no usable models"},
+		{name: "malformed", status: http.StatusOK, body: `not json`, wantErr: "decode models response"},
+		{name: "oversized", status: http.StatusOK, body: `{"data":[{"id":"` + strings.Repeat("x", maxModelCatalogBytes) + `"}]}`, wantErr: "byte limit"},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+				response.WriteHeader(testCase.status)
+				_, _ = io.WriteString(response, testCase.body)
+			}))
+			defer server.Close()
+			value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+				ID: "local", BaseURL: server.URL, Protocol: ProtocolChatCompletions,
+				APIKey: "secret-key", AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+				Models: []Model{{ID: "configured", ContextWindow: 5}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = value.RefreshModels(context.Background())
+			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) {
+				t.Fatalf("err = %v, want it to contain %q", err, testCase.wantErr)
+			}
+			if strings.Contains(err.Error(), "secret-key") {
+				t.Fatalf("error leaked the API key: %v", err)
+			}
+			if models := value.Models(); len(models) != 1 || models[0].ID != "configured" {
+				t.Fatalf("failed refresh replaced the catalog: %#v", models)
+			}
+		})
 	}
 }

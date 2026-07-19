@@ -120,6 +120,10 @@ func TestStatusDrainerPublishesLifecycleError(t *testing.T) {
 
 func TestCompositionEndToEndInProcess(t *testing.T) {
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"test"}]}`)
+			return
+		}
 		if r.URL.Path != "/v1/responses" {
 			t.Errorf("provider path = %q", r.URL.Path)
 		}

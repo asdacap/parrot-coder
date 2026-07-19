@@ -53,20 +53,28 @@ func TestApplyProviderPresetFillsOnlyEmptyFields(t *testing.T) {
 		wantAPIKeyEnv string
 		wantTimeoutMS *int
 		wantModelIDs  []string
+		wantModels    map[string]config.Model
 	}{
 		{
 			name: "kimi-code defaults apply to an empty entry", id: "kimi-code",
 			wantBaseURL: "https://api.kimi.com/coding/v1", wantProtocol: "chat-completions", wantAPIKeyEnv: "KIMI_API_KEY",
-			wantModelIDs: []string{"kimi-k2-0905-preview", "kimi-k2-thinking", "kimi-k2-turbo-preview"},
 		},
 		{
 			name: "user fields win over the preset", id: "kimi-api",
 			item: config.Provider{
 				BaseURL: "https://api.moonshot.cn/v1", Protocol: "responses", APIKeyEnv: "MY_KEY",
-				HeaderTimeoutMS: &timeout, Models: map[string]config.Model{"custom": {}},
+				HeaderTimeoutMS: &timeout,
+				Models: map[string]config.Model{
+					"custom":           {},
+					"kimi-k2-thinking": {Name: "Corrected", Context: 999},
+				},
 			},
 			wantBaseURL: "https://api.moonshot.cn/v1", wantProtocol: "responses", wantAPIKeyEnv: "MY_KEY",
-			wantTimeoutMS: &timeout, wantModelIDs: []string{"custom"},
+			wantTimeoutMS: &timeout,
+			// Declared models stay exactly as declared: a preset describes
+			// models, it does not add them to the user's list.
+			wantModelIDs: []string{"custom", "kimi-k2-thinking"},
+			wantModels:   map[string]config.Model{"kimi-k2-thinking": {Name: "Corrected", Context: 999}},
 		},
 		{
 			name: "openai keeps its ten second header timeout and nothing else", id: "openai",
@@ -97,6 +105,11 @@ func TestApplyProviderPresetFillsOnlyEmptyFields(t *testing.T) {
 			for _, id := range testCase.wantModelIDs {
 				if _, ok := got.Models[id]; !ok {
 					t.Fatalf("models %#v missing %q", got.Models, id)
+				}
+			}
+			for id, want := range testCase.wantModels {
+				if got.Models[id].Name != want.Name || got.Models[id].Context != want.Context {
+					t.Fatalf("model %q = %#v, want %#v", id, got.Models[id], want)
 				}
 			}
 		})
@@ -155,5 +168,16 @@ func TestBuildProvidersAppliesEnvironmentKeyFromPreset(t *testing.T) {
 	}
 	if findProvider(built, "kimi-api") == nil {
 		t.Fatal("kimi-api was not built from MOONSHOT_API_KEY")
+	}
+}
+
+func TestPresetModelDefaultsDescribeWithoutDeclaring(t *testing.T) {
+	defaults := presetModelDefaults("kimi-code")
+	thinking, ok := defaults["kimi-k2-thinking"]
+	if !ok || thinking.Context == 0 {
+		t.Fatalf("defaults = %#v, want a context window a model list cannot supply", defaults)
+	}
+	if presetModelDefaults("whatever") != nil {
+		t.Fatal("a provider without a preset reported model defaults")
 	}
 }

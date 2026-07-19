@@ -372,6 +372,10 @@ func TestFormatSubscriptionUsageShowsRemainingAndReset(t *testing.T) {
 func TestRunCancellationInterruptsActiveSession(t *testing.T) {
 	started := make(chan struct{})
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"test"}]}`)
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.(http.Flusher).Flush()
 		close(started)

@@ -23,7 +23,9 @@ const chatGPTEndpoint = "https://chatgpt.com/backend-api/codex/responses"
 const chatGPTModelsEndpoint = "https://chatgpt.com/backend-api/codex/models"
 const chatGPTUsageEndpoint = "https://chatgpt.com/backend-api/wham/usage"
 const chatGPTHeaderTimeout = 10 * time.Second
-const chatGPTModelsRefreshTimeout = 5 * time.Second
+
+// modelsRefreshTimeout bounds a startup model-catalog fetch for any provider.
+const modelsRefreshTimeout = 5 * time.Second
 const chatGPTModelsClientVersion = "0.144.5"
 const maxModelCatalogBytes = 16 << 20
 
@@ -97,7 +99,7 @@ func (p *ChatGPT) Models() []Model {
 // returned by the ChatGPT Codex backend. The bundled catalog remains active if
 // this method returns an error.
 func (p *ChatGPT) RefreshModels(ctx context.Context) error {
-	requestCtx, cancel := context.WithTimeout(ctx, chatGPTModelsRefreshTimeout)
+	requestCtx, cancel := context.WithTimeout(ctx, modelsRefreshTimeout)
 	defer cancel()
 	credential, err := p.tokens.Token(requestCtx)
 	if err != nil {

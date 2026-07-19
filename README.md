@@ -134,10 +134,12 @@ with an insufficient-balance error, because the plan does not fund the
 pay-as-you-go endpoint. `parrot usage` reports the remaining balance for
 `kimi-api`; `kimi-code` has no balance route, so it reports nothing.
 
-Both presets speak the chat-completions protocol and ship metadata for the Kimi
-K2 models. Override any of it with a `providers.kimi-code` or
-`providers.kimi-api` entry — for example to use a regional endpoint or to
-correct a model's context window.
+Both presets speak the chat-completions protocol. `parrot models` lists whatever
+the endpoint serves, fetched from `/v1/models` at startup; the presets only
+carry the metadata a model list cannot express — context windows and reasoning
+variants — for the Kimi K2 models. Correct or extend any of it with a
+`providers.kimi-code` or `providers.kimi-api` entry, for example to use a
+regional endpoint or to give a newly served model its real context window.
 
 ### Compatible Endpoint
 

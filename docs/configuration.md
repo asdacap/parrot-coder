@@ -105,8 +105,8 @@ enough to use them and no `providers` entry is required:
 
 | ID | Auth | Preset |
 | --- | --- | --- |
-| `kimi-code` | API key: `KIMI_API_KEY` or `parrot auth login kimi-code --api-key-stdin` | `https://api.kimi.com/coding/v1`, `chat-completions`, Kimi K2 models |
-| `kimi-api` | API key: `MOONSHOT_API_KEY` or `parrot auth login kimi-api --api-key-stdin` | `https://api.moonshot.ai/v1`, `chat-completions`, Kimi K2 models |
+| `kimi-code` | API key: `KIMI_API_KEY` or `parrot auth login kimi-code --api-key-stdin` | `https://api.kimi.com/coding/v1`, `chat-completions`, Kimi K2 metadata |
+| `kimi-api` | API key: `MOONSHOT_API_KEY` or `parrot auth login kimi-api --api-key-stdin` | `https://api.moonshot.ai/v1`, `chat-completions`, Kimi K2 metadata |
 | `openai` | API key: your `api_key_env` or credential store entry | 10-second `header_timeout_ms` only; `base_url` is still required |
 
 The two Kimi providers are different products and take different keys.
@@ -124,6 +124,23 @@ out keeps the preset value. Setting `models` replaces the preset catalog
 outright rather than merging into it. A preset provider with no configuration
 entry and no credential is skipped silently; a provider you do configure still
 requires a key.
+
+A compatible provider's model catalog comes from `GET {base_url}/models` at
+startup. `models` entries are not that catalog: they declare models the endpoint
+does not list, and supply the metadata a model list cannot express — `context`,
+`max_tokens`, and `variants`. A declared model is always selectable; a built-in
+preset's model metadata only describes models the endpoint actually serves, so a
+stale built-in entry disappears rather than advertising a model that is gone.
+
+Without a `context`, a model has no input budget, so Parrot cannot compact
+proactively — the session compacts only after the provider reports an overflow.
+Without `variants`, a model exposes no reasoning efforts to `/effort`. Declare
+both for any model where they matter; startup warns which models lack a context
+window.
+
+Catalog fetches are best-effort and run concurrently. If one fails — the
+endpoint has no `/models` route, is unreachable, or rejects the key — that
+provider keeps its declared and preset models and startup continues.
 
 Each configured provider ID must have a nonempty API key from `api_key_env` or
 the credential store. The environment wins. `base_url` may contain a path but
