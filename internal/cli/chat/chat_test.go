@@ -1188,3 +1188,27 @@ func TestApplyModelClearsVariantForModelsWithoutVariants(t *testing.T) {
 		})
 	}
 }
+
+func TestEnhancedConfigReportsTheCurrentModelNotTheStartupOne(t *testing.T) {
+	// The enhanced runtime assigns ModelName() back onto its own selection
+	// after every slash command, so a stale reading silently reverts a model
+	// switch and leaves an empty selection re-opening the model picker.
+	models := v1.ModelList{Items: []v1.Model{
+		{Provider: "kimi-code", ID: "kimi-for-coding"},
+		{Provider: "chatgpt", ID: "gpt"},
+	}}
+	shell := &chatShell{
+		ctx: context.Background(), api: &effortSwitchAPI{models: models}, models: models.Items,
+		current: v1.Session{ID: "session"}, stdout: io.Discard, stderr: io.Discard,
+	}
+	config := shell.enhancedConfig()
+	if got := config.ModelName(); got != "" {
+		t.Fatalf("initial model = %q, want empty", got)
+	}
+	if err := shell.applyModel("kimi-code/kimi-for-coding"); err != nil {
+		t.Fatal(err)
+	}
+	if got := config.ModelName(); got != "kimi-code/kimi-for-coding" {
+		t.Fatalf("ModelName() = %q after switching; want the current model", got)
+	}
+}

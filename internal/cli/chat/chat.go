@@ -1301,7 +1301,12 @@ type chatShell struct {
 }
 
 func (s *chatShell) runEnhanced(first string) int {
-	result := enhancedchat.Run(enhancedchat.Config{
+	result := enhancedchat.Run(s.enhancedConfig(), first)
+	return finish(s.ctx, result.Code, result.Reason, result.Err)
+}
+
+func (s *chatShell) enhancedConfig() enhancedchat.Config {
+	return enhancedchat.Config{
 		Context: s.ctx, Interrupts: interruptChannel(s.ctx), API: s.api, CurrentAPI: func() enhancedchat.API { return s.api },
 		Editor: s.editor, Decoder: s.decoder, Renderer: s.renderer, Stderr: s.stderr,
 		Thinking: s.options.thinking, ThinkingEnabled: func() bool { return s.options.thinking },
@@ -1310,8 +1315,12 @@ func (s *chatShell) runEnhanced(first string) int {
 			s.current = item
 			s.selection = selectionFromSession(item, s.selection.agent)
 		},
-		Agent:     func() string { return s.selection.agent },
-		ModelName: s.selection.modelName, ModelineModelLabel: s.modelineModelLabel,
+		Agent: func() string { return s.selection.agent },
+		// selection is a struct value, so a bound method value would capture a
+		// copy taken at startup and report that model forever. refreshState
+		// assigns this back onto the enhanced selection, so a stale reading
+		// silently undoes every model switch.
+		ModelName: func() string { return s.selection.modelName() }, ModelineModelLabel: s.modelineModelLabel,
 		NextAgent: s.nextAgent, ApplyAgent: s.applyAgent, SelectAgent: s.selectAgent,
 		PickModel: s.pickModel, ApplyModel: s.applyModel, SelectModel: s.selectModel,
 		ChooseSession: s.chooseSession, CreateSession: s.createSession,
@@ -1329,8 +1338,7 @@ func (s *chatShell) runEnhanced(first string) int {
 		},
 		Slash:          s.slash,
 		OnTurnComplete: s.onTurnComplete,
-	}, first)
-	return finish(s.ctx, result.Code, result.Reason, result.Err)
+	}
 }
 
 func (s *chatShell) onTurnComplete(completed enhancedchat.TurnComplete) *enhancedchat.TurnCompleteDialog {
