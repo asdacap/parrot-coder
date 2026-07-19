@@ -372,6 +372,24 @@ func (s *chatShell) runEnhanced(first string) int {
 					continue
 				}
 			}
+			if modalAction && runtime.modal.kind == "turn_complete" && len(runtime.modal.choices) > 0 {
+				handled, err := runtime.handleTurnCompleteModalKey(result.key)
+				if handled {
+					close(result.ack)
+					if err != nil {
+						if errors.Is(err, errInvalidModalAnswer) {
+							runtime.status = err.Error()
+						} else {
+							runtime.commitError(err.Error())
+							runtime.cancelModal()
+						}
+					}
+					if err := runtime.render(); err != nil {
+						return s.enhancedRenderError(err)
+					}
+					continue
+				}
+			}
 			action := targetState.Handle(result.key)
 			if !action.Done {
 				close(result.ack)
@@ -517,7 +535,7 @@ func (r *enhancedChatRuntime) render() error {
 			prompt.Completions = r.modal.choices
 			prompt.Selected = r.modal.selected
 		}
-		if r.modal.kind == "permission" {
+		if len(r.modal.choices) > 0 {
 			prompt.Text = ""
 			prompt.Cursor = 0
 		}

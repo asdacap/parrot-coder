@@ -341,8 +341,11 @@ func TestPlanTurnCompletePolicy(t *testing.T) {
 			api := &agentModeAPI{modes: v1.ModeList{Items: []v1.Mode{{ID: mode.BuildID}, {ID: mode.PlanID}}}}
 			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: mode.PlanID}, selection: chatSelection{agent: mode.PlanID}}
 			dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.PlanID})
-			if dialog == nil || dialog.Handle == nil || len(dialog.Context) != 1 {
+			if dialog == nil || dialog.Handle == nil || len(dialog.Context) != 1 || len(dialog.Choices) != 3 || dialog.CustomChoice != "feedback" || dialog.CustomPrompt != "plan feedback: " {
 				t.Fatalf("dialog = %#v", dialog)
+			}
+			if dialog.Choices[0].Value != "yes" || dialog.Choices[1].Value != "no" || dialog.Choices[2].Value != "feedback" {
+				t.Fatalf("dialog choices = %#v", dialog.Choices)
 			}
 			result, err := dialog.Handle(test.answer)
 			if err != nil {

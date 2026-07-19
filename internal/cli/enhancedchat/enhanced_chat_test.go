@@ -179,7 +179,7 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 		{name: "interrupted", eventType: "session.assistant.interrupted", status: "interrupted"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Status: test.status, Error: test.messageError}}}}
+			api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Content: "finished plan", Status: test.status, Error: test.messageError}}}}
 			var output bytes.Buffer
 			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
 			editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
@@ -191,6 +191,9 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 				config: &Config{OnTurnComplete: func(item TurnComplete) *TurnCompleteDialog {
 					calls++
 					completed = item
+					if !strings.Contains(output.String(), "finished plan") {
+						t.Fatal("turn completion callback ran before the assistant response was committed")
+					}
 					return &TurnCompleteDialog{Prompt: "continue? ", Context: []string{"turn finished"}, Handle: func(value string) (TurnCompleteResult, error) {
 						if strings.TrimSpace(value) == "" {
 							return TurnCompleteResult{ValidationError: "answer required"}, nil
@@ -241,6 +244,64 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 	}
 	if calls != 0 {
 		t.Fatalf("callback ran %d times for restored history", calls)
+	}
+}
+
+func TestEnhancedTurnCompleteChoicesSelectOrRequestFeedback(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		selected   int
+		wantAnswer string
+		wantInput  bool
+	}{
+		{name: "approve", wantAnswer: "yes"},
+		{name: "stop", selected: 1, wantAnswer: "no"},
+		{name: "feedback", selected: 2, wantInput: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("draft")
+			if err != nil {
+				t.Fatal(err)
+			}
+			var answer string
+			dialog := &TurnCompleteDialog{
+				Prompt: "Plan complete: ",
+				Choices: []terminal.Candidate{
+					{Value: "yes"},
+					{Value: "no"},
+					{Value: "feedback"},
+				},
+				CustomChoice: "feedback", CustomPrompt: "plan feedback: ",
+				Handle: func(value string) (TurnCompleteResult, error) {
+					answer = value
+					return TurnCompleteResult{}, nil
+				},
+			}
+			runtime := &enhancedChatRuntime{
+				shell: &chatShell{},
+				modal: &enhancedModal{kind: "turn_complete", state: state, prompt: dialog.Prompt, choices: append([]terminal.Candidate(nil), dialog.Choices...), selected: test.selected, turnComplete: dialog},
+			}
+
+			handled, err := runtime.handleTurnCompleteModalKey(terminal.Key{Kind: terminal.KeyEnter})
+			if err != nil || !handled {
+				t.Fatalf("selection handled=%t err=%v", handled, err)
+			}
+			if test.wantInput {
+				if runtime.modal == nil || !runtime.modal.customInput || len(runtime.modal.choices) != 0 || runtime.modal.prompt != "plan feedback: " || state.Value() != "" || answer != "" {
+					t.Fatalf("feedback modal=%#v value=%q answer=%q", runtime.modal, state.Value(), answer)
+				}
+				if err := runtime.answerModal("revise error handling"); err != nil {
+					t.Fatal(err)
+				}
+				if answer != "revise error handling" || runtime.modal != nil {
+					t.Fatalf("feedback answer=%q modal=%#v", answer, runtime.modal)
+				}
+				return
+			}
+			if answer != test.wantAnswer || runtime.modal != nil {
+				t.Fatalf("answer=%q modal=%#v", answer, runtime.modal)
+			}
+		})
 	}
 }
 

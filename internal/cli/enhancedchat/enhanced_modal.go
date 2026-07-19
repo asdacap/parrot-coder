@@ -255,6 +255,35 @@ func (r *enhancedChatRuntime) handleQuestionModalKey(key terminal.Key) (bool, er
 	return true, nil
 }
 
+func (r *enhancedChatRuntime) handleTurnCompleteModalKey(key terminal.Key) (bool, error) {
+	if r.modal == nil || r.modal.kind != "turn_complete" || len(r.modal.choices) == 0 {
+		return false, nil
+	}
+	switch key.Kind {
+	case terminal.KeyUp:
+		r.modal.selected = (r.modal.selected - 1 + len(r.modal.choices)) % len(r.modal.choices)
+	case terminal.KeyDown, terminal.KeyTab:
+		r.modal.selected = (r.modal.selected + 1) % len(r.modal.choices)
+	case terminal.KeyEnter, terminal.KeyNewline:
+		selected := min(max(r.modal.selected, 0), len(r.modal.choices)-1)
+		value := r.modal.choices[selected].Value
+		if r.modal.turnComplete.CustomChoice != "" && value == r.modal.turnComplete.CustomChoice {
+			r.modal.customInput = true
+			r.modal.choices = nil
+			r.modal.prompt = r.modal.turnComplete.CustomPrompt
+			return true, r.modal.state.Reset("")
+		}
+		return true, r.answerModal(value)
+	case terminal.KeyEscape, terminal.KeyEOF:
+		r.cancelModal()
+	case terminal.KeyInterrupt:
+		r.cancelModal()
+		return true, r.requestInterrupt()
+	}
+	// Choice-bearing turn completion dialogs are selections, not editable input.
+	return true, nil
+}
+
 func (r *enhancedChatRuntime) updateQuestionPrompt() {
 	if r.modal == nil || r.modal.question == nil || r.modal.index >= len(r.modal.question.Questions) {
 		return

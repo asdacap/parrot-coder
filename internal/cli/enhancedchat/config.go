@@ -50,9 +50,12 @@ type TurnComplete struct {
 }
 
 type TurnCompleteDialog struct {
-	Prompt  string
-	Context []string
-	Handle  func(string) (TurnCompleteResult, error)
+	Prompt       string
+	Context      []string
+	Choices      []terminal.Candidate
+	CustomChoice string
+	CustomPrompt string
+	Handle       func(string) (TurnCompleteResult, error)
 }
 
 type TurnCompleteResult struct {
