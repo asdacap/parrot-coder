@@ -546,6 +546,7 @@ type SubagentReport struct {
 type SubagentStreamTracker struct {
 	messages map[string]*subagentMessageState
 	tools    map[string]*StreamToolTracker
+	done     map[string]bool
 }
 
 func subagentPrefix(item *v1.SubagentEvent) string {
@@ -606,6 +607,9 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			messageID = "assistant"
 		}
 		key := scope + "message:" + messageID
+		if t.done[key] {
+			return nil, nil
+		}
 		if t.messages == nil {
 			t.messages = make(map[string]*subagentMessageState)
 		}
@@ -624,6 +628,9 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			messageID = "assistant"
 		}
 		key := scope + "message:" + messageID
+		if t.done[key] {
+			return nil, nil
+		}
 		if t.messages == nil {
 			t.messages = make(map[string]*subagentMessageState)
 		}
@@ -690,6 +697,10 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 		}
 		key := scope + "message:" + messageID
 		state := t.messages[key]
+		if t.done == nil {
+			t.done = make(map[string]bool)
+		}
+		t.done[key] = true
 		status := "○"
 		if item.Event.Type == "session.assistant.error" {
 			status = "✗"
@@ -706,23 +717,28 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			}
 			text += payload.Error
 		}
-		if text == "" && item.Event.Type == "session.assistant.complete" && state != nil && !state.reasoningDone && strings.TrimSpace(state.reasoning.String()) != "" {
-			label := "Reasoning: "
-			if state.reasoningSummary {
-				label = "Thought: "
-			}
-			line := prefixSubagentActivity(prefix, "✓ "+label+SingleLineReasoningSummary(state.reasoning.String()))
-			delete(t.messages, key)
-			return []SubagentReport{{ID: key + ":reasoning", Line: line, Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
-		}
 		delete(t.messages, key)
+		var reports []SubagentReport
+		if state != nil && !state.reasoningDone && strings.TrimSpace(state.reasoning.String()) != "" {
+			reasoning := SubagentReport{ID: key + ":reasoning", Terminal: true, Skip: text != "", Style: terminal.TextStyleMuted}
+			if text == "" || state.reasoningSummary {
+				label := "Reasoning: "
+				if state.reasoningSummary {
+					label = "Thought: "
+				}
+				reasoning.Line = prefixSubagentActivity(prefix, "✓ "+label+SingleLineReasoningSummary(state.reasoning.String()))
+				reasoning.EmitPlain = true
+				reasoning.Skip = false
+			}
+			reports = append(reports, reasoning)
+		}
 		if text == "" && item.Event.Type == "session.assistant.complete" {
-			return []SubagentReport{{ID: key + ":response", Terminal: true, Skip: true}}, nil
+			return append(reports, SubagentReport{ID: key + ":response", Terminal: true, Skip: true}), nil
 		}
 		if text == "" {
 			text = "response complete"
 		}
-		return []SubagentReport{{ID: key + ":response", Line: prefixSubagentActivity(prefix, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
+		return append(reports, SubagentReport{ID: key + ":response", Line: prefixSubagentActivity(prefix, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
 	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
 		if t.tools == nil {
 			t.tools = make(map[string]*StreamToolTracker)
@@ -767,9 +783,22 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			return nil, err
 		}
 		progress := payload.(*v1.TaskProgress)
+		id := scope + "task:" + progress.ToolCallID
+		if progress.ToolCallID == "" {
+			id = scope + "task:" + progress.TaskID
+		}
+		if t.done[id] {
+			return nil, nil
+		}
 		line := fmt.Sprintf("task: %s · %s tokens · %d tools", progress.Agent, FormatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
 		terminalEvent := progress.Status != "pending" && progress.Status != "running"
-		return []SubagentReport{{ID: scope + "task:" + progress.TaskID, Line: prefix + line, Terminal: terminalEvent, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
+		if terminalEvent {
+			if t.done == nil {
+				t.done = make(map[string]bool)
+			}
+			t.done[id] = true
+		}
+		return []SubagentReport{{ID: id, Line: prefix + line, Terminal: terminalEvent, EmitPlain: !terminalEvent, Skip: terminalEvent, Style: terminal.TextStyleMuted}}, nil
 	case v1.EventSessionStatus:
 		payload, err := v1.DecodeEventData(item.Event)
 		if err != nil {

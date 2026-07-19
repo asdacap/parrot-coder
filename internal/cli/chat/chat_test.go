@@ -658,6 +658,76 @@ func TestStreamSubagentEventSkipsEmptyCompletedResponse(t *testing.T) {
 	}
 }
 
+func TestStreamSubagentTerminalTaskProgressClearsLiveRow(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+	options := streamOptions{stderr: io.Discard, renderer: renderer}
+	tracker := &subagentStreamTracker{}
+	item := &v1.SubagentEvent{TaskID: "parent-task", TaskName: "review", Depth: 1}
+	for _, status := range []string{"running", "succeeded"} {
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: "child-task", ToolCallID: "call-1", Agent: "explore", Status: status})
+		item.Event = v1.Event{Type: v1.EventTaskProgress, Data: data}
+		before := output.Len()
+		if err := writeStreamSubagentEvent(options, tracker, item); err != nil {
+			t.Fatal(err)
+		}
+		if output.Len() == before {
+			t.Fatalf("%s task progress did not update renderer", status)
+		}
+	}
+	before := output.Len()
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: "child-task", ToolCallID: "call-1", Agent: "explore", Status: "running"})
+	item.Event = v1.Event{Type: v1.EventTaskProgress, Data: data}
+	if err := writeStreamSubagentEvent(options, tracker, item); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != before {
+		t.Fatal("late task progress repainted renderer")
+	}
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "child-task", ToolCallID: "call-2", Agent: "explore", Status: "running"})
+	item.Event = v1.Event{Type: v1.EventTaskProgress, Data: data}
+	if err := writeStreamSubagentEvent(options, tracker, item); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() == before {
+		t.Fatal("follow-up task progress was suppressed")
+	}
+}
+
+func TestStreamDirectTaskTerminalOnlyClearsOwnedRow(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+	options := streamOptions{stderr: io.Discard, renderer: renderer}
+	tracker := &subagentStreamTracker{}
+	running := &v1.TaskProgress{TaskID: "task", ToolCallID: "call-1", Agent: "explore", Status: "running"}
+	if err := writeStreamTaskProgress(options, tracker, running); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Update([]string{"parent response"}); err != nil {
+		t.Fatal(err)
+	}
+	tracker.liveID = ""
+	before := output.Len()
+	if err := writeStreamTaskProgress(options, tracker, &v1.TaskProgress{TaskID: "task", ToolCallID: "call-1", Agent: "explore", Status: "succeeded"}); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != before {
+		t.Fatal("terminal task progress cleared an unrelated row")
+	}
+	if err := writeStreamTaskProgress(options, tracker, running); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != before {
+		t.Fatal("late task progress repainted renderer")
+	}
+	if err := writeStreamTaskProgress(options, tracker, &v1.TaskProgress{TaskID: "task", ToolCallID: "call-2", Agent: "explore", Status: "running"}); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() == before {
+		t.Fatal("follow-up task progress was suppressed")
+	}
+}
+
 func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T) {
 	var tracker subagentStreamTracker
 	item := &v1.SubagentEvent{TaskID: "task-review", TaskName: "review", Depth: 1}
@@ -677,7 +747,7 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || !reports[0].terminal || reports[0].skip || reports[0].line != "  ✓ [review] Reasoning: Checking the change" {
+	if len(reports) != 2 || !reports[0].terminal || reports[0].skip || reports[0].line != "  ✓ [review] Reasoning: Checking the change" || !reports[1].terminal || !reports[1].skip {
 		t.Fatalf("completion reports = %#v", reports)
 	}
 }

@@ -582,7 +582,9 @@ type subagentReport struct {
 }
 
 type subagentStreamTracker struct {
-	tracker chatview.SubagentStreamTracker
+	tracker             chatview.SubagentStreamTracker
+	liveID              string
+	completedDirectTask map[string]bool
 }
 
 func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) ([]subagentReport, error) {
@@ -604,6 +606,13 @@ func writeStreamSubagentEvent(options streamOptions, tracker *subagentStreamTrac
 	}
 	for _, report := range reports {
 		if report.skip {
+			if report.terminal && options.renderer != nil && tracker.liveID == report.id {
+				err = options.renderer.UpdateStyled(nil)
+				tracker.liveID = ""
+			}
+			if err != nil {
+				return err
+			}
 			continue
 		}
 		text := report.line
@@ -613,6 +622,7 @@ func writeStreamSubagentEvent(options streamOptions, tracker *subagentStreamTrac
 		if options.renderer != nil {
 			styled := terminal.StyledText{Text: text, Style: report.style}
 			if report.terminal {
+				tracker.liveID = ""
 				if report.block != "" {
 					err = options.renderer.CommitStyledBlock(styled)
 				} else {
@@ -620,6 +630,7 @@ func writeStreamSubagentEvent(options streamOptions, tracker *subagentStreamTrac
 				}
 			} else {
 				err = options.renderer.UpdateStyled([]terminal.StyledText{styled})
+				tracker.liveID = report.id
 			}
 		} else if report.emitPlain {
 			_, err = fmt.Fprintln(options.stderr, terminal.Sanitize(text))
@@ -629,6 +640,42 @@ func writeStreamSubagentEvent(options streamOptions, tracker *subagentStreamTrac
 		}
 	}
 	return nil
+}
+
+func writeStreamTaskProgress(options streamOptions, tracker *subagentStreamTracker, progress *v1.TaskProgress) error {
+	id := "direct-task:" + taskProgressID(progress)
+	terminalEvent := progress.Status != "pending" && progress.Status != "running"
+	if terminalEvent {
+		if tracker.completedDirectTask == nil {
+			tracker.completedDirectTask = make(map[string]bool)
+		}
+		tracker.completedDirectTask[id] = true
+		if options.renderer != nil && tracker.liveID == id {
+			tracker.liveID = ""
+			return options.renderer.Update(nil)
+		}
+		return nil
+	}
+	if tracker.completedDirectTask[id] {
+		return nil
+	}
+	line := fmt.Sprintf("task: %s · %s tokens · %d tools", progress.Agent, formatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
+	if options.renderer == nil {
+		_, err := fmt.Fprintln(options.stderr, line)
+		return err
+	}
+	if err := options.renderer.Update([]string{line}); err != nil {
+		return err
+	}
+	tracker.liveID = id
+	return nil
+}
+
+func taskProgressID(progress *v1.TaskProgress) string {
+	if progress.ToolCallID != "" {
+		return progress.ToolCallID
+	}
+	return progress.TaskID
 }
 
 func toolActivityStyle(name string) terminal.TextStyle { return chatview.ToolActivityStyle(name) }
@@ -740,6 +787,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 		}
 		interrupted = true
 		if options.renderer != nil {
+			subagentTracker.liveID = ""
 			_ = options.renderer.Commit("■ Interrupt requested")
 		} else {
 			fmt.Fprintln(options.stderr, "■ Interrupt requested")
@@ -796,11 +844,13 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				}
 			}
 			if options.format != "jsonl" && strings.HasPrefix(item.Type, "session.tool.") {
+				subagentTracker.liveID = ""
 				if err := writeStreamToolEvent(options, &toolTracker, item); err != nil {
 					return streamResult{err: err}
 				}
 			}
 			if options.format != "jsonl" && (item.Type == "session.context.initialized" || item.Type == "session.context.changed" || item.Type == "session.context.replaced") {
+				subagentTracker.liveID = ""
 				if err := writeAgentsLoadedActivity(options, item); err != nil {
 					return streamResult{err: err}
 				}
@@ -820,12 +870,14 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				if value.Kind == "text" {
 					streamed.WriteString(value.Delta)
 					if options.renderer != nil {
+						subagentTracker.liveID = ""
 						if err := options.renderer.UpdateMessage("● ", streamed.String()); err != nil {
 							return streamResult{err: err}
 						}
 					}
 				} else if options.format != "jsonl" && (value.Kind != "reasoning" && value.Kind != "reasoning_summary" || options.thinking) {
 					if options.renderer != nil {
+						subagentTracker.liveID = ""
 						_ = options.renderer.Update([]string{"status: " + value.Kind})
 					} else {
 						fmt.Fprintf(options.stderr, "status: %s\n", value.Kind)
@@ -834,6 +886,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 			case *v1.SessionStatus:
 				if options.format != "jsonl" && value.Kind != "idle" && value.Kind != "finish" && value.Kind != "usage" {
 					if options.renderer != nil {
+						subagentTracker.liveID = ""
 						_ = options.renderer.Update([]string{"status: " + value.Kind})
 					} else {
 						fmt.Fprintf(options.stderr, "status: %s\n", value.Kind)
@@ -851,15 +904,13 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				}
 			case *v1.TaskProgress:
 				if options.format != "jsonl" {
-					line := fmt.Sprintf("task: %s · %s tokens · %d tools", value.Agent, formatTokenCount(value.Usage.TotalTokens), value.ToolUses)
-					if options.renderer != nil {
-						_ = options.renderer.Update([]string{line})
-					} else {
-						fmt.Fprintln(options.stderr, line)
+					if err := writeStreamTaskProgress(options, &subagentTracker, value); err != nil {
+						return streamResult{err: err}
 					}
 				}
 			case *v1.ToolOutputDelta:
 				if options.format != "jsonl" {
+					subagentTracker.liveID = ""
 					if err := writeStreamToolOutput(options, &toolTracker, value); err != nil {
 						return streamResult{err: err}
 					}

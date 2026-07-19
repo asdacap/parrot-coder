@@ -127,6 +127,9 @@ type taskState struct {
 	done           chan struct{}
 	registered     chan struct{}
 	registeredDone bool
+	discard        bool
+	callbackTurn   int
+	callbackDone   chan struct{}
 	cancel         context.CancelFunc
 	revision       uint64
 	op             sync.Mutex
@@ -222,10 +225,7 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 	m.signalLocked(state)
 	m.workers.Add(1)
 	m.mu.Unlock()
-	go func() {
-		defer m.workers.Done()
-		m.run(ctx, state)
-	}()
+	go m.run(ctx, state)
 	return id, nil
 }
 
@@ -268,11 +268,8 @@ func (m *Manager) Spawn(ctx context.Context, parentSession, callerAgent string, 
 		if state.cancel != nil {
 			state.cancel()
 		}
+		state.discard = true
 		m.mu.Unlock()
-		go func() {
-			<-state.done
-			m.discard(state)
-		}()
 		return "", ctx.Err()
 	}
 }
@@ -327,7 +324,6 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	execution := Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentAgentID: state.task.ParentAgentID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: report, RegisterSession: register}
 	output, executeErr := m.executor.Execute(ctx, execution)
 	state.op.Lock()
-	defer state.op.Unlock()
 	status := StatusSucceeded
 	errText := ""
 	if executeErr != nil {
@@ -361,8 +357,38 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	}
 	state.cancel()
 	m.closeRegisteredLocked(state)
-	close(state.done)
-	m.signalLocked(state)
+	if state.discard {
+		delete(m.tasks, state.task.ID)
+		delete(m.bySession, state.task.SessionID)
+	}
+	snapshot := cloneTask(state.task)
+	callback := m.config.OnProgress
+	var callbackDone chan struct{}
+	if callback != nil {
+		state.callbackTurn = turn
+		callbackDone = make(chan struct{})
+		state.callbackDone = callbackDone
+	}
+	done := state.done
+	m.mu.Unlock()
+	state.op.Unlock()
+	close(done)
+	m.workers.Done()
+	if callback != nil {
+		callback(snapshot)
+	}
+	m.mu.Lock()
+	if state.task.Turn == turn {
+		if callback == nil {
+			m.signalLocked(state)
+		} else if state.callbackTurn == turn {
+			state.callbackTurn = 0
+			m.signalLocked(state)
+		}
+	}
+	if callbackDone != nil {
+		close(callbackDone)
+	}
 	m.mu.Unlock()
 }
 
@@ -492,10 +518,7 @@ func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, err
 	m.workers.Add(1)
 	task := cloneTask(state.task)
 	m.mu.Unlock()
-	go func() {
-		defer m.workers.Done()
-		m.run(ctx, state)
-	}()
+	go m.run(ctx, state)
 	return task, nil
 }
 
@@ -518,7 +541,8 @@ func (m *Manager) Wait(ctx context.Context, callerSession string, ids []string) 
 			}
 			result = append(result, cloneTask(state.task))
 			previous, seen := revisions[id]
-			ready = ready || state.task.Status != StatusRunning && state.task.Status != StatusPending || seen && previous != state.revision
+			terminal := state.task.Status != StatusRunning && state.task.Status != StatusPending
+			ready = ready || terminal && state.callbackTurn != state.task.Turn || !terminal && seen && previous != state.revision
 			revisions[id] = state.revision
 		}
 		changed := m.changed

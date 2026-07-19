@@ -237,6 +237,7 @@ type enhancedChatRuntime struct {
 	subagents         subagentStreamTracker
 	pendingToolOutput map[string]shellOutputTail
 	completedToolIDs  map[string]bool
+	completedTaskIDs  map[string]bool
 
 	stream           *client.EventStream
 	streamSessionID  string
