@@ -1,6 +1,9 @@
 package mode
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 	r, err := NewRegistry()
@@ -13,6 +16,9 @@ func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 	}
 	if items[0].Profile().ReadOnly || !items[1].Profile().ReadOnly {
 		t.Fatal("unexpected mode policies")
+	}
+	if !slices.Contains(items[1].Profile().AllowedToolIDs, "monitor") || !items[1].Profile().AllowsTool("monitor") {
+		t.Fatal("plan mode does not allow process monitoring")
 	}
 	if _, err := r.Get("explorer"); err == nil {
 		t.Fatal("explorer exposed as foreground mode")

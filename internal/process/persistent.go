@@ -62,6 +62,47 @@ type PersistentResult struct {
 	OmittedBytes       int
 }
 
+// PersistentCompletion describes the terminal state of a managed process.
+// WaitError is populated when the operating-system wait failed, including
+// processes which exited unsuccessfully or because of a signal.
+type PersistentCompletion struct {
+	ProcessID int32
+	ExitCode  *int
+	WaitError error
+}
+
+// PersistentObserver holds a stable reference to a managed process. It remains
+// valid if another caller later drains the process output and removes the
+// process from the runner's interactive-process registry.
+type PersistentObserver struct{ process *persistentProcess }
+
+// ObservePersistent validates ownership and returns a reusable completion
+// observer. Multiple observers may safely wait for the same process.
+func (r *Runner) ObservePersistent(sessionID string, processID int32) (*PersistentObserver, error) {
+	item := r.lookupPersistent(sessionID, processID)
+	if item == nil {
+		return nil, fmt.Errorf("process: unknown process id %d", processID)
+	}
+	return &PersistentObserver{process: item}, nil
+}
+
+// Wait waits for the observed process without consuming its output or removing
+// it from the runner. Canceling the context does not affect the process.
+func (o *PersistentObserver) Wait(ctx context.Context) (PersistentCompletion, error) {
+	if o == nil || o.process == nil {
+		return PersistentCompletion{}, errors.New("process: observer is required")
+	}
+	select {
+	case <-o.process.finished:
+		o.process.mu.Lock()
+		completion := PersistentCompletion{ProcessID: o.process.id, ExitCode: o.process.exitCode, WaitError: o.process.waitErr}
+		o.process.mu.Unlock()
+		return completion, nil
+	case <-ctx.Done():
+		return PersistentCompletion{}, ctx.Err()
+	}
+}
+
 type persistentProcess struct {
 	id          int32
 	owner       string

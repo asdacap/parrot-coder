@@ -441,6 +441,52 @@ func TestPersistentProcessPTYInputPollingOwnershipAndCleanup(t *testing.T) {
 	}
 }
 
+func TestPersistentObserverWaitsWithoutConsumingOrControllingProcess(t *testing.T) {
+	runner := testRunner(t, Config{TerminationGrace: 50 * time.Millisecond})
+	result, err := runner.RunPersistent(context.Background(), PersistentRequest{
+		Shell: "/bin/sh", Command: `sleep .35; printf final; exit 7`, SessionID: "owner", Yield: MinYieldTime,
+	})
+	if err != nil || result.ProcessID == nil {
+		t.Fatalf("start = %#v, %v", result, err)
+	}
+	processID := *result.ProcessID
+	observer, err := runner.ObservePersistent("owner", processID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := runner.ObservePersistent("owner", processID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runner.ObservePersistent("other", processID); err == nil || !strings.Contains(err.Error(), "unknown process") {
+		t.Fatalf("cross-owner observation error = %v", err)
+	}
+
+	waitCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if _, err := observer.Wait(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("canceled wait error = %v", err)
+	}
+	completion, err := observer.Wait(context.Background())
+	if err != nil || completion.ProcessID != processID || completion.ExitCode == nil || *completion.ExitCode != 7 || completion.WaitError == nil {
+		t.Fatalf("completion = %#v, %v", completion, err)
+	}
+
+	drained, err := runner.WritePersistent(context.Background(), PersistentWriteRequest{
+		SessionID: "owner", ProcessID: processID, Chars: "\x03", Yield: MinYieldTime,
+	})
+	if err != nil || drained.ProcessID != nil || drained.ExitCode == nil || *drained.ExitCode != 7 || drained.Output != "final" {
+		t.Fatalf("drain = %#v, %v", drained, err)
+	}
+	completion, err = second.Wait(context.Background())
+	if err != nil || completion.ExitCode == nil || *completion.ExitCode != 7 {
+		t.Fatalf("stable observer completion = %#v, %v", completion, err)
+	}
+	if _, err := (*PersistentObserver)(nil).Wait(context.Background()); err == nil {
+		t.Fatal("nil observer wait succeeded")
+	}
+}
+
 func TestPersistentProcessLimitsReapCompletedAndBoundConcurrentReservations(t *testing.T) {
 	runner := testRunner(t, Config{MaxProcesses: 2, MaxSessionProcesses: 1, TerminationGrace: 50 * time.Millisecond})
 	first, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "sleep .35", SessionID: "a", Yield: MinYieldTime})

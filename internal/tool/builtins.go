@@ -22,6 +22,7 @@ import (
 type BuiltinServices struct {
 	Changes   *change.Service
 	Processes *process.Runner
+	Monitor   ProcessMonitor
 	Todos     *session.TodoService
 	Goals     *session.GoalService
 	Questions *question.Broker
@@ -58,6 +59,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewUnrestrictedShellTool(services.Processes),
 		NewWritePermissionTool(services.Processes),
 		NewWriteStdinTool(services.Processes),
+		NewMonitorTool(services.Monitor),
 		NewTodoReadTool(services.Todos),
 		NewTodoWriteTool(services.Todos),
 		NewGetGoalTool(services.Goals),

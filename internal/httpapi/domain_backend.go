@@ -95,6 +95,8 @@ func goalDTO(goal session.Goal) v1.Goal {
 }
 
 type ProcessLifecycle interface {
+	SuspendSession(context.Context, string) error
+	ResumeSession(string)
 	InterruptSession(string) error
 	DeleteSession(string) error
 }
@@ -231,8 +233,14 @@ func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
 		return err
 	}
 	var cleanupErr error
+	if b.Processes != nil {
+		cleanupErr = b.Processes.SuspendSession(ctx, id)
+		if cleanupErr == nil {
+			defer b.Processes.ResumeSession(id)
+		}
+	}
 	if b.Coordinator != nil {
-		cleanupErr = b.Coordinator.Interrupt(ctx, id)
+		cleanupErr = errors.Join(cleanupErr, b.Coordinator.Interrupt(ctx, id))
 	}
 	if b.Processes != nil {
 		cleanupErr = errors.Join(cleanupErr, b.Processes.DeleteSession(id))
@@ -327,8 +335,14 @@ func (b *DomainBackend) Interrupt(ctx context.Context, id string) error {
 		return err
 	}
 	var err error
+	if b.Processes != nil {
+		err = b.Processes.SuspendSession(ctx, id)
+		if err == nil {
+			defer b.Processes.ResumeSession(id)
+		}
+	}
 	if b.Coordinator != nil {
-		err = b.Coordinator.Interrupt(ctx, id)
+		err = errors.Join(err, b.Coordinator.Interrupt(ctx, id))
 	}
 	if b.Processes != nil {
 		err = errors.Join(err, b.Processes.InterruptSession(id))

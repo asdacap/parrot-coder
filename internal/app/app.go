@@ -33,6 +33,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/lsp"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
+	"github.com/amirulashraf/parrot-coder/internal/monitor"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/processidentity"
@@ -95,6 +96,7 @@ type App struct {
 	compactions  *compaction.Repository
 	outputs      *tool.OutputStore
 	processes    *process.Runner
+	monitors     *monitor.Service
 	mcp          *mcp.Manager
 	lsp          *lsp.Manager
 	closeOnce    sync.Once
@@ -276,6 +278,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: process: %w", err)
 	}
 	result.processes = processes
+	monitors := monitor.NewService(processes, sessions)
+	result.monitors = monitors
 	var questionHandler question.Prompter
 	if options.NonInteractive {
 		questionHandler = questionPrompter{}
@@ -357,7 +361,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return profile.ReadOnly, err
 	}
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
-		Changes: changes, Processes: processes, Todos: todos, Goals: goals, Questions: questions,
+		Changes: changes, Processes: processes, Monitor: monitors, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages}, Formatters: formatterRegistry,
 		Subagents: subagents, Agents: agentLookup,
@@ -408,12 +412,13 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	drainer := statusDrainer{runner: runner, live: live}
 	coordinator := agent.NewCoordinator(drainer, drainer)
+	monitors.SetWaker(coordinator)
 	subagentExecutor.coordinator = coordinator
 	result.coordinator = coordinator
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
-		Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: processes,
+		Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: monitors,
 		ProviderResolver: providerRegistry,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
@@ -555,6 +560,11 @@ func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		started := time.Now()
 		activeSessions := 0
+		if a.monitors != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			a.closeErr = errors.Join(a.closeErr, a.monitors.Close(ctx))
+			cancel()
+		}
 		if a.subagents != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			a.closeErr = errors.Join(a.closeErr, a.subagents.Shutdown(ctx))
