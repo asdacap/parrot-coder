@@ -347,10 +347,10 @@ func TestFormatSubscriptionUsageShowsRemainingAndReset(t *testing.T) {
 		{
 			name: "kimi credits only",
 			usage: v1.SubscriptionUsage{
-				Provider: "kimi",
+				Provider: "kimi-code",
 				Credits:  &v1.UsageCredits{HasCredits: true, Balance: "49.53"},
 			},
-			want: []string{"Kimi subscription", "credits: 49.53"},
+			want: []string{"Kimi For Coding subscription", "credits: 49.53"},
 		},
 		{
 			name:  "unknown provider falls back to its ID",

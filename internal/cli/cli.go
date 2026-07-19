@@ -319,8 +319,10 @@ func subscriptionProviderName(id string) string {
 	switch id {
 	case "chatgpt":
 		return "ChatGPT"
-	case "kimi":
-		return "Kimi"
+	case "kimi-code":
+		return "Kimi For Coding"
+	case "kimi-api":
+		return "Kimi API"
 	case "":
 		return "provider"
 	default:

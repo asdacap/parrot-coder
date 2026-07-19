@@ -13,9 +13,12 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/auth"
 )
 
-// Kimi is the Moonshot subscription provider. It streams over the same
-// OpenAI-compatible transport as any configured provider and additionally
-// reports the account balance backing a Kimi subscription.
+// Kimi backs the kimi-api provider: the Moonshot platform API, billed against a
+// prepaid balance. It streams over the same OpenAI-compatible transport as any
+// configured provider and additionally reports that balance.
+//
+// The Kimi For Coding subscription (kimi-code) is a plain compatible provider
+// instead: its endpoint serves a plan and exposes no balance route.
 type Kimi struct {
 	*OpenAICompatible
 	apiKey  auth.Secret

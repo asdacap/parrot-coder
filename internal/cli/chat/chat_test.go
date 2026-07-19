@@ -1059,7 +1059,7 @@ func TestAuthLoginAcceptsKeyArgumentOrEnvironment(t *testing.T) {
 		{name: "environment fallback", argument: "login local", env: "sk-env", wantName: "local", wantKey: "sk-env"},
 		{name: "prompts for a key when none is supplied", argument: "login local", input: "sk-prompted\n", wantName: "local", wantKey: "sk-prompted"},
 		{name: "empty key entry is refused", argument: "login local", input: "\n", wantError: "no API key entered"},
-		{name: "picks the provider then prompts", argument: "login", input: "kimi\nsk-picked\n", wantName: "kimi", wantKey: "sk-picked"},
+		{name: "picks the provider then prompts", argument: "login", input: "kimi-code\nsk-picked\n", wantName: "kimi-code", wantKey: "sk-picked"},
 		{name: "cancelling the provider picker stores nothing", argument: "login", input: "\n"},
 		{name: "no-browser is OAuth only", argument: "login local --no-browser", wantError: "only valid for OpenAI"},
 	} {
@@ -1112,7 +1112,7 @@ func TestAuthProviderCandidatesIncludeBuiltinsAndStoredCredentials(t *testing.T)
 	for _, item := range shell.authProviderCandidates() {
 		described[item.Value] = item.Description
 	}
-	for _, want := range []string{"chatgpt", "kimi", "openai", "custom", "local"} {
+	for _, want := range []string{"chatgpt", "kimi-code", "kimi-api", "openai", "custom", "local"} {
 		if _, ok := described[want]; !ok {
 			t.Fatalf("candidates %v missing %q", described, want)
 		}
@@ -1120,7 +1120,7 @@ func TestAuthProviderCandidatesIncludeBuiltinsAndStoredCredentials(t *testing.T)
 	if !strings.Contains(described["chatgpt"], "OAuth") {
 		t.Fatalf("chatgpt description = %q", described["chatgpt"])
 	}
-	if !strings.Contains(described["custom"], "credential stored") || !strings.Contains(described["kimi"], "no credential") {
+	if !strings.Contains(described["custom"], "credential stored") || !strings.Contains(described["kimi-code"], "no credential") {
 		t.Fatalf("descriptions = %v", described)
 	}
 }
@@ -1128,7 +1128,7 @@ func TestAuthProviderCandidatesIncludeBuiltinsAndStoredCredentials(t *testing.T)
 func TestEnhancedAuthLoginPicksProviderThenReadsKey(t *testing.T) {
 	// "kimi" filters the picker, Enter selects it, then the key is typed into a
 	// throwaway editor sharing the same decoder.
-	input := bytes.NewBufferString("kimi\rsk-enhanced\r")
+	input := bytes.NewBufferString("kimi-code\rsk-enhanced\r")
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, MaxRows: 6})
 	decoder := terminal.NewKeyDecoder(input)
@@ -1139,7 +1139,7 @@ func TestEnhancedAuthLoginPicksProviderThenReadsKey(t *testing.T) {
 		decoder: decoder, renderer: renderer, enhanced: true,
 	}
 	shell.authAction("login")
-	stored, err := store.Get(context.Background(), "kimi")
+	stored, err := store.Get(context.Background(), "kimi-code")
 	if err != nil {
 		t.Fatalf("credential not stored: %v; output=%q", err, output.String())
 	}

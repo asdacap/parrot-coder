@@ -105,8 +105,17 @@ enough to use them and no `providers` entry is required:
 
 | ID | Auth | Preset |
 | --- | --- | --- |
-| `kimi` | API key: `MOONSHOT_API_KEY` or `parrot auth login kimi --api-key-stdin` | `https://api.moonshot.ai/v1`, `chat-completions`, Kimi K2 models |
+| `kimi-code` | API key: `KIMI_API_KEY` or `parrot auth login kimi-code --api-key-stdin` | `https://api.kimi.com/coding/v1`, `chat-completions`, Kimi K2 models |
+| `kimi-api` | API key: `MOONSHOT_API_KEY` or `parrot auth login kimi-api --api-key-stdin` | `https://api.moonshot.ai/v1`, `chat-completions`, Kimi K2 models |
 | `openai` | API key: your `api_key_env` or credential store entry | 10-second `header_timeout_ms` only; `base_url` is still required |
+
+The two Kimi providers are different products and take different keys.
+`kimi-code` is the **Kimi For Coding subscription**: its endpoint serves your
+plan, so `parrot usage` reports nothing for it — there is no balance route.
+`kimi-api` is the **Moonshot platform API**, billed against a prepaid balance
+that `parrot usage` does report. A subscription key used against `kimi-api`
+fails with an insufficient-balance error, because the plan does not fund the
+pay-as-you-go endpoint.
 
 Presets are compiled in, not configuration, so a project-scope file cannot
 redirect a preset provider's connection fields. Adding a `providers` entry for a

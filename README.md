@@ -106,24 +106,38 @@ unavailable, Parrot keeps using its bundled model metadata.
 time for the subscription's available rate-limit windows. This relies on an
 upstream ChatGPT endpoint and requires a stored ChatGPT OAuth credential.
 
-### Kimi Subscription
+### Kimi
 
-`kimi` is a built-in provider preset for Moonshot, so a credential is all it
-needs — no `providers` entry:
+Kimi ships as two built-in provider presets, because they are two products with
+two different keys. A credential is all either one needs — no `providers` entry.
+
+**`kimi-code` — the Kimi For Coding subscription.** Its endpoint serves your
+plan:
 
 ```sh
-printf '%s' "$MOONSHOT_API_KEY" | parrot auth login kimi --api-key-stdin
-# Or simply export MOONSHOT_API_KEY before starting Parrot.
+printf '%s' "$KIMI_API_KEY" | parrot auth login kimi-code --api-key-stdin
+# Or simply export KIMI_API_KEY before starting Parrot.
 
 parrot models
-parrot chat --model kimi/kimi-k2-thinking
+parrot chat --model kimi-code/kimi-k2-thinking
 ```
 
-The preset points at `https://api.moonshot.ai/v1` over the chat-completions
-protocol and ships metadata for the Kimi K2 models. Override any of it with a
-`providers.kimi` entry, for example to use a regional endpoint or to correct a
-model's context window. `parrot usage` reports the account's remaining Moonshot
-balance; Moonshot exposes a balance rather than rate-limit windows.
+**`kimi-api` — the Moonshot platform API,** billed against a prepaid balance:
+
+```sh
+printf '%s' "$MOONSHOT_API_KEY" | parrot auth login kimi-api --api-key-stdin
+parrot chat --model kimi-api/kimi-k2-thinking
+```
+
+Pick the one matching the key you hold: a subscription key on `kimi-api` fails
+with an insufficient-balance error, because the plan does not fund the
+pay-as-you-go endpoint. `parrot usage` reports the remaining balance for
+`kimi-api`; `kimi-code` has no balance route, so it reports nothing.
+
+Both presets speak the chat-completions protocol and ship metadata for the Kimi
+K2 models. Override any of it with a `providers.kimi-code` or
+`providers.kimi-api` entry — for example to use a regional endpoint or to
+correct a model's context window.
 
 ### Compatible Endpoint
 

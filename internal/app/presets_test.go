@@ -55,12 +55,12 @@ func TestApplyProviderPresetFillsOnlyEmptyFields(t *testing.T) {
 		wantModelIDs  []string
 	}{
 		{
-			name: "kimi defaults apply to an empty entry", id: "kimi",
-			wantBaseURL: "https://api.moonshot.ai/v1", wantProtocol: "chat-completions", wantAPIKeyEnv: "MOONSHOT_API_KEY",
+			name: "kimi-code defaults apply to an empty entry", id: "kimi-code",
+			wantBaseURL: "https://api.kimi.com/coding/v1", wantProtocol: "chat-completions", wantAPIKeyEnv: "KIMI_API_KEY",
 			wantModelIDs: []string{"kimi-k2-0905-preview", "kimi-k2-thinking", "kimi-k2-turbo-preview"},
 		},
 		{
-			name: "user fields win over the preset", id: "kimi",
+			name: "user fields win over the preset", id: "kimi-api",
 			item: config.Provider{
 				BaseURL: "https://api.moonshot.cn/v1", Protocol: "responses", APIKeyEnv: "MY_KEY",
 				HeaderTimeoutMS: &timeout, Models: map[string]config.Model{"custom": {}},
@@ -111,28 +111,37 @@ func TestBuildProvidersUsesPresetsForUnconfiguredProviders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if findProvider(built, "kimi") != nil {
-		t.Fatal("kimi was built without a credential")
+	if findProvider(built, "kimi-code") != nil {
+		t.Fatal("kimi-code was built without a credential")
 	}
 
-	built, err = BuildProviders(ctx, cfg, storeWithKeys(t, "kimi"), offlineClient())
+	built, err = BuildProviders(ctx, cfg, storeWithKeys(t, "kimi-code", "kimi-api"), offlineClient())
 	if err != nil {
 		t.Fatal(err)
 	}
-	kimi := findProvider(built, "kimi")
-	if kimi == nil {
-		t.Fatal("kimi was not built from a stored credential alone")
+	code := findProvider(built, "kimi-code")
+	if code == nil {
+		t.Fatal("kimi-code was not built from a stored credential alone")
 	}
-	if len(kimi.Models()) != len(providerPresets["kimi"].Models) {
-		t.Fatalf("models = %#v", kimi.Models())
+	if len(code.Models()) != len(providerPresets["kimi-code"].Models) {
+		t.Fatalf("models = %#v", code.Models())
 	}
-	if _, ok := kimi.(provider.UsageReporter); !ok {
-		t.Fatal("kimi does not report subscription usage")
+	// The subscription endpoint has no balance route, so it must not claim to
+	// report usage; the pay-as-you-go platform API does.
+	if _, ok := code.(provider.UsageReporter); ok {
+		t.Fatal("kimi-code reports subscription usage, but its endpoint has no balance route")
+	}
+	api := findProvider(built, "kimi-api")
+	if api == nil {
+		t.Fatal("kimi-api was not built from a stored credential alone")
+	}
+	if _, ok := api.(provider.UsageReporter); !ok {
+		t.Fatal("kimi-api does not report its balance")
 	}
 }
 
 func TestBuildProvidersRejectsConfiguredProviderWithoutCredential(t *testing.T) {
-	cfg := config.Config{Providers: map[string]config.Provider{"kimi": {}}}
+	cfg := config.Config{Providers: map[string]config.Provider{"kimi-code": {}}}
 	if _, err := BuildProviders(context.Background(), cfg, storeWithKeys(t), offlineClient()); err == nil {
 		t.Fatal("accepted a configured provider with no API key")
 	}
@@ -144,7 +153,7 @@ func TestBuildProvidersAppliesEnvironmentKeyFromPreset(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if findProvider(built, "kimi") == nil {
-		t.Fatal("kimi was not built from MOONSHOT_API_KEY")
+	if findProvider(built, "kimi-api") == nil {
+		t.Fatal("kimi-api was not built from MOONSHOT_API_KEY")
 	}
 }
