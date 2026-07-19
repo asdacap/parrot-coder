@@ -85,7 +85,7 @@ func TestDepthRecursionCancelAndResultBound(t *testing.T) {
 		<-ctx.Done()
 		return "", ctx.Err()
 	})
-	manager := NewManager(executor, Config{MaxDepth: 2, MaxResultBytes: 5, Timeout: time.Minute, AgentRecursionLimit: func(string) int { return 1 }})
+	manager := NewManager(executor, Config{MaxDepth: 2, MaxResultBytes: 5, AgentRecursionLimit: func(string) int { return 1 }})
 	limited := NewManager(executor, Config{MaxPromptBytes: 3})
 	if _, err := limited.Launch("p", nil, Request{Prompt: "large", Agent: "worker"}); !errors.Is(err, ErrRequestLimit) {
 		t.Fatalf("request limit error = %v", err)
@@ -127,19 +127,6 @@ func TestDepthRecursionCancelAndResultBound(t *testing.T) {
 	}
 }
 
-func TestTimeout(t *testing.T) {
-	executor := executorFunc(func(ctx context.Context, _ Execution) (string, error) { <-ctx.Done(); return "", ctx.Err() })
-	manager := NewManager(executor, Config{Timeout: 10 * time.Millisecond})
-	id, err := manager.Launch("p", nil, Request{Prompt: "wait", Agent: "worker"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	task, err := manager.Await(context.Background(), "p", id)
-	if !errors.Is(err, ErrTimeout) || task.Status != StatusTimedOut {
-		t.Fatalf("task = %#v, error = %v", task, err)
-	}
-}
-
 func TestObserverReturnsTerminalLifecycleAsData(t *testing.T) {
 	for _, test := range []struct {
 		name      string
@@ -151,7 +138,6 @@ func TestObserverReturnsTerminalLifecycleAsData(t *testing.T) {
 	}{
 		{name: "failed", executor: executorFunc(func(context.Context, Execution) (string, error) { return "", errors.New("failed") }), status: StatusFailed, errorText: "failed"},
 		{name: "canceled", executor: executorFunc(func(ctx context.Context, _ Execution) (string, error) { <-ctx.Done(); return "", ctx.Err() }), interrupt: true, status: StatusCanceled, errorText: ErrCanceled.Error()},
-		{name: "timed out", executor: executorFunc(func(ctx context.Context, _ Execution) (string, error) { <-ctx.Done(); return "", ctx.Err() }), config: Config{Timeout: time.Millisecond}, status: StatusTimedOut, errorText: ErrTimeout.Error()},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			manager := NewManager(test.executor, test.config)
