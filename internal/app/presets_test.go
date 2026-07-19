@@ -173,7 +173,7 @@ func TestBuildProvidersAppliesEnvironmentKeyFromPreset(t *testing.T) {
 
 func TestPresetModelDefaultsDescribeWithoutDeclaring(t *testing.T) {
 	defaults := presetModelDefaults("kimi-code")
-	thinking, ok := defaults["kimi-k2-thinking"]
+	thinking, ok := defaults["kimi-for-coding"]
 	if !ok || thinking.Context == 0 {
 		t.Fatalf("defaults = %#v, want a context window a model list cannot supply", defaults)
 	}

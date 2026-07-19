@@ -24,30 +24,27 @@ type providerPreset struct {
 var providerPresets = map[string]providerPreset{
 	"openai": {HeaderTimeout: 10 * time.Second},
 	// kimi-code is the Kimi For Coding subscription. Its endpoint serves the
-	// plan rather than an account balance, so it reports no usage.
+	// plan rather than an account balance, so it reports no usage, and it
+	// serves a single plan-named model rather than the platform model IDs.
 	"kimi-code": {
 		Protocol:  "chat-completions",
 		BaseURL:   "https://api.kimi.com/coding/v1",
 		APIKeyEnv: "KIMI_API_KEY",
-		Models:    kimiModels(),
+		Models: map[string]config.Model{
+			"kimi-for-coding": {Name: "Kimi For Coding", Context: 262144, Tools: true, Reasoning: true},
+		},
 	},
 	// kimi-api is the Moonshot platform API, billed against a prepaid balance.
 	"kimi-api": {
 		Protocol:  "chat-completions",
 		BaseURL:   "https://api.moonshot.ai/v1",
 		APIKeyEnv: "MOONSHOT_API_KEY",
-		Models:    kimiModels(),
+		Models: map[string]config.Model{
+			"kimi-k2-thinking":      {Name: "Kimi K2 Thinking", Context: 262144, MaxTokens: 32768, Tools: true, Reasoning: true},
+			"kimi-k2-turbo-preview": {Name: "Kimi K2 Turbo", Context: 262144, MaxTokens: 32768, Tools: true},
+			"kimi-k2-0905-preview":  {Name: "Kimi K2 0905", Context: 262144, MaxTokens: 32768, Tools: true},
+		},
 	},
-}
-
-// kimiModels is the metadata both Kimi providers start from. Each preset gets
-// its own copy so overriding one cannot mutate the other.
-func kimiModels() map[string]config.Model {
-	return map[string]config.Model{
-		"kimi-k2-thinking":      {Name: "Kimi K2 Thinking", Context: 262144, MaxTokens: 32768, Tools: true, Reasoning: true},
-		"kimi-k2-turbo-preview": {Name: "Kimi K2 Turbo", Context: 262144, MaxTokens: 32768, Tools: true},
-		"kimi-k2-0905-preview":  {Name: "Kimi K2 0905", Context: 262144, MaxTokens: 32768, Tools: true},
-	}
 }
 
 // PresetProviderIDs lists the provider IDs that carry built-in defaults, so a
