@@ -196,11 +196,11 @@ services and materially increases SSRF impact.
 - `PARROT_API_KEY` is accepted only by the compatible-provider login command.
 - API keys are never accepted as `parrot` command-line arguments, where they
   would land in shell history and in the process argument list.
-- The in-chat `/auth login PROVIDER KEY` form does accept a key, because builtin
-  slash commands are handled locally: the text never reaches the model or the
-  session transcript, and chat input history is not persisted. The key is still
-  shown on screen, so prefer `PARROT_API_KEY` or `--api-key-stdin` when others
-  can see the display.
+- The in-chat `/auth login` does accept a key, either as an argument or at its
+  interactive prompt, because builtin slash commands are handled locally: the
+  text never reaches the model or the session transcript, and chat input history
+  is not persisted. The key is echoed on screen either way, so prefer
+  `PARROT_API_KEY` or `--api-key-stdin` when others can see the display.
 - Project configuration, MCP environment maps, and custom headers are plaintext
   and may be committed accidentally.
 

@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -2124,7 +2125,7 @@ func (s *chatShell) authAction(argument string) {
 		return
 	}
 	if len(fields) == 0 {
-		s.commitError("usage: /auth list|login PROVIDER [KEY|--no-browser]|logout PROVIDER")
+		s.commitError("usage: /auth list|login [PROVIDER [KEY|--no-browser]]|logout PROVIDER")
 		return
 	}
 	switch fields[0] {
@@ -2161,11 +2162,24 @@ func (s *chatShell) authAction(argument string) {
 		}
 		s.commitStatus("✓ Credential removed; restart chat to reload providers")
 	case "login":
-		if len(fields) < 2 || len(fields) > 3 {
-			s.commitError("usage: /auth login PROVIDER [KEY|--no-browser]")
+		if len(fields) > 3 {
+			s.commitError("usage: /auth login [PROVIDER [KEY|--no-browser]]")
 			return
 		}
-		name := fields[1]
+		name := ""
+		if len(fields) > 1 {
+			name = fields[1]
+		} else {
+			// No provider named: choose one, then read its key below.
+			item, err := s.pick("provider> ", s.authProviderCandidates())
+			if err != nil {
+				if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
+					s.commitError(err.Error())
+				}
+				return
+			}
+			name = item.Value
+		}
 		if name != "openai" && name != "chatgpt" {
 			if len(fields) == 3 && fields[2] == "--no-browser" {
 				s.commitError("--no-browser is only valid for OpenAI")
@@ -2180,7 +2194,17 @@ func (s *chatShell) authAction(argument string) {
 				key = fields[2]
 			}
 			if key == "" {
-				s.commitError("compatible provider login requires a key argument or PARROT_API_KEY")
+				value, err := s.promptLine(name + " API key> ")
+				if err != nil {
+					if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
+						s.commitError(err.Error())
+					}
+					return
+				}
+				key = strings.TrimSpace(value)
+			}
+			if key == "" {
+				s.commitError("no API key entered")
 				return
 			}
 			if err := s.credentials.Put(s.ctx, name, auth.NewAPIKeyCredential(key)); err != nil {
@@ -2219,7 +2243,7 @@ func (s *chatShell) authAction(argument string) {
 		}
 		s.commitStatus("✓ OpenAI OAuth credential stored; restart chat to reload providers")
 	default:
-		s.commitError("usage: /auth list|login PROVIDER [KEY|--no-browser]|logout PROVIDER")
+		s.commitError("usage: /auth list|login [PROVIDER [KEY|--no-browser]]|logout PROVIDER")
 	}
 }
 
@@ -2548,6 +2572,65 @@ func (s *chatShell) pick(prompt string, candidates []terminal.Candidate) (termin
 		}
 	}
 	return terminal.Candidate{}, fmt.Errorf("unknown selection %q", value)
+}
+
+// promptLine reads one line from the user mid-session. It mirrors pick's split
+// between the shared key decoder and the plain reader. Input is echoed; there
+// is no masked variant.
+func (s *chatShell) promptLine(prompt string) (string, error) {
+	if s.enhanced {
+		editor := terminal.NewEditorDecoder(s.decoder, s.stdout,
+			terminal.WithEditorPrompt(prompt), terminal.WithEditorRenderer(s.renderer))
+		return editor.Read(s.ctx)
+	}
+	fmt.Fprint(s.stdout, prompt)
+	line, err := s.reader.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return "", err
+	}
+	return strings.TrimSpace(line), nil
+}
+
+// authProviderCandidates offers the built-in providers plus every provider that
+// already has a credential or a usable model, so login works before anything is
+// configured. Configured providers always hold a credential already, because
+// building them without one is a startup error.
+func (s *chatShell) authProviderCandidates() []terminal.Candidate {
+	stored := map[string]string{}
+	if names, err := s.credentials.List(s.ctx); err == nil {
+		for _, name := range names {
+			stored[name] = "credential stored"
+		}
+	}
+	ids := map[string]struct{}{"chatgpt": {}}
+	for _, id := range app.PresetProviderIDs() {
+		ids[id] = struct{}{}
+	}
+	for name := range stored {
+		ids[name] = struct{}{}
+	}
+	if models, err := s.api.Models(s.ctx); err == nil {
+		for _, item := range models.Items {
+			ids[item.Provider] = struct{}{}
+		}
+	}
+	names := make([]string, 0, len(ids))
+	for id := range ids {
+		names = append(names, id)
+	}
+	sort.Strings(names)
+	candidates := make([]terminal.Candidate, 0, len(names))
+	for _, id := range names {
+		description := stored[id]
+		if description == "" {
+			description = "no credential"
+		}
+		if id == "chatgpt" {
+			description += "; OAuth"
+		}
+		candidates = append(candidates, terminal.Candidate{Value: id, Description: description})
+	}
+	return candidates
 }
 
 func slashParts(line string) (string, string) {

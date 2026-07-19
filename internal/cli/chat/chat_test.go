@@ -1,6 +1,7 @@
 package chat
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -1045,20 +1046,29 @@ func TestAuthLoginAcceptsKeyArgumentOrEnvironment(t *testing.T) {
 		name      string
 		argument  string
 		env       string
+		input     string
+		wantName  string
 		wantKey   string
 		wantError string
 	}{
-		{name: "key argument", argument: "login local sk-typed", wantKey: "sk-typed"},
-		{name: "key argument wins over the environment", argument: "login local sk-typed", env: "sk-env", wantKey: "sk-typed"},
-		{name: "environment fallback", argument: "login local", env: "sk-env", wantKey: "sk-env"},
-		{name: "neither", argument: "login local", wantError: "requires a key argument or PARROT_API_KEY"},
+		{name: "key argument", argument: "login local sk-typed", wantName: "local", wantKey: "sk-typed"},
+		{name: "key argument wins over the environment", argument: "login local sk-typed", env: "sk-env", wantName: "local", wantKey: "sk-typed"},
+		{name: "environment fallback", argument: "login local", env: "sk-env", wantName: "local", wantKey: "sk-env"},
+		{name: "prompts for a key when none is supplied", argument: "login local", input: "sk-prompted\n", wantName: "local", wantKey: "sk-prompted"},
+		{name: "empty key entry is refused", argument: "login local", input: "\n", wantError: "no API key entered"},
+		{name: "picks the provider then prompts", argument: "login", input: "kimi\nsk-picked\n", wantName: "kimi", wantKey: "sk-picked"},
+		{name: "cancelling the provider picker stores nothing", argument: "login", input: "\n"},
 		{name: "no-browser is OAuth only", argument: "login local --no-browser", wantError: "only valid for OpenAI"},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			t.Setenv("PARROT_API_KEY", testCase.env)
 			var stdout, stderr bytes.Buffer
 			store := auth.NewFileStore(filepath.Join(t.TempDir(), "credentials.json"))
-			shell := &chatShell{ctx: context.Background(), credentials: store, stdout: &stdout, stderr: &stderr}
+			shell := &chatShell{
+				ctx: context.Background(), credentials: store, stdout: &stdout, stderr: &stderr,
+				api:    catalogOnlyAPI{models: v1.ModelList{Items: []v1.Model{{Provider: "local", ID: "test"}}}},
+				reader: bufio.NewReader(strings.NewReader(testCase.input)),
+			}
 			shell.authAction(testCase.argument)
 			if testCase.wantError != "" {
 				if !strings.Contains(stderr.String(), testCase.wantError) {
@@ -1066,7 +1076,13 @@ func TestAuthLoginAcceptsKeyArgumentOrEnvironment(t *testing.T) {
 				}
 				return
 			}
-			stored, err := store.Get(context.Background(), "local")
+			if testCase.wantName == "" {
+				if names, err := store.List(context.Background()); err != nil || len(names) != 0 {
+					t.Fatalf("credentials = %v, err = %v; want none stored", names, err)
+				}
+				return
+			}
+			stored, err := store.Get(context.Background(), testCase.wantName)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1077,5 +1093,54 @@ func TestAuthLoginAcceptsKeyArgumentOrEnvironment(t *testing.T) {
 				t.Fatalf("output echoed the key: %q %q", stdout.String(), stderr.String())
 			}
 		})
+	}
+}
+
+func TestAuthProviderCandidatesIncludeBuiltinsAndStoredCredentials(t *testing.T) {
+	store := auth.NewFileStore(filepath.Join(t.TempDir(), "credentials.json"))
+	if err := store.Put(context.Background(), "custom", auth.NewAPIKeyCredential("sk-stored")); err != nil {
+		t.Fatal(err)
+	}
+	shell := &chatShell{
+		ctx: context.Background(), credentials: store,
+		api: catalogOnlyAPI{models: v1.ModelList{Items: []v1.Model{{Provider: "local", ID: "test"}}}},
+	}
+	described := map[string]string{}
+	for _, item := range shell.authProviderCandidates() {
+		described[item.Value] = item.Description
+	}
+	for _, want := range []string{"chatgpt", "kimi", "openai", "custom", "local"} {
+		if _, ok := described[want]; !ok {
+			t.Fatalf("candidates %v missing %q", described, want)
+		}
+	}
+	if !strings.Contains(described["chatgpt"], "OAuth") {
+		t.Fatalf("chatgpt description = %q", described["chatgpt"])
+	}
+	if !strings.Contains(described["custom"], "credential stored") || !strings.Contains(described["kimi"], "no credential") {
+		t.Fatalf("descriptions = %v", described)
+	}
+}
+
+func TestEnhancedAuthLoginPicksProviderThenReadsKey(t *testing.T) {
+	// "kimi" filters the picker, Enter selects it, then the key is typed into a
+	// throwaway editor sharing the same decoder.
+	input := bytes.NewBufferString("kimi\rsk-enhanced\r")
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, MaxRows: 6})
+	decoder := terminal.NewKeyDecoder(input)
+	store := auth.NewFileStore(filepath.Join(t.TempDir(), "credentials.json"))
+	shell := &chatShell{
+		ctx: context.Background(), credentials: store, stdout: &output, stderr: io.Discard,
+		api:     catalogOnlyAPI{models: v1.ModelList{Items: []v1.Model{{Provider: "local", ID: "test"}}}},
+		decoder: decoder, renderer: renderer, enhanced: true,
+	}
+	shell.authAction("login")
+	stored, err := store.Get(context.Background(), "kimi")
+	if err != nil {
+		t.Fatalf("credential not stored: %v; output=%q", err, output.String())
+	}
+	if stored.APIKey == nil || stored.APIKey.Key.Value() != "sk-enhanced" {
+		t.Fatalf("stored credential = %#v", stored)
 	}
 }

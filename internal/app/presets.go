@@ -35,6 +35,17 @@ var providerPresets = map[string]providerPreset{
 	},
 }
 
+// PresetProviderIDs lists the provider IDs that carry built-in defaults, so a
+// caller can offer them before any configuration or credential exists.
+func PresetProviderIDs() []string {
+	ids := make([]string, 0, len(providerPresets))
+	for id := range providerPresets {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // applyProviderPreset fills the fields a user left empty with built-in defaults.
 func applyProviderPreset(id string, item config.Provider) config.Provider {
 	preset, ok := providerPresets[id]
