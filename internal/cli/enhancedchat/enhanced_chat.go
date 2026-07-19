@@ -228,6 +228,7 @@ type enhancedChatRuntime struct {
 	modal             *enhancedModal
 	inputMode         enhancedInputMode
 	knownMessages     map[string]bool
+	unsyncedMessages  map[string]bool
 	activity          []enhancedActivityItem
 	completedTools    []enhancedActivityItem
 	turnCompleteID    string
@@ -256,7 +257,7 @@ func (s *chatShell) runEnhanced(first string) int {
 		return exitWithReason(s.ctx, exitError, "enhanced_editor_start_failed", err)
 	}
 	runtime := &enhancedChatRuntime{
-		shell: s, state: state, knownMessages: make(map[string]bool),
+		shell: s, state: state, knownMessages: make(map[string]bool), unsyncedMessages: make(map[string]bool),
 		events: make(chan enhancedSessionEvent, 128),
 	}
 	defer runtime.stopStream()
