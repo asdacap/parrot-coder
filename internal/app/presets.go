@@ -1,0 +1,76 @@
+package app
+
+import (
+	"sort"
+	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/config"
+)
+
+// providerPreset supplies built-in defaults for a well-known provider ID so a
+// user only has to supply a credential. Every field a user sets in parrot.jsonc
+// overrides the preset; the preset only fills what was left empty.
+type providerPreset struct {
+	Protocol      string
+	BaseURL       string
+	APIKeyEnv     string
+	HeaderTimeout time.Duration
+	Models        map[string]config.Model
+}
+
+// providerPresets are built-in, not configuration, so a project-scope file
+// cannot redirect a preset provider's base URL. Model metadata is a starting
+// point that a user may override per model in parrot.jsonc.
+var providerPresets = map[string]providerPreset{
+	"openai": {HeaderTimeout: 10 * time.Second},
+	"kimi": {
+		Protocol:  "chat-completions",
+		BaseURL:   "https://api.moonshot.ai/v1",
+		APIKeyEnv: "MOONSHOT_API_KEY",
+		Models: map[string]config.Model{
+			"kimi-k2-thinking":      {Name: "Kimi K2 Thinking", Context: 262144, MaxTokens: 32768, Tools: true, Reasoning: true},
+			"kimi-k2-turbo-preview": {Name: "Kimi K2 Turbo", Context: 262144, MaxTokens: 32768, Tools: true},
+			"kimi-k2-0905-preview":  {Name: "Kimi K2 0905", Context: 262144, MaxTokens: 32768, Tools: true},
+		},
+	},
+}
+
+// applyProviderPreset fills the fields a user left empty with built-in defaults.
+func applyProviderPreset(id string, item config.Provider) config.Provider {
+	preset, ok := providerPresets[id]
+	if !ok {
+		return item
+	}
+	if item.Protocol == "" {
+		item.Protocol = preset.Protocol
+	}
+	if item.BaseURL == "" {
+		item.BaseURL = preset.BaseURL
+	}
+	if item.APIKeyEnv == "" {
+		item.APIKeyEnv = preset.APIKeyEnv
+	}
+	if item.HeaderTimeoutMS == nil && preset.HeaderTimeout > 0 {
+		milliseconds := int(preset.HeaderTimeout / time.Millisecond)
+		item.HeaderTimeoutMS = &milliseconds
+	}
+	if len(item.Models) == 0 {
+		item.Models = preset.Models
+	}
+	return item
+}
+
+// presetOnlyProviderIDs are preset providers with a usable base URL that the
+// configuration does not mention at all. They are built from the preset alone
+// so that storing a credential is enough to use them.
+func presetOnlyProviderIDs(configured map[string]config.Provider) []string {
+	ids := make([]string, 0, len(providerPresets))
+	for id, preset := range providerPresets {
+		if _, exists := configured[id]; exists || preset.BaseURL == "" {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}

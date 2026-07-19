@@ -106,6 +106,25 @@ unavailable, Parrot keeps using its bundled model metadata.
 time for the subscription's available rate-limit windows. This relies on an
 upstream ChatGPT endpoint and requires a stored ChatGPT OAuth credential.
 
+### Kimi Subscription
+
+`kimi` is a built-in provider preset for Moonshot, so a credential is all it
+needs — no `providers` entry:
+
+```sh
+printf '%s' "$MOONSHOT_API_KEY" | parrot auth login kimi --api-key-stdin
+# Or simply export MOONSHOT_API_KEY before starting Parrot.
+
+parrot models
+parrot chat --model kimi/kimi-k2-thinking
+```
+
+The preset points at `https://api.moonshot.ai/v1` over the chat-completions
+protocol and ships metadata for the Kimi K2 models. Override any of it with a
+`providers.kimi` entry, for example to use a regional endpoint or to correct a
+model's context window. `parrot usage` reports the account's remaining Moonshot
+balance; Moonshot exposes a balance rather than rate-limit windows.
+
 ### Compatible Endpoint
 
 Create `~/.config/parrot/parrot.jsonc`. Configuration stores the name of an

@@ -733,8 +733,16 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 		ids = append(ids, id)
 	}
 	sort.Strings(ids)
+	// Preset providers absent from the configuration are optional: they are
+	// built only when a credential exists, so an unused preset is not an error.
+	optional := presetOnlyProviderIDs(cfg.Providers)
+	ids = append(ids, optional...)
+	optionalIDs := make(map[string]bool, len(optional))
+	for _, id := range optional {
+		optionalIDs[id] = true
+	}
 	for _, id := range ids {
-		item := cfg.Providers[id]
+		item := applyProviderPreset(id, cfg.Providers[id])
 		if item.HeaderTimeoutMS != nil && *item.HeaderTimeoutMS < 0 {
 			return nil, fmt.Errorf("app: provider %q header timeout cannot be negative", id)
 		}
@@ -745,8 +753,6 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 		headerTimeout := time.Duration(0)
 		if item.HeaderTimeoutMS != nil {
 			headerTimeout = time.Duration(*item.HeaderTimeoutMS) * time.Millisecond
-		} else if id == "openai" {
-			headerTimeout = 10 * time.Second
 		}
 		if item.Type != "" && item.Type != "compatible" && item.Type != "openai-compatible" {
 			return nil, fmt.Errorf("app: provider %q has unsupported type %q", id, item.Type)
@@ -764,6 +770,9 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 			}
 		}
 		if key == "" {
+			if optionalIDs[id] {
+				continue
+			}
 			where := "credential store"
 			if item.APIKeyEnv != "" {
 				where = "environment variable " + item.APIKeyEnv + " or credential store entry " + id
@@ -793,11 +802,18 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 			}
 			models = append(models, provider.Model{ID: modelID, Name: name, ContextWindow: model.Context, MaxOutputTokens: model.MaxTokens, Capabilities: provider.Capabilities{Tools: model.Tools, Reasoning: model.Reasoning, Output: append([]string(nil), model.Output...), Variants: variants}})
 		}
-		compatible, createErr := provider.NewOpenAICompatible(provider.OpenAICompatibleOptions{
+		options := provider.OpenAICompatibleOptions{
 			ID: id, BaseURL: item.BaseURL, Protocol: provider.CompatibleProtocol(item.Protocol), APIKey: auth.Secret(key),
 			Headers: item.Headers, AllowInsecureLocalhost: item.AllowInsecureLocalhost, Models: models, HTTPClient: httpClient,
 			HeaderTimeout: headerTimeout,
-		})
+		}
+		var compatible provider.Provider
+		var createErr error
+		if id == "kimi" {
+			compatible, createErr = provider.NewKimi(options)
+		} else {
+			compatible, createErr = provider.NewOpenAICompatible(options)
+		}
 		if createErr != nil {
 			return nil, fmt.Errorf("app: provider %q: %w", id, createErr)
 		}

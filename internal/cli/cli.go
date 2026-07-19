@@ -288,7 +288,7 @@ func (a *App) usageCommand(ctx context.Context, args []string, stdout, stderr io
 }
 
 func formatSubscriptionUsage(usage v1.SubscriptionUsage, now time.Time) string {
-	lines := []string{"ChatGPT subscription"}
+	lines := []string{subscriptionProviderName(usage.Provider) + " subscription"}
 	if usage.PlanType != "" {
 		lines[0] += " (" + usage.PlanType + ")"
 	}
@@ -311,6 +311,21 @@ func formatSubscriptionUsage(usage v1.SubscriptionUsage, now time.Time) string {
 		lines = append(lines, "usage windows unavailable")
 	}
 	return strings.Join(lines, "\n")
+}
+
+// subscriptionProviderName renders a provider ID for display, falling back to
+// the ID itself for providers without a preferred capitalization.
+func subscriptionProviderName(id string) string {
+	switch id {
+	case "chatgpt":
+		return "ChatGPT"
+	case "kimi":
+		return "Kimi"
+	case "":
+		return "provider"
+	default:
+		return id
+	}
 }
 
 func formatResetDuration(duration time.Duration) string {

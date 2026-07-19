@@ -176,6 +176,12 @@ type Provider interface {
 	Stream(context.Context, protocol.Request) (Stream, error)
 }
 
+// UsageReporter is implemented by providers whose account exposes subscription
+// quota or balance. Providers that cannot report usage simply omit the method.
+type UsageReporter interface {
+	Usage(context.Context) (SubscriptionUsage, error)
+}
+
 // StreamWithHeaderRetry starts a provider stream and retries response-header
 // timeouts until the caller cancels the operation. A retry cannot duplicate
 // client-visible partial output, although the provider may have processed an

@@ -100,6 +100,22 @@ The built-in provider ID is `chatgpt`; it is not configured in `providers`.
 Parrot refreshes this provider's model metadata from the ChatGPT Codex model
 catalog at startup and uses bundled metadata if that refresh is unavailable.
 
+Some provider IDs also carry built-in presets, so supplying a credential is
+enough to use them and no `providers` entry is required:
+
+| ID | Auth | Preset |
+| --- | --- | --- |
+| `kimi` | API key: `MOONSHOT_API_KEY` or `parrot auth login kimi --api-key-stdin` | `https://api.moonshot.ai/v1`, `chat-completions`, Kimi K2 models |
+| `openai` | API key: your `api_key_env` or credential store entry | 10-second `header_timeout_ms` only; `base_url` is still required |
+
+Presets are compiled in, not configuration, so a project-scope file cannot
+redirect a preset provider's connection fields. Adding a `providers` entry for a
+preset ID overrides it field by field: anything you set wins, anything you leave
+out keeps the preset value. Setting `models` replaces the preset catalog
+outright rather than merging into it. A preset provider with no configuration
+entry and no credential is skipped silently; a provider you do configure still
+requires a key.
+
 Each configured provider ID must have a nonempty API key from `api_key_env` or
 the credential store. The environment wins. `base_url` may contain a path but
 not user information, query parameters, or a fragment. Parrot appends
@@ -114,8 +130,8 @@ the config file; do not use this field for credentials. `context` and
 
 `header_timeout_ms` limits how long Parrot waits for HTTP response headers.
 For configured providers, zero disables this provider-specific deadline and
-negative values are invalid. The provider ID `openai` defaults to 10 seconds
-when the field is omitted; explicitly setting zero disables that default.
+negative values are invalid. The provider ID `openai` presets 10 seconds when
+the field is omitted; explicitly setting zero disables that preset.
 The timer stops as soon as headers arrive and does not limit streaming the
 response body. A timeout is retried with exponential backoff (2 seconds,
 doubling to a maximum of 30 seconds) until the turn is interrupted. The

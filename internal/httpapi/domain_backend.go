@@ -575,24 +575,43 @@ func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {
 }
 
 func (b *DomainBackend) SubscriptionUsage(ctx context.Context) (v1.SubscriptionUsage, error) {
+	item, reporter := b.usageReporter()
+	if reporter == nil {
+		return v1.SubscriptionUsage{}, errors.New("httpapi: subscription usage is unavailable")
+	}
+	usage, err := reporter.Usage(ctx)
+	if err != nil {
+		return v1.SubscriptionUsage{}, err
+	}
+	return v1.SubscriptionUsage{
+		Provider: item.ID(), PlanType: usage.PlanType,
+		PrimaryWindow: mapSubscriptionWindow(usage.PrimaryWindow), SecondaryWindow: mapSubscriptionWindow(usage.SecondaryWindow),
+		Credits: mapSubscriptionCredits(usage.Credits),
+	}, nil
+}
+
+// usageReporter prefers the provider backing the default selection so a session
+// reports its own subscription, falling back to the first provider that can
+// report usage at all.
+func (b *DomainBackend) usageReporter() (provider.Provider, provider.UsageReporter) {
+	var fallbackProvider provider.Provider
+	var fallbackReporter provider.UsageReporter
 	for _, item := range b.Providers {
-		usageProvider, ok := item.(interface {
-			Usage(context.Context) (provider.SubscriptionUsage, error)
-		})
-		if !ok || item.ID() != "chatgpt" {
+		if item == nil {
 			continue
 		}
-		usage, err := usageProvider.Usage(ctx)
-		if err != nil {
-			return v1.SubscriptionUsage{}, err
+		reporter, ok := item.(provider.UsageReporter)
+		if !ok {
+			continue
 		}
-		return v1.SubscriptionUsage{
-			Provider: "chatgpt", PlanType: usage.PlanType,
-			PrimaryWindow: mapSubscriptionWindow(usage.PrimaryWindow), SecondaryWindow: mapSubscriptionWindow(usage.SecondaryWindow),
-			Credits: mapSubscriptionCredits(usage.Credits),
-		}, nil
+		if item.ID() == b.DefaultSelection.Provider {
+			return item, reporter
+		}
+		if fallbackReporter == nil {
+			fallbackProvider, fallbackReporter = item, reporter
+		}
 	}
-	return v1.SubscriptionUsage{}, errors.New("httpapi: ChatGPT subscription usage is unavailable")
+	return fallbackProvider, fallbackReporter
 }
 
 func mapSubscriptionWindow(window *provider.UsageWindow) *v1.UsageWindow {

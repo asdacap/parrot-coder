@@ -259,8 +259,9 @@ type ModelList struct {
 	Items []Model `json:"items"`
 }
 
-// SubscriptionUsage reports ChatGPT subscription limits. RemainingPercent is
-// derived from upstream's used percentage and clamped to 0 through 100.
+// SubscriptionUsage reports the subscription limits of the provider named in
+// Provider. RemainingPercent is derived from upstream's used percentage and
+// clamped to 0 through 100. A provider may report windows, credits, or both.
 type SubscriptionUsage struct {
 	Provider        string        `json:"provider"`
 	PlanType        string        `json:"plan_type,omitempty"`

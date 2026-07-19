@@ -329,16 +329,43 @@ func TestModelsDoesNotRequireDefaultModel(t *testing.T) {
 
 func TestFormatSubscriptionUsageShowsRemainingAndReset(t *testing.T) {
 	now := time.Date(2030, time.January, 1, 12, 0, 0, 0, time.UTC)
-	usage := v1.SubscriptionUsage{
-		PlanType:        "plus",
-		PrimaryWindow:   &v1.UsageWindow{UsedPercent: 27.5, RemainingPercent: 72.5, ResetAt: now.Add(2*time.Hour + 15*time.Minute)},
-		SecondaryWindow: &v1.UsageWindow{UsedPercent: 4, RemainingPercent: 96, ResetAt: now.Add(48 * time.Hour)},
-	}
-	output := formatSubscriptionUsage(usage, now)
-	for _, want := range []string{"ChatGPT subscription (plus)", "primary: 72.5% remaining", "in 2h 15m", "secondary: 96.0% remaining", "in 2d 0h"} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("output %q does not contain %q", output, want)
-		}
+	for _, testCase := range []struct {
+		name  string
+		usage v1.SubscriptionUsage
+		want  []string
+	}{
+		{
+			name: "chatgpt windows",
+			usage: v1.SubscriptionUsage{
+				Provider:        "chatgpt",
+				PlanType:        "plus",
+				PrimaryWindow:   &v1.UsageWindow{UsedPercent: 27.5, RemainingPercent: 72.5, ResetAt: now.Add(2*time.Hour + 15*time.Minute)},
+				SecondaryWindow: &v1.UsageWindow{UsedPercent: 4, RemainingPercent: 96, ResetAt: now.Add(48 * time.Hour)},
+			},
+			want: []string{"ChatGPT subscription (plus)", "primary: 72.5% remaining", "in 2h 15m", "secondary: 96.0% remaining", "in 2d 0h"},
+		},
+		{
+			name: "kimi credits only",
+			usage: v1.SubscriptionUsage{
+				Provider: "kimi",
+				Credits:  &v1.UsageCredits{HasCredits: true, Balance: "49.53"},
+			},
+			want: []string{"Kimi subscription", "credits: 49.53"},
+		},
+		{
+			name:  "unknown provider falls back to its ID",
+			usage: v1.SubscriptionUsage{Provider: "moonshot-cn"},
+			want:  []string{"moonshot-cn subscription", "usage windows unavailable"},
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			output := formatSubscriptionUsage(testCase.usage, now)
+			for _, want := range testCase.want {
+				if !strings.Contains(output, want) {
+					t.Fatalf("output %q does not contain %q", output, want)
+				}
+			}
+		})
 	}
 }
 
