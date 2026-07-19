@@ -76,7 +76,6 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 	if services.Formatters != nil {
 		items = append(items, NewFormatTool(services.Formatters, services.Changes))
 	}
-	items = append(items, NewTaskTools(services.Subagents, services.Agents)...)
 	items = append(items, NewReviewTool(services.Subagents, services.Agents))
 	items = append(items, NewAgentTools(services.Subagents, services.Agents)...)
 

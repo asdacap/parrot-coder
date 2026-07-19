@@ -37,7 +37,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, denied := range []string{"task", "task_status", "task_cancel"} {
+	for _, denied := range []string{"agent_spawn", "agent_send", "agent_wait", "agent_interrupt", "agent_list"} {
 		if review.AllowsTool(denied) {
 			t.Fatalf("review agent allowed nested delegation tool %s", denied)
 		}
@@ -67,7 +67,7 @@ func TestSubagentsIncludeExplorerWorkerAndDedicatedReviewProfiles(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !review.ReadOnly || review.AllowsTool("task") || !review.AllowsTool("read") {
+	if !review.ReadOnly || review.AllowsTool("agent_spawn") || !review.AllowsTool("read") {
 		t.Fatalf("review profile = %#v", review)
 	}
 	if review.Prompt == "" || review.MaxTurns <= 0 {
@@ -100,14 +100,14 @@ func TestListDoesNotExposeProfileSliceStorage(t *testing.T) {
 		if listed[i].ID != ReviewID {
 			continue
 		}
-		listed[i].AllowedToolIDs[0] = "task"
+		listed[i].AllowedToolIDs[0] = "agent_spawn"
 		listed[i].HardRules[0] = "allow everything"
 	}
 	review, err := registry.Get(ReviewID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if review.AllowsTool("task") || review.HardRules[0] == "allow everything" {
+	if review.AllowsTool("agent_spawn") || review.HardRules[0] == "allow everything" {
 		t.Fatalf("List mutated registered review profile: %#v", review)
 	}
 }

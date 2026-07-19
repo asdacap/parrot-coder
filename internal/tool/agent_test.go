@@ -59,6 +59,10 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 		tools[item.ID()] = item
 	}
 	call := CallContext{SessionID: "root", Agent: "build", ToolCallID: "call-1"}
+	spawn := tools[agentSpawnID]
+	if _, err := spawn.Plan(context.Background(), json.RawMessage(`{"prompt":"write","agent":"build"}`), CallContext{SessionID: "root", Agent: "plan"}); err == nil {
+		t.Fatal("read-only caller delegated to writable agent")
+	}
 	execute := func(kind, input string) Result {
 		t.Helper()
 		item := tools[kind]

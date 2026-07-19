@@ -46,6 +46,13 @@ func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
 		}
 		return
 	}
+	// agent_spawn completes once the child session exists. Ignore later
+	// progress tied to that completed tool call instead of recreating a row
+	// which no tool lifecycle event can finish. Existing rows still receive
+	// progress so an event racing with tool completion can settle them.
+	if progress.ToolCallID != "" && r.completedToolIDs[progress.ToolCallID] {
+		return
+	}
 	if terminalEvent {
 		if r.completedTaskIDs == nil {
 			r.completedTaskIDs = make(map[string]bool)
@@ -53,7 +60,7 @@ func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
 		r.completedTaskIDs[id] = true
 		return
 	}
-	r.upsertActivity(id, "task · "+progress.Agent, "running", false, false, false)
+	r.upsertActivity(id, "agent · "+progress.Agent, "running", false, false, false)
 	r.updateTaskProgress(progress)
 }
 
@@ -460,11 +467,6 @@ func toolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "name"))
 	case "web_fetch":
 		add(firstString(input, "url"))
-	case "task":
-		add(firstString(input, "agent"))
-		add(firstString(input, "prompt"))
-	case "task_status", "task_cancel":
-		add(firstString(input, "task_id"))
 	case "agent_spawn":
 		add(firstString(input, "agent"))
 		add(firstString(input, "prompt"))

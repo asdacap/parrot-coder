@@ -12,8 +12,9 @@ import (
 const reviewAgentID = "review"
 
 // ReviewTool starts the built-in, read-only review worker. It is deliberately
-// separate from task so a parent model can request a review without selecting
-// or knowing the implementation profile used by the child session.
+// separate from the reusable child-agent controls so a parent model can request
+// a review without selecting or knowing the implementation profile used by the
+// child session.
 type ReviewTool struct {
 	Manager    *subagent.Manager
 	Agents     AgentLookup
@@ -97,9 +98,17 @@ func (t *ReviewTool) Execute(ctx context.Context, plan Plan, call CallContext) (
 		_ = t.Manager.Forget(call.SessionID, id)
 		return Result{}, err
 	}
-	result := taskResult(task)
+	result := reviewResult(task)
 	if err := t.Manager.Forget(call.SessionID, id); err != nil {
 		return Result{}, err
 	}
 	return result, nil
+}
+
+func reviewResult(task subagent.Task) Result {
+	metadata := map[string]any{"task_id": task.ID, "status": task.Status, "agent": task.Agent, "model": task.Model, "depth": task.Depth, "truncated": task.Truncated, "usage": task.Usage, "tool_uses": task.ToolUses}
+	if task.Error != "" {
+		metadata["error"] = task.Error
+	}
+	return Result{Text: task.Output, Metadata: metadata}
 }

@@ -53,7 +53,7 @@ func Builtins() []Profile {
 	}
 }
 
-// Subagents returns task-only profiles, not foreground modes.
+// Subagents returns child-agent-only profiles, not foreground modes.
 func Subagents() []Profile {
 	return []Profile{
 		profiles.Explorer(),

@@ -659,7 +659,7 @@ func writeStreamTaskProgress(options streamOptions, tracker *subagentStreamTrack
 	if tracker.completedDirectTask[id] {
 		return nil
 	}
-	line := fmt.Sprintf("task: %s · %s tokens · %d tools", progress.Agent, formatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
+	line := fmt.Sprintf("agent: %s · %s tokens · %d tools", progress.Agent, formatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
 	if options.renderer == nil {
 		_, err := fmt.Fprintln(options.stderr, line)
 		return err
@@ -1608,7 +1608,7 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/effort", Description: "select model reasoning effort"},
 	{Value: "/modes", Description: "list available modes"},
 	{Value: "/mode", Description: "select a mode"},
-	{Value: "/agents", Description: "list task subagents"},
+	{Value: "/agents", Description: "list reusable child agents"},
 	{Value: "/agent", Description: "deprecated alias for /mode"},
 	{Value: "/sessions", Description: "list sessions"},
 	{Value: "/session", Description: "list, show, switch, compact, or delete sessions"},
@@ -2562,14 +2562,14 @@ func isBuiltinSlash(name string) bool {
 
 func subtaskPrompt(expansion customcommand.Expansion) string {
 	var request strings.Builder
-	request.WriteString("Delegate the following task using the task tool")
+	request.WriteString("Delegate the following work using agent_spawn")
 	if expansion.Agent != "" {
 		fmt.Fprintf(&request, " with agent %q", expansion.Agent)
 	}
 	if expansion.Model != "" {
 		fmt.Fprintf(&request, " and model %q", expansion.Model)
 	}
-	request.WriteString(". Return the child task's result.\n\n")
+	request.WriteString(". Then call agent_wait with the returned agent_id until its status is no longer pending or running, and return the child agent's output.\n\n")
 	request.WriteString(expansion.Prompt)
 	return request.String()
 }

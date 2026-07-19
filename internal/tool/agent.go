@@ -19,6 +19,8 @@ const (
 	agentListID      = "agent_list"
 )
 
+type AgentLookup func(string) (bool, error)
+
 type AgentTool struct {
 	Kind    string
 	Manager *subagent.Manager

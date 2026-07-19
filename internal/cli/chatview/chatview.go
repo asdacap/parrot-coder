@@ -386,11 +386,6 @@ func ToolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "name"))
 	case "web_fetch":
 		add(firstString(input, "url"))
-	case "task":
-		add(firstString(input, "agent"))
-		add(firstString(input, "prompt"))
-	case "task_status", "task_cancel":
-		add(firstString(input, "task_id"))
 	case "agent_spawn":
 		add(firstString(input, "agent"))
 		add(firstString(input, "prompt"))
@@ -559,7 +554,7 @@ func subagentPrefix(item *v1.SubagentEvent) string {
 	}
 	name := strings.TrimSpace(item.TaskName)
 	if name == "" {
-		name = "task"
+		name = "agent"
 	}
 	return strings.Repeat("  ", depth) + "[" + name + "] "
 }
@@ -790,7 +785,7 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 		if t.done[id] {
 			return nil, nil
 		}
-		line := fmt.Sprintf("task: %s · %s tokens · %d tools", progress.Agent, FormatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
+		line := fmt.Sprintf("agent: %s · %s tokens · %d tools", progress.Agent, FormatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
 		terminalEvent := progress.Status != "pending" && progress.Status != "running"
 		if terminalEvent {
 			if t.done == nil {

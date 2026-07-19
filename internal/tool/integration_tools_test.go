@@ -198,52 +198,6 @@ func (f subagentExecutorFunc) Execute(ctx context.Context, execution subagent.Ex
 	return f(ctx, execution)
 }
 
-func TestTaskToolOutputReadOnlyBoundaryAndParentCancellation(t *testing.T) {
-	started := make(chan struct{})
-	manager := subagent.NewManager(subagentExecutorFunc(func(ctx context.Context, execution subagent.Execution) (string, error) {
-		if execution.Request.Prompt == "wait" {
-			close(started)
-			<-ctx.Done()
-			return "", ctx.Err()
-		}
-		return "child output", nil
-	}), subagent.Config{})
-	lookup := func(id string) (bool, error) { return id != "build", nil }
-	item := NewTaskTools(manager, lookup)[0]
-	call := CallContext{SessionID: "parent", Agent: "plan"}
-	if _, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":"write","agent":"build"}`), call); err == nil {
-		t.Fatal("read-only caller delegated to writable agent")
-	}
-	plan, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":"read","agent":"explore"}`), call)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := item.Execute(context.Background(), plan, call)
-	if err != nil || result.Text != "child output" || result.Metadata["task_id"] == "" {
-		t.Fatalf("result = %#v, %v", result, err)
-	}
-	if result.Metadata["usage"] == nil || result.Metadata["tool_uses"] != 0 {
-		t.Fatalf("task accounting metadata = %#v", result.Metadata)
-	}
-	waitPlan, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":"wait","agent":"explore"}`), call)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan error, 1)
-	go func() { _, err := item.Execute(ctx, waitPlan, call); done <- err }()
-	<-started
-	cancel()
-	if err := <-done; !errors.Is(err, context.Canceled) {
-		t.Fatalf("execute error = %v", err)
-	}
-	for _, task := range manager.List("parent") {
-		if task.Status == subagent.StatusRunning {
-			t.Fatalf("orphaned task = %#v", task)
-		}
-	}
-}
-
 func TestReviewToolLaunchesFixedReadOnlyReviewerAndReturnsFindings(t *testing.T) {
 	var captured subagent.Execution
 	manager := subagent.NewManager(subagentExecutorFunc(func(_ context.Context, execution subagent.Execution) (string, error) {
@@ -344,45 +298,6 @@ func TestGitDiffToolReadsUncommittedChangesAndRejectsOptionRefs(t *testing.T) {
 	}
 	if _, err := item.Plan(context.Background(), json.RawMessage(`{"target":"base","ref":"--help"}`), call); err == nil {
 		t.Fatal("option-like Git ref was accepted")
-	}
-}
-
-func TestTaskStatusAndCancelToolsAreParentScoped(t *testing.T) {
-	started := make(chan struct{})
-	manager := subagent.NewManager(subagentExecutorFunc(func(ctx context.Context, _ subagent.Execution) (string, error) {
-		close(started)
-		<-ctx.Done()
-		return "", ctx.Err()
-	}), subagent.Config{})
-	id, err := manager.Launch("parent", []string{"build"}, subagent.Request{Prompt: "wait", Agent: "explore"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	<-started
-	tools := NewTaskTools(manager, func(string) (bool, error) { return false, nil })
-	call := CallContext{SessionID: "parent", Agent: "build"}
-	raw := json.RawMessage(`{"task_id":"` + id + `"}`)
-	statusPlan, err := tools[1].Plan(context.Background(), raw, call)
-	if err != nil {
-		t.Fatal(err)
-	}
-	status, err := tools[1].Execute(context.Background(), statusPlan, call)
-	if err != nil || status.Metadata["status"] != subagent.StatusRunning {
-		t.Fatalf("status = %#v, %v", status, err)
-	}
-	if _, err := tools[1].Plan(context.Background(), raw, CallContext{SessionID: "other", Agent: "build"}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tools[1].Execute(context.Background(), statusPlan, CallContext{SessionID: "other", Agent: "build"}); !errors.Is(err, subagent.ErrNotFound) {
-		t.Fatalf("cross-parent status error = %v", err)
-	}
-	cancelPlan, err := tools[2].Plan(context.Background(), raw, call)
-	if err != nil {
-		t.Fatal(err)
-	}
-	canceled, err := tools[2].Execute(context.Background(), cancelPlan, call)
-	if err != nil || canceled.Metadata["status"] != subagent.StatusCanceled {
-		t.Fatalf("cancel = %#v, %v", canceled, err)
 	}
 }
 

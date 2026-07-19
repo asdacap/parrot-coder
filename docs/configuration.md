@@ -207,11 +207,13 @@ optional. Names contain only ASCII letters, digits, `_`, or `-`.
 
 ## Built-in subagents
 
-Parrot includes the task-only `explorer`, `worker`, and `review` profiles. Use
-`explorer` for specific, well-scoped codebase questions; it is
-runtime-enforced read-only. Use `worker` for implementation and production
-work; it can modify files and run commands within the authorized workspace.
-`explore` is accepted as an alias of `explorer`.
+Parrot includes the reusable child-agent profiles `explorer`, `worker`, and
+`review`. Start them with `agent_spawn`, observe them with `agent_wait` or
+`agent_list`, send follow-up input with `agent_send`, and stop an active turn
+with `agent_interrupt`. Use `explorer` for specific, well-scoped codebase
+questions; it is runtime-enforced read-only. Use `worker` for implementation
+and production work; it can modify files and run commands within the authorized
+workspace. `explore` is accepted as an alias of `explorer`.
 
 ### Review subagent
 
@@ -220,8 +222,8 @@ The tool accepts a review prompt and an optional model override, launches an
 isolated child session, waits for it, and returns its final findings to the
 parent agent. The worker is defect-first and runtime-enforced read-only; it has
 repository inspection and LSP tools, plus a bounded read-only `git_diff` tool,
-but no mutation, shell, network, or nested delegation tools. It is a task-only
-agent, not a selectable foreground mode.
+but no mutation, shell, network, or nested delegation tools. It is a
+child-agent-only profile, not a selectable foreground mode.
 
 ## Commands
 
@@ -244,3 +246,6 @@ Review $ARGUMENTS. Focus first on $1 and include @path/to/context.txt.
 Templates support `$ARGUMENTS`, `$1` through `$9`, `${1}` through `${9}`, and
 bounded `@relative/path` file inclusion. Shell substitution is forbidden. The
 command file and included files are hash-checked between discovery and use.
+When `subtask: true`, the foreground agent is instructed to start the configured
+child agent with `agent_spawn`, wait for it with `agent_wait`, and return its
+output.

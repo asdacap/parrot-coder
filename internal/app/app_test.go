@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -486,7 +487,10 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 	}
 }
 
-func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
+func TestAgentToolsUseIsolatedChildSessionAndReturnOutput(t *testing.T) {
+	var parentContinuations atomic.Int32
+	agentIDPattern := regexp.MustCompile(`task_[0-9a-f]+`)
+	releaseChild := make(chan struct{})
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -495,13 +499,28 @@ func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch {
+		case bytes.Contains(body, []byte("function_call_output")) && parentContinuations.Add(1) == 1:
+			agentID := string(agentIDPattern.Find(body))
+			if agentID == "" {
+				t.Errorf("spawn output omitted agent ID: %s", body)
+				return
+			}
+			arguments := fmt.Sprintf(`{"ids":[%q]}`, agentID)
+			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_wait\",\"type\":\"function_call\",\"call_id\":\"call_wait\",\"name\":\"agent_wait\",\"arguments\":%q}}\n\n", arguments)
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+			close(releaseChild)
 		case bytes.Contains(body, []byte("function_call_output")):
+			if !bytes.Contains(body, []byte("child output")) || !bytes.Contains(body, []byte(`\"status\":\"succeeded\"`)) {
+				t.Errorf("wait output omitted terminal child result: %s", body)
+				return
+			}
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent received child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		case bytes.Contains(body, []byte("child prompt")):
+			<-releaseChild
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		default:
 			arguments := `{"prompt":"child prompt","agent":"explorer"}`
-			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_task\",\"type\":\"function_call\",\"call_id\":\"call_task\",\"name\":\"task\",\"arguments\":%q}}\n\n", arguments)
+			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_spawn\",\"type\":\"function_call\",\"call_id\":\"call_spawn\",\"name\":\"agent_spawn\",\"arguments\":%q}}\n\n", arguments)
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		}
 	}))
@@ -557,7 +576,7 @@ func TestTaskToolUsesIsolatedChildSessionAndReturnsOutput(t *testing.T) {
 	}
 	messages, _ := runtime.Client.Messages(context.Background(), parent.ID)
 	sessions, _ := runtime.Client.Sessions(context.Background())
-	t.Fatalf("task tool did not return child output; messages=%#v sessions=%#v", messages.Items, sessions.Items)
+	t.Fatalf("agent tools did not return child output; messages=%#v sessions=%#v", messages.Items, sessions.Items)
 }
 
 func TestReportSubagentEventConvertsUsageAndToolCalls(t *testing.T) {

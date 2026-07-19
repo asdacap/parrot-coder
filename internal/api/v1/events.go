@@ -72,7 +72,7 @@ type ToolOutputDelta struct {
 // SubagentEvent projects an event from an isolated child session onto its
 // parent's event stream. Depth is relative to the session receiving this
 // event: a direct child has depth 1. TaskName is currently the child agent ID,
-// which is the human-facing name available on task requests.
+// which is the human-facing name available on child-agent requests.
 type SubagentEvent struct {
 	TaskID   string `json:"task_id"`
 	TaskName string `json:"task_name"`

@@ -345,14 +345,14 @@ func isBuiltinSlash(name string) bool {
 }
 func subtaskPrompt(expansion customcommand.Expansion) string {
 	var request strings.Builder
-	request.WriteString("Delegate the following task using the task tool")
+	request.WriteString("Delegate the following work using agent_spawn")
 	if expansion.Agent != "" {
 		fmt.Fprintf(&request, " with agent %q", expansion.Agent)
 	}
 	if expansion.Model != "" {
 		fmt.Fprintf(&request, " and model %q", expansion.Model)
 	}
-	request.WriteString(". Return the child task's result.\n\n")
+	request.WriteString(". Then call agent_wait with the returned agent_id until its status is no longer pending or running, and return the child agent's output.\n\n")
 	request.WriteString(expansion.Prompt)
 	return request.String()
 }

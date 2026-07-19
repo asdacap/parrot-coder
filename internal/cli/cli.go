@@ -689,7 +689,7 @@ Commands:
   models     list configured models
   usage      show ChatGPT subscription usage
   modes      list foreground modes
-  agents     list task subagents
+  agents     list reusable child agents
   session    manage sessions
   serve      start the HTTP API server
   version    print build information
