@@ -60,6 +60,7 @@ type OpenAICompatible struct {
 	modelsMu       sync.RWMutex
 	models         []Model
 	client         *http.Client
+	stream         *http.Client
 	headerTimeout  time.Duration
 }
 
@@ -98,7 +99,9 @@ func NewOpenAICompatible(options OpenAICompatibleOptions) (*OpenAICompatible, er
 	declared, defaults := cloneModels(options.Models), cloneModels(options.ModelDefaults)
 	return &OpenAICompatible{
 		id: options.ID, endpoint: endpoint, modelsEndpoint: modelsEndpoint, protocol: options.Protocol, apiKey: options.APIKey,
-		headers: headers, declared: declared, defaults: defaults, client: secureClient(options.HTTPClient, endpoint),
+		headers: headers, declared: declared, defaults: defaults,
+		client:  secureClient(options.HTTPClient, endpoint, false),
+		stream:  secureClient(options.HTTPClient, endpoint, true),
 		// Until a catalog is fetched the defaults stand in for one, so an
 		// offline start still has models to select.
 		models:        mergeModels(nil, declared, defaults),
@@ -275,5 +278,5 @@ func (p *OpenAICompatible) Stream(ctx context.Context, request protocol.Request)
 	}
 	headers := p.headers.Clone()
 	headers.Set("Authorization", "Bearer "+p.apiKey.Value())
-	return startStream(ctx, p.client, p.endpoint, body, headers, []string{p.apiKey.Value()}, p.headerTimeout, parser)
+	return startStream(ctx, p.stream, p.endpoint, body, headers, []string{p.apiKey.Value()}, p.headerTimeout, parser)
 }

@@ -238,6 +238,38 @@ func TestOpenAICompatibleHeaderTimeoutStopsAfterHeaders(t *testing.T) {
 	}
 }
 
+// A stream must outlive http.Client.Timeout, which would otherwise cancel the
+// body read and surface "context deadline exceeded" mid-generation.
+func TestOpenAICompatibleStreamOutlivesClientTimeout(t *testing.T) {
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "text/event-stream")
+		response.(http.Flusher).Flush()
+		<-release
+		_, _ = io.WriteString(response, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+	}))
+	defer server.Close()
+	client := server.Client()
+	client.Timeout = 25 * time.Millisecond
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolResponses, APIKey: "key",
+		AllowInsecureLocalhost: true, HTTPClient: client,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := value.Stream(context.Background(), protocol.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	if _, err := stream.Next(context.Background()); err != nil {
+		t.Fatalf("stream.Next past client timeout = %v", err)
+	}
+}
+
 func TestOpenAICompatibleCallerCancellationWins(t *testing.T) {
 	started := make(chan struct{})
 	releaseRequest := make(chan struct{})

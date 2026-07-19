@@ -44,6 +44,7 @@ type ChatGPTOptions struct {
 type ChatGPT struct {
 	tokens    OAuthTokenSource
 	client    *http.Client
+	stream    *http.Client
 	endpoint  *url.URL
 	sessionID string
 	modelsMu  sync.RWMutex
@@ -83,7 +84,8 @@ func NewChatGPT(options ChatGPTOptions) (*ChatGPT, error) {
 	}
 	return &ChatGPT{
 		tokens: options.TokenSource, endpoint: endpoint, sessionID: hex.EncodeToString(value[:]),
-		client: secureClient(options.HTTPClient, endpoint), models: cloneModels(chatGPTModels),
+		client: secureClient(options.HTTPClient, endpoint, false), stream: secureClient(options.HTTPClient, endpoint, true),
+		models: cloneModels(chatGPTModels),
 	}, nil
 }
 
@@ -311,7 +313,7 @@ func (p *ChatGPT) Stream(ctx context.Context, request protocol.Request) (Stream,
 	headers.Set("User-Agent", "parrot")
 	headers.Set("session-id", p.sessionID)
 	parser := func(reader io.Reader, limit int) Stream { return responses.NewParser(reader, limit) }
-	return startStream(ctx, p.client, p.endpoint, body, headers, []string{credential.AccessToken.Value()}, chatGPTHeaderTimeout, parser)
+	return startStream(ctx, p.stream, p.endpoint, body, headers, []string{credential.AccessToken.Value()}, chatGPTHeaderTimeout, parser)
 }
 
 var chatGPTModels = []Model{

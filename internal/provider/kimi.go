@@ -39,7 +39,7 @@ func NewKimi(options OpenAICompatibleOptions) (*Kimi, error) {
 	}
 	return &Kimi{
 		OpenAICompatible: compatible, apiKey: options.APIKey,
-		client: secureClient(options.HTTPClient, balance), balance: balance,
+		client: secureClient(options.HTTPClient, balance, false), balance: balance,
 	}, nil
 }
 

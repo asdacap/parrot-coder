@@ -132,12 +132,19 @@ func validHeaderName(name string) bool {
 	return true
 }
 
-func secureClient(source *http.Client, target *url.URL) *http.Client {
+// secureClient hardens a provider HTTP client. Non-streaming requests are
+// bounded by requestTimeout; streaming requests are not, because
+// http.Client.Timeout also bounds reading the response body and would cut off
+// long SSE streams. Streams are instead bounded by the header timeout, caller
+// cancellation, and the maxStreamBytes read limit.
+func secureClient(source *http.Client, target *url.URL, streaming bool) *http.Client {
 	if source == nil {
 		source = http.DefaultClient
 	}
 	client := *source
-	if client.Timeout == 0 || client.Timeout > requestTimeout {
+	if streaming {
+		client.Timeout = 0
+	} else if client.Timeout == 0 || client.Timeout > requestTimeout {
 		client.Timeout = requestTimeout
 	}
 	previous := source.CheckRedirect

@@ -48,6 +48,13 @@ All notable changes to Parrot Coder will be documented in this file.
 - Nix development/build checks, cross-platform CI, fuzz targets, and tagged
   release automation for macOS and Linux amd64/arm64.
 
+### Fixed
+
+- Provider streams no longer fail with "sse: read: context deadline exceeded"
+  after ten minutes: the whole-request HTTP timeout no longer applies to
+  streaming bodies, matching the documented header-timeout-only behavior.
+  Non-streaming provider calls keep the ten-minute ceiling.
+
 ### Security
 
 - Bounded provider streams now fail explicitly on overflow, streamed credential
