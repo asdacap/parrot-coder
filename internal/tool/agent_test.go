@@ -78,7 +78,7 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	}
 
 	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer"}`)
-	id, ok := spawned.Metadata["agent_id"].(string)
+	id, ok := spawned.Metadata["task_id"].(string)
 	if !ok || id == "" || spawned.Metadata["status"] != subagent.StatusRunning {
 		t.Fatalf("spawned = %#v", spawned)
 	}
@@ -86,24 +86,15 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	if first.Request.Prompt != "inspect" || first.Turn != 1 {
 		t.Fatalf("first execution = %#v", first)
 	}
-	listed := execute(agentListID, `{}`)
-	if agents := listed.Metadata["agents"].([]map[string]any); len(agents) != 1 || agents[0]["agent_id"] != id {
-		t.Fatalf("listed = %#v", listed)
-	}
-	sent := execute(agentSendID, `{"agent_id":"`+id+`","message":"focus"}`)
+	sent := execute(agentSendID, `{"task_id":"`+id+`","message":"focus"}`)
 	if sent.Metadata["message_id"] != "message-1" || <-executor.sends != "session-"+id+":focus" {
 		t.Fatalf("sent = %#v", sent)
 	}
-	waited := execute(agentWaitID, `{"ids":["`+id+`"],"timeout_ms":5}`)
-	if waited.Metadata["timed_out"] != true {
-		t.Fatalf("waited = %#v", waited)
-	}
-
 	executor.release(id, "first output")
 	if _, err := manager.Await(context.Background(), "root", id); err != nil {
 		t.Fatal(err)
 	}
-	followed := execute(agentSendID, `{"agent_id":"`+id+`","message":"continue"}`)
+	followed := execute(agentSendID, `{"task_id":"`+id+`","message":"continue"}`)
 	if followed.Metadata["turn"] != 2 || followed.Metadata["status"] != subagent.StatusRunning {
 		t.Fatalf("followed = %#v", followed)
 	}
@@ -111,9 +102,9 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	if second.SessionID != "session-"+id || second.Request.Prompt != "continue" || second.Turn != 2 {
 		t.Fatalf("second execution = %#v", second)
 	}
-	interrupted := execute(agentInterruptID, `{"agent_id":"`+id+`"}`)
-	if interrupted.Metadata["status"] != subagent.StatusCanceled {
-		t.Fatalf("interrupted = %#v", interrupted)
+	interrupted, err := manager.Interrupt(context.Background(), "root", id)
+	if err != nil || interrupted.Status != subagent.StatusCanceled {
+		t.Fatalf("interrupted = %#v, %v", interrupted, err)
 	}
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()

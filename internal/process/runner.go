@@ -73,8 +73,8 @@ type Runner struct {
 	writablePaths   map[string]map[string]struct{}
 	temporaryDirs   map[string]*sessionTemporaryDirectory
 	deletedSessions map[string]struct{}
-	processes       map[int32]*persistentProcess
-	reservedIDs     map[int32]string
+	processes       map[string]*persistentProcess
+	reservedIDs     map[string]string
 	closed          bool
 }
 
@@ -161,7 +161,7 @@ func NewRunner(config Config) (*Runner, error) {
 		config: config, sandbox: implementation,
 		writablePaths: make(map[string]map[string]struct{}),
 		temporaryDirs: make(map[string]*sessionTemporaryDirectory), deletedSessions: make(map[string]struct{}),
-		processes: make(map[int32]*persistentProcess), reservedIDs: make(map[int32]string),
+		processes: make(map[string]*persistentProcess), reservedIDs: make(map[string]string),
 	}, nil
 }
 

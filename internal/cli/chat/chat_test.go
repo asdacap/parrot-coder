@@ -119,8 +119,9 @@ func TestChatHelpListsCustomCommandsAndSubtaskUsesNormalPrompt(t *testing.T) {
 		t.Fatalf("help = %q, exit=%t, code=%d", stdout.String(), exit, code)
 	}
 	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explorer", Model: "local/model", Subtask: true})
-	if !strings.Contains(prompt, "using agent_spawn") || !strings.Contains(prompt, "call agent_wait") || !strings.Contains(prompt, `agent "explorer"`) || !strings.HasSuffix(prompt, "Inspect this") {
-		t.Fatalf("subtask prompt = %q", prompt)
+	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". agent_spawn returns a task_id. Call monitor(task_id), then relay the monitor notification and output.\n\nInspect this"
+	if prompt != want {
+		t.Fatalf("subtask prompt = %q, want %q", prompt, want)
 	}
 }
 

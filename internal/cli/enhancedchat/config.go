@@ -352,7 +352,7 @@ func subtaskPrompt(expansion customcommand.Expansion) string {
 	if expansion.Model != "" {
 		fmt.Fprintf(&request, " and model %q", expansion.Model)
 	}
-	request.WriteString(". Then call agent_wait with the returned agent_id until its status is no longer pending or running, and return the child agent's output.\n\n")
+	request.WriteString(". agent_spawn returns a task_id. Call monitor(task_id), then relay the monitor notification and output.\n\n")
 	request.WriteString(expansion.Prompt)
 	return request.String()
 }

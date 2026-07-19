@@ -125,15 +125,23 @@ type Task struct {
 type taskState struct {
 	task           Task
 	request        Request
-	done           chan struct{}
+	turn           *turnState
 	registered     chan struct{}
 	registeredDone bool
 	discard        bool
-	callbackTurn   int
-	callbackDone   chan struct{}
 	cancel         context.CancelFunc
-	revision       uint64
 	op             sync.Mutex
+}
+
+type turnState struct {
+	done   chan struct{}
+	result Task
+}
+
+// Observer waits for the turn which was current when it was created. It stays
+// bound to that turn if the retained agent subsequently starts a follow-up.
+type Observer struct {
+	turn *turnState
 }
 
 type Manager struct {
@@ -144,7 +152,6 @@ type Manager struct {
 	bySession map[string]*taskState
 	running   int
 	byParent  map[string]int
-	changed   chan struct{}
 	closed    bool
 	workers   sync.WaitGroup
 }
@@ -171,7 +178,7 @@ func NewManager(executor Executor, config Config) *Manager {
 	if config.Timeout <= 0 {
 		config.Timeout = 10 * time.Minute
 	}
-	return &Manager{executor: executor, config: config, tasks: make(map[string]*taskState), bySession: make(map[string]*taskState), byParent: make(map[string]int), changed: make(chan struct{})}
+	return &Manager{executor: executor, config: config, tasks: make(map[string]*taskState), bySession: make(map[string]*taskState), byParent: make(map[string]int)}
 }
 
 // Launch reserves concurrency immediately and starts the execution
@@ -223,11 +230,10 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 		rootSession, parentAgentID = parent.task.RootSession, parent.task.ID
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), m.config.Timeout)
-	state := &taskState{task: Task{ID: id, ParentSession: parentSession, RootSession: rootSession, ParentAgentID: parentAgentID, Agent: request.Agent, Model: request.Model, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, done: make(chan struct{}), registered: make(chan struct{}), cancel: cancel}
+	state := &taskState{task: Task{ID: id, ParentSession: parentSession, RootSession: rootSession, ParentAgentID: parentAgentID, Agent: request.Agent, Model: request.Model, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, registered: make(chan struct{}), cancel: cancel}
 	m.tasks[id] = state
 	m.running++
 	m.byParent[parentSession]++
-	m.signalLocked(state)
 	m.workers.Add(1)
 	m.mu.Unlock()
 	go m.run(ctx, state)
@@ -316,7 +322,6 @@ func (m *Manager) discard(state *taskState) {
 	}
 	delete(m.tasks, state.task.ID)
 	delete(m.bySession, state.task.SessionID)
-	m.signalLocked(nil)
 }
 
 func (m *Manager) run(ctx context.Context, state *taskState) {
@@ -332,7 +337,6 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 			m.bySession[sessionID] = state
 		}
 		m.closeRegisteredLocked(state)
-		m.signalLocked(state)
 		m.mu.Unlock()
 	}
 	execution := Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentAgentID: state.task.ParentAgentID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: report, RegisterSession: register}
@@ -376,14 +380,9 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 		delete(m.bySession, state.task.SessionID)
 	}
 	snapshot := cloneTask(state.task)
+	state.turn.result = snapshot
 	callback := m.config.OnProgress
-	var callbackDone chan struct{}
-	if callback != nil {
-		state.callbackTurn = turn
-		callbackDone = make(chan struct{})
-		state.callbackDone = callbackDone
-	}
-	done := state.done
+	done := state.turn.done
 	m.mu.Unlock()
 	state.op.Unlock()
 	close(done)
@@ -391,19 +390,6 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	if callback != nil {
 		callback(snapshot)
 	}
-	m.mu.Lock()
-	if state.task.Turn == turn {
-		if callback == nil {
-			m.signalLocked(state)
-		} else if state.callbackTurn == turn {
-			state.callbackTurn = 0
-			m.signalLocked(state)
-		}
-	}
-	if callbackDone != nil {
-		close(callbackDone)
-	}
-	m.mu.Unlock()
 }
 
 func (m *Manager) reportProgress(state *taskState, turn int, progress Progress) {
@@ -423,7 +409,6 @@ func (m *Manager) reportProgress(state *taskState, turn int, progress Progress) 
 	state.task.ToolUses += progress.ToolUses
 	snapshot := cloneTask(state.task)
 	callback := m.config.OnProgress
-	m.signalLocked(state)
 	m.mu.Unlock()
 	if callback != nil {
 		callback(snapshot)
@@ -433,16 +418,39 @@ func (m *Manager) reportProgress(state *taskState, turn int, progress Progress) 
 // Await observes a task. Cancellation of ctx only stops waiting and does not
 // cancel the underlying execution.
 func (m *Manager) Await(ctx context.Context, parentSession, id string) (Task, error) {
-	state, err := m.lookup(parentSession, id)
+	observer, err := m.Observe(parentSession, id)
 	if err != nil {
 		return Task{}, err
 	}
+	task, err := observer.Wait(ctx)
+	if err != nil {
+		return Task{}, err
+	}
+	return task, taskError(task)
+}
+
+// Observe captures the caller-visible task's current turn for stable waiting.
+func (m *Manager) Observe(callerSession, id string) (*Observer, error) {
+	if m == nil || callerSession == "" || id == "" {
+		return nil, ErrNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.tasks[id]
+	if state == nil || !m.visibleLocked(callerSession, state) {
+		return nil, ErrNotFound
+	}
+	return &Observer{turn: state.turn}, nil
+}
+
+// Wait waits for the captured turn without affecting the underlying agent.
+func (o *Observer) Wait(ctx context.Context) (Task, error) {
+	if o == nil || o.turn == nil {
+		return Task{}, ErrNotFound
+	}
 	select {
-	case <-state.done:
-		m.mu.Lock()
-		task := cloneTask(state.task)
-		m.mu.Unlock()
-		return task, taskError(task)
+	case <-o.turn.done:
+		return cloneTask(o.turn.result), nil
 	case <-ctx.Done():
 		return Task{}, ctx.Err()
 	}
@@ -477,9 +485,6 @@ func (m *Manager) Send(ctx context.Context, callerSession, id, message string) (
 	if err != nil {
 		return "", err
 	}
-	m.mu.Lock()
-	m.signalLocked(state)
-	m.mu.Unlock()
 	return messageID, nil
 }
 
@@ -524,52 +529,15 @@ func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, err
 	state.task.ToolUses = 0
 	request.Agent, request.Model = state.task.Agent, state.task.Model
 	state.request = request
-	state.done = make(chan struct{})
+	state.turn = &turnState{done: make(chan struct{})}
 	state.cancel = cancel
 	m.running++
 	m.byParent[state.task.ParentSession]++
-	m.signalLocked(state)
 	m.workers.Add(1)
 	task := cloneTask(state.task)
 	m.mu.Unlock()
 	go m.run(ctx, state)
 	return task, nil
-}
-
-// Wait returns immediately for a terminal agent, otherwise wakes when any
-// agent or mailbox activity changes the live tree. Waiting never cancels work.
-func (m *Manager) Wait(ctx context.Context, callerSession string, ids []string) ([]Task, error) {
-	if len(ids) == 0 {
-		return nil, ErrInvalid
-	}
-	revisions := make(map[string]uint64, len(ids))
-	for {
-		m.mu.Lock()
-		result := make([]Task, 0, len(ids))
-		ready := false
-		for _, id := range ids {
-			state := m.tasks[id]
-			if state == nil || !m.visibleLocked(callerSession, state) {
-				m.mu.Unlock()
-				return nil, ErrNotFound
-			}
-			result = append(result, cloneTask(state.task))
-			previous, seen := revisions[id]
-			terminal := state.task.Status != StatusRunning && state.task.Status != StatusPending
-			ready = ready || terminal && state.callbackTurn != state.task.Turn || !terminal && seen && previous != state.revision
-			revisions[id] = state.revision
-		}
-		changed := m.changed
-		m.mu.Unlock()
-		if ready {
-			return result, nil
-		}
-		select {
-		case <-changed:
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
 }
 
 // Interrupt stops the current turn but retains the agent for follow-up work.
@@ -585,11 +553,11 @@ func (m *Manager) Interrupt(ctx context.Context, callerSession, id string) (Task
 		return task, nil
 	}
 	state.cancel()
-	done := state.done
+	turn := state.turn
 	m.mu.Unlock()
 	select {
-	case <-done:
-		return m.Status(callerSession, id)
+	case <-turn.done:
+		return cloneTask(turn.result), nil
 	case <-ctx.Done():
 		return Task{}, ctx.Err()
 	}
@@ -617,13 +585,24 @@ func (m *Manager) Status(parentSession, id string) (Task, error) {
 
 // List is stable by agent ID and returns the caller-visible subtree.
 func (m *Manager) List(callerSession string) []Task {
+	return m.list(callerSession, false)
+}
+
+// ListActive is stable by agent ID and returns active tasks in the
+// caller-visible subtree.
+func (m *Manager) ListActive(callerSession string) []Task {
+	return m.list(callerSession, true)
+}
+
+func (m *Manager) list(callerSession string, activeOnly bool) []Task {
 	if m == nil {
 		return nil
 	}
 	m.mu.Lock()
 	out := make([]Task, 0)
 	for _, state := range m.tasks {
-		if m.visibleLocked(callerSession, state) {
+		active := state.task.Status == StatusRunning || state.task.Status == StatusPending
+		if m.visibleLocked(callerSession, state) && (!activeOnly || active) {
 			out = append(out, cloneTask(state.task))
 		}
 	}
@@ -654,7 +633,6 @@ func (m *Manager) Forget(parentSession, id string) error {
 	}
 	delete(m.tasks, id)
 	delete(m.bySession, state.task.SessionID)
-	m.signalLocked(nil)
 	return nil
 }
 
@@ -685,7 +663,6 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 				state.cancel()
 			}
 		}
-		m.signalLocked(nil)
 	}
 	m.mu.Unlock()
 	done := make(chan struct{})
@@ -724,14 +701,6 @@ func (m *Manager) closeRegisteredLocked(state *taskState) {
 		close(state.registered)
 		state.registeredDone = true
 	}
-}
-
-func (m *Manager) signalLocked(state *taskState) {
-	if state != nil {
-		state.revision++
-	}
-	close(m.changed)
-	m.changed = make(chan struct{})
 }
 
 func cloneTask(task Task) Task {

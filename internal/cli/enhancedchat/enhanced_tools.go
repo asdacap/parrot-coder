@@ -471,14 +471,12 @@ func toolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "agent"))
 		add(firstString(input, "prompt"))
 	case "agent_send":
-		add(firstString(input, "agent_id"))
+		add(firstString(input, "task_id"))
 		add(firstString(input, "message"))
-	case "agent_interrupt":
-		add(firstString(input, "agent_id"))
-	case "agent_wait":
-		if ids, ok := input["ids"].([]any); ok {
-			add(fmt.Sprintf("%d agents", len(ids)))
-		}
+	case "task_interrupt":
+		add(firstString(input, "task_id"))
+	case "monitor":
+		add(firstString(input, "task_id"))
 	default:
 		if strings.HasPrefix(name, "lsp_") {
 			add(firstString(input, "path", "query"))

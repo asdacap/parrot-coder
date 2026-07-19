@@ -8,20 +8,20 @@ import (
 	"time"
 )
 
-const monitorSchema = `{"type":"object","properties":{"session_id":{"type":"integer","minimum":1,"description":"Identifier of the running unified exec session."},"timeout_ms":{"type":"integer","minimum":0,"description":"Maximum time to monitor in milliseconds. Zero or omitted waits without a timeout."}},"required":["session_id"],"additionalProperties":false}`
+const monitorSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Identifier of the running shell or agent task."},"timeout_ms":{"type":"integer","minimum":0,"description":"Maximum time to monitor in milliseconds. Zero or omitted waits without a timeout."}},"required":["task_id"],"additionalProperties":false}`
 
 const maxMonitorTimeoutMS = int64(^uint64(0)>>1) / int64(time.Millisecond)
 
 // ProcessMonitor starts application-owned process monitors.
 type ProcessMonitor interface {
-	Start(sessionID string, processID int32, timeout time.Duration) error
+	Start(sessionID, taskID string, timeout time.Duration) error
 }
 
 type MonitorTool struct{ Service ProcessMonitor }
 
 type monitorInput struct {
-	SessionID int32 `json:"session_id"`
-	TimeoutMS int64 `json:"timeout_ms"`
+	TaskID    string `json:"task_id"`
+	TimeoutMS int64  `json:"timeout_ms"`
 }
 
 func NewMonitorTool(service ProcessMonitor) *MonitorTool { return &MonitorTool{Service: service} }
@@ -39,7 +39,7 @@ func (*MonitorTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Monitor process %d", input.SessionID), nil
+	return fmt.Sprintf("Monitor task %s", input.TaskID), nil
 }
 
 func (t *MonitorTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
@@ -50,8 +50,8 @@ func (t *MonitorTool) Plan(_ context.Context, raw json.RawMessage, call CallCont
 	if call.SessionID == "" {
 		return Plan{}, errors.New("monitor: caller session is required")
 	}
-	if input.SessionID <= 0 {
-		return Plan{}, errors.New("monitor: a positive session_id is required")
+	if input.TaskID == "" {
+		return Plan{}, errors.New("monitor: task_id is required")
 	}
 	if input.TimeoutMS < 0 {
 		return Plan{}, errors.New("monitor: timeout_ms must be nonnegative")
@@ -68,10 +68,10 @@ func (t *MonitorTool) Execute(_ context.Context, plan Plan, call CallContext) (R
 		return Result{}, errors.New("monitor: service is required")
 	}
 	input := plan.Data.(monitorInput)
-	if err := t.Service.Start(call.SessionID, input.SessionID, time.Duration(input.TimeoutMS)*time.Millisecond); err != nil {
+	if err := t.Service.Start(call.SessionID, input.TaskID, time.Duration(input.TimeoutMS)*time.Millisecond); err != nil {
 		return Result{}, fmt.Errorf("monitor failed: %w", err)
 	}
-	text := fmt.Sprintf("Monitoring process session %d in the background; this session will be notified when it exits", input.SessionID)
+	text := fmt.Sprintf("Monitoring task %s in the background; this session will be notified when it finishes", input.TaskID)
 	if input.TimeoutMS > 0 {
 		text += fmt.Sprintf(" or after %d ms", input.TimeoutMS)
 	}

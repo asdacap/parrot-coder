@@ -23,6 +23,7 @@ type BuiltinServices struct {
 	Changes   *change.Service
 	Processes *process.Runner
 	Monitor   ProcessMonitor
+	Tasks     TaskController
 	Todos     *session.TodoService
 	Goals     *session.GoalService
 	Questions *question.Broker
@@ -70,6 +71,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewWebFetchTool(services.WebFetch),
 		NewGitDiffTool(),
 	}
+	items = append(items, NewTaskTools(services.Tasks)...)
 	if services.LSP.Client != nil {
 		items = append(items, NewLSPTools(services.LSP)...)
 	}

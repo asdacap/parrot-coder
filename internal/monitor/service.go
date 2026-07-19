@@ -1,4 +1,4 @@
-// Package monitor delivers asynchronous managed-process completion notices to
+// Package monitor delivers asynchronous managed-task completion notices to
 // the session which requested them.
 package monitor
 
@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,6 +14,8 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/subagent"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 )
 
 type sessionAdmitter interface {
@@ -23,7 +26,7 @@ type sessionWaker interface{ Wake(string) }
 
 type monitorKey struct {
 	sessionID string
-	processID int32
+	taskID    string
 }
 
 type activeMonitor struct {
@@ -35,6 +38,7 @@ type activeMonitor struct {
 // them. A monitor timeout only stops observation; it never stops the process.
 type Service struct {
 	processes *process.Runner
+	agents    *subagent.Manager
 	sessions  sessionAdmitter
 
 	mu     sync.Mutex
@@ -47,10 +51,10 @@ type Service struct {
 	wg     sync.WaitGroup
 }
 
-func NewService(processes *process.Runner, sessions sessionAdmitter) *Service {
+func NewService(processes *process.Runner, agents *subagent.Manager, sessions sessionAdmitter) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		processes: processes, sessions: sessions, ctx: ctx, cancel: cancel,
+		processes: processes, agents: agents, sessions: sessions, ctx: ctx, cancel: cancel,
 		active: make(map[monitorKey]*activeMonitor), paused: make(map[string]int),
 	}
 }
@@ -62,16 +66,16 @@ func (s *Service) SetWaker(waker sessionWaker) {
 	s.mu.Unlock()
 }
 
-// Start validates and captures the process before returning, then waits in the
+// Start validates and captures the task before returning, then waits in the
 // background and eventually steers a notification into the caller session.
-func (s *Service) Start(sessionID string, processID int32, timeout time.Duration) error {
+func (s *Service) Start(sessionID, taskID string, timeout time.Duration) error {
 	if s == nil || s.processes == nil || s.sessions == nil {
 		return errors.New("monitor: service is unavailable")
 	}
-	if sessionID == "" || processID <= 0 || timeout < 0 {
-		return errors.New("monitor: session, positive process ID, and nonnegative timeout are required")
+	if sessionID == "" || taskID == "" || timeout < 0 {
+		return errors.New("monitor: session, task ID, and nonnegative timeout are required")
 	}
-	observer, err := s.processes.ObservePersistent(sessionID, processID)
+	wait, err := s.observe(sessionID, taskID)
 	if err != nil {
 		return err
 	}
@@ -89,21 +93,70 @@ func (s *Service) Start(sessionID string, processID int32, timeout time.Duration
 		s.mu.Unlock()
 		return errors.New("monitor: session monitoring is paused")
 	}
-	key := monitorKey{sessionID: sessionID, processID: processID}
+	key := monitorKey{sessionID: sessionID, taskID: taskID}
 	if s.active[key] != nil {
 		s.mu.Unlock()
-		return fmt.Errorf("monitor: process session %d is already being monitored", processID)
+		return fmt.Errorf("monitor: task %s is already being monitored", taskID)
 	}
 	monitorCtx, cancel := context.WithCancel(s.ctx)
 	active := &activeMonitor{cancel: cancel, done: make(chan struct{})}
 	s.active[key] = active
 	s.wg.Add(1)
 	s.mu.Unlock()
-	go s.run(monitorCtx, key, timeout, observer, active)
+	go s.run(monitorCtx, key, timeout, wait, active)
 	return nil
 }
 
-func (s *Service) run(ctx context.Context, key monitorKey, timeout time.Duration, observer *process.PersistentObserver, active *activeMonitor) {
+type taskWait func(context.Context) (string, error)
+
+func (s *Service) observe(sessionID, taskID string) (taskWait, error) {
+	switch {
+	case strings.HasPrefix(taskID, "proc_"):
+		observer, err := s.processes.ObservePersistent(sessionID, taskID)
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context) (string, error) {
+			completion, err := observer.Wait(ctx)
+			if err != nil {
+				return "", err
+			}
+			if completion.ExitCode != nil {
+				return fmt.Sprintf("Task monitor notification: shell task %s exited with code %d.", completion.ProcessID, *completion.ExitCode), nil
+			}
+			if completion.WaitError != nil {
+				return fmt.Sprintf("Task monitor notification: shell task %s finished with an unknown exit status: %v.", completion.ProcessID, completion.WaitError), nil
+			}
+			return fmt.Sprintf("Task monitor notification: shell task %s finished.", completion.ProcessID), nil
+		}, nil
+	case strings.HasPrefix(taskID, "task_"):
+		if s.agents == nil {
+			return nil, errors.New("monitor: agent manager is unavailable")
+		}
+		observer, err := s.agents.Observe(sessionID, taskID)
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context) (string, error) {
+			task, err := observer.Wait(ctx)
+			if err != nil {
+				return "", err
+			}
+			content := fmt.Sprintf("Task monitor notification: agent task %s finished with status %s.", task.ID, task.Status)
+			if task.Output != "" {
+				content += "\n\n" + task.Output
+			}
+			if task.Error != "" {
+				content += "\n\nError: " + task.Error
+			}
+			return content, nil
+		}, nil
+	default:
+		return nil, fmt.Errorf("monitor: unknown task ID %q", taskID)
+	}
+}
+
+func (s *Service) run(ctx context.Context, key monitorKey, timeout time.Duration, wait taskWait, active *activeMonitor) {
 	defer func() {
 		s.mu.Lock()
 		if s.active[key] == active {
@@ -119,27 +172,71 @@ func (s *Service) run(ctx context.Context, key monitorKey, timeout time.Duration
 		waitCtx, cancel = context.WithTimeout(waitCtx, timeout)
 		defer cancel()
 	}
-	completion, err := observer.Wait(waitCtx)
+	content, err := wait(waitCtx)
 	if errors.Is(err, context.Canceled) {
 		return
 	}
 
-	var content string
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
-		content = fmt.Sprintf("Process monitor notification: monitoring process session %d timed out after %s. The process was not stopped and may still be running.", key.processID, timeout)
+		content = fmt.Sprintf("Task monitor notification: monitoring task %s timed out after %s. The task was not stopped and may still be running.", key.taskID, timeout)
 	case err != nil:
-		content = fmt.Sprintf("Process monitor notification: waiting for process session %d failed: %v.", key.processID, err)
-	case completion.ExitCode != nil:
-		content = fmt.Sprintf("Process monitor notification: process session %d exited with code %d.", key.processID, *completion.ExitCode)
-	case completion.WaitError != nil:
-		content = fmt.Sprintf("Process monitor notification: process session %d finished with an unknown exit status: %v.", key.processID, completion.WaitError)
-	default:
-		content = fmt.Sprintf("Process monitor notification: process session %d finished.", key.processID)
+		content = fmt.Sprintf("Task monitor notification: waiting for task %s failed: %v.", key.taskID, err)
 	}
 	if err := s.notify(ctx, key.sessionID, content); err != nil && !errors.Is(err, context.Canceled) {
-		diagnostics.Error("process_monitor_notification_failed", "session_id", key.sessionID, "process_id", key.processID, "error_type", diagnostics.ErrorType(err))
+		diagnostics.Error("task_monitor_notification_failed", "session_id", key.sessionID, "task_id", key.taskID, "error_type", diagnostics.ErrorType(err))
 	}
+}
+
+// Interrupt stops one active shell or agent task visible to sessionID.
+func (s *Service) Interrupt(ctx context.Context, sessionID, taskID string) (managedtask.Active, error) {
+	if s == nil || s.processes == nil {
+		return managedtask.Active{}, errors.New("task: controller is unavailable")
+	}
+	switch {
+	case strings.HasPrefix(taskID, "proc_"):
+		active, err := s.processes.InterruptPersistent(sessionID, taskID)
+		if err != nil {
+			return managedtask.Active{}, err
+		}
+		return managedtask.Active{ID: taskID, Kind: managedtask.KindShell, Status: "canceled", StartedAt: active.StartedAt}, nil
+	case strings.HasPrefix(taskID, "task_"):
+		if s.agents == nil {
+			return managedtask.Active{}, errors.New("task: agent manager is unavailable")
+		}
+		task, err := s.agents.Interrupt(ctx, sessionID, taskID)
+		return agentActive(task), err
+	default:
+		return managedtask.Active{}, fmt.Errorf("task: unknown task ID %q", taskID)
+	}
+}
+
+// ListActive returns active shell and agent tasks visible to sessionID.
+func (s *Service) ListActive(sessionID string) []managedtask.Active {
+	if s == nil || s.processes == nil {
+		return nil
+	}
+	processes := s.processes.ListActivePersistent(sessionID)
+	var agents []subagent.Task
+	if s.agents != nil {
+		agents = s.agents.ListActive(sessionID)
+	}
+	result := make([]managedtask.Active, 0, len(processes)+len(agents))
+	for _, item := range processes {
+		result = append(result, shellActive(item))
+	}
+	for _, item := range agents {
+		result = append(result, agentActive(item))
+	}
+	return result
+}
+
+func shellActive(item process.PersistentTask) managedtask.Active {
+	return managedtask.Active{ID: item.ID, Kind: managedtask.KindShell, Status: "running", StartedAt: item.StartedAt}
+}
+
+func agentActive(item subagent.Task) managedtask.Active {
+	return managedtask.Active{ID: item.ID, Kind: managedtask.KindAgent, Status: string(item.Status), StartedAt: item.StartedAt, Agent: item.Agent, Turn: item.Turn, Depth: item.Depth}
 }
 
 func (s *Service) notify(monitorCtx context.Context, sessionID, content string) error {

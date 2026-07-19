@@ -17,8 +17,10 @@ func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 	if items[0].Profile().ReadOnly || !items[1].Profile().ReadOnly {
 		t.Fatal("unexpected mode policies")
 	}
-	if !slices.Contains(items[1].Profile().AllowedToolIDs, "monitor") || !items[1].Profile().AllowsTool("monitor") {
-		t.Fatal("plan mode does not allow process monitoring")
+	for _, toolID := range []string{"monitor", "task_interrupt", "task_list_active"} {
+		if !slices.Contains(items[1].Profile().AllowedToolIDs, toolID) || !items[1].Profile().AllowsTool(toolID) {
+			t.Fatalf("plan mode does not allow %s", toolID)
+		}
 	}
 	if _, err := r.Get("explorer"); err == nil {
 		t.Fatal("explorer exposed as foreground mode")

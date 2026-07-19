@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -471,6 +472,9 @@ func TestPersistentObserverWaitsWithoutConsumingOrControllingProcess(t *testing.
 	if err != nil || completion.ProcessID != processID || completion.ExitCode == nil || *completion.ExitCode != 7 || completion.WaitError == nil {
 		t.Fatalf("completion = %#v, %v", completion, err)
 	}
+	if active := runner.ListActivePersistent("owner"); len(active) != 0 {
+		t.Fatalf("completed process listed as active: %#v", active)
+	}
 
 	drained, err := runner.WritePersistent(context.Background(), PersistentWriteRequest{
 		SessionID: "owner", ProcessID: processID, Chars: "\x03", Yield: MinYieldTime,
@@ -484,6 +488,55 @@ func TestPersistentObserverWaitsWithoutConsumingOrControllingProcess(t *testing.
 	}
 	if _, err := (*PersistentObserver)(nil).Wait(context.Background()); err == nil {
 		t.Fatal("nil observer wait succeeded")
+	}
+}
+
+func TestPersistentIDsActiveListingAndTargetedInterruptionAreOwnerScoped(t *testing.T) {
+	runner := testRunner(t, Config{TerminationGrace: 50 * time.Millisecond})
+	t.Cleanup(func() { _ = runner.Close() })
+	startedAfter := time.Now()
+	results := make([]PersistentResult, 0, 3)
+	for _, owner := range []string{"owner", "owner", "other"} {
+		result, err := runner.RunPersistent(context.Background(), PersistentRequest{
+			Shell: "/bin/sh", Command: "sleep 5", SessionID: owner, Yield: MinYieldTime,
+		})
+		if err != nil || result.ProcessID == nil {
+			t.Fatalf("start for %q = %#v, %v", owner, result, err)
+		}
+		if err := id.ValidatePrefix(*result.ProcessID, "proc"); err != nil {
+			t.Fatalf("process ID %q: %v", *result.ProcessID, err)
+		}
+		results = append(results, result)
+	}
+
+	owned := runner.ListActivePersistent("owner")
+	other := runner.ListActivePersistent("other")
+	if len(owned) != 2 || owned[0].ID != *results[0].ProcessID || owned[1].ID != *results[1].ProcessID ||
+		owned[0].StartedAt.Before(startedAfter) || owned[1].StartedAt.Before(owned[0].StartedAt) ||
+		len(other) != 1 || other[0].ID != *results[2].ProcessID || len(runner.ListActivePersistent("unknown")) != 0 {
+		t.Fatalf("active tasks: owner=%#v other=%#v", owned, other)
+	}
+	if _, err := runner.InterruptPersistent("other", owned[0].ID); err == nil || !strings.Contains(err.Error(), "unknown process") {
+		t.Fatalf("cross-owner interrupt error = %v", err)
+	}
+	if active := runner.ListActivePersistent("owner"); len(active) != 2 {
+		t.Fatalf("cross-owner interrupt changed active tasks: %#v", active)
+	}
+	interrupted, err := runner.InterruptPersistent("owner", owned[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if interrupted != owned[0] {
+		t.Fatalf("interrupted task = %#v, want %#v", interrupted, owned[0])
+	}
+	if active := runner.ListActivePersistent("owner"); len(active) != 1 || active[0].ID != owned[1].ID {
+		t.Fatalf("active tasks after targeted interrupt = %#v", active)
+	}
+	if active := runner.ListActivePersistent("other"); len(active) != 1 || active[0].ID != other[0].ID {
+		t.Fatalf("targeted interrupt affected other owner: %#v", active)
+	}
+	if _, err := runner.InterruptPersistent("owner", owned[0].ID); err == nil || !strings.Contains(err.Error(), "unknown process") {
+		t.Fatalf("repeated interrupt error = %v", err)
 	}
 }
 
@@ -507,7 +560,7 @@ func TestPersistentProcessLimitsReapCompletedAndBoundConcurrentReservations(t *t
 
 	limited := testRunner(t, Config{MaxProcesses: 1, MaxSessionProcesses: 2})
 	limited.mu.Lock()
-	limited.reservedIDs[1000] = "a"
+	limited.reservedIDs["proc_00000000000000000000000000"] = "a"
 	limited.mu.Unlock()
 	if _, _, err := limited.reserveProcessID("b"); err == nil || !strings.Contains(err.Error(), "global process limit") {
 		t.Fatalf("global reservation limit error = %v", err)

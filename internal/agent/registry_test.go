@@ -33,11 +33,22 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 			}
 		}
 	}
+	for _, id := range []string{PlanID, ExploreID, ExplorerID} {
+		profile, err := registry.Get(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, allowed := range []string{"monitor", "task_interrupt", "task_list_active"} {
+			if !profile.AllowsTool(allowed) {
+				t.Fatalf("%s denied %s", id, allowed)
+			}
+		}
+	}
 	review, err := registry.Get(ReviewID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, denied := range []string{"agent_spawn", "agent_send", "agent_wait", "agent_interrupt", "agent_list"} {
+	for _, denied := range []string{"agent_spawn", "agent_send", "monitor", "task_interrupt", "task_list_active"} {
 		if review.AllowsTool(denied) {
 			t.Fatalf("review agent allowed nested delegation tool %s", denied)
 		}

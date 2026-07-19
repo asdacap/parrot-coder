@@ -12,6 +12,7 @@ import (
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -25,6 +26,14 @@ type agentModeAPI struct {
 
 func (a *agentModeAPI) Agents(context.Context) (v1.AgentList, error) { return a.agents, nil }
 func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error)   { return a.modes, nil }
+
+func TestSubtaskPromptUsesSpawnAndMonitor(t *testing.T) {
+	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explorer", Model: "local/model", Subtask: true})
+	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". agent_spawn returns a task_id. Call monitor(task_id), then relay the monitor notification and output.\n\nInspect this"
+	if prompt != want {
+		t.Fatalf("subtask prompt = %q, want %q", prompt, want)
+	}
+}
 
 func TestShellCallbacksSynchronizeExtractedState(t *testing.T) {
 	firstAPI, secondAPI := &enhancedQueueAPI{}, &enhancedQueueAPI{}
@@ -421,7 +430,7 @@ func TestEnhancedSubagentEventUsesDepthAndAgentPrefix(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
 	runtime.activity = append(runtime.activity,
 		enhancedActivityItem{id: "call-read", label: "read · file.go", toolName: "read", status: "running", started: time.Now()},
-		enhancedActivityItem{id: "call-agent", label: "agent · review", toolName: "agent_wait", status: "running", started: time.Now()},
+		enhancedActivityItem{id: "call-agent", label: "agent · review", toolName: "monitor", status: "running", started: time.Now()},
 	)
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "checking"})
 	envelope, _ := json.Marshal(v1.SubagentEvent{
@@ -439,6 +448,24 @@ func TestEnhancedSubagentEventUsesDepthAndAgentPrefix(t *testing.T) {
 	}
 	if got := formatActivity(runtime.activity[2], runtime.activity[2].started); !strings.Contains(got, "Working: agent · review") {
 		t.Fatalf("agent activity = %q", got)
+	}
+}
+
+func TestTaskActivityLabelsUseTaskID(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		input map[string]any
+		want  string
+	}{
+		{name: "agent_send", input: map[string]any{"task_id": "task_agent", "message": "continue"}, want: "agent_send · task_agent · continue"},
+		{name: "monitor", input: map[string]any{"task_id": "task_agent"}, want: "monitor · task_agent"},
+		{name: "task_interrupt", input: map[string]any{"task_id": "task_agent"}, want: "task_interrupt · task_agent"},
+		{name: "task_list_active", input: map[string]any{}, want: "task_list_active"},
+		{name: "write_stdin", input: map[string]any{"task_id": "task_shell", "chars": "input"}, want: "write_stdin · task_shell · <redacted: 5 chars>"},
+	} {
+		if got := toolActivityLabel(test.name, test.input); got != test.want {
+			t.Errorf("toolActivityLabel(%q) = %q, want %q", test.name, got, test.want)
+		}
 	}
 }
 

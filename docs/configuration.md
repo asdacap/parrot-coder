@@ -208,10 +208,12 @@ optional. Names contain only ASCII letters, digits, `_`, or `-`.
 ## Built-in subagents
 
 Parrot includes the reusable child-agent profiles `explorer`, `worker`, and
-`review`. Start them with `agent_spawn`, observe them with `agent_wait` or
-`agent_list`, send follow-up input with `agent_send`, and stop an active turn
-with `agent_interrupt`. Use `explorer` for specific, well-scoped codebase
-questions; it is runtime-enforced read-only. Use `worker` for implementation
+`review`. Start them with `agent_spawn`, which returns a `task_id`; observe a
+task with `monitor` or discover active tasks with `task_list_active`, send
+follow-up input with `agent_send`, and stop an active turn with
+`task_interrupt`. Task-targeting tools accept that `task_id`. Use `explorer` for
+specific, well-scoped codebase questions; it is runtime-enforced read-only. Use
+`worker` for implementation
 and production work; it can modify files and run commands within the authorized
 workspace. `explore` is accepted as an alias of `explorer`.
 
@@ -247,5 +249,5 @@ Templates support `$ARGUMENTS`, `$1` through `$9`, `${1}` through `${9}`, and
 bounded `@relative/path` file inclusion. Shell substitution is forbidden. The
 command file and included files are hash-checked between discovery and use.
 When `subtask: true`, the foreground agent is instructed to start the configured
-child agent with `agent_spawn`, wait for it with `agent_wait`, and return its
+child agent with `agent_spawn`, wait for it with `monitor`, and return its
 output.

@@ -41,7 +41,7 @@ func NewExecCommandTool(runner *process.Runner) *ExecCommandTool {
 func (*ExecCommandTool) ID() string { return "exec_command" }
 
 func (*ExecCommandTool) Description() string {
-	return "Runs a command in a PTY, returning output or a session ID for ongoing interaction."
+	return "Runs a command in a PTY, returning output or a task ID for ongoing interaction."
 }
 
 func (*ExecCommandTool) JSONSchema() json.RawMessage { return json.RawMessage(execCommandSchema) }
@@ -222,7 +222,7 @@ func formatPersistentResult(result process.PersistentResult) string {
 		text += fmt.Sprintf("\nProcess exited with code %d", *result.ExitCode)
 	}
 	if result.ProcessID != nil {
-		text += fmt.Sprintf("\nProcess running with session ID %d", *result.ProcessID)
+		text += fmt.Sprintf("\nShell task running with task ID %s", *result.ProcessID)
 	}
 	text += fmt.Sprintf("\nOriginal token count: %d\nOutput:\n%s", result.OriginalTokenCount, result.Output)
 	return text

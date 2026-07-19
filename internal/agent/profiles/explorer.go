@@ -10,7 +10,7 @@ func Explorer() Profile {
 	return Profile{
 		ID:             ExplorerID,
 		Prompt:         explorerPrompt,
-		AllowedToolIDs: []string{"agent_interrupt", "agent_list", "agent_send", "agent_spawn", "agent_wait", "get_goal", "glob", "git_diff", "grep", "read", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "todoread"},
+		AllowedToolIDs: []string{"agent_send", "agent_spawn", "get_goal", "git_diff", "glob", "grep", "lsp_definition", "lsp_diagnostics", "lsp_hover", "lsp_references", "lsp_symbols", "monitor", "read", "read_output", "review", "skill", "task_interrupt", "task_list_active", "todoread"},
 		HardRules:      []string{"Read-only mode is enforced by the runtime."},
 		MaxTurns:       32,
 		RecursionLimit: 3,

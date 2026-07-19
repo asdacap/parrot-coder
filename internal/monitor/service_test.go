@@ -8,6 +8,7 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -35,7 +36,7 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 2)}
 	waker := &recordingWaker{woken: make(chan string, 2)}
-	service := NewService(runner, admitter)
+	service := NewService(runner, subagent.NewManager(nil, subagent.Config{}), admitter)
 	service.SetWaker(waker)
 	defer service.Close(context.Background())
 
@@ -120,7 +121,7 @@ func TestServiceRequiresWakerAndStopsNotificationsOnClose(t *testing.T) {
 	}
 	defer runner.Close()
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 1)}
-	service := NewService(runner, admitter)
+	service := NewService(runner, subagent.NewManager(nil, subagent.Config{}), admitter)
 	running, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
 		Shell: "/bin/sh", Command: "sleep 5", SessionID: "session", Yield: process.MinYieldTime, Unrestricted: true,
 	})

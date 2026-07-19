@@ -10,12 +10,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/creack/pty"
 )
 
@@ -45,7 +47,7 @@ type PersistentRequest struct {
 
 type PersistentWriteRequest struct {
 	SessionID       string
-	ProcessID       int32
+	ProcessID       string
 	Chars           string
 	Yield           time.Duration
 	MaxOutputTokens *int
@@ -56,7 +58,7 @@ type PersistentResult struct {
 	ChunkID            string
 	WallTime           time.Duration
 	Output             string
-	ProcessID          *int32
+	ProcessID          *string
 	ExitCode           *int
 	OriginalTokenCount int
 	OmittedBytes       int
@@ -66,9 +68,15 @@ type PersistentResult struct {
 // WaitError is populated when the operating-system wait failed, including
 // processes which exited unsuccessfully or because of a signal.
 type PersistentCompletion struct {
-	ProcessID int32
+	ProcessID string
 	ExitCode  *int
 	WaitError error
+}
+
+// PersistentTask identifies an active managed process and when it started.
+type PersistentTask struct {
+	ID        string
+	StartedAt time.Time
 }
 
 // PersistentObserver holds a stable reference to a managed process. It remains
@@ -78,10 +86,10 @@ type PersistentObserver struct{ process *persistentProcess }
 
 // ObservePersistent validates ownership and returns a reusable completion
 // observer. Multiple observers may safely wait for the same process.
-func (r *Runner) ObservePersistent(sessionID string, processID int32) (*PersistentObserver, error) {
+func (r *Runner) ObservePersistent(sessionID, processID string) (*PersistentObserver, error) {
 	item := r.lookupPersistent(sessionID, processID)
 	if item == nil {
-		return nil, fmt.Errorf("process: unknown process id %d", processID)
+		return nil, fmt.Errorf("process: unknown process id %q", processID)
 	}
 	return &PersistentObserver{process: item}, nil
 }
@@ -104,7 +112,7 @@ func (o *PersistentObserver) Wait(ctx context.Context) (PersistentCompletion, er
 }
 
 type persistentProcess struct {
-	id          int32
+	id          string
 	owner       string
 	command     *exec.Cmd
 	stdin       io.WriteCloser
@@ -224,12 +232,12 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 func (r *Runner) WritePersistent(ctx context.Context, request PersistentWriteRequest) (PersistentResult, error) {
 	item := r.lookupPersistent(request.SessionID, request.ProcessID)
 	if item == nil {
-		return PersistentResult{}, fmt.Errorf("process: unknown process id %d", request.ProcessID)
+		return PersistentResult{}, fmt.Errorf("process: unknown process id %q", request.ProcessID)
 	}
 	item.interaction.Lock()
 	defer item.interaction.Unlock()
 	if !r.ownsPersistent(item) {
-		return PersistentResult{}, fmt.Errorf("process: unknown process id %d", request.ProcessID)
+		return PersistentResult{}, fmt.Errorf("process: unknown process id %q", request.ProcessID)
 	}
 	if request.Chars != "" {
 		if !item.tty {
@@ -572,11 +580,11 @@ func bytesToValidUTF8(value []byte) []byte {
 	return []byte(strings.ToValidUTF8(string(value), "\uFFFD"))
 }
 
-func (r *Runner) reserveProcessID(owner string) (int32, *persistentProcess, error) {
+func (r *Runner) reserveProcessID(owner string) (string, *persistentProcess, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
-		return 0, nil, errors.New("process: runner is closed")
+		return "", nil, errors.New("process: runner is closed")
 	}
 	owned := 0
 	for _, reservedOwner := range r.reservedIDs {
@@ -594,24 +602,22 @@ func (r *Runner) reserveProcessID(owner string) (int32, *persistentProcess, erro
 		}
 	}
 	if owned >= r.config.MaxSessionProcesses {
-		return 0, nil, errors.New("process: session process limit reached")
+		return "", nil, errors.New("process: session process limit reached")
 	}
 	if len(r.reservedIDs) >= r.config.MaxProcesses {
 		r.reapFinishedLocked("")
 	}
 	if len(r.reservedIDs) >= r.config.MaxProcesses {
-		return 0, nil, errors.New("process: global process limit reached")
+		return "", nil, errors.New("process: global process limit reached")
 	}
 	for {
-		var raw [4]byte
-		if _, err := rand.Read(raw[:]); err != nil {
-			return 0, nil, err
+		processID, err := id.New("proc")
+		if err != nil {
+			return "", nil, err
 		}
-		id := int32(uint32(raw[0])<<24|uint32(raw[1])<<16|uint32(raw[2])<<8|uint32(raw[3])) & math.MaxInt32
-		id = 1000 + id%99000
-		if _, exists := r.reservedIDs[id]; !exists {
-			r.reservedIDs[id] = owner
-			return id, nil, nil
+		if _, exists := r.reservedIDs[processID]; !exists {
+			r.reservedIDs[processID] = owner
+			return processID, nil, nil
 		}
 	}
 }
@@ -630,7 +636,7 @@ func (r *Runner) reapFinishedLocked(owner string) {
 	}
 }
 
-func (r *Runner) releaseReservedID(id int32) {
+func (r *Runner) releaseReservedID(id string) {
 	r.mu.Lock()
 	delete(r.reservedIDs, id)
 	r.mu.Unlock()
@@ -647,7 +653,7 @@ func (r *Runner) storePersistent(item *persistentProcess) bool {
 	return true
 }
 
-func (r *Runner) lookupPersistent(owner string, id int32) *persistentProcess {
+func (r *Runner) lookupPersistent(owner, id string) *persistentProcess {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	item := r.processes[id]
@@ -693,6 +699,54 @@ func (r *Runner) terminatePersistent(item *persistentProcess) {
 			<-item.finished
 		}
 	})
+}
+
+// ListActivePersistent returns active managed processes owned by one Parrot
+// session, ordered by start time and then ID.
+func (r *Runner) ListActivePersistent(owner string) []PersistentTask {
+	r.mu.RLock()
+	tasks := make([]PersistentTask, 0)
+	for _, item := range r.processes {
+		if item.owner != owner {
+			continue
+		}
+		select {
+		case <-item.finished:
+			continue
+		default:
+			tasks = append(tasks, PersistentTask{ID: item.id, StartedAt: item.started})
+		}
+	}
+	r.mu.RUnlock()
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].StartedAt.Equal(tasks[j].StartedAt) {
+			return tasks[i].ID < tasks[j].ID
+		}
+		return tasks[i].StartedAt.Before(tasks[j].StartedAt)
+	})
+	return tasks
+}
+
+// InterruptPersistent claims and terminates one active retained process owned
+// by a Parrot session.
+func (r *Runner) InterruptPersistent(owner, processID string) (PersistentTask, error) {
+	r.mu.Lock()
+	item := r.processes[processID]
+	if item == nil || item.owner != owner {
+		r.mu.Unlock()
+		return PersistentTask{}, fmt.Errorf("process: unknown process id %q", processID)
+	}
+	select {
+	case <-item.finished:
+		r.mu.Unlock()
+		return PersistentTask{}, fmt.Errorf("process: unknown active process id %q", processID)
+	default:
+	}
+	delete(r.processes, processID)
+	delete(r.reservedIDs, processID)
+	r.mu.Unlock()
+	r.terminatePersistent(item)
+	return PersistentTask{ID: item.id, StartedAt: item.started}, nil
 }
 
 // InterruptSession terminates retained processes owned by one Parrot session.
@@ -772,8 +826,8 @@ func (r *Runner) Close() error {
 	for _, item := range r.processes {
 		items = append(items, item)
 	}
-	r.processes = make(map[int32]*persistentProcess)
-	r.reservedIDs = make(map[int32]string)
+	r.processes = make(map[string]*persistentProcess)
+	r.reservedIDs = make(map[string]string)
 	r.writablePaths = make(map[string]map[string]struct{})
 	type temporaryDirectoryCleanup struct {
 		path string

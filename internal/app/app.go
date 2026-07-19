@@ -278,8 +278,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: process: %w", err)
 	}
 	result.processes = processes
-	monitors := monitor.NewService(processes, sessions)
-	result.monitors = monitors
 	var questionHandler question.Prompter
 	if options.NonInteractive {
 		questionHandler = questionPrompter{}
@@ -355,13 +353,15 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, Data: data})
 	}})
 	result.subagents = subagents
+	monitors := monitor.NewService(processes, subagents, sessions)
+	result.monitors = monitors
 	tools := tool.NewRegistry()
 	agentLookup := func(id string) (bool, error) {
 		profile, err := profileResolver.GetProfile(id)
 		return profile.ReadOnly, err
 	}
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
-		Changes: changes, Processes: processes, Monitor: monitors, Todos: todos, Goals: goals, Questions: questions,
+		Changes: changes, Processes: processes, Monitor: monitors, Tasks: monitors, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages}, Formatters: formatterRegistry,
 		Subagents: subagents, Agents: agentLookup,

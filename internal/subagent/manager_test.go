@@ -140,6 +140,42 @@ func TestTimeout(t *testing.T) {
 	}
 }
 
+func TestObserverReturnsTerminalLifecycleAsData(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		executor  Executor
+		config    Config
+		interrupt bool
+		status    Status
+		errorText string
+	}{
+		{name: "failed", executor: executorFunc(func(context.Context, Execution) (string, error) { return "", errors.New("failed") }), status: StatusFailed, errorText: "failed"},
+		{name: "canceled", executor: executorFunc(func(ctx context.Context, _ Execution) (string, error) { <-ctx.Done(); return "", ctx.Err() }), interrupt: true, status: StatusCanceled, errorText: ErrCanceled.Error()},
+		{name: "timed out", executor: executorFunc(func(ctx context.Context, _ Execution) (string, error) { <-ctx.Done(); return "", ctx.Err() }), config: Config{Timeout: time.Millisecond}, status: StatusTimedOut, errorText: ErrTimeout.Error()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager := NewManager(test.executor, test.config)
+			id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			observer, err := manager.Observe("parent", id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.interrupt {
+				if _, err := manager.Interrupt(context.Background(), "parent", id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			task, err := observer.Wait(context.Background())
+			if err != nil || task.Status != test.status || task.Error != test.errorText {
+				t.Fatalf("observer result = %#v, %v", task, err)
+			}
+		})
+	}
+}
+
 func TestProgressAccumulatesAndReportsSnapshots(t *testing.T) {
 	var snapshots []Task
 	terminalProgress := make(chan struct{})
@@ -168,114 +204,6 @@ func TestProgressAccumulatesAndReportsSnapshots(t *testing.T) {
 	if len(snapshots) != 3 || snapshots[0].Usage.TotalTokens != 12 || snapshots[1].ToolUses != 3 || snapshots[2].Status != StatusSucceeded {
 		t.Fatalf("snapshots = %#v", snapshots)
 	}
-}
-
-func TestTerminalProgressCallbackIsReentrantAndPrecedesWait(t *testing.T) {
-	callbackStarted := make(chan struct{})
-	releaseCallback := make(chan struct{})
-	callbackDone := make(chan error, 1)
-	var manager *Manager
-	manager = NewManager(executorFunc(func(context.Context, Execution) (string, error) { return "done", nil }), Config{OnProgress: func(task Task) {
-		if task.Status == StatusRunning {
-			return
-		}
-		close(callbackStarted)
-		_, err := manager.Await(context.Background(), "parent", task.ID)
-		callbackDone <- err
-		<-releaseCallback
-	}})
-	id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	<-callbackStarted
-	waitDone := make(chan error, 1)
-	go func() {
-		_, waitErr := manager.Wait(context.Background(), "parent", []string{id})
-		waitDone <- waitErr
-	}()
-	select {
-	case err := <-waitDone:
-		t.Fatalf("Wait returned before terminal callback completed: %v", err)
-	case <-time.After(10 * time.Millisecond):
-	}
-	close(releaseCallback)
-	if err := <-callbackDone; err != nil {
-		t.Fatalf("callback Await error = %v", err)
-	}
-	if err := <-waitDone; err != nil {
-		t.Fatalf("Wait error = %v", err)
-	}
-}
-
-func TestOlderTerminalCallbackCannotReleaseNewTurnWait(t *testing.T) {
-	firstStarted := make(chan struct{})
-	firstRelease := make(chan struct{})
-	secondStarted := make(chan struct{})
-	secondRelease := make(chan struct{})
-	manager := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {
-		if execution.Turn == 2 {
-			close(secondStarted)
-			<-secondRelease
-		}
-		return "done", nil
-	}), Config{OnProgress: func(task Task) {
-		if task.Turn == 1 {
-			close(firstStarted)
-			<-firstRelease
-		}
-	}})
-	id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	<-firstStarted
-	manager.mu.Lock()
-	firstCallbackDone := manager.tasks[id].callbackDone
-	manager.mu.Unlock()
-	if _, err := manager.FollowUp("parent", id, Request{Prompt: "again"}); err != nil {
-		t.Fatal(err)
-	}
-	<-secondStarted
-	waitObserved := make(chan struct{})
-	waitCtx := &observedDoneContext{Context: context.Background(), observed: waitObserved}
-	waitDone := make(chan error, 1)
-	go func() {
-		_, waitErr := manager.Wait(waitCtx, "parent", []string{id})
-		waitDone <- waitErr
-	}()
-	<-waitObserved
-	manager.mu.Lock()
-	revision := manager.tasks[id].revision
-	manager.mu.Unlock()
-	close(firstRelease)
-	<-firstCallbackDone
-	manager.mu.Lock()
-	if current := manager.tasks[id].revision; current != revision {
-		manager.mu.Unlock()
-		t.Fatalf("stale callback changed revision from %d to %d", revision, current)
-	}
-	manager.mu.Unlock()
-	select {
-	case err := <-waitDone:
-		t.Fatalf("Wait returned after stale callback activity: %v", err)
-	default:
-	}
-	close(secondRelease)
-	if err := <-waitDone; err != nil {
-		t.Fatalf("Wait error = %v", err)
-	}
-}
-
-type observedDoneContext struct {
-	context.Context
-	once     sync.Once
-	observed chan struct{}
-}
-
-func (c *observedDoneContext) Done() <-chan struct{} {
-	c.once.Do(func() { close(c.observed) })
-	return c.Context.Done()
 }
 
 type reusableExecutor struct {
@@ -320,7 +248,7 @@ func (e *reusableExecutor) Send(_ context.Context, execution Execution, message 
 	return "message-1", nil
 }
 
-func TestReusableAgentLifecycleOwnershipAndSelectiveWait(t *testing.T) {
+func TestReusableAgentLifecycleOwnershipObservationAndActiveListing(t *testing.T) {
 	executor := newReusableExecutor()
 	manager := NewManager(executor, Config{MaxConcurrent: 4, MaxConcurrentPerParent: 4, MaxDepth: 4})
 
@@ -339,6 +267,9 @@ func TestReusableAgentLifecycleOwnershipAndSelectiveWait(t *testing.T) {
 	if _, err := manager.Status("unrelated", id); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unrelated status error = %v", err)
 	}
+	if _, err := manager.Observe("unrelated", id); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unrelated observe error = %v", err)
+	}
 	if messageID, err := manager.Send(context.Background(), "root", id, "steer"); err != nil || messageID != "message-1" {
 		t.Fatalf("send = %q, %v", messageID, err)
 	}
@@ -351,27 +282,25 @@ func TestReusableAgentLifecycleOwnershipAndSelectiveWait(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-executor.runs
-	waitCtx, cancelWait := context.WithTimeout(context.Background(), 30*time.Millisecond)
-	waited := make(chan error, 1)
-	go func() {
-		_, waitErr := manager.Wait(waitCtx, "root", []string{id})
-		waited <- waitErr
-	}()
+	firstObserver, err := manager.Observe("root", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	active := manager.ListActive("root")
+	if len(active) != 2 || active[0].ID != min(id, otherID) || active[1].ID != max(id, otherID) {
+		t.Fatalf("active tasks = %#v", active)
+	}
 	if _, err := manager.Send(context.Background(), "root", otherID, "unrelated"); err != nil {
 		t.Fatal(err)
 	}
-	select {
-	case err := <-waited:
-		if !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("selective wait error = %v", err)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("selective wait did not time out")
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	if _, err := firstObserver.Wait(waitCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("observer wait error = %v", err)
 	}
 	cancelWait()
 
 	executor.release(id, "first output")
-	completed, err := manager.Await(context.Background(), "root", id)
+	completed, err := firstObserver.Wait(context.Background())
 	if err != nil || completed.Output != "first output" || completed.Status != StatusSucceeded {
 		t.Fatalf("completed = %#v, %v", completed, err)
 	}
@@ -383,10 +312,21 @@ func TestReusableAgentLifecycleOwnershipAndSelectiveWait(t *testing.T) {
 	if second.SessionID != task.SessionID || second.Turn != 2 || second.Request.Prompt != "second" {
 		t.Fatalf("second execution = %#v", second)
 	}
+	if previous, err := firstObserver.Wait(context.Background()); err != nil || previous.Turn != 1 || previous.Output != "first output" {
+		t.Fatalf("captured first turn = %#v, %v", previous, err)
+	}
+	active = manager.ListActive("root")
+	if len(active) != 2 {
+		t.Fatalf("active after follow-up = %#v", active)
+	}
 	executor.release(id, "second output")
 	completed, err = manager.Await(context.Background(), "root", id)
 	if err != nil || completed.Output != "second output" {
 		t.Fatalf("second completion = %#v, %v", completed, err)
+	}
+	active = manager.ListActive("root")
+	if len(active) != 1 || active[0].ID != otherID {
+		t.Fatalf("active after completion = %#v", active)
 	}
 
 	if _, err := manager.Interrupt(context.Background(), "root", otherID); err != nil {
@@ -397,6 +337,47 @@ func TestReusableAgentLifecycleOwnershipAndSelectiveWait(t *testing.T) {
 	}
 	if _, err := manager.Launch("root", nil, Request{Prompt: "closed", Agent: "explore"}); !errors.Is(err, ErrClosed) {
 		t.Fatalf("closed launch error = %v", err)
+	}
+}
+
+func TestObserveAndListActivePreserveDescendantVisibility(t *testing.T) {
+	executor := newReusableExecutor()
+	manager := NewManager(executor, Config{MaxConcurrent: 4, MaxConcurrentPerParent: 4, MaxDepth: 4})
+	parentID, err := manager.Spawn(context.Background(), "root", "build", Request{Prompt: "parent", Agent: "explore"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-executor.runs
+	parent, err := manager.Status("root", parentID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID, err := manager.Spawn(context.Background(), parent.SessionID, "explore", Request{Prompt: "child", Agent: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-executor.runs
+
+	rootActive := manager.ListActive("root")
+	parentActive := manager.ListActive(parent.SessionID)
+	if len(rootActive) != 2 || len(parentActive) != 1 || parentActive[0].ID != childID || len(manager.ListActive("unrelated")) != 0 {
+		t.Fatalf("active tasks: root=%#v parent=%#v", rootActive, parentActive)
+	}
+	if _, err := manager.Observe(parent.SessionID, childID); err != nil {
+		t.Fatalf("observe child: %v", err)
+	}
+	child, err := manager.Status(parent.SessionID, childID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Observe(child.SessionID, parentID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("observe ancestor error = %v", err)
+	}
+	if _, err := manager.Interrupt(context.Background(), "root", childID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Interrupt(context.Background(), "root", parentID); err != nil {
+		t.Fatal(err)
 	}
 }
 

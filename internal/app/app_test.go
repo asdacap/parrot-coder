@@ -499,22 +499,20 @@ func TestAgentToolsUseIsolatedChildSessionAndReturnOutput(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch {
+		case bytes.Contains(body, []byte("Task monitor notification")) && bytes.Contains(body, []byte("child output")):
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent received child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		case bytes.Contains(body, []byte("function_call_output")) && parentContinuations.Add(1) == 1:
 			agentID := string(agentIDPattern.Find(body))
 			if agentID == "" {
-				t.Errorf("spawn output omitted agent ID: %s", body)
+				t.Errorf("spawn output omitted task ID: %s", body)
 				return
 			}
-			arguments := fmt.Sprintf(`{"ids":[%q]}`, agentID)
-			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_wait\",\"type\":\"function_call\",\"call_id\":\"call_wait\",\"name\":\"agent_wait\",\"arguments\":%q}}\n\n", arguments)
+			arguments := fmt.Sprintf(`{"task_id":%q}`, agentID)
+			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_monitor\",\"type\":\"function_call\",\"call_id\":\"call_monitor\",\"name\":\"monitor\",\"arguments\":%q}}\n\n", arguments)
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 			close(releaseChild)
 		case bytes.Contains(body, []byte("function_call_output")):
-			if !bytes.Contains(body, []byte("child output")) || !bytes.Contains(body, []byte(`\"status\":\"succeeded\"`)) {
-				t.Errorf("wait output omitted terminal child result: %s", body)
-				return
-			}
-			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent received child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		case bytes.Contains(body, []byte("child prompt")):
 			<-releaseChild
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")

@@ -10,20 +10,20 @@ import (
 
 type recordingProcessMonitor struct {
 	sessionID string
-	processID int32
+	taskID    string
 	timeout   time.Duration
 	err       error
 }
 
-func (m *recordingProcessMonitor) Start(sessionID string, processID int32, timeout time.Duration) error {
-	m.sessionID, m.processID, m.timeout = sessionID, processID, timeout
+func (m *recordingProcessMonitor) Start(sessionID, taskID string, timeout time.Duration) error {
+	m.sessionID, m.taskID, m.timeout = sessionID, taskID, timeout
 	return m.err
 }
 
 func TestMonitorToolPlansAndStartsBackgroundMonitor(t *testing.T) {
 	monitor := &recordingProcessMonitor{}
 	item := NewMonitorTool(monitor)
-	raw := json.RawMessage(`{"session_id":42,"timeout_ms":1500}`)
+	raw := json.RawMessage(`{"task_id":"proc_test","timeout_ms":1500}`)
 	plan, err := item.Plan(context.Background(), raw, CallContext{SessionID: "caller"})
 	if err != nil {
 		t.Fatal(err)
@@ -35,13 +35,13 @@ func TestMonitorToolPlansAndStartsBackgroundMonitor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if monitor.sessionID != "caller" || monitor.processID != 42 || monitor.timeout != 1500*time.Millisecond {
-		t.Fatalf("monitor call = %q, %d, %s", monitor.sessionID, monitor.processID, monitor.timeout)
+	if monitor.sessionID != "caller" || monitor.taskID != "proc_test" || monitor.timeout != 1500*time.Millisecond {
+		t.Fatalf("monitor call = %q, %q, %s", monitor.sessionID, monitor.taskID, monitor.timeout)
 	}
-	if !strings.Contains(result.Text, "42") || !strings.Contains(result.Text, "1500 ms") {
+	if !strings.Contains(result.Text, "proc_test") || !strings.Contains(result.Text, "1500 ms") {
 		t.Fatalf("result = %q", result.Text)
 	}
-	if described, err := item.DescribeRequest(raw); err != nil || described != "Monitor process 42" {
+	if described, err := item.DescribeRequest(raw); err != nil || described != "Monitor task proc_test" {
 		t.Fatalf("description = %q, %v", described, err)
 	}
 }
@@ -53,10 +53,10 @@ func TestMonitorToolRejectsInvalidRequests(t *testing.T) {
 		raw  string
 		call CallContext
 	}{
-		{name: "missing caller", raw: `{"session_id":1}`},
-		{name: "invalid process", raw: `{"session_id":0}`, call: CallContext{SessionID: "caller"}},
-		{name: "negative timeout", raw: `{"session_id":1,"timeout_ms":-1}`, call: CallContext{SessionID: "caller"}},
-		{name: "overflowing timeout", raw: `{"session_id":1,"timeout_ms":9223372036854775807}`, call: CallContext{SessionID: "caller"}},
+		{name: "missing caller", raw: `{"task_id":"proc_test"}`},
+		{name: "missing task", raw: `{}`, call: CallContext{SessionID: "caller"}},
+		{name: "negative timeout", raw: `{"task_id":"proc_test","timeout_ms":-1}`, call: CallContext{SessionID: "caller"}},
+		{name: "overflowing timeout", raw: `{"task_id":"proc_test","timeout_ms":9223372036854775807}`, call: CallContext{SessionID: "caller"}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

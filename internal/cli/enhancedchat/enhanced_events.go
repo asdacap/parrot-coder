@@ -185,7 +185,7 @@ func (r *enhancedChatRuntime) handleSubagentEvent(item *v1.SubagentEvent) error 
 func (r *enhancedChatRuntime) insertSubagentActivity(item enhancedActivityItem) {
 	for i := range r.activity {
 		switch r.activity[i].toolName {
-		case "agent_spawn", "agent_send", "agent_wait", "review":
+		case "agent_spawn", "agent_send", "monitor", "review":
 			r.activity = append(r.activity, enhancedActivityItem{})
 			copy(r.activity[i+1:], r.activity[i:])
 			r.activity[i] = item
