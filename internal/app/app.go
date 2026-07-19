@@ -339,7 +339,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return id
 		}
 		return profile.ID
-	}, OnProgress: func(task subagent.Task) {
+	}, AgentRecursionLimit: agentRecursionLimit, OnProgress: func(task subagent.Task) {
 		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, Data: data})
 	}})
@@ -1226,6 +1226,13 @@ func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {
 type combinedProfileResolver struct {
 	modes  *mode.Registry
 	agents *agent.Registry
+}
+
+func agentRecursionLimit(id string) int {
+	if id == mode.PlanID {
+		return 1
+	}
+	return 3
 }
 
 func (r combinedProfileResolver) GetProfile(id string) (agent.Profile, error) {

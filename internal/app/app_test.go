@@ -22,12 +22,45 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 type appDrainerFunc func(context.Context, string) error
+
+func TestAgentRecursionLimitPolicy(t *testing.T) {
+	modes, err := mode.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := agent.NewRegistry(agent.Subagents()...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := combinedProfileResolver{modes: modes, agents: agents}
+	for _, test := range []struct {
+		id       string
+		identity string
+		limit    int
+	}{
+		{id: mode.PlanID, identity: mode.PlanID, limit: 1},
+		{id: mode.BuildID, identity: mode.BuildID, limit: 3},
+		{id: agent.ExploreID, identity: agent.ExplorerID, limit: 3},
+		{id: agent.ExplorerID, identity: agent.ExplorerID, limit: 3},
+		{id: agent.ReviewID, identity: agent.ReviewID, limit: 3},
+		{id: agent.WorkerID, identity: agent.WorkerID, limit: 3},
+	} {
+		profile, resolveErr := resolver.GetProfile(test.id)
+		if resolveErr != nil {
+			t.Fatal(resolveErr)
+		}
+		if profile.ID != test.identity || agentRecursionLimit(profile.ID) != test.limit {
+			t.Fatalf("policy for %q = identity %q, limit %d", test.id, profile.ID, agentRecursionLimit(profile.ID))
+		}
+	}
+}
 
 func (f appDrainerFunc) Drain(ctx context.Context, sessionID string) error {
 	return f(ctx, sessionID)

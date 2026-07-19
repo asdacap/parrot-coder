@@ -17,7 +17,7 @@ var (
 	ErrInvalid      = errors.New("subagent: invalid request")
 	ErrConcurrency  = errors.New("subagent: concurrency limit reached")
 	ErrDepth        = errors.New("subagent: maximum depth reached")
-	ErrCycle        = errors.New("subagent: agent cycle detected")
+	ErrRecursion    = errors.New("subagent: agent recursion limit reached")
 	ErrNotFound     = errors.New("subagent: task not found")
 	ErrCanceled     = errors.New("subagent: task canceled")
 	ErrTimeout      = errors.New("subagent: task timed out")
@@ -85,6 +85,7 @@ type Config struct {
 	MaxResultBytes         int
 	Timeout                time.Duration
 	AgentIdentity          func(string) string
+	AgentRecursionLimit    func(string) int
 	OnProgress             func(Task)
 }
 
@@ -183,13 +184,17 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 		return "", ErrDepth
 	}
 	targetIdentity := m.agentIdentity(request.Agent)
+	recursions := 1
 	for _, ancestor := range lineage {
 		if !validAgent(ancestor) {
 			return "", ErrInvalid
 		}
 		if m.agentIdentity(ancestor) == targetIdentity {
-			return "", ErrCycle
+			recursions++
 		}
+	}
+	if recursions > m.agentRecursionLimit(targetIdentity) {
+		return "", ErrRecursion
 	}
 	id, err := taskID()
 	if err != nil {
@@ -237,6 +242,15 @@ func (m *Manager) agentIdentity(id string) string {
 		return identity
 	}
 	return id
+}
+
+func (m *Manager) agentRecursionLimit(id string) int {
+	if m.config.AgentRecursionLimit != nil {
+		if limit := m.config.AgentRecursionLimit(id); limit > 0 {
+			return limit
+		}
+	}
+	return 3
 }
 
 // Spawn derives durable ancestry from the caller session and waits only until

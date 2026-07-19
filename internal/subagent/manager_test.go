@@ -74,7 +74,7 @@ func TestLaunchConcurrencyAwaitAndStatus(t *testing.T) {
 	}
 }
 
-func TestDepthCycleCancelAndResultBound(t *testing.T) {
+func TestDepthRecursionCancelAndResultBound(t *testing.T) {
 	started := make(chan struct{})
 	var once sync.Once
 	executor := executorFunc(func(ctx context.Context, execution Execution) (string, error) {
@@ -85,7 +85,7 @@ func TestDepthCycleCancelAndResultBound(t *testing.T) {
 		<-ctx.Done()
 		return "", ctx.Err()
 	})
-	manager := NewManager(executor, Config{MaxDepth: 2, MaxResultBytes: 5, Timeout: time.Minute})
+	manager := NewManager(executor, Config{MaxDepth: 2, MaxResultBytes: 5, Timeout: time.Minute, AgentRecursionLimit: func(string) int { return 1 }})
 	limited := NewManager(executor, Config{MaxPromptBytes: 3})
 	if _, err := limited.Launch("p", nil, Request{Prompt: "large", Agent: "worker"}); !errors.Is(err, ErrRequestLimit) {
 		t.Fatalf("request limit error = %v", err)
@@ -93,8 +93,8 @@ func TestDepthCycleCancelAndResultBound(t *testing.T) {
 	if _, err := manager.Launch("p", []string{"a", "b"}, Request{Prompt: "x", Agent: "c"}); !errors.Is(err, ErrDepth) {
 		t.Fatalf("depth error = %v", err)
 	}
-	if _, err := manager.Launch("p", []string{"a"}, Request{Prompt: "x", Agent: "a"}); !errors.Is(err, ErrCycle) {
-		t.Fatalf("cycle error = %v", err)
+	if _, err := manager.Launch("p", []string{"a"}, Request{Prompt: "x", Agent: "a"}); !errors.Is(err, ErrRecursion) {
+		t.Fatalf("recursion error = %v", err)
 	}
 	id, err := manager.Launch("p", nil, Request{Prompt: "wait", Agent: "worker"})
 	if err != nil {
@@ -274,9 +274,6 @@ func TestReusableAgentLifecycleOwnershipAndSelectiveWait(t *testing.T) {
 		t.Fatalf("second completion = %#v, %v", completed, err)
 	}
 
-	if _, err := manager.Spawn(context.Background(), task.SessionID, "explore", Request{Prompt: "cycle", Agent: "build"}); !errors.Is(err, ErrCycle) {
-		t.Fatalf("derived cycle error = %v", err)
-	}
 	if _, err := manager.Interrupt(context.Background(), "root", otherID); err != nil {
 		t.Fatal(err)
 	}
@@ -288,23 +285,58 @@ func TestReusableAgentLifecycleOwnershipAndSelectiveWait(t *testing.T) {
 	}
 }
 
-func TestLaunchDetectsCyclesAcrossEquivalentAgentNames(t *testing.T) {
-	manager := NewManager(executorFunc(func(context.Context, Execution) (string, error) { return "", nil }), Config{AgentIdentity: func(id string) string {
+func TestLaunchEnforcesPerAgentRecursionLimits(t *testing.T) {
+	manager := NewManager(executorFunc(func(context.Context, Execution) (string, error) { return "", nil }), Config{MaxConcurrent: 16, AgentIdentity: func(id string) string {
 		if id == "explore" {
 			return "explorer"
 		}
 		return id
+	}, AgentRecursionLimit: func(id string) int {
+		if id == "plan" {
+			return 1
+		}
+		return 3
 	}})
 	for _, test := range []struct {
-		ancestor string
-		target   string
+		name    string
+		lineage []string
+		target  string
+		wantErr error
 	}{
-		{ancestor: "explore", target: "explorer"},
-		{ancestor: "explorer", target: "explore"},
+		{name: "plan first occurrence", target: "plan"},
+		{name: "plan second occurrence", lineage: []string{"plan"}, target: "plan", wantErr: ErrRecursion},
+		{name: "other role third occurrence", lineage: []string{"worker", "worker"}, target: "worker"},
+		{name: "other role fourth occurrence", lineage: []string{"worker", "worker", "worker"}, target: "worker", wantErr: ErrRecursion},
+		{name: "different roles do not consume limit", lineage: []string{"worker", "plan", "explorer"}, target: "worker"},
+		{name: "aliases share limit", lineage: []string{"explore", "explorer", "explore"}, target: "explorer", wantErr: ErrRecursion},
+		{name: "maximum depth remains independent", lineage: []string{"a", "b", "c", "d"}, target: "worker", wantErr: ErrDepth},
 	} {
-		if _, err := manager.Launch("root", []string{test.ancestor}, Request{Prompt: "cycle", Agent: test.target}); !errors.Is(err, ErrCycle) {
-			t.Fatalf("Launch(%q -> %q) error = %v", test.ancestor, test.target, err)
+		t.Run(test.name, func(t *testing.T) {
+			_, err := manager.Launch("root-"+test.name, test.lineage, Request{Prompt: "recurse", Agent: test.target})
+			if !errors.Is(err, test.wantErr) {
+				t.Fatalf("Launch(%v -> %q) error = %v, want %v", test.lineage, test.target, err, test.wantErr)
+			}
+		})
+	}
+
+	derived := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {
+		execution.RegisterSession("session-" + execution.TaskID)
+		return "", nil
+	}), Config{})
+	parentSession := "root"
+	for range 2 {
+		id, err := derived.Spawn(context.Background(), parentSession, "build", Request{Prompt: "recurse", Agent: "build"})
+		if err != nil {
+			t.Fatal(err)
 		}
+		task, err := derived.Status(parentSession, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		parentSession = task.SessionID
+	}
+	if _, err := derived.Spawn(context.Background(), parentSession, "build", Request{Prompt: "recurse", Agent: "build"}); !errors.Is(err, ErrRecursion) {
+		t.Fatalf("derived recursion error = %v", err)
 	}
 }
 
