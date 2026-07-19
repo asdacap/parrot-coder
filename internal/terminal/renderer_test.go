@@ -618,6 +618,24 @@ func TestLiveRendererKeepsStreamingRowAtTopOfCompositeFrame(t *testing.T) {
 	}
 }
 
+func TestLiveRendererCanCommitPreviouslyDisplayedStreamAfterTextDiverges(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 20, MaxRows: 6})
+	frame := LiveFrame{Stream: &StreamMessage{ID: "answer", Prefix: "- ", Text: "displayed suffix"}}
+	if err := renderer.Frame(frame); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "authoritative answer"}, false); RenderErrorClass(err) != "stream_text_changed" {
+		t.Fatalf("divergent commit error = %v", err)
+	}
+	if err := renderer.CommitDisplayedStream("answer", false); err != nil {
+		t.Fatal(err)
+	}
+	if renderer.stream.id != "" || !strings.Contains(output.String(), "displayed suffix") || strings.Contains(output.String(), "authoritative answer") {
+		t.Fatalf("recovered stream state=%#v output=%q", renderer.stream, output.String())
+	}
+}
+
 func indexOf(values []string, target string) int {
 	for i, value := range values {
 		if value == target {

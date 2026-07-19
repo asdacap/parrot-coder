@@ -1062,6 +1062,73 @@ func TestEnhancedConflictingAssistantDeltaDoesNotCloseActiveStream(t *testing.T)
 	}
 }
 
+func TestEnhancedUnsynchronizedAssistantIgnoresSuffixAndCommitsDurableMessage(t *testing.T) {
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{
+		ID: "assistant", Role: "assistant", Content: "complete durable answer", Status: "complete",
+	}}}}
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{
+			ctx: context.Background(), api: api, current: v1.Session{ID: "session"},
+			renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true}),
+		},
+		knownMessages:    map[string]bool{},
+		unsyncedMessages: map[string]bool{"assistant": true},
+	}
+	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "assistant", Kind: "text", Delta: " answer"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMessagePartDelta, Data: delta}); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.streamMessageID != "" || runtime.streamed.Len() != 0 {
+		t.Fatalf("unsynchronized suffix was accepted: id=%q text=%q", runtime.streamMessageID, runtime.streamed.String())
+	}
+	if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "complete durable answer") || runtime.unsyncedMessages["assistant"] {
+		t.Fatalf("durable message was not committed: output=%q unsynced=%#v", output.String(), runtime.unsyncedMessages)
+	}
+}
+
+func TestEnhancedSnapshotRaceMarksNewAssistantUnsynchronized(t *testing.T) {
+	before := v1.MessageList{Items: []v1.Message{{ID: "user", Role: "user", Status: "complete"}}}
+	after := v1.MessageList{Items: []v1.Message{
+		{ID: "user", Role: "user", Status: "complete"},
+		{ID: "assistant", Role: "assistant", Status: "complete"},
+	}}
+	snapshotMessages := make(map[string]bool, len(before.Items))
+	for _, item := range before.Items {
+		snapshotMessages[item.ID] = true
+	}
+	runtime := &enhancedChatRuntime{unsyncedMessages: map[string]bool{}}
+	runtime.markNewAssistantsUnsynced(after, snapshotMessages)
+	if !runtime.unsyncedMessages["assistant"] || runtime.unsyncedMessages["user"] {
+		t.Fatalf("snapshot race classification = %#v", runtime.unsyncedMessages)
+	}
+}
+
+func TestEnhancedDivergentDurableMessageClosesDisplayedStream(t *testing.T) {
+	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{
+		ID: "assistant", Role: "assistant", Content: "authoritative answer", Status: "complete",
+	}}}}
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 20})
+	if err := renderer.Frame(terminal.LiveFrame{Stream: &terminal.StreamMessage{ID: "assistant", Prefix: "● ", Text: "displayed suffix"}}); err != nil {
+		t.Fatal(err)
+	}
+	runtime := &enhancedChatRuntime{
+		shell:         &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer},
+		knownMessages: map[string]bool{}, streamMessageID: "assistant",
+	}
+	runtime.streamed.WriteString("displayed suffix")
+	if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+		t.Fatalf("divergent durable message terminated enhanced chat: %v", err)
+	}
+	if runtime.streamMessageID != "" || !runtime.knownMessages["assistant"] || strings.Contains(output.String(), "authoritative answer") {
+		t.Fatalf("stream was not recovered: id=%q known=%#v output=%q", runtime.streamMessageID, runtime.knownMessages, output.String())
+	}
+}
+
 func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{

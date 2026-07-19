@@ -20,6 +20,10 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 	if err != nil {
 		return err
 	}
+	snapshotMessages := make(map[string]bool, len(messages.Items))
+	for _, item := range messages.Items {
+		snapshotMessages[item.ID] = true
+	}
 	newSession := r.eventSessionID != sessionID
 	if newSession {
 		r.eventSessionID = sessionID
@@ -28,6 +32,7 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		r.lastCompleteID = ""
 		r.turnCompleteID = ""
 		r.knownMessages = make(map[string]bool, len(messages.Items))
+		r.unsyncedMessages = make(map[string]bool)
 		for _, item := range messages.Items {
 			if item.Sequence > r.eventAfter {
 				r.eventAfter = item.Sequence
@@ -49,6 +54,14 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 			}
 		}
 	}
+	if r.unsyncedMessages == nil {
+		r.unsyncedMessages = make(map[string]bool)
+	}
+	// Disposable deltas are not replayed. If an assistant was already active
+	// when this connection took its snapshot, its subsequent deltas would form
+	// only a suffix (or contain a gap after reconnecting). Wait for the durable
+	// message instead of presenting that incomplete text as a cumulative stream.
+	r.markActiveAssistantsUnsynced(messages)
 	after := r.eventAfter
 	stream, err := r.shell.api.Events(r.shell.ctx, sessionID, &after)
 	if err != nil {
@@ -62,6 +75,15 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		}
 		return err
 	}
+	// Close the race between the repository snapshot and live subscription.
+	// Any assistant first observed during that window may have emitted deltas
+	// before the stream existed, so it must also settle from durable content.
+	connectedMessages, err := r.shell.api.Messages(r.shell.ctx, sessionID)
+	if err != nil {
+		_ = stream.Close()
+		return err
+	}
+	r.markNewAssistantsUnsynced(connectedMessages, snapshotMessages)
 	r.stream = stream
 	r.streamSessionID = sessionID
 	r.streamGeneration++
@@ -85,6 +107,22 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		}
 	}()
 	return r.reconcileRuntime()
+}
+
+func (r *enhancedChatRuntime) markActiveAssistantsUnsynced(messages v1.MessageList) {
+	for _, item := range messages.Items {
+		if item.Role == "assistant" && item.Status == "active" {
+			r.unsyncedMessages[item.ID] = true
+		}
+	}
+}
+
+func (r *enhancedChatRuntime) markNewAssistantsUnsynced(messages v1.MessageList, snapshotMessages map[string]bool) {
+	for _, item := range messages.Items {
+		if item.Role == "assistant" && !snapshotMessages[item.ID] {
+			r.unsyncedMessages[item.ID] = true
+		}
+	}
 }
 
 func (r *enhancedChatRuntime) reconcileRuntime() error {
@@ -210,6 +248,9 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		}
 		delta := payload.(*v1.MessagePartDelta)
 		if delta.MessageID != "" && r.knownMessages[delta.MessageID] {
+			return r.settleIdle()
+		}
+		if delta.MessageID != "" && r.unsyncedMessages[delta.MessageID] {
 			return r.settleIdle()
 		}
 		accepted, err := r.beginAssistantMessage(delta.MessageID)
@@ -456,11 +497,7 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 			return err
 		}
 		if item.Content != "" {
-			if item.ID == r.streamMessageID {
-				if err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "● ", Text: item.Content}, false); err != nil {
-					return err
-				}
-			} else if err := r.shell.renderer.CommitMessage("● ", item.Content, false); err != nil {
+			if err := r.commitAssistantContent(item); err != nil {
 				return err
 			}
 			// The live labeled modeline owns the response/input boundary. Leaving
@@ -472,6 +509,7 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 			r.commitError(item.Error)
 		}
 		r.knownMessages[item.ID] = true
+		delete(r.unsyncedMessages, item.ID)
 	}
 	if currentStreamSettled && (messageID == "" || messageID == r.streamMessageID) {
 		r.streamed.Reset()
@@ -483,6 +521,21 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 	}
 	r.status = ""
 	return nil
+}
+
+func (r *enhancedChatRuntime) commitAssistantContent(item v1.Message) error {
+	if item.ID != r.streamMessageID {
+		return r.shell.renderer.CommitMessage("● ", item.Content, false)
+	}
+	err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "● ", Text: item.Content}, false)
+	if terminal.RenderErrorClass(err) == "stream_text_changed" {
+		// Some live text may already be permanent terminal scrollback and cannot
+		// be replaced. Close the stream with the text the user has seen instead
+		// of terminating enhanced chat. The repository remains authoritative for
+		// future history and session resumes.
+		return r.shell.renderer.CommitDisplayedStream(item.ID, false)
+	}
+	return err
 }
 
 // beginAssistantMessage synchronizes the CLI's cumulative buffer with the

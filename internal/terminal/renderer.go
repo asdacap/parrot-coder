@@ -499,6 +499,26 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.commitStream(message, divider)
+}
+
+// CommitDisplayedStream commits the assistant stream exactly as it was last
+// displayed. It is a recovery path for callers whose authoritative final text
+// no longer extends disposable live deltas that may already be in scrollback.
+func (r *LiveRenderer) CommitDisplayedStream(messageID string, divider bool) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	messageID = Sanitize(messageID)
+	if messageID == "" {
+		return errStreamMessageIDEmpty
+	}
+	if r.stream.id != messageID {
+		return errStreamMessageConflict
+	}
+	return r.commitStream(StreamMessage{ID: messageID, Prefix: r.stream.prefix, Text: r.stream.text}, divider)
+}
+
+func (r *LiveRenderer) commitStream(message StreamMessage, divider bool) error {
 	if r.closed {
 		return errRendererClosed
 	}
