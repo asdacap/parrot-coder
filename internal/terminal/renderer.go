@@ -295,11 +295,11 @@ func (r *LiveRenderer) Prompt(state PromptState) error {
 	}
 	r.syncColumns()
 
-	rows, cursorRow, cursorCol := r.promptRows(state, r.maxInputRows)
+	content, cursorRow, cursorCol := r.promptRows(state, r.maxInputRows)
 	if !r.tty {
-		return r.writePlain(rows)
+		return r.writePlain(content.rows)
 	}
-	return r.redraw(rows, cursorRow, cursorCol)
+	return r.redrawRich(content.rows, nil, content.spans, cursorRow, cursorCol)
 }
 
 // Frame redraws a composite response, pending queue, and editor while keeping
@@ -335,7 +335,8 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	}
 	// The modeline is chrome between the live and input regions. It does not
 	// consume the input region's twelve-row prompt/menu budget.
-	promptRows, promptCursorRow, promptCursorCol := r.promptRows(prompt, r.maxInputRows)
+	promptContent, promptCursorRow, promptCursorCol := r.promptRows(prompt, r.maxInputRows)
+	promptRows := promptContent.rows
 	var promptContextRows []string
 	for _, item := range frame.PromptContext {
 		promptContextRows = append(promptContextRows, r.layoutLines([]string{item})...)
@@ -377,6 +378,8 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	inputRows = append(inputRows, pendingRows...)
 	inputRows = append(inputRows, promptContextRows...)
 	inputRows = append(inputRows, promptRows...)
+	inputSpans := make([][]textSpan, dividerRows+barRows+len(pendingRows)+len(promptContextRows))
+	inputSpans = append(inputSpans, promptContent.spans...)
 	assistantMessage := frame.Message != "" && isAssistantPrefix(frame.MessagePrefix)
 	assistantGap := !r.streamBlock && len(promoted.rows) == 0 && len(streamRows) > 0
 	remaining := r.maxRows
@@ -468,7 +471,7 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 		inputStyles[i] = textStyleGreen
 	}
 	styles = append(styles, inputStyles...)
-	spans = append(spans, make([][]textSpan, len(inputRows))...)
+	spans = append(spans, inputSpans...)
 	cursorRow := len(streamRows) + len(contextRows) + len(activity) + blockGap + dividerRows + barRows + len(pendingRows) + len(promptContextRows) + promptCursorRow
 	if !r.tty {
 		if len(promoted.rows) > 0 && !r.streamBlock {
@@ -536,7 +539,7 @@ func (r *LiveRenderer) CommitStream(message StreamMessage, divider bool) error {
 	return nil
 }
 
-func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, int) {
+func (r *LiveRenderer) promptRows(state PromptState, limit int) (richRows, int, int) {
 	if state.MaxRows > 0 {
 		limit = min(limit, state.MaxRows)
 	}
@@ -544,7 +547,12 @@ func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, 
 	cleanText := Sanitize(state.Text)
 	text := prefix + cleanText
 	cursor := runeCount(prefix) + clamp(state.Cursor, 0, runeCount(cleanText))
-	rows, cursorRow, cursorCol := layoutTextHanging(text, cursor, r.columns, strings.Repeat(" ", displayWidth(prefix)))
+	indent := strings.Repeat(" ", displayWidth(prefix))
+	if displayWidth(indent) >= r.columns {
+		indent = ""
+	}
+	rows, cursorRow, cursorCol := layoutTextHanging(text, cursor, r.columns, indent)
+	spans := promptTextSpans(rows, prefix, indent, r.columns)
 	if len(rows) >= limit {
 		start := cursorRow - limit + 1
 		if start < 0 {
@@ -554,13 +562,14 @@ func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, 
 			start = len(rows) - limit
 		}
 		rows = rows[start : start+limit]
+		spans = spans[start : start+limit]
 		cursorRow = clamp(cursorRow-start, 0, len(rows)-1)
-		return rows, cursorRow, cursorCol
+		return richRows{rows: rows, spans: spans}, cursorRow, cursorCol
 	}
 	choiceBudget := limit - len(rows)
 	total := len(state.Completions)
 	if choiceBudget <= 0 || total == 0 {
-		return rows, cursorRow, cursorCol
+		return richRows{rows: rows, spans: spans}, cursorRow, cursorCol
 	}
 	selected := clamp(state.Selected, 0, total-1)
 	visible := min(total, choiceBudget)
@@ -570,7 +579,8 @@ func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, 
 		line := "> " + Sanitize(candidate.Value)
 		line += fmt.Sprintf("  (%d options hidden)", total-1)
 		rows = append(rows, truncateMenuLine(line, r.columns))
-		return rows, cursorRow, cursorCol
+		spans = append(spans, nil)
+		return richRows{rows: rows, spans: spans}, cursorRow, cursorCol
 	}
 	if showMore {
 		visible-- // reserve a row for an explicit viewport/overflow message
@@ -594,13 +604,34 @@ func (r *LiveRenderer) promptRows(state PromptState, limit int) ([]string, int, 
 			line += "  " + Sanitize(candidate.Description)
 		}
 		rows = append(rows, truncateMenuLine(line, r.columns))
+		spans = append(spans, nil)
 	}
 	if showMore && choiceBudget > 1 {
 		hidden := total - visible
 		line := fmt.Sprintf("Showing %d-%d of %d options; %d hidden", start+1, end, total, hidden)
 		rows = append(rows, truncateMenuLine(line, r.columns))
+		spans = append(spans, nil)
 	}
-	return rows, cursorRow, cursorCol
+	return richRows{rows: rows, spans: spans}, cursorRow, cursorCol
+}
+
+func promptTextSpans(rows []string, prefix, indent string, columns int) [][]textSpan {
+	spans := make([][]textSpan, len(rows))
+	if len(rows) == 0 {
+		return spans
+	}
+	prefixRows, startRow, _ := layoutTextHanging(prefix, runeCount(prefix), columns, indent)
+	green := ansiStyle{color: "32"}
+	for row := startRow; row < len(rows); row++ {
+		start := len(indent)
+		if row == startRow {
+			start = len(prefixRows[startRow])
+		}
+		if start < len(rows[row]) {
+			spans[row] = []textSpan{{start: start, end: len(rows[row]), style: green}}
+		}
+	}
+	return spans
 }
 
 func truncateMenuLine(line string, columns int) string {
@@ -1398,8 +1429,8 @@ func (r *LiveRenderer) decorateRich(row string, style TextStyle, spans []textSpa
 		if start == end {
 			continue
 		}
-		combined := mergeANSIStyle(base, spanStyleAt(spans, start))
-		combined = mergeANSIStyle(combined, spanStyleAt(semantic, start))
+		combined := mergeANSIStyle(base, spanStyleAt(semantic, start))
+		combined = mergeANSIStyle(combined, spanStyleAt(spans, start))
 		output.WriteString(ansiStyled(row[start:end], combined))
 	}
 	return output.String()

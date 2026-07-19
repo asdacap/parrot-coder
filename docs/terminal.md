@@ -86,10 +86,11 @@ $ User message
 ⠋ $ Editable while the agent works
 ```
 
-The `$` marker is the user accent. User messages use a dark-blue background with
-pale-yellow text. The `-` marker is the assistant accent, and assistant messages
-use a dark-green background with pale-cyan text. Neither message has a leading
-divider. The divider after an assistant response is the input area's top border.
+The `$` marker is the user accent, and editable user input is green. User
+messages use a dark-blue background with pale-yellow text. The `-` marker is the
+assistant accent, and assistant messages use a dark-green background with
+pale-cyan text. Neither message has a leading divider. The divider after an
+assistant response is the input area's top border.
 Pending follow-ups appear below it with a written
 `(○ pending)` label.
 Human-oriented state uses an icon plus a written label where practical: the

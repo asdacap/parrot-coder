@@ -289,6 +289,40 @@ func TestLiveRendererPromptUsesHangingIndentAndExplicitResize(t *testing.T) {
 	}
 }
 
+func TestLiveRendererPromptRendersUserInputGreen(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 8})
+	if err := renderer.Prompt(PromptState{Prefix: "$ ", Text: "abcdefgh", Cursor: 8}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"\x1b[36m$\x1b[0m \x1b[32mabcdef\x1b[0m",
+		"  \x1b[32mgh\x1b[0m",
+	} {
+		if got := output.String(); !strings.Contains(got, want) {
+			t.Fatalf("colored prompt = %q, want substring %q", got, want)
+		}
+	}
+
+	output.Reset()
+	renderer = NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 20})
+	if err := renderer.Frame(LiveFrame{Prompt: PromptState{Prefix: "$ ", Text: "draft", Cursor: 5}}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "\x1b[36m$\x1b[0m \x1b[32mdraft\x1b[0m"; !strings.Contains(got, want) {
+		t.Fatalf("colored frame prompt = %q, want substring %q", got, want)
+	}
+
+	output.Reset()
+	renderer = NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 2})
+	if err := renderer.Prompt(PromptState{Prefix: "$ ", Text: "error:", Cursor: 6}); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); !strings.Contains(got, "\x1b[32mer\x1b[0m") || strings.Contains(got, "\x1b[31m") {
+		t.Fatalf("narrow prompt input did not remain green: %q", got)
+	}
+}
+
 func TestLiveRendererStyledRowsKeepLeadingIndentWhenWrapped(t *testing.T) {
 	var live, committed, narrow bytes.Buffer
 	liveRenderer := NewLiveRenderer(&live, RendererConfig{TTY: true, Columns: 8})
