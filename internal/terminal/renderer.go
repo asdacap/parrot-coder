@@ -1596,7 +1596,11 @@ func (r *LiveRenderer) layoutStyledContentAtColumns(lines []StyledText, columns 
 	styles := make([]TextStyle, 0, len(lines))
 	for _, line := range lines {
 		for _, part := range strings.Split(Sanitize(line.Text), "\n") {
-			wrapped := wrapLine(part, columns)
+			indent := part[:len(part)-len(strings.TrimLeft(part, " "))]
+			if displayWidth(indent) >= columns-1 {
+				indent = ""
+			}
+			wrapped, _, _ := layoutTextHanging(part, runeCount(part), columns, indent)
 			rows = append(rows, wrapped...)
 			for range wrapped {
 				styles = append(styles, line.Style)

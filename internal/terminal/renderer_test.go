@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -285,6 +286,33 @@ func TestLiveRendererPromptUsesHangingIndentAndExplicitResize(t *testing.T) {
 	}
 	if len(renderer.rows) != 3 || renderer.rows[0] != "" || renderer.rows[1] != "- abc" || renderer.rows[2] != "  def" {
 		t.Fatalf("resized message rows = %#v", renderer.rows)
+	}
+}
+
+func TestLiveRendererStyledRowsKeepLeadingIndentWhenWrapped(t *testing.T) {
+	var live, committed, narrow bytes.Buffer
+	liveRenderer := NewLiveRenderer(&live, RendererConfig{TTY: true, Columns: 8})
+	if err := liveRenderer.UpdateStyled([]StyledText{MutedText("  ○ abcdef")}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := liveRenderer.rows, []string{"  ○ abcd", "  ef"}; !slices.Equal(got, want) {
+		t.Fatalf("live rows = %#v, want %#v", got, want)
+	}
+
+	committedRenderer := NewLiveRenderer(&committed, RendererConfig{Columns: 8})
+	if err := committedRenderer.CommitStyled(MutedText("  ○ abcdef")); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := committed.String(), "  ○ abcd\n  ef\n"; got != want {
+		t.Fatalf("committed output = %q, want %q", got, want)
+	}
+
+	narrowRenderer := NewLiveRenderer(&narrow, RendererConfig{TTY: true, Columns: 4})
+	if err := narrowRenderer.UpdateStyled([]StyledText{MutedText("   界x")}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := narrowRenderer.rows, []string{"   ", "界x"}; !slices.Equal(got, want) {
+		t.Fatalf("narrow rows = %#v, want %#v", got, want)
 	}
 }
 
