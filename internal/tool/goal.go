@@ -30,6 +30,9 @@ func (t *GetGoalTool) Execute(ctx context.Context, _ Plan, call CallContext) (Re
 		return Result{}, errors.New("get_goal: service and session are required")
 	}
 	goal, err := t.Service.Get(ctx, call.SessionID)
+	if errors.Is(err, session.ErrGoalNotFound) {
+		return Result{Text: "no goal set"}, nil
+	}
 	if err != nil {
 		return Result{}, err
 	}
