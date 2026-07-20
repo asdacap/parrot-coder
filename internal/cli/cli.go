@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -470,7 +469,11 @@ func (a *App) authCommand(ctx context.Context, args []string, stdin io.Reader, s
 		fmt.Fprintln(stderr, err)
 		return exitWithReason(ctx, exitError, "app_directories_failed", err)
 	}
-	store := auth.NewFileStore(filepath.Join(paths.Data, app.CredentialFile))
+	if err := app.MigrateLegacyCredentials(paths); err != nil {
+		fmt.Fprintln(stderr, err)
+		return exitWithReason(ctx, exitError, "credential_migration_failed", err)
+	}
+	store := auth.NewFileStore(app.CredentialFilePath(paths))
 	switch args[0] {
 	case "list":
 		if len(args) != 1 {

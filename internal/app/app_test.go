@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -20,6 +21,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/agent"
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
+	"github.com/amirulashraf/parrot-coder/internal/auth"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/event"
@@ -602,6 +604,218 @@ providers:
 	messages, _ := runtime.Client.Messages(context.Background(), parent.ID)
 	sessions, _ := runtime.Client.Sessions(context.Background())
 	t.Fatalf("agent tools did not return child output; messages=%#v sessions=%#v", messages.Items, sessions.Items)
+}
+
+func TestMigrateLegacyCredentials(t *testing.T) {
+	for _, testCase := range []struct {
+		name           string
+		legacyContent  string
+		newContent     string
+		wantNewContent string
+		wantLegacyGone bool
+	}{
+		{
+			name:           "legacy file is moved to config",
+			legacyContent:  `{"version":1,"credentials":{"local":{"version":1,"type":"api_key","api_key":{"key":"secret"}}}}`,
+			wantNewContent: `{"version":1,"credentials":{"local":{"version":1,"type":"api_key","api_key":{"key":"secret"}}}}`,
+			wantLegacyGone: true,
+		},
+		{
+			name:           "legacy file is moved when new does not exist",
+			legacyContent:  `{"version":1,"credentials":{"chatgpt":{"version":1,"type":"oauth","oauth":{"access_token":"a","refresh_token":"r","expires_at":"2030-01-01T00:00:00Z"}}}}`,
+			wantNewContent: `{"version":1,"credentials":{"chatgpt":{"version":1,"type":"oauth","oauth":{"access_token":"a","refresh_token":"r","expires_at":"2030-01-01T00:00:00Z"}}}}`,
+			wantLegacyGone: true,
+		},
+		{
+			name:           "new file wins over legacy file",
+			legacyContent:  `{"version":1,"credentials":{"local":{"version":1,"type":"api_key","api_key":{"key":"old"}}}}`,
+			newContent:     `{"version":1,"credentials":{"local":{"version":1,"type":"api_key","api_key":{"key":"new"}}}}`,
+			wantNewContent: `{"version":1,"credentials":{"local":{"version":1,"type":"api_key","api_key":{"key":"new"}}}}`,
+			wantLegacyGone: false,
+		},
+		{
+			name:           "no migration when neither file exists",
+			wantNewContent: "",
+			wantLegacyGone: true,
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			root := t.TempDir()
+			paths := appdirs.Paths{
+				Config: filepath.Join(root, "config", "parrot"),
+				Data:   filepath.Join(root, "data", "parrot"),
+			}
+			legacyPath := filepath.Join(paths.Data, CredentialFile)
+			newPath := CredentialFilePath(paths)
+
+			if testCase.legacyContent != "" {
+				if err := os.MkdirAll(paths.Data, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(legacyPath, []byte(testCase.legacyContent), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if testCase.newContent != "" {
+				if err := os.MkdirAll(paths.Config, 0o700); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(newPath, []byte(testCase.newContent), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			if err := MigrateLegacyCredentials(paths); err != nil {
+				t.Fatalf("MigrateLegacyCredentials() = %v", err)
+			}
+
+			if testCase.wantNewContent != "" {
+				got, err := os.ReadFile(newPath)
+				if err != nil {
+					t.Fatalf("read new credential file: %v", err)
+				}
+				if string(got) != testCase.wantNewContent {
+					t.Fatalf("new credential file = %q, want %q", got, testCase.wantNewContent)
+				}
+			} else {
+				if _, err := os.Stat(newPath); !os.IsNotExist(err) {
+					t.Fatalf("new credential file should not exist, got err = %v", err)
+				}
+			}
+
+			_, legacyErr := os.Stat(legacyPath)
+			legacyExists := !os.IsNotExist(legacyErr)
+			if legacyExists == testCase.wantLegacyGone {
+				t.Fatalf("legacy file exists = %t, want %t", legacyExists, !testCase.wantLegacyGone)
+			}
+		})
+	}
+}
+
+func TestCredentialFilePathUsesConfigDir(t *testing.T) {
+	root := t.TempDir()
+	paths := appdirs.Paths{
+		Config: filepath.Join(root, "config", "parrot"),
+		Data:   filepath.Join(root, "data", "parrot"),
+	}
+	got := CredentialFilePath(paths)
+	want := filepath.Join(paths.Config, CredentialFile)
+	if got != want {
+		t.Fatalf("CredentialFilePath() = %q, want %q", got, want)
+	}
+}
+
+func TestMigrateLegacyCredentialsConcurrent(t *testing.T) {
+	root := t.TempDir()
+	paths := appdirs.Paths{
+		Config: filepath.Join(root, "config", "parrot"),
+		Data:   filepath.Join(root, "data", "parrot"),
+	}
+	legacyPath := filepath.Join(paths.Data, CredentialFile)
+	newPath := CredentialFilePath(paths)
+
+	if err := os.MkdirAll(paths.Data, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacyPath, []byte(`{"version":1,"credentials":{"local":{"version":1,"type":"api_key","api_key":{"key":"secret"}}}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var group sync.WaitGroup
+	errors := make(chan error, 100)
+	for i := 0; i < 100; i++ {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			if err := MigrateLegacyCredentials(paths); err != nil {
+				errors <- err
+			}
+		}()
+	}
+	group.Wait()
+	close(errors)
+
+	for err := range errors {
+		t.Fatalf("MigrateLegacyCredentials() = %v", err)
+	}
+
+	if _, err := os.Stat(legacyPath); !os.IsNotExist(err) {
+		t.Fatalf("legacy credential file should be gone, got err = %v", err)
+	}
+	got, err := os.ReadFile(newPath)
+	if err != nil {
+		t.Fatalf("read new credential file: %v", err)
+	}
+	want := `{"version":1,"credentials":{"local":{"version":1,"type":"api_key","api_key":{"key":"secret"}}}}`
+	if string(got) != want {
+		t.Fatalf("new credential file = %q, want %q", got, want)
+	}
+}
+
+func TestOpenUsesConfigCredentialFile(t *testing.T) {
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"test"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer provider.Close()
+
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	dataHome := filepath.Join(root, "data")
+	stateHome := filepath.Join(root, "state")
+	cacheHome := filepath.Join(root, "cache")
+	configDir := filepath.Join(configHome, "parrot")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configuration := fmt.Sprintf(`model: local/test-model
+providers:
+  local:
+    type: compatible
+    protocol: responses
+    base_url: %q
+    api_key_env: PARROT_TEST_KEY
+    allow_insecure_localhost: true
+    models:
+      test-model:
+        name: Test Model
+        tools: true
+`, provider.URL+"/v1")
+	if err := os.WriteFile(filepath.Join(configDir, "parrot.yaml"), []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Store credentials in the legacy data location; Open should migrate them to config.
+	dataDir := filepath.Join(dataHome, "parrot")
+	if err := os.MkdirAll(dataDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	credentials := `{"version":1,"credentials":{"local":{"version":1,"type":"api_key","api_key":{"key":"migrated-secret"}}}}`
+	if err := os.WriteFile(filepath.Join(dataDir, CredentialFile), []byte(credentials), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("PARROT_TEST_KEY", "")
+	paths := appdirs.Overrides{Home: root, ConfigHome: configHome, DataHome: dataHome, StateHome: stateHome, CacheHome: cacheHome}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, Version: "test", NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+
+	stored, err := runtime.Credentials.Get(context.Background(), "local")
+	if err != nil {
+		t.Fatalf("read migrated credential: %v", err)
+	}
+	if stored.Type != auth.CredentialAPIKey || stored.APIKey == nil || stored.APIKey.Key.Value() != "migrated-secret" {
+		t.Fatalf("migrated credential = %v, want api_key with migrated-secret", stored)
+	}
+	if _, err := os.Stat(filepath.Join(dataDir, CredentialFile)); !os.IsNotExist(err) {
+		t.Fatalf("legacy credential file still exists after migration")
+	}
 }
 
 func TestReportSubagentEventConvertsUsageAndToolCalls(t *testing.T) {

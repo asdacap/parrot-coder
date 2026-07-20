@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
@@ -57,6 +59,85 @@ const (
 	CredentialFile = "credentials.json"
 	DatabaseFile   = "parrot.db"
 )
+
+// CredentialFilePath returns the path to the credentials store under the
+// user's XDG config directory.
+func CredentialFilePath(paths appdirs.Paths) string {
+	return filepath.Join(paths.Config, CredentialFile)
+}
+
+// MigrateLegacyCredentials moves a credentials file that was previously stored
+// under the XDG data directory into the XDG config directory. If a file
+// already exists at the new location, the legacy file is left untouched. It is
+// safe to call from multiple concurrent processes.
+func MigrateLegacyCredentials(paths appdirs.Paths) error {
+	oldPath := filepath.Join(paths.Data, CredentialFile)
+	newPath := CredentialFilePath(paths)
+
+	if _, err := os.Stat(newPath); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("check new credential path: %w", err)
+	}
+
+	oldInfo, err := os.Stat(oldPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("check legacy credential path: %w", err)
+	}
+
+	if err := os.MkdirAll(paths.Config, 0o700); err != nil {
+		return fmt.Errorf("create config directory: %w", err)
+	}
+
+	if err := os.Rename(oldPath, newPath); err != nil {
+		if os.IsNotExist(err) {
+			// Another process may have already moved the file; prefer the new
+			// path if it now exists.
+			if _, statErr := os.Stat(newPath); statErr == nil {
+				return nil
+			}
+			return fmt.Errorf("legacy credential file disappeared during migration: %w", err)
+		}
+		if errors.Is(err, syscall.EXDEV) {
+			if copyErr := copyCredentialFile(oldPath, newPath, oldInfo.Mode().Perm()); copyErr != nil {
+				return fmt.Errorf("copy credentials across filesystems: %w", copyErr)
+			}
+			if removeErr := os.Remove(oldPath); removeErr != nil && !os.IsNotExist(removeErr) {
+				return fmt.Errorf("remove legacy credential file after copy: %w", removeErr)
+			}
+			return nil
+		}
+		return fmt.Errorf("move credentials to config directory: %w", err)
+	}
+	_ = os.Chmod(paths.Config, 0o700)
+	_ = os.Chmod(newPath, oldInfo.Mode().Perm())
+	return nil
+}
+
+func copyCredentialFile(src, dst string, perm os.FileMode) error {
+	input, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+
+	output, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, perm)
+	if err != nil {
+		if os.IsExist(err) {
+			return nil
+		}
+		return err
+	}
+	defer output.Close()
+
+	if _, err := io.Copy(output, input); err != nil {
+		return err
+	}
+	return output.Close()
+}
 
 // Options controls process-local composition. Model accepts provider/model or
 // a model ID from the configured default provider.
@@ -176,7 +257,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err := validateConfigTrust(loaded); err != nil {
 		return nil, err
 	}
-	credentials := auth.NewFileStore(filepath.Join(paths.Data, CredentialFile))
+	if err := MigrateLegacyCredentials(paths); err != nil {
+		return nil, fmt.Errorf("app: migrate credentials: %w", err)
+	}
+	credentials := auth.NewFileStore(CredentialFilePath(paths))
 	providers, err := BuildProviders(ctx, loaded.Config, credentials, options.HTTPClient)
 	if err != nil {
 		return nil, err
