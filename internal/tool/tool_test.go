@@ -23,8 +23,9 @@ import (
 type testTool struct {
 	BasePresentation
 	WritableTool
-	id    string
-	stale bool
+	id     string
+	stale  bool
+	result *Result
 }
 
 func (t testTool) ID() string                                    { return t.id }
@@ -40,7 +41,10 @@ func (t testTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (P
 	}
 	return p, err
 }
-func (testTool) Execute(_ context.Context, _ Plan, _ CallContext) (Result, error) {
+func (t testTool) Execute(_ context.Context, _ Plan, _ CallContext) (Result, error) {
+	if t.result != nil {
+		return *t.result, nil
+	}
 	return Result{Text: "ok", ModelText: "ok"}, nil
 }
 
@@ -82,6 +86,28 @@ func TestExecutorSchemaAndStalePlan(t *testing.T) {
 	_ = r.Register(testTool{id: "test", stale: true})
 	e := Executor{Snapshot: r.Materialize()}
 	if _, err := e.Execute(context.Background(), "test", json.RawMessage(`{"value":"x"}`), CallContext{}); err == nil || !strings.Contains(err.Error(), "stale") {
+		t.Fatalf("got %v", err)
+	}
+}
+
+func TestExecutorEmptyModelText(t *testing.T) {
+	execute := func(result Result) (Result, error) {
+		r := NewRegistry()
+		_ = r.Register(testTool{id: "test", result: &result})
+		e := Executor{Snapshot: r.Materialize()}
+		return e.Execute(context.Background(), "test", json.RawMessage(`{"value":"x"}`), CallContext{})
+	}
+	// A tool producing no output leaves both fields empty; the executor
+	// substitutes the placeholder in the model copy only.
+	got, err := execute(Result{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ModelText != emptyModelText || got.Text != "" {
+		t.Fatalf("placeholder not applied: %#v", got)
+	}
+	// Output without a model copy remains an error.
+	if _, err := execute(Result{Text: "ok"}); err == nil || !strings.Contains(err.Error(), "without a model copy") {
 		t.Fatalf("got %v", err)
 	}
 }

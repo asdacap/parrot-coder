@@ -42,6 +42,11 @@ const maxModelTextBytes = 64 << 10
 // those tools bound the oversized field before encoding instead.
 func modelText(text string) string { return boundedText(text, maxModelTextBytes) }
 
+// emptyModelText is the executor's placeholder for a tool which produced no
+// output: provider protocols require one result for every call, and an empty
+// result gives the model no signal that the call even ran.
+const emptyModelText = "(no output)"
+
 // sortedEnvironmentNames returns the variable names of env in a stable order,
 // for permission context which must not disclose their values.
 func sortedEnvironmentNames(env map[string]string) []string {

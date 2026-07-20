@@ -49,7 +49,9 @@ type Plan struct {
 // kept by the session and shown to the user. ModelText is what the model reads.
 // A tool returning any output must set both: there is no fallback, because only
 // the tool knows which part of its output the model must retain and how large
-// that copy may safely grow.
+// that copy may safely grow. A tool producing no output at all may leave both
+// empty; the executor substitutes a placeholder so the model never reads an
+// empty result.
 type Result struct {
 	Text      string         `json:"text"`
 	ModelText string         `json:"model_text"`
@@ -315,6 +317,9 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	}
 	if result.ModelText == "" && result.Text != "" {
 		return Result{}, fmt.Errorf("tool %q returned output without a model copy", id)
+	}
+	if result.ModelText == "" {
+		result.ModelText = emptyModelText
 	}
 	// Text is never truncated here, and bounding the model copy is each tool's
 	// responsibility. Spilling is the exception: the executor performed the spill
