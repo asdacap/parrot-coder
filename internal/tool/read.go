@@ -3,6 +3,8 @@ package tool
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,7 +36,7 @@ func NewReadTool(config ReadConfig) *ReadTool {
 }
 func (*ReadTool) ID() string { return "read" }
 func (*ReadTool) Description() string {
-	return "Read a bounded line range from a text file or list a directory. Relative paths resolve within the workspace."
+	return "Read a bounded line range from a text file or list a directory. Relative paths resolve within the workspace. File reads include a content sha256 for use with edit's expected_sha256."
 }
 func (*ReadTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input readInput
@@ -146,7 +148,8 @@ func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	if limit > t.Config.MaxLines {
 		return Result{}, errors.New("line limit exceeded")
 	}
-	reader := bufio.NewReader(f)
+	hash := sha256.New()
+	reader := bufio.NewReader(io.TeeReader(f, hash))
 	var b strings.Builder
 	lineNo, returned := 0, 0
 	var scanned int64
@@ -177,5 +180,9 @@ func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 			break
 		}
 	}
+	if _, err := io.Copy(io.Discard, reader); err != nil {
+		return Result{}, err
+	}
+	fmt.Fprintf(&b, "sha256: %s\n", hex.EncodeToString(hash.Sum(nil)))
 	return Result{Text: b.String(), Metadata: map[string]any{"lines": returned, "path": p.Input.Path}}, nil
 }

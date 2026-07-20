@@ -22,7 +22,7 @@ func testWorkspace(t *testing.T) *workspace.Workspace {
 	return ws
 }
 
-func TestEditExactBOMCRLFAndStale(t *testing.T) {
+func TestEditFullReplaceAndStale(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
 	path := filepath.Join(ws.Root(), "file.txt")
@@ -31,12 +31,13 @@ func TestEditExactBOMCRLFAndStale(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewService(Config{})
-	plan, err := service.PlanEdit(ctx, ws, Edit{Path: "file.txt", ExpectedSHA256: SHA256(before), Old: "two\n", New: "three\n"})
+	replacement := []byte("replaced\nverbatim")
+	plan, err := service.PlanEdit(ctx, ws, Edit{Path: "file.txt", ExpectedSHA256: SHA256(before), New: string(replacement)})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Equal(plan.Mutations[0].After.Data, append([]byte{0xef, 0xbb, 0xbf}, []byte("one\r\nthree\r\n")...)) {
-		t.Fatalf("newline/BOM changed: %q", plan.Mutations[0].After.Data)
+	if !bytes.Equal(plan.Mutations[0].After.Data, replacement) {
+		t.Fatalf("full replace not verbatim: %q", plan.Mutations[0].After.Data)
 	}
 	if err := service.Commit(ctx, ws, plan); err != nil {
 		t.Fatal(err)
@@ -45,32 +46,15 @@ func TestEditExactBOMCRLFAndStale(t *testing.T) {
 	if info.Mode().Perm() != 0o640 {
 		t.Fatalf("mode = %o", info.Mode().Perm())
 	}
-	if _, err := service.PlanEdit(ctx, ws, Edit{Path: "file.txt", ExpectedSHA256: SHA256(before), Old: "three", New: "four"}); !errors.Is(err, ErrStale) {
+	if _, err := service.PlanEdit(ctx, ws, Edit{Path: "file.txt", ExpectedSHA256: SHA256(before), New: "four"}); !errors.Is(err, ErrStale) {
 		t.Fatalf("stale hash error = %v", err)
 	}
 }
 
-func TestEditMatchRulesAndExplicitCreation(t *testing.T) {
+func TestEditExplicitCreation(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
-	data := []byte("same same")
-	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
 	service := NewService(Config{})
-	base := Edit{Path: "file", ExpectedSHA256: SHA256(data), Old: "same", New: "new"}
-	if _, err := service.PlanEdit(ctx, ws, base); !errors.Is(err, ErrConflict) {
-		t.Fatalf("multiple match error = %v", err)
-	}
-	base.Old = "missing"
-	if _, err := service.PlanEdit(ctx, ws, base); !errors.Is(err, ErrConflict) {
-		t.Fatalf("zero match error = %v", err)
-	}
-	base.Old, base.ReplaceAll = "same", true
-	plan, err := service.PlanEdit(ctx, ws, base)
-	if err != nil || string(plan.Mutations[0].After.Data) != "new new" {
-		t.Fatalf("replace all = %#v, %v", plan, err)
-	}
 	if _, err := service.PlanEdit(ctx, ws, Edit{Path: "new", New: "content"}); err == nil {
 		t.Fatal("implicit creation accepted")
 	}
@@ -397,7 +381,7 @@ func TestCommitRollbackAndSymlinkSwap(t *testing.T) {
 		if err := os.Symlink("inside", link); err != nil {
 			t.Fatal(err)
 		}
-		linkPlan, err := planner.PlanEdit(ctx, ws, Edit{Path: "link", ExpectedSHA256: SHA256([]byte("safe")), Old: "safe", New: "changed"})
+		linkPlan, err := planner.PlanEdit(ctx, ws, Edit{Path: "link", ExpectedSHA256: SHA256([]byte("safe")), New: "changed"})
 		if err != nil {
 			t.Fatal(err)
 		}
