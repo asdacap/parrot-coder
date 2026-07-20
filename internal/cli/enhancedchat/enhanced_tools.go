@@ -521,33 +521,24 @@ func cleanActivityDetail(value string) string {
 }
 
 func patchActivityTargets(patch string) []string {
-	prefixes := []string{"*** Add File: ", "*** Update File: ", "*** Delete File: ", "*** Move to: "}
+	// An aider block names its file on the last non-blank line before the
+	// SEARCH marker, so report the paths that actually introduce a block.
 	seen := make(map[string]bool)
 	var targets []string
+	candidate := ""
 	for _, line := range strings.Split(patch, "\n") {
-		if move, ok := strings.CutPrefix(line, "*** Move File: "); ok {
-			source, destination, valid := strings.Cut(move, " -> ")
-			if valid {
-				for _, path := range []string{source, destination} {
-					path = cleanActivityDetail(path)
-					if path != "" && !seen[path] {
-						seen[path] = true
-						targets = append(targets, path)
-					}
-				}
-			}
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "```") {
 			continue
 		}
-		for _, prefix := range prefixes {
-			if !strings.HasPrefix(line, prefix) {
-				continue
-			}
-			path := cleanActivityDetail(strings.TrimPrefix(line, prefix))
-			if path != "" && !seen[path] {
-				seen[path] = true
-				targets = append(targets, path)
-			}
-			break
+		if trimmed != "<<<<<<< SEARCH" {
+			candidate = trimmed
+			continue
+		}
+		path := cleanActivityDetail(candidate)
+		if path != "" && !seen[path] {
+			seen[path] = true
+			targets = append(targets, path)
 		}
 	}
 	if len(targets) <= 2 {
