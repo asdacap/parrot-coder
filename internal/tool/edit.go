@@ -16,7 +16,7 @@ func NewEditTool(changes *change.Service) *EditTool { return &EditTool{Changes: 
 
 func (*EditTool) ID() string { return "edit" }
 func (*EditTool) Description() string {
-	return "Replace exact text in a workspace file after hash-bound diff review; creation must be explicit."
+	return "Replace the entire content of a workspace file after hash-bound diff review; creation must be explicit."
 }
 func (*EditTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input change.Edit
@@ -30,7 +30,7 @@ func (*EditTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	return fmt.Sprintf("%s workspace file %q", operation, input.Path), nil
 }
 func (*EditTool) JSONSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"expected_sha256":{"type":"string"},"old":{"type":"string"},"new":{"type":"string"},"replace_all":{"type":"boolean"},"create":{"type":"boolean"}},"required":["path","new"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"expected_sha256":{"type":"string"},"new":{"type":"string"},"create":{"type":"boolean"}},"required":["path","new"],"additionalProperties":false}`)
 }
 
 type mutationPlan struct {
@@ -57,5 +57,13 @@ func (t *EditTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 }
 
 func (t *EditTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	return executeMutation(ctx, t.Changes, plan, call)
+	result, err := executeMutation(ctx, t.Changes, plan, call)
+	if err != nil {
+		return result, err
+	}
+	planned := plan.Data.(mutationPlan).Change
+	if len(planned.Mutations) == 1 {
+		result.Text += "sha256: " + planned.Mutations[0].After.SHA256 + "\n"
+	}
+	return result, nil
 }
