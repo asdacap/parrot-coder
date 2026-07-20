@@ -11,11 +11,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/tailscale/hujson"
+	"go.yaml.in/yaml/v3"
 )
 
 const (
-	FileName       = "parrot.jsonc"
+	FileName       = "parrot.yaml"
 	maxConfigBytes = 4 << 20
 )
 
@@ -124,7 +124,7 @@ type Result struct {
 
 // Discover returns existing config files in deterministic low-to-high
 // precedence order: global, then each directory from project root to cwd.
-// Within one directory, .parrot/parrot.jsonc has higher precedence.
+// Within one directory, .parrot/parrot.yaml has higher precedence.
 func Discover(options Options) ([]Source, error) {
 	root, cwd, err := discoveryBounds(options.ProjectRoot, options.CWD)
 	if err != nil {
@@ -260,79 +260,61 @@ func readBoundedFile(path string, max int64) ([]byte, error) {
 	return data, nil
 }
 
-// Parse converts one JSONC object into generic JSON values and rejects
+// Parse converts one YAML object into generic JSON values and rejects
 // duplicate object keys at every depth.
 func Parse(data []byte) (map[string]any, error) {
-	value, err := hujson.Parse(data)
-	if err != nil {
+	var document yaml.Node
+	if err := yaml.Unmarshal(data, &document); err != nil {
 		return nil, err
 	}
-	value.Standardize()
-	standard := value.Pack()
-	if err := rejectDuplicateKeys(standard); err != nil {
+	if err := rejectDuplicateYAMLKeys(&document, "$"); err != nil {
 		return nil, err
 	}
 	var object map[string]any
-	if err := json.Unmarshal(standard, &object); err != nil {
+	if err := document.Decode(&object); err != nil {
 		return nil, err
 	}
 	if object == nil {
-		return nil, errors.New("config root must be a JSON object")
+		return nil, errors.New("config root must be a YAML object")
 	}
 	return object, nil
 }
 
-func rejectDuplicateKeys(data []byte) error {
-	decoder := json.NewDecoder(bytes.NewReader(data))
-	if err := scanJSONValue(decoder, "$"); err != nil {
-		return err
-	}
-	if _, err := decoder.Token(); !errors.Is(err, io.EOF) {
-		if err == nil {
-			return errors.New("multiple JSON values")
+func rejectDuplicateYAMLKeys(node *yaml.Node, path string) error {
+	switch node.Kind {
+	case yaml.DocumentNode:
+		if len(node.Content) == 0 {
+			return nil
 		}
-		return err
-	}
-	return nil
-}
-
-func scanJSONValue(decoder *json.Decoder, path string) error {
-	token, err := decoder.Token()
-	if err != nil {
-		return err
-	}
-	delimiter, ok := token.(json.Delim)
-	if !ok {
-		return nil
-	}
-	switch delimiter {
-	case '{':
+		return rejectDuplicateYAMLKeys(node.Content[0], path)
+	case yaml.MappingNode:
 		seen := make(map[string]bool)
-		for decoder.More() {
-			keyToken, err := decoder.Token()
-			if err != nil {
-				return err
+		for i := 0; i < len(node.Content); i += 2 {
+			keyNode := node.Content[i]
+			if keyNode.Kind != yaml.ScalarNode {
+				return fmt.Errorf("non-scalar key at %s", path)
 			}
-			key := keyToken.(string)
+			key := keyNode.Value
+			childPath := key
+			if path != "" {
+				childPath = path + "." + key
+			}
 			if seen[key] {
 				return fmt.Errorf("duplicate object key %q at %s", key, path)
 			}
 			seen[key] = true
-			if err := scanJSONValue(decoder, path+"."+key); err != nil {
+			if err := rejectDuplicateYAMLKeys(node.Content[i+1], childPath); err != nil {
 				return err
 			}
 		}
-	case '[':
-		for index := 0; decoder.More(); index++ {
-			if err := scanJSONValue(decoder, fmt.Sprintf("%s[%d]", path, index)); err != nil {
+	case yaml.SequenceNode:
+		for index := 0; index < len(node.Content); index++ {
+			if err := rejectDuplicateYAMLKeys(node.Content[index], fmt.Sprintf("%s[%d]", path, index)); err != nil {
 				return err
 			}
 		}
-	default:
-		return fmt.Errorf("unexpected JSON delimiter %q", delimiter)
 	}
-	_, err = decoder.Token()
-	return err
+	return nil
 }
 
 func mergeObject(destination, source map[string]any, prefix, sourcePath string, provenance map[string]string) {

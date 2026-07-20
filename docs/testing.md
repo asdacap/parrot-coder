@@ -59,7 +59,7 @@ access or process execution:
 ```sh
 go test ./internal/change -run '^$' -fuzz '^FuzzParsePatch$' -fuzztime=10s
 go test ./internal/protocol/sse -run '^$' -fuzz '^FuzzDecoder$' -fuzztime=10s
-go test ./internal/config -run '^$' -fuzz '^FuzzParseJSONC$' -fuzztime=10s
+go test ./internal/config -run '^$' -fuzz '^FuzzParseYAML$' -fuzztime=10s
 go test ./internal/mcp -run '^$' -fuzz '^FuzzFramedReader$' -fuzztime=10s
 go test ./internal/lsp -run '^$' -fuzz '^FuzzReadFrame$' -fuzztime=10s
 go test ./internal/terminal -run '^$' -fuzz '^FuzzSanitize$' -fuzztime=10s

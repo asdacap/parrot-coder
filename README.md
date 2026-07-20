@@ -143,29 +143,23 @@ regional endpoint or to give a newly served model its real context window.
 
 ### Compatible Endpoint
 
-Create `~/.config/parrot/parrot.jsonc`. Configuration stores the name of an
+Create `~/.config/parrot/parrot.yaml`. Configuration stores the name of an
 environment variable, never the API key itself:
 
-```jsonc
-{
-  "model": "local/code-model",
-  "providers": {
-    "local": {
-      "type": "compatible",
-      "protocol": "responses",
-      "base_url": "https://models.example.test/v1",
-      "api_key_env": "LOCAL_MODEL_API_KEY",
-      "models": {
-        "code-model": {
-          "name": "Code Model",
-          "context": 128000,
-          "max_tokens": 16384,
-          "tools": true
-        }
-      }
-    }
-  }
-}
+```yaml
+model: local/code-model
+providers:
+  local:
+    type: compatible
+    protocol: responses
+    base_url: https://models.example.test/v1
+    api_key_env: LOCAL_MODEL_API_KEY
+    models:
+      code-model:
+        name: Code Model
+        context: 128000
+        max_tokens: 16384
+        tools: true
 ```
 
 Then export the key for the Parrot process and start chat:

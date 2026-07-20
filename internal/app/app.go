@@ -960,7 +960,7 @@ func selectModel(configured, override string, providers []provider.Provider) (st
 		value = configured
 	}
 	if value == "" {
-		return "", "", errors.New("app: no default model configured; set model to provider/model in parrot.jsonc or pass --model")
+		return "", "", errors.New("app: no default model configured; set model to provider/model in parrot.yaml or pass --model")
 	}
 	providerID, modelID, found := strings.Cut(value, "/")
 	if !found {
