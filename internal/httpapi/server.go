@@ -85,6 +85,7 @@ var routes = []Route{
 	{"GET", "/api/v1/usage", "getSubscriptionUsage"},
 	{"GET", "/api/v1/agents", "listAgents"},
 	{"GET", "/api/v1/modes", "listModes"},
+	{"GET", "/api/v1/tools", "listTools"},
 	{"GET", "/openapi.json", "getOpenAPI"},
 }
 
@@ -120,6 +121,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/usage", s.subscriptionUsage)
 	s.mux.HandleFunc("/api/v1/agents", s.agents)
 	s.mux.HandleFunc("/api/v1/modes", s.modes)
+	s.mux.HandleFunc("/api/v1/tools", s.tools)
 	s.mux.HandleFunc("/openapi.json", s.openAPIDocument)
 	return s
 }
@@ -404,6 +406,21 @@ func (s *Server) modes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := lister.ListModes(r.Context())
+	s.respond(w, r, http.StatusOK, item, err)
+}
+
+func (s *Server) tools(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	lister, ok := s.backend.(interface {
+		ListTools(context.Context) (v1.ToolList, error)
+	})
+	if !ok {
+		s.respond(w, r, http.StatusOK, v1.ToolList{Items: []v1.Tool{}}, nil)
+		return
+	}
+	item, err := lister.ListTools(r.Context())
 	s.respond(w, r, http.StatusOK, item, err)
 }
 

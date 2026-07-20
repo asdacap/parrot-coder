@@ -41,6 +41,7 @@ var operationSchemas = map[string]operationSchema{
 	"getSubscriptionUsage":   {response: v1.SubscriptionUsage{}, status: "200"},
 	"listAgents":             {response: v1.AgentList{}, status: "200"},
 	"listModes":              {response: v1.ModeList{}, status: "200"},
+	"listTools":              {response: v1.ToolList{}, status: "200"},
 	"getOpenAPI":             {status: "200"},
 }
 

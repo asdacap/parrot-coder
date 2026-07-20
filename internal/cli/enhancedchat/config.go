@@ -65,10 +65,13 @@ type TurnCompleteResult struct {
 }
 
 type Config struct {
-	Context            context.Context
-	Interrupts         <-chan os.Signal
-	API                API
-	CurrentAPI         func() API
+	Context    context.Context
+	Interrupts <-chan os.Signal
+	API        API
+	CurrentAPI func() API
+	// Presentation reports what the connected server's tools declared about
+	// themselves. It is a function so a mid-session /connect is picked up.
+	Presentation       func() chatview.Presentations
 	Editor             *terminal.Editor
 	Decoder            *terminal.KeyDecoder
 	Renderer           *terminal.LiveRenderer
@@ -310,12 +313,14 @@ type taskReport struct {
 // activity list. The tracker owns every parent-child task relationship; the
 // enhanced runtime only renders the reports it returns.
 type taskStreamTracker struct {
-	tracker *chatview.TaskTracker
+	tracker      *chatview.TaskTracker
+	presentation chatview.Presentations
 }
 
 func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
 	if t.tracker == nil {
 		t.tracker = chatview.NewTaskTracker()
+		t.tracker.Presentation = t.presentation
 	}
 	reports, err := t.tracker.Apply(item, thinking)
 	if err != nil {
@@ -349,7 +354,16 @@ func permissionContextLines(item v1.Permission) []string {
 }
 func agentsLoadedActivities(item v1.Event) []string    { return chatview.AgentsLoadedActivities(item) }
 func toolActivityStyle(name string) terminal.TextStyle { return chatview.ToolActivityStyle(name) }
-func formatJSONAsYAML(input json.RawMessage) string    { return chatview.FormatJSONAsYAML(input) }
+
+// presentation reports what the connected server's tools declared. The zero
+// value describes nothing, so callers fall back to the legacy rendering.
+func (r *enhancedChatRuntime) presentation() chatview.Presentations {
+	if r == nil || r.shell == nil || r.shell.config == nil || r.shell.config.Presentation == nil {
+		return chatview.Presentations{}
+	}
+	return r.shell.config.Presentation()
+}
+func formatJSONAsYAML(input json.RawMessage) string { return chatview.FormatJSONAsYAML(input) }
 func slashParts(line string) (string, string) {
 	name, argument, _ := strings.Cut(line, " ")
 	return name, strings.TrimSpace(argument)

@@ -337,7 +337,7 @@ func (r *Runner) PrepareContinuation(ctx context.Context, sessionID string) (boo
 	if err != nil {
 		return false, err
 	}
-	if !profile.AllowsTool("get_goal") || !profile.AllowsTool("update_goal") {
+	if !profile.AllowsAll(GoalContinuationTools) {
 		return false, nil
 	}
 	remaining := "unlimited"
@@ -650,7 +650,7 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 			// Record the call before any cancellable operation. This lets cleanup
 			// settle and answer calls that were still waiting for the semaphore.
 			outcomes[i].call = call
-			if !profile.AllowsTool(call.call.Name) {
+			if !ProfileAllowsID(profile, snapshot, call.call.Name) {
 				err := fmt.Errorf("tool %q denied by agent %q", call.call.Name, profile.ID)
 				settleErr := r.config.Sessions.SettleTool(ctx, sessionID, call.call.ID, "failure", "", err.Error())
 				outcomes[i] = toolOutcome{call: call, err: err, settled: settleErr == nil, persistErr: settleErr}
@@ -771,7 +771,7 @@ func toolDefinitions(snapshot tool.Snapshot, profile Profile) []protocol.ToolDef
 	definitions := snapshot.Definitions()
 	result := make([]protocol.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
-		if profile.AllowsTool(definition.ID) {
+		if ProfileAllows(profile, definition) {
 			result = append(result, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
 		}
 	}

@@ -9,10 +9,18 @@ import (
 	"strings"
 )
 
-type SkillTool struct{ Registry *skill.Registry }
+type SkillTool struct {
+	BasePresentation
+	ReadOnlyTool
+	Registry *skill.Registry
+}
 
 func NewSkillTool(registry *skill.Registry) *SkillTool { return &SkillTool{Registry: registry} }
 func (*SkillTool) ID() string                          { return "skill" }
+func (*SkillTool) Presentation() Presentation {
+	return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"name"}}}}}
+}
+
 func (t *SkillTool) Description() string {
 	items := t.Registry.List()
 	names := make([]string, 0, len(items))

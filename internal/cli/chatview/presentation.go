@@ -1,0 +1,266 @@
+package chatview
+
+import (
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/terminal"
+)
+
+// Label strategies, mirroring tool.LabelKind. They name a rendering approach
+// rather than a tool, so the renderer never branches on tool identity.
+const (
+	toolLabelPatchTargets = "patch_targets"
+	toolLabelItemCount    = "item_count"
+)
+
+// Output modes, mirroring tool.OutputMode.
+const (
+	ToolOutputTail = "tail"
+	ToolOutputNone = "none"
+)
+
+// Result renderers, mirroring tool.ResultRender.
+const (
+	ToolResultText  = "text"
+	ToolResultTodos = "todos"
+)
+
+// Presentations holds the display metadata declared by the connected server's
+// tools, so renderers branch on what a tool does rather than on its identity.
+//
+// The zero value is valid and describes nothing: every lookup then returns an
+// empty presentation and the caller falls back to generic rendering. That is
+// what a server predating the tools endpoint yields, and it is also the state
+// while a connection is being established.
+type Presentations struct {
+	byID map[string]v1.ToolPresentation
+}
+
+func NewPresentations(list v1.ToolList) Presentations {
+	byID := make(map[string]v1.ToolPresentation, len(list.Items))
+	for _, item := range list.Items {
+		byID[item.ID] = item.Presentation
+	}
+	return Presentations{byID: byID}
+}
+
+// For returns the declared presentation of a tool, or the empty presentation
+// when the tool is unknown to this client.
+func (p Presentations) For(name string) v1.ToolPresentation { return p.byID[name] }
+
+// Redact returns a display-only copy of input with every field the tool
+// declared sensitive replaced by a length summary. Exact input remains
+// available to authorization and execution.
+func (p Presentations) Redact(name string, input map[string]any) map[string]any {
+	fields := p.For(name).Redact
+	if input == nil || len(fields) == 0 {
+		return RedactToolInputForDisplay(name, input)
+	}
+	return redactFields(input, fields)
+}
+
+// Payload decodes a tool activity event, redacting declared fields.
+func (p Presentations) Payload(data json.RawMessage) (string, string, map[string]any, string) {
+	callID, name, input, result := toolActivityRaw(data)
+	return callID, name, p.Redact(name, input), result
+}
+
+// Label summarises an invocation from its input, following the strategy the
+// tool declared. A tool this client does not know falls back to the generic
+// label, which inspects field names rather than tool identity.
+func (p Presentations) Label(name string, input map[string]any) string {
+	if _, declared := p.byID[name]; !declared {
+		return ToolActivityLabel(name, input)
+	}
+	spec := p.For(name).Label
+	var details []string
+	add := func(value string) {
+		if value = cleanActivityDetail(value); value != "" {
+			details = append(details, value)
+		}
+	}
+
+	switch spec.Kind {
+	case string(toolLabelItemCount):
+		items, ok := firstArray(input, spec.Source...)
+		if !ok {
+			return name
+		}
+		return itemCountLabel(spec.Prefix, spec.Noun, len(items))
+	case string(toolLabelPatchTargets):
+		details = append(details, patchActivityTargets(firstString(input, spec.Source...))...)
+	default:
+		for _, field := range spec.Fields {
+			if field.Array {
+				items, ok := firstArray(input, field.Names...)
+				if !ok {
+					continue
+				}
+				if len(items) > 0 {
+					if element, ok := items[0].(map[string]any); ok {
+						add(firstString(element, field.Item...))
+					}
+				}
+				if field.Overflow && len(items) > 1 {
+					details = append(details, fmt.Sprintf("+%d more", len(items)-1))
+				}
+				continue
+			}
+			value := firstString(input, field.Names...)
+			if value == "" {
+				value = field.Default
+			}
+			if field.Quote {
+				if cleaned := cleanActivityDetail(value); cleaned != "" {
+					details = append(details, fmt.Sprintf("%q", cleaned))
+				}
+				continue
+			}
+			add(value)
+		}
+	}
+	if len(details) == 0 {
+		return name
+	}
+	return name + " · " + strings.Join(details, " · ")
+}
+
+// itemCountLabel renders a collection size, pluralising the declared noun.
+func itemCountLabel(prefix, noun string, count int) string {
+	if noun == "" {
+		noun = "item"
+	}
+	if count != 1 {
+		noun += "s"
+	}
+	if prefix == "" {
+		prefix = "items"
+	}
+	return fmt.Sprintf("%s · %d %s", prefix, count, noun)
+}
+
+func firstArray(raw map[string]any, keys ...string) ([]any, bool) {
+	for _, key := range keys {
+		if value, ok := raw[key].([]any); ok {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+// Result reports how a successful result body should render.
+func (p Presentations) Result(name string) string {
+	if presentation, declared := p.byID[name]; declared {
+		return presentation.Result
+	}
+	return legacyResult(name)
+}
+
+// Output reports how streamed output should be handled.
+func (p Presentations) Output(name string) string {
+	if presentation, declared := p.byID[name]; declared {
+		return presentation.Output
+	}
+	return legacyOutput(name)
+}
+
+// legacyResult and legacyOutput reproduce the behaviour of the tool-ID switch
+// this package used before tools declared their own presentation. They apply
+// only to a tool the connected server did not describe, which means a server
+// predating the tools endpoint. Without them such a server would silently lose
+// diff blocks, streamed tails and stdin redaction.
+func legacyResult(name string) string {
+	switch name {
+	case "edit":
+		return ToolResultText
+	case "todowrite", "todo_write":
+		return ToolResultTodos
+	default:
+		return ""
+	}
+}
+
+func legacyOutput(name string) string {
+	switch name {
+	case "shell", "exec_command":
+		return ToolOutputTail
+	case "write_stdin":
+		return ToolOutputNone
+	default:
+		return ""
+	}
+}
+
+// Subagent reports whether invocations of a tool create child task activity.
+func (p Presentations) Subagent(name string) bool {
+	if presentation, declared := p.byID[name]; declared {
+		return presentation.Subagent
+	}
+	return legacySubagent(name)
+}
+
+func legacySubagent(name string) bool {
+	switch name {
+	case "agent_spawn", "agent_send", "monitor", "review":
+		return true
+	default:
+		return false
+	}
+}
+
+// PermissionChoiceLabels renders the answers a permission request offers, in
+// the order the requesting tool declared them. A request from a server which
+// declares none falls back to the standard answers.
+func PermissionChoiceLabels(item v1.Permission) []v1.PermissionChoice {
+	if len(item.Choices) > 0 {
+		return item.Choices
+	}
+	return legacyPermissionChoices(item.ToolID)
+}
+
+func legacyPermissionChoices(toolID string) []v1.PermissionChoice {
+	if toolID == "request_write_permission" {
+		return []v1.PermissionChoice{
+			{Value: "grant", Decision: "allow", Label: "grant", Description: "Allow sandboxed writes to this path for the current session"},
+			{Value: "reject", Decision: "deny", Label: "reject", Description: "Reject this request"},
+			{Value: "reject with reason", Decision: "deny", Label: "reject with reason", Description: "Reject and provide feedback to the agent", RequiresReason: true},
+		}
+	}
+	return []v1.PermissionChoice{
+		{Value: "yes", Decision: "allow", Label: "yes", Description: "Allow this request once"},
+		{Value: "no", Decision: "deny", Label: "no", Description: "Deny this request"},
+		{Value: "allow all for session", Decision: "allow", Scope: "session", Label: "allow all for session", Description: "Allow matching requests for this session"},
+		{Value: "allow all for workspace", Decision: "allow", Scope: "workspace", Label: "allow all for workspace", Description: "Allow matching requests for this workspace"},
+		{Value: "allow all for process", Decision: "allow", Scope: "process", Label: "allow all for process", Description: "Allow matching requests until Parrot exits"},
+		{Value: "enable yolo", Decision: "allow", Scope: "yolo", Label: "enable yolo", Description: "Disable all permission checks for this session"},
+	}
+}
+
+// PermissionReplyForChoice maps a chosen value back to the reply to send.
+func PermissionReplyForChoice(item v1.Permission, value, reason string) (v1.PermissionReply, bool) {
+	for _, choice := range PermissionChoiceLabels(item) {
+		if choice.Value != value {
+			continue
+		}
+		reply := v1.PermissionReply{Decision: choice.Decision, Scope: choice.Scope}
+		if choice.RequiresReason {
+			reply.Reason = reason
+		}
+		return reply, true
+	}
+	return v1.PermissionReply{}, false
+}
+
+// Style reports how prominently an invocation should render.
+func (p Presentations) Style(name string) terminal.TextStyle {
+	if p.For(name).Muted {
+		return terminal.TextStyleMuted
+	}
+	if _, declared := p.byID[name]; declared {
+		return terminal.TextStyleDefault
+	}
+	return ToolActivityStyle(name)
+}

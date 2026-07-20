@@ -18,7 +18,11 @@ import (
 
 const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["use_default","require_escalated"],"description":"Per-command sandbox override. Defaults to \u0060use_default\u0060; use \u0060require_escalated\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060require_escalated\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
 
-type ExecCommandTool struct{ Runner *process.Runner }
+type ExecCommandTool struct {
+	BasePresentation
+	WritableTool
+	Runner *process.Runner
+}
 
 type execCommandInput struct {
 	Command            string            `json:"cmd"`
@@ -39,6 +43,12 @@ func NewExecCommandTool(runner *process.Runner) *ExecCommandTool {
 }
 
 func (*ExecCommandTool) ID() string { return "exec_command" }
+func (*ExecCommandTool) Presentation() Presentation {
+	return Presentation{
+		Output: OutputTail,
+		Label:  LabelSpec{Fields: []LabelField{{Names: []string{"cmd"}}}},
+	}
+}
 
 func (*ExecCommandTool) Description() string {
 	return "Runs a command in a PTY, returning output or a task ID for ongoing interaction."

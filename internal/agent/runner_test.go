@@ -113,6 +113,8 @@ func (s *callThenBlockingStream) Next(ctx context.Context) (protocol.Event, erro
 func (*callThenBlockingStream) Close() error { return nil }
 
 type fakeTool struct {
+	tool.BasePresentation
+	tool.WritableTool
 	id      string
 	execute func(context.Context) (tool.Result, error)
 }

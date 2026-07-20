@@ -39,15 +39,31 @@ type Resource struct {
 	Attributes map[string]string `json:"attributes,omitempty"`
 }
 
+// Choice is one answer a requesting tool offers for its own authorization. A
+// tool which grants a lasting capability can thereby refuse to be approved for
+// a broader scope than the capability it hands out.
+type Choice struct {
+	Value          string `json:"value"`
+	Decision       string `json:"decision"`
+	Scope          string `json:"scope,omitempty"`
+	Label          string `json:"label"`
+	Description    string `json:"description,omitempty"`
+	RequiresReason bool   `json:"requires_reason,omitempty"`
+}
+
 // Request contains authorization data and a human-facing description. Callers
 // must not put credentials or file contents in Description, Review, or resource
 // attributes.
+//
+// Choices is not part of Hash: it describes how an operation may be answered,
+// not what the operation is, so adding it invalidates no existing grant.
 type Request struct {
 	ToolID         string          `json:"tool_id"`
 	Description    string          `json:"description,omitempty"`
 	CanonicalInput json.RawMessage `json:"canonical_input"`
 	Resources      []Resource      `json:"resources"`
 	Review         json.RawMessage `json:"review,omitempty"`
+	Choices        []Choice        `json:"choices,omitempty"`
 	OperationHash  string          `json:"operation_hash"`
 	SessionID      string          `json:"-"`
 	Workspace      string          `json:"-"`

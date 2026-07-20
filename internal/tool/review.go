@@ -16,6 +16,8 @@ const reviewAgentID = "review"
 // a review without selecting or knowing the implementation profile used by the
 // child session.
 type ReviewTool struct {
+	BasePresentation
+	ReadOnlyTool
 	Manager    *subagent.Manager
 	Agents     AgentLookup
 	CancelWait time.Duration
@@ -25,7 +27,9 @@ func NewReviewTool(manager *subagent.Manager, agents AgentLookup) Tool {
 	return &ReviewTool{Manager: manager, Agents: agents, CancelWait: 5 * time.Second}
 }
 
-func (t *ReviewTool) ID() string { return "review" }
+func (t *ReviewTool) ID() string               { return "review" }
+func (*ReviewTool) Presentation() Presentation { return Presentation{Subagent: true} }
+
 func (t *ReviewTool) Description() string {
 	return "Launch the built-in read-only review subagent and wait for its actionable findings. Use after implementing changes or when explicitly asked to review code."
 }

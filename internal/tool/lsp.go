@@ -31,6 +31,8 @@ type LSPToolConfig struct {
 }
 
 type LSPTool struct {
+	BasePresentation
+	ReadOnlyTool
 	kind   string
 	config LSPToolConfig
 }
@@ -43,6 +45,12 @@ func NewLSPTools(config LSPToolConfig) []Tool {
 	return result
 }
 func (t *LSPTool) ID() string { return "lsp_" + t.kind }
+func (*LSPTool) Presentation() Presentation {
+	return Presentation{
+		Muted: true,
+		Label: LabelSpec{Fields: []LabelField{{Names: []string{"path", "query"}}}},
+	}
+}
 func (t *LSPTool) Description() string {
 	return "Read-only Language Server Protocol " + t.kind + " query within the workspace."
 }

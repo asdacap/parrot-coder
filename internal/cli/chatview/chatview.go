@@ -133,15 +133,26 @@ func FormatFailedToolRequest(input map[string]any) string {
 
 // RedactToolInputForDisplay returns a presentation-only copy. Exact tool input
 // remains available to authorization and execution but stdin is never rendered.
+//
+// Deprecated: this is the fallback for servers which do not declare which of a
+// tool's fields are sensitive. Prefer Presentations.Redact, which asks the tool.
 func RedactToolInputForDisplay(name string, input map[string]any) map[string]any {
 	if input == nil || name != "write_stdin" {
 		return input
+	}
+	return redactFields(input, []string{"chars", "input"})
+}
+
+// redactFields copies input, replacing the named fields with a length summary.
+func redactFields(input map[string]any, fields []string) map[string]any {
+	if input == nil {
+		return nil
 	}
 	redacted := make(map[string]any, len(input))
 	for key, value := range input {
 		redacted[key] = value
 	}
-	for _, key := range []string{"chars", "input"} {
+	for _, key := range fields {
 		value, exists := redacted[key]
 		if !exists {
 			continue
@@ -269,7 +280,16 @@ func ToolActivityOutputTail(data json.RawMessage) string {
 	return firstString(raw, "output_tail")
 }
 
+// ToolActivityPayload decodes a tool activity event and applies the fallback
+// redaction. Prefer Presentations.Payload, which redacts the fields the tool
+// itself declared sensitive.
 func ToolActivityPayload(data json.RawMessage) (string, string, map[string]any, string) {
+	callID, name, input, result := toolActivityRaw(data)
+	return callID, name, RedactToolInputForDisplay(name, input), result
+}
+
+// toolActivityRaw decodes without redacting. Callers must redact before display.
+func toolActivityRaw(data json.RawMessage) (string, string, map[string]any, string) {
 	raw, ok := decodeJSONObject(data)
 	if !ok {
 		return "", "", nil, ""
@@ -292,7 +312,7 @@ func ToolActivityPayload(data json.RawMessage) (string, string, map[string]any, 
 			result = firstString(nested, "result", "Result")
 		}
 	}
-	return callID, name, RedactToolInputForDisplay(name, input), result
+	return callID, name, input, result
 }
 
 func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
@@ -310,18 +330,6 @@ func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
 		return nil, false
 	}
 	return raw, true
-}
-
-func todoWriteNameFromLabel(label string) string {
-	if label == "TODO" || strings.HasPrefix(label, "TODO · ") {
-		return "todowrite"
-	}
-	for _, name := range []string{"todowrite", "todo_write"} {
-		if label == name || strings.HasPrefix(label, name+" · ") {
-			return name
-		}
-	}
-	return ""
 }
 
 func todoWriteActivityLabel(_ string, count int) string {
@@ -492,13 +500,18 @@ type streamToolCall struct {
 	name   string
 	input  map[string]any
 	style  terminal.TextStyle
+	result string
+	stream string
 	output ShellOutputTail
 }
 
 type StreamToolTracker struct {
-	calls   map[string]streamToolCall
-	pending map[string]ShellOutputTail
-	done    map[string]bool
+	// Presentation is what each tool declared about itself. Its zero value
+	// describes nothing, so an unset tracker renders through the fallbacks.
+	Presentation Presentations
+	calls        map[string]streamToolCall
+	pending      map[string]ShellOutputTail
+	done         map[string]bool
 }
 
 type StreamToolReport struct {
@@ -548,6 +561,9 @@ type taskNode struct {
 // task.start carries the parent_task_id linking a task into the tree. Any
 // event for a task the tracker has never seen produces an unknown-task error.
 type TaskTracker struct {
+	// Presentation is forwarded to every per-task tool tracker. Its zero value
+	// describes nothing, so an unset tracker renders through the fallbacks.
+	Presentation    Presentations
 	tasks           map[string]*taskNode
 	unknownReported map[string]bool
 }
@@ -802,9 +818,9 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		return append(reports, TaskReport{ID: key + ":response", Line: prefixTaskActivity(prefix, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
 	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
 		if node.tools == nil {
-			node.tools = &StreamToolTracker{}
+			node.tools = &StreamToolTracker{Presentation: t.Presentation}
 		}
-		callID, _, _, _ := ToolActivityPayload(item.Data)
+		callID, _, _, _ := t.Presentation.Payload(item.Data)
 		report := node.tools.DescribeReport(item)
 		line := report.Line
 		if report.Label != "" {
@@ -817,7 +833,7 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		return []TaskReport{{ID: scope + "tool:" + callID, Line: prefixTaskActivity(prefix, line), Block: block, Terminal: report.Terminal, EmitPlain: true, Style: report.Style}}, nil
 	case v1.EventToolOutputDelta:
 		if node.tools == nil {
-			node.tools = &StreamToolTracker{}
+			node.tools = &StreamToolTracker{Presentation: t.Presentation}
 		}
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {
@@ -963,7 +979,7 @@ func (t *StreamToolTracker) Describe(item v1.Event) (string, string, bool) {
 }
 
 func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
-	callID, name, input, result := ToolActivityPayload(item.Data)
+	callID, name, input, result := t.Presentation.Payload(item.Data)
 	if t.calls == nil {
 		t.calls = make(map[string]streamToolCall)
 	}
@@ -974,7 +990,9 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	}
 	if name != "" {
 		call.name = name
-		call.style = ToolActivityStyle(name)
+		call.style = t.Presentation.Style(name)
+		call.result = t.Presentation.Result(name)
+		call.stream = t.Presentation.Output(name)
 	}
 	if input != nil {
 		call.input = input
@@ -985,16 +1003,16 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminalEvent := status == "success" || status == "failure" || status == "interrupted"
 	block := ""
-	if status == "success" && call.name == "edit" && strings.TrimSpace(result) != "" {
+	if status == "success" && call.result == ToolResultText && strings.TrimSpace(result) != "" {
 		block = TruncateToolBlock(result, MaxToolBlockLines)
-	} else if status == "success" && (call.name == "todowrite" || call.name == "todo_write") {
+	} else if status == "success" && call.result == ToolResultTodos {
 		if formatted, _, ok := FormatTodoWriteBlock(result, call.input); ok {
 			block = formatted
 		}
 	} else if status == "failure" && call.input != nil {
 		block = TruncateToolBlock(FormatFailedToolRequest(call.input), MaxToolBlockLines)
 	}
-	if terminalEvent && (call.name == "shell" || call.name == "exec_command") {
+	if terminalEvent && call.stream == ToolOutputTail {
 		output := ToolActivityOutputTail(item.Data)
 		if output == "" {
 			output = call.output.String()
@@ -1020,11 +1038,11 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		delete(t.calls, callID)
 	}
 	errorText := ToolActivityError(item.Data)
-	if call.name == "write_stdin" {
+	if call.stream == ToolOutputNone {
 		errorText, block = "", ""
 	}
 	return StreamToolReport{
-		Line: StreamToolStatus(status, errorText), Label: ToolActivityLabel(call.name, call.input), Block: block,
+		Line: StreamToolStatus(status, errorText), Label: t.Presentation.Label(call.name, call.input), Block: block,
 		Terminal: terminalEvent, Style: style,
 	}
 }
@@ -1046,12 +1064,12 @@ func (t *StreamToolTracker) Output(item *v1.ToolOutputDelta) StreamToolReport {
 		t.pending[item.ToolCallID] = pending
 		return StreamToolReport{}
 	}
-	if call.name == "write_stdin" {
-		return StreamToolReport{Line: "  ◐ Running " + ToolActivityLabel(call.name, call.input), Style: call.style}
+	if call.stream == ToolOutputNone {
+		return StreamToolReport{Line: "  ◐ Running " + t.Presentation.Label(call.name, call.input), Style: call.style}
 	}
 	call.output.Write(item.Delta)
 	t.calls[item.ToolCallID] = call
-	return StreamToolReport{Line: "  ◐ Running " + ToolActivityLabel(call.name, call.input), Block: call.output.String(), Style: call.style}
+	return StreamToolReport{Line: "  ◐ Running " + t.Presentation.Label(call.name, call.input), Block: call.output.String(), Style: call.style}
 }
 
 func AgentsLoadedPaths(item v1.Event) []string {
@@ -1147,17 +1165,36 @@ func setYAMLBlockStyle(node *yaml.Node) {
 	}
 }
 
+// PermissionContextLines renders the prompt context for a permission request.
+//
+// Deprecated: prefer Presentations.PermissionContextLines, which asks the tool
+// whether its description would echo a redacted value.
 func PermissionContextLines(item v1.Permission) []string {
-	if item.ToolID == "write_stdin" {
+	var empty Presentations
+	return empty.PermissionContextLines(item)
+}
+
+// PermissionContextLines renders the prompt context for a permission request.
+// A tool which declared LabelInPermission has its label shown instead of its
+// own description, because that description would echo a redacted value.
+func (p Presentations) PermissionContextLines(item v1.Permission) []string {
+	if p.labelInPermission(item.ToolID) {
 		var input map[string]any
 		if json.Unmarshal(item.CanonicalInput, &input) == nil {
-			return []string{ToolActivityLabel(item.ToolID, RedactToolInputForDisplay(item.ToolID, input))}
+			return []string{p.Label(item.ToolID, p.Redact(item.ToolID, input))}
 		}
-		return []string{"write_stdin"}
+		return []string{item.ToolID}
 	}
 	description := strings.TrimSpace(strings.NewReplacer("\r\n", " ", "\r", " ", "\n", " ").Replace(item.Description))
 	if description == "" {
 		return nil
 	}
 	return []string{description}
+}
+
+func (p Presentations) labelInPermission(name string) bool {
+	if presentation, declared := p.byID[name]; declared {
+		return presentation.LabelInPermission
+	}
+	return name == "write_stdin"
 }

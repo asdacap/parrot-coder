@@ -448,7 +448,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
 		Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: monitors,
-		ProviderResolver: providerRegistry,
+		ProviderResolver: providerRegistry, Tools: toolSnapshot,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
 		for _, active := range coordinator.Active() {
@@ -473,7 +473,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 		definitions := make([]protocol.ToolDefinition, 0)
 		for _, definition := range toolSnapshot.Definitions() {
-			if profile.AllowsTool(definition.ID) {
+			if agent.ProfileAllows(profile, definition) {
 				definitions = append(definitions, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
 			}
 		}

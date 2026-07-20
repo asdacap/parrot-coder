@@ -13,7 +13,10 @@ const maxGitDiffBytes = 4 << 20
 
 // GitDiffTool exposes only fixed, read-only Git operations. Review workers use
 // it to inspect changes without receiving the general shell tool.
-type GitDiffTool struct{}
+type GitDiffTool struct {
+	BasePresentation
+	ReadOnlyTool
+}
 
 func NewGitDiffTool() Tool        { return &GitDiffTool{} }
 func (t *GitDiffTool) ID() string { return "git_diff" }

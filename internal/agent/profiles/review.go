@@ -10,9 +10,11 @@ Return all actionable findings, ordered by severity. For each finding, include a
 
 func Review() Profile {
 	return Profile{
-		ID:             ReviewID,
-		Prompt:         reviewPrompt,
-		AllowedToolIDs: []string{"get_goal", "glob", "git_diff", "grep", "read", "read_output", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "todoread"},
+		ID:     ReviewID,
+		Prompt: reviewPrompt,
+		// Read-only tools are available by default; delegation is withheld so the
+		// HardRule below is enforced rather than merely stated.
+		DeniedToolIDs:  []string{"agent_send", "agent_spawn", "monitor", "review", "task_interrupt", "task_list_active"},
 		HardRules:      []string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."},
 		MaxTurns:       32,
 		RecursionLimit: 3,

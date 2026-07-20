@@ -17,6 +17,8 @@ import (
 )
 
 type ShellTool struct {
+	BasePresentation
+	WritableTool
 	Runner       *process.Runner
 	unrestricted bool
 }
@@ -31,6 +33,15 @@ func (t *ShellTool) ID() string {
 		return "unrestricted_shell"
 	}
 	return "shell"
+}
+
+// Presentation is identical for both variants: unrestricted_shell drives a
+// terminal exactly as shell does.
+func (*ShellTool) Presentation() Presentation {
+	return Presentation{
+		Output: OutputTail,
+		Label:  LabelSpec{Fields: []LabelField{{Names: []string{"command"}}}},
+	}
 }
 func (t *ShellTool) Description() string {
 	if t.unrestricted {

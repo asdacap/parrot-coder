@@ -18,6 +18,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 // DomainBackend maps the existing application services to the stable API.
@@ -41,6 +42,7 @@ type DomainBackend struct {
 	ProviderResolver   agent.ProviderResolver
 	CompactSessionFunc func(context.Context, string) (v1.Compaction, error)
 	Processes          ProcessLifecycle
+	Tools              tool.Snapshot
 }
 
 func (b *DomainBackend) GetGoal(ctx context.Context, id string) (v1.Goal, error) {
@@ -423,7 +425,14 @@ func (b *DomainBackend) ListPermissions(ctx context.Context, id string) (v1.Perm
 		for i, resource := range item.Request.Resources {
 			resources[i] = v1.PermissionResource{Kind: resource.Kind, Identifier: resource.Identifier, Operation: resource.Operation, Attributes: resource.Attributes}
 		}
-		out.Items = append(out.Items, v1.Permission{ID: item.ID, ToolID: item.Request.ToolID, Description: item.Request.Description, CanonicalInput: item.Request.CanonicalInput, Resources: resources, Review: item.Request.Review, OperationHash: item.Request.OperationHash, Reason: item.Reason})
+		choices := make([]v1.PermissionChoice, len(item.Request.Choices))
+		for i, choice := range item.Request.Choices {
+			choices[i] = v1.PermissionChoice{
+				Value: choice.Value, Decision: choice.Decision, Scope: choice.Scope,
+				Label: choice.Label, Description: choice.Description, RequiresReason: choice.RequiresReason,
+			}
+		}
+		out.Items = append(out.Items, v1.Permission{ID: item.ID, ToolID: item.Request.ToolID, Description: item.Request.Description, CanonicalInput: item.Request.CanonicalInput, Resources: resources, Review: item.Request.Review, Choices: choices, OperationHash: item.Request.OperationHash, Reason: item.Reason})
 	}
 	return out, nil
 }
@@ -443,7 +452,14 @@ func (b *DomainBackend) ReplyPermission(ctx context.Context, sessionID, requestI
 			break
 		}
 	}
-	if len(reply.Reason) > 4096 || permissionItem.ToolID == "request_write_permission" && reply.Decision == "allow" && reply.Scope != "" {
+	if len(reply.Reason) > 4096 {
+		return ErrInvalid
+	}
+	// The reply must be one of the answers the requesting tool offered. A tool
+	// which grants a lasting capability offers no scoped allow, so this is what
+	// stops one approval from authorizing later requests. Choices are read from
+	// the pending request held by the broker, never from the client.
+	if len(permissionItem.Choices) > 0 && !replyMatchesChoices(permissionItem.Choices, reply) {
 		return ErrInvalid
 	}
 	switch reply.Decision {
@@ -655,6 +671,54 @@ func (b *DomainBackend) ListModes(context.Context) (v1.ModeList, error) {
 		out.Items = append(out.Items, v1.Mode{ID: item.ID(), ReadOnly: profile.ReadOnly, MaxTurns: profile.MaxTurns})
 	}
 	return out, nil
+}
+
+// ListTools exposes the declared presentation of every registered tool so that
+// clients render tool activity without knowing which tools exist. An empty
+// snapshot yields an empty list, and such a client falls back to generic
+// rendering.
+func (b *DomainBackend) ListTools(context.Context) (v1.ToolList, error) {
+	out := v1.ToolList{Items: []v1.Tool{}}
+	for _, entry := range b.Tools.Presentations() {
+		out.Items = append(out.Items, v1.Tool{ID: entry.ID, Presentation: toolPresentationDTO(entry.Presentation)})
+	}
+	return out, nil
+}
+
+func toolPresentationDTO(presentation tool.Presentation) v1.ToolPresentation {
+	fields := make([]v1.ToolLabelPart, 0, len(presentation.Label.Fields))
+	for _, field := range presentation.Label.Fields {
+		fields = append(fields, v1.ToolLabelPart{
+			Names: field.Names, Quote: field.Quote, Default: field.Default,
+			Array: field.Array, Item: field.Item, Overflow: field.Overflow,
+		})
+	}
+	return v1.ToolPresentation{
+		Label: v1.ToolLabel{
+			Kind: string(presentation.Label.Kind), Fields: fields, Source: presentation.Label.Source,
+			Prefix: presentation.Label.Prefix, Noun: presentation.Label.Noun,
+		},
+		Redact: presentation.Redact, Muted: presentation.Muted,
+		Result: string(presentation.Result), Output: string(presentation.Output),
+		Subagent: presentation.Subagent, LabelInPermission: presentation.LabelInPermission,
+	}
+}
+
+// replyMatchesChoices reports whether a reply is one of the answers the
+// requesting tool offered. A tool which grants a lasting capability offers no
+// scoped allow, which is what stops one approval from authorizing later
+// requests. A reason is accepted only for a choice which asks for one.
+func replyMatchesChoices(choices []v1.PermissionChoice, reply v1.PermissionReply) bool {
+	for _, choice := range choices {
+		if choice.Decision != reply.Decision || choice.Scope != reply.Scope {
+			continue
+		}
+		if reply.Reason != "" && !choice.RequiresReason {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func sessionDTO(item session.Session) v1.Session {

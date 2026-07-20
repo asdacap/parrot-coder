@@ -19,7 +19,11 @@ type GlobConfig struct {
 	MaxVisited int
 	Timeout    time.Duration
 }
-type GlobTool struct{ Config GlobConfig }
+type GlobTool struct {
+	BasePresentation
+	ReadOnlyTool
+	Config GlobConfig
+}
 
 func NewGlobTool(config GlobConfig) *GlobTool {
 	if config.MaxResults <= 0 {
@@ -31,9 +35,16 @@ func NewGlobTool(config GlobConfig) *GlobTool {
 	if config.Timeout <= 0 {
 		config.Timeout = 5 * time.Second
 	}
-	return &GlobTool{config}
+	return &GlobTool{Config: config}
 }
 func (*GlobTool) ID() string { return "glob" }
+func (*GlobTool) Presentation() Presentation {
+	return Presentation{
+		Muted: true,
+		Label: LabelSpec{Fields: []LabelField{{Names: []string{"pattern"}, Quote: true}}},
+	}
+}
+
 func (*GlobTool) Description() string {
 	return "Find workspace paths with deterministic glob matching, including **."
 }

@@ -14,6 +14,8 @@ import (
 )
 
 type FormatTool struct {
+	BasePresentation
+	WritableTool
 	Formatters *formatter.Registry
 	Changes    *change.Service
 }
@@ -22,6 +24,10 @@ func NewFormatTool(formatters *formatter.Registry, changes *change.Service) *For
 	return &FormatTool{Formatters: formatters, Changes: changes}
 }
 func (*FormatTool) ID() string { return "format" }
+func (*FormatTool) Presentation() Presentation {
+	return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"path", "file", "filePath"}}}}}
+}
+
 func (*FormatTool) Description() string {
 	return "Run the configured formatter during planning, review its command and exact proposed diff, then commit those bytes without rerunning it."
 }

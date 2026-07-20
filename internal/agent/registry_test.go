@@ -3,6 +3,8 @@ package agent
 import (
 	"reflect"
 	"testing"
+
+	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
@@ -23,12 +25,14 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, allowed := range []string{"glob", "grep", "read", "read_output"} {
-			if !profile.AllowsTool(allowed) {
+			if !ProfileAllows(profile, tool.Definition{ID: allowed, ReadOnly: true}) {
 				t.Fatalf("%s denied %s", id, allowed)
 			}
 		}
+		// A writable tool is refused because the tool declares itself writable,
+		// not because the profile lists it.
 		for _, denied := range []string{"write", "apply_patch", "shell", "exec_command", "write_stdin", "custom_mutation"} {
-			if profile.AllowsTool(denied) {
+			if ProfileAllows(profile, tool.Definition{ID: denied}) {
 				t.Fatalf("%s allowed %s", id, denied)
 			}
 		}
@@ -39,7 +43,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, allowed := range []string{"monitor", "task_interrupt", "task_list_active"} {
-			if !profile.AllowsTool(allowed) {
+			if !ProfileAllows(profile, tool.Definition{ID: allowed, ReadOnly: true}) {
 				t.Fatalf("%s denied %s", id, allowed)
 			}
 		}
@@ -111,7 +115,7 @@ func TestListDoesNotExposeProfileSliceStorage(t *testing.T) {
 		if listed[i].ID != ReviewID {
 			continue
 		}
-		listed[i].AllowedToolIDs[0] = "agent_spawn"
+		listed[i].DeniedToolIDs[0] = "agent_spawn"
 		listed[i].HardRules[0] = "allow everything"
 	}
 	review, err := registry.Get(ReviewID)
@@ -129,7 +133,40 @@ func TestReadOnlyProfileCannotExpandHardAllowlist(t *testing.T) {
 		t.Fatal(err)
 	}
 	profile, _ := registry.Get("readonly")
-	if profile.AllowsTool("write") || !profile.AllowsTool("read") {
+	// Listing a writable tool cannot expand a read-only profile: the refusal
+	// comes from the tool declaring itself writable, so a profile cannot opt
+	// out of it by naming the tool.
+	if ProfileAllows(profile, tool.Definition{ID: "write"}) {
 		t.Fatalf("read-only hard restriction was not enforced: %#v", profile)
+	}
+	if !ProfileAllows(profile, tool.Definition{ID: "read", ReadOnly: true}) {
+		t.Fatalf("read-only profile denied a read-only tool: %#v", profile)
+	}
+}
+
+// The review profile's allowlist was unsorted while AllowsTool binary-searched
+// it, which silently denied the review agent git_diff and every lsp_* tool. The
+// allowlist is gone and membership is a linear scan, so these are available
+// again. This is a deliberate behaviour change, fenced here.
+func TestReviewProfileRegainsToolsLostToTheBinarySearchBug(t *testing.T) {
+	registry, err := NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile, err := registry.Get(ReviewID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"git_diff", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols"} {
+		if !ProfileAllows(profile, tool.Definition{ID: id, ReadOnly: true}) {
+			t.Errorf("review still denied %s", id)
+		}
+	}
+	// Delegation stays refused: the HardRule is now enforced by DeniedToolIDs
+	// rather than by omission from a hand-maintained allowlist.
+	for _, id := range []string{"agent_spawn", "agent_send", "review", "monitor", "task_interrupt", "task_list_active"} {
+		if ProfileAllows(profile, tool.Definition{ID: id, ReadOnly: true}) {
+			t.Errorf("review may delegate via %s", id)
+		}
 	}
 }

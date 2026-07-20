@@ -9,7 +9,11 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
-type GetGoalTool struct{ Service *session.GoalService }
+type GetGoalTool struct {
+	BasePresentation
+	ReadOnlyTool
+	Service *session.GoalService
+}
 
 func NewGetGoalTool(service *session.GoalService) *GetGoalTool { return &GetGoalTool{Service: service} }
 func (*GetGoalTool) ID() string                                { return "get_goal" }
@@ -39,7 +43,11 @@ func (t *GetGoalTool) Execute(ctx context.Context, _ Plan, call CallContext) (Re
 	return goalResult(goal), nil
 }
 
-type CreateGoalTool struct{ Service *session.GoalService }
+type CreateGoalTool struct {
+	BasePresentation
+	WritableTool
+	Service *session.GoalService
+}
 
 type createGoalInput struct {
 	Objective   string `json:"objective"`
@@ -82,7 +90,11 @@ func (t *CreateGoalTool) Execute(ctx context.Context, plan Plan, call CallContex
 	return goalResult(goal), nil
 }
 
-type UpdateGoalTool struct{ Service *session.GoalService }
+type UpdateGoalTool struct {
+	BasePresentation
+	WritableTool
+	Service *session.GoalService
+}
 
 type updateGoalInput struct {
 	Status session.GoalStatus `json:"status"`

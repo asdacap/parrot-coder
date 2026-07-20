@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -21,7 +20,7 @@ func (r *enhancedChatRuntime) updateToolOutput(output *v1.ToolOutputDelta) {
 	}
 	for i := range r.activity {
 		if r.activity[i].id == output.ToolCallID {
-			if r.activity[i].toolName == "write_stdin" {
+			if r.presentation().Output(r.activity[i].toolName) == chatview.ToolOutputNone {
 				return
 			}
 			r.activity[i].output.Write(output.Delta)
@@ -37,14 +36,15 @@ func (r *enhancedChatRuntime) updateToolOutput(output *v1.ToolOutputDelta) {
 }
 
 func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
-	callID, name, input, result := toolActivityPayload(item.Data)
+	presentation := r.presentation()
+	callID, name, input, result := presentation.Payload(item.Data)
 	errorText := toolActivityError(item.Data)
 	if callID == "" {
 		callID = fmt.Sprintf("tool-%d", time.Now().UnixNano())
 	}
 	label := name
 	if input != nil {
-		label = toolActivityLabel(name, input)
+		label = presentation.Label(name, input)
 	} else {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
@@ -71,14 +71,14 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		}
 		if name != "" {
 			r.activity[i].toolName = name
-			if name == "write_stdin" {
+			if presentation.Output(name) == chatview.ToolOutputNone {
 				r.activity[i].output = shellOutputTail{}
 			}
 		}
 		if status == "failure" || status == "interrupted" {
 			r.activity[i].style = terminal.TextStyleDefault
 		} else {
-			r.activity[i].style = toolActivityStyle(r.activity[i].toolName)
+			r.activity[i].style = presentation.Style(r.activity[i].toolName)
 		}
 		break
 	}
@@ -90,7 +90,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
-	if terminalEvent && status == "success" && name == "edit" && strings.TrimSpace(result) != "" {
+	if terminalEvent && status == "success" && presentation.Result(name) == chatview.ToolResultText && strings.TrimSpace(result) != "" {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
 				r.activity[i].block = truncateToolBlock(result, maxToolBlockLines)
@@ -103,20 +103,16 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			if r.activity[i].id != callID {
 				continue
 			}
-			todoName := name
-			if todoName == "" {
-				todoName = todoWriteNameFromLabel(r.activity[i].label)
-			}
-			if todoName == "todowrite" || todoName == "todo_write" {
+			if presentation.Result(r.activity[i].toolName) == chatview.ToolResultTodos {
 				if block, count, ok := formatTodoWriteBlock(result, r.activity[i].input); ok {
 					r.activity[i].block = block
-					r.activity[i].label = todoWriteActivityLabel(todoName, count)
+					r.activity[i].label = todoWriteActivityLabel(r.activity[i].toolName, count)
 				}
 			}
 			break
 		}
 	}
-	if name == "write_stdin" {
+	if presentation.Output(name) == chatview.ToolOutputNone {
 		errorText = ""
 	}
 	if errorText != "" {
@@ -137,7 +133,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	}
 	if terminalEvent {
 		for i := range r.activity {
-			if r.activity[i].id == callID && (r.activity[i].toolName == "shell" || r.activity[i].toolName == "exec_command") {
+			if r.activity[i].id == callID && presentation.Output(r.activity[i].toolName) == chatview.ToolOutputTail {
 				output := toolActivityOutputTail(item.Data)
 				if output == "" {
 					output = r.activity[i].output.String()
@@ -347,18 +343,6 @@ func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
 	return raw, true
 }
 
-func todoWriteNameFromLabel(label string) string {
-	if label == "TODO" || strings.HasPrefix(label, "TODO · ") {
-		return "todowrite"
-	}
-	for _, name := range []string{"todowrite", "todo_write"} {
-		if label == name || strings.HasPrefix(label, name+" · ") {
-			return name
-		}
-	}
-	return ""
-}
-
 func todoWriteActivityLabel(_ string, count int) string {
 	noun := "items"
 	if count == 1 {
@@ -367,89 +351,10 @@ func todoWriteActivityLabel(_ string, count int) string {
 	return fmt.Sprintf("TODO · %d %s", count, noun)
 }
 
+// toolActivityLabel delegates to the shared renderer. It survives only for the
+// legacy fallback path; declared tools are labelled via Presentations.Label.
 func toolActivityLabel(name string, input map[string]any) string {
-	if name == "exec_command" || name == "write_stdin" {
-		return chatview.ToolActivityLabel(name, chatview.RedactToolInputForDisplay(name, input))
-	}
-	var details []string
-	add := func(value string) {
-		if value = cleanActivityDetail(value); value != "" {
-			details = append(details, value)
-		}
-	}
-	quoted := func(value string) {
-		if value = cleanActivityDetail(value); value != "" {
-			details = append(details, fmt.Sprintf("%q", value))
-		}
-	}
-
-	switch name {
-	case "read", "edit", "format":
-		add(firstString(input, "path", "file", "filePath"))
-	case "glob":
-		quoted(firstString(input, "pattern"))
-	case "grep":
-		quoted(firstString(input, "pattern"))
-		path := firstString(input, "path")
-		if path == "" {
-			path = "."
-		}
-		add(path)
-	case "read_output":
-		add(firstString(input, "id"))
-	case "apply_patch":
-		details = append(details, patchActivityTargets(firstString(input, "patchText", "patch"))...)
-	case "shell":
-		add(firstString(input, "command"))
-	case "todowrite", "todo_write":
-		if todos, ok := input["todos"].([]any); ok {
-			return todoWriteActivityLabel(name, len(todos))
-		}
-	case "question":
-		if questions, ok := input["questions"].([]any); ok && len(questions) > 0 {
-			if question, ok := questions[0].(map[string]any); ok {
-				add(firstString(question, "header", "prompt", "question"))
-			}
-			if len(questions) > 1 {
-				details = append(details, fmt.Sprintf("+%d more", len(questions)-1))
-			}
-		}
-	case "skill":
-		add(firstString(input, "name"))
-	case "web_fetch":
-		add(firstString(input, "url"))
-	case "agent_spawn":
-		add(firstString(input, "agent"))
-		add(firstString(input, "prompt"))
-	case "agent_send":
-		add(firstString(input, "task_id"))
-		add(firstString(input, "message"))
-	case "task_interrupt":
-		add(firstString(input, "task_id"))
-	case "monitor":
-		add(firstString(input, "task_id"))
-	default:
-		if strings.HasPrefix(name, "lsp_") {
-			add(firstString(input, "path", "query"))
-			break
-		}
-		keys := make([]string, 0, len(input))
-		for key := range input {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			value, ok := input[key].(string)
-			if ok && !sensitiveActivityField(key) {
-				add(key + "=" + value)
-				break
-			}
-		}
-	}
-	if len(details) == 0 {
-		return name
-	}
-	return name + " · " + strings.Join(details, " · ")
+	return chatview.ToolActivityLabel(name, chatview.RedactToolInputForDisplay(name, input))
 }
 
 func firstObject(raw map[string]any, keys ...string) map[string]any {

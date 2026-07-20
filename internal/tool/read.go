@@ -20,7 +20,11 @@ type ReadConfig struct {
 	MaxBytes   int64
 	MaxEntries int
 }
-type ReadTool struct{ Config ReadConfig }
+type ReadTool struct {
+	BasePresentation
+	ReadOnlyTool
+	Config ReadConfig
+}
 
 func NewReadTool(config ReadConfig) *ReadTool {
 	if config.MaxLines <= 0 {
@@ -32,9 +36,16 @@ func NewReadTool(config ReadConfig) *ReadTool {
 	if config.MaxEntries <= 0 {
 		config.MaxEntries = 2000
 	}
-	return &ReadTool{config}
+	return &ReadTool{Config: config}
 }
 func (*ReadTool) ID() string { return "read" }
+func (*ReadTool) Presentation() Presentation {
+	return Presentation{
+		Muted: true,
+		Label: LabelSpec{Fields: []LabelField{{Names: []string{"path", "file", "filePath"}}}},
+	}
+}
+
 func (*ReadTool) Description() string {
 	return "Read a bounded line range from a text file or list a directory. Relative paths resolve within the workspace. File reads include a content sha256 for use with edit's expected_sha256."
 }

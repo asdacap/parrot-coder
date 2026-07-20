@@ -9,12 +9,21 @@ import (
 )
 
 type EditTool struct {
+	BasePresentation
+	WritableTool
 	Changes *change.Service
 }
 
 func NewEditTool(changes *change.Service) *EditTool { return &EditTool{Changes: changes} }
 
 func (*EditTool) ID() string { return "edit" }
+func (*EditTool) Presentation() Presentation {
+	return Presentation{
+		Result: ResultText,
+		Label:  LabelSpec{Fields: []LabelField{{Names: []string{"path", "file", "filePath"}}}},
+	}
+}
+
 func (*EditTool) Description() string {
 	return "Replace the entire content of a workspace file after hash-bound diff review; creation must be explicit."
 }

@@ -65,6 +65,15 @@ type Tool interface {
 	// values merely because they occur in it.
 	DescribeRequest(json.RawMessage) (string, error)
 	JSONSchema() json.RawMessage
+	// Presentation declares display-only metadata so that renderers branch on
+	// what a tool does rather than on which tool it is. Embed BasePresentation
+	// for the neutral default.
+	Presentation() Presentation
+	// ReadOnly reports whether the tool can change anything outside the
+	// session. It gates read-only agent profiles, so it is required rather than
+	// defaulted: a silent default here would be a security decision made by
+	// omission.
+	ReadOnly() bool
 	Plan(context.Context, json.RawMessage, CallContext) (Plan, error)
 	Execute(context.Context, Plan, CallContext) (Result, error)
 }
@@ -95,6 +104,10 @@ type Definition struct {
 	ID          string          `json:"id"`
 	Description string          `json:"description"`
 	Schema      json.RawMessage `json:"schema"`
+	// ReadOnly is excluded from the wire form: Definitions is marshalled into
+	// the model's tool guidance, which must not grow fields the model does not
+	// use. Read-onlyness is consumed server-side when gating a profile.
+	ReadOnly bool `json:"-"`
 }
 
 type Registry struct {
@@ -155,10 +168,29 @@ func (s Snapshot) Definitions() []Definition {
 	return out
 }
 
+// ReadOnly reports whether a registered tool can change anything outside the
+// session. An unknown tool is treated as writable.
+func (s Snapshot) ReadOnly(id string) bool {
+	t, ok := s.tools[id]
+	return ok && t.ReadOnly()
+}
+
+// Presentations projects the declared display metadata of every tool. It is
+// deliberately separate from Definitions so that presentation detail never
+// reaches the model's tool guidance.
+func (s Snapshot) Presentations() []PresentationEntry {
+	out := make([]PresentationEntry, 0, len(s.tools))
+	for id, t := range s.tools {
+		out = append(out, PresentationEntry{ID: id, Presentation: t.Presentation()})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 func definitions(tools map[string]Tool) []Definition {
 	out := make([]Definition, 0, len(tools))
 	for _, t := range tools {
-		out = append(out, Definition{t.ID(), t.Description(), append(json.RawMessage(nil), t.JSONSchema()...)})
+		out = append(out, Definition{ID: t.ID(), Description: t.Description(), Schema: append(json.RawMessage(nil), t.JSONSchema()...), ReadOnly: t.ReadOnly()})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -243,6 +275,7 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 				return Result{}, err
 			}
 			p.Permissions[i].Description = description
+			p.Permissions[i].Choices = ChoicesFor(t)
 			p.Permissions[i].OperationHash, err = permission.Hash(p.Permissions[i])
 			if err != nil {
 				return Result{}, err
@@ -283,10 +316,11 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	if result.ModelText == "" && result.Text != "" {
 		return Result{}, fmt.Errorf("tool %q returned output without a model copy", id)
 	}
-	// Neither field is truncated here: bounding the model copy is each tool's
-	// responsibility, since only the tool knows which part of its output the
-	// model must retain. Oversized output is spilled so the full text stays
-	// recoverable, and an unbounded model copy is reported rather than cut.
+	// Text is never truncated here, and bounding the model copy is each tool's
+	// responsibility. Spilling is the exception: the executor performed the spill
+	// and is the only party holding the resulting identifier, so it replaces the
+	// model copy to report what it did. Without this the model receives a
+	// preview it cannot act on, because nothing else names the output ID.
 	if len(result.Text) > max && call.Outputs != nil {
 		if result.Metadata == nil {
 			result.Metadata = make(map[string]any)
@@ -294,9 +328,13 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 		stored, storeErr := call.Outputs.Store(ctx, strings.NewReader(result.Text))
 		if storeErr != nil {
 			result.Metadata["output_lossy"] = true
+			result.ModelText = modelText(result.ModelText) +
+				fmt.Sprintf("\n... output exceeded %d bytes and could not be stored; the remainder is unrecoverable ...", max)
 		} else {
 			result.Metadata["output_id"] = stored.ID
 			result.Metadata["output_bytes"] = stored.Size
+			result.ModelText = modelText(stored.Preview) +
+				fmt.Sprintf("\n... %d bytes total; read the remainder with read_output id %s ...", stored.Size, stored.ID)
 		}
 	}
 	if len(result.ModelText) > max {

@@ -92,16 +92,26 @@ func writeJSONLine(output io.Writer, item v1.Event) error {
 	return json.NewEncoder(output).Encode(item)
 }
 
-type jsonlRedactor struct{ tools map[string]string }
+// jsonlRedactor blanks the transcript export for tools which declared they
+// have no displayable output, so a redacted field never reaches a file.
+type jsonlRedactor struct {
+	presentation chatview.Presentations
+	tools        map[string]string
+}
+
+// suppressed reports whether a tool declared that its output must not be shown.
+func (r *jsonlRedactor) suppressed(name string) bool {
+	return name != "" && r.presentation.Output(name) == chatview.ToolOutputNone
+}
 
 func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
 	if item.Type == v1.EventPermission {
 		var request v1.Permission
-		if json.Unmarshal(item.Data, &request) == nil && request.ToolID == "write_stdin" {
-			request.Description = "write_stdin"
+		if json.Unmarshal(item.Data, &request) == nil && r.suppressed(request.ToolID) {
+			request.Description = request.ToolID
 			var input map[string]any
 			if json.Unmarshal(request.CanonicalInput, &input) == nil {
-				request.CanonicalInput, _ = json.Marshal(chatview.RedactToolInputForDisplay(request.ToolID, input))
+				request.CanonicalInput, _ = json.Marshal(r.presentation.Redact(request.ToolID, input))
 			}
 			request.Review = json.RawMessage(`{"redacted":true}`)
 			item.Data, _ = json.Marshal(request)
@@ -109,18 +119,18 @@ func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
 		return item
 	}
 	if strings.HasPrefix(item.Type, "session.tool.") {
-		callID, name, input, _ := chatview.ToolActivityPayload(item.Data)
+		callID, name, input, _ := r.presentation.Payload(item.Data)
 		if r.tools == nil {
 			r.tools = make(map[string]string)
 		}
-		if name == "write_stdin" && callID != "" {
+		if r.suppressed(name) && callID != "" {
 			r.tools[callID] = name
 		}
 		effectiveName := name
 		if effectiveName == "" {
 			effectiveName = r.tools[callID]
 		}
-		if effectiveName == "write_stdin" {
+		if r.suppressed(effectiveName) {
 			var raw map[string]any
 			if json.Unmarshal(item.Data, &raw) == nil {
 				if input != nil {
@@ -139,13 +149,13 @@ func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
 	if item.Type == v1.EventMessagePartDelta {
 		var delta v1.MessagePartDelta
 		if json.Unmarshal(item.Data, &delta) == nil && delta.Kind == "tool_input" {
-			if delta.ToolName == "write_stdin" {
+			if r.suppressed(delta.ToolName) {
 				if r.tools == nil {
 					r.tools = make(map[string]string)
 				}
 				r.tools[delta.ToolCallID] = delta.ToolName
 			}
-			if r.tools[delta.ToolCallID] == "write_stdin" {
+			if r.suppressed(r.tools[delta.ToolCallID]) {
 				delta.Delta = "<redacted>"
 				item.Data, _ = json.Marshal(delta)
 			}
@@ -153,7 +163,7 @@ func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
 	}
 	if item.Type == v1.EventToolOutputDelta {
 		var delta v1.ToolOutputDelta
-		if json.Unmarshal(item.Data, &delta) == nil && r.tools[delta.ToolCallID] == "write_stdin" {
+		if json.Unmarshal(item.Data, &delta) == nil && r.suppressed(r.tools[delta.ToolCallID]) {
 			delta.Delta = "<redacted>"
 			item.Data, _ = json.Marshal(delta)
 		}
@@ -346,6 +356,9 @@ func command(ctx context.Context, config Config) int {
 		fmt.Fprintln(stderr, err)
 		return finish(ctx, exitError, "model_list_failed", err)
 	}
+	// A server which does not serve tool presentation yields an empty table,
+	// which renders through the generic fallback rather than failing startup.
+	toolList, _ := api.Tools(ctx)
 	var current v1.Session
 	if options.continued || options.session != "" {
 		current, err = chooseSession(ctx, api, runtime.Project.ID, options.continued, options.session, "")
@@ -403,7 +416,7 @@ func command(ctx context.Context, config Config) int {
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
 		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, claimRequest: claimRequest, commands: runtime.Commands,
 		build: config.Build, credentials: runtime.Credentials, handler: runtime.Handler,
-		models: models.Items,
+		models: models.Items, presentation: chatview.NewPresentations(toolList),
 		stdout: plainOut, stderr: stderr, inputTTY: terminal.IsTTY(stdin), outputTTY: terminal.IsTTY(stdout),
 		inputEcho: terminal.InputEchoed(stdin, stdout), columns: terminal.Columns(stdout),
 	}
@@ -465,6 +478,7 @@ type apiClient interface {
 	Models(context.Context) (v1.ModelList, error)
 	SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error)
 	Agents(context.Context) (v1.AgentList, error)
+	Tools(context.Context) (v1.ToolList, error)
 }
 
 type goalClient interface {
@@ -536,6 +550,9 @@ type streamOptions struct {
 	renderer    *terminal.LiveRenderer
 	keyInput    *terminal.KeyDecoder
 	tasks       *taskStreamTracker
+	// presentation is what the connected server's tools declared about
+	// themselves. Its zero value renders through the legacy fallbacks.
+	presentation chatview.Presentations
 }
 
 type streamResult struct {
@@ -588,12 +605,15 @@ type taskReport struct {
 // renderer. The tracker owns the parent-child relationships of every task on
 // the stream; this wrapper only owns which report is currently live.
 type taskStreamTracker struct {
-	tracker *chatview.TaskTracker
-	liveID  string
+	tracker      *chatview.TaskTracker
+	presentation chatview.Presentations
+	liveID       string
 }
 
-func newTaskStreamTracker() taskStreamTracker {
-	return taskStreamTracker{tracker: chatview.NewTaskTracker()}
+func newTaskStreamTracker(presentation chatview.Presentations) taskStreamTracker {
+	tracker := chatview.NewTaskTracker()
+	tracker.Presentation = presentation
+	return taskStreamTracker{tracker: tracker, presentation: presentation}
 }
 
 // isTaskEvent reports whether an event belongs to the task tree rather than
@@ -610,6 +630,7 @@ func isTaskEvent(item v1.Event) bool {
 func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
 	if t.tracker == nil {
 		t.tracker = chatview.NewTaskTracker()
+		t.tracker.Presentation = t.presentation
 	}
 	reports, err := t.tracker.Apply(item, thinking)
 	if err != nil {
@@ -665,9 +686,11 @@ func writeStreamTaskEvent(options streamOptions, tracker *taskStreamTracker, ite
 	return nil
 }
 
-func toolActivityStyle(name string) terminal.TextStyle { return chatview.ToolActivityStyle(name) }
-func toolActivityLabel(name string, input map[string]any) string {
-	return chatview.ToolActivityLabel(name, input)
+func toolActivityStyle(presentation chatview.Presentations, name string) terminal.TextStyle {
+	return presentation.Style(name)
+}
+func toolActivityLabel(presentation chatview.Presentations, name string, input map[string]any) string {
+	return presentation.Label(name, input)
 }
 
 func writeStreamToolOutput(options streamOptions, tracker *streamToolTracker, item *v1.ToolOutputDelta) error {
@@ -764,10 +787,10 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 	statusError := false
 	interrupted := false
 	interruptCount := 0
-	var toolTracker streamToolTracker
+	toolTracker := streamToolTracker{tracker: chatview.StreamToolTracker{Presentation: options.presentation}}
 	subagentTracker := options.tasks
 	if subagentTracker == nil {
-		fresh := newTaskStreamTracker()
+		fresh := newTaskStreamTracker(options.presentation)
 		subagentTracker = &fresh
 	}
 	interrupts, _ := ctx.Value(interruptKey{}).(<-chan os.Signal)
@@ -790,7 +813,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 		}()
 		return nil
 	}
-	var jsonl jsonlRedactor
+	jsonl := jsonlRedactor{presentation: options.presentation}
 	for {
 		select {
 		case <-interrupts:
@@ -1027,33 +1050,25 @@ func settlePrompts(ctx context.Context, api apiClient, sessionID string, input i
 	}
 	for _, item := range permissions.Items {
 		writePermissionContext(output, item)
-		if item.ToolID == "request_write_permission" {
-			fmt.Fprint(output, "grant, reject, or reject with reason? [reject]: ")
-		} else {
-			fmt.Fprint(output, "allow once/session/workspace/process or enable yolo? [deny]: ")
-		}
+		fmt.Fprint(output, permissionPromptFor(item))
 		line, readErr := reader.ReadString('\n')
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			return readErr
 		}
 		var reply v1.PermissionReply
-		if item.ToolID == "request_write_permission" {
-			switch strings.ToLower(strings.TrimSpace(line)) {
-			case "grant":
-				reply.Decision = "allow"
-			case "reject with reason":
-				reply.Decision = "deny"
+		answer := strings.ToLower(strings.TrimSpace(line))
+		if declared, ok := chatview.PermissionReplyForChoice(item, answer, ""); ok {
+			reply = declared
+			if requiresPermissionReason(item, answer) {
 				fmt.Fprint(output, "rejection reason: ")
 				reason, reasonErr := reader.ReadString('\n')
 				if reasonErr != nil && !errors.Is(reasonErr, io.EOF) {
 					return reasonErr
 				}
 				reply.Reason = strings.TrimSpace(reason)
-			default:
-				reply.Decision = "deny"
 			}
 		} else {
-			reply = permissionReplyFromAnswer(line)
+			reply = permissionDefaultReply(item)
 		}
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
@@ -1131,12 +1146,9 @@ func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, o
 			return readErr
 		}
 		var reply v1.PermissionReply
-		if item.ToolID == "request_write_permission" {
-			switch choice.Value {
-			case "grant":
-				reply.Decision = "allow"
-			case "reject with reason":
-				reply.Decision = "deny"
+		if declared, ok := chatview.PermissionReplyForChoice(item, choice.Value, ""); ok {
+			reply = declared
+			if requiresPermissionReason(item, choice.Value) {
 				reason, reasonErr := read("rejection reason: ")
 				if errors.Is(reasonErr, terminal.ErrCanceled) || errors.Is(reasonErr, io.EOF) {
 					reason, reasonErr = "", nil
@@ -1145,11 +1157,9 @@ func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, o
 					return reasonErr
 				}
 				reply.Reason = strings.TrimSpace(reason)
-			default:
-				reply.Decision = "deny"
 			}
 		} else {
-			reply = permissionReplyFromAnswer(choice.Value)
+			reply = permissionDefaultReply(item)
 		}
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
@@ -1262,6 +1272,7 @@ type chatShell struct {
 	server       *http.Server
 	listener     net.Listener
 	models       []v1.Model
+	presentation chatview.Presentations
 	stdout       io.Writer
 	stderr       io.Writer
 	reader       *bufio.Reader
@@ -1286,7 +1297,7 @@ type chatShell struct {
 // a fresh tree when the session changes.
 func (s *chatShell) taskTracker() *taskStreamTracker {
 	if s.tasks == nil || s.tasksSession != s.current.ID {
-		tracker := newTaskStreamTracker()
+		tracker := newTaskStreamTracker(s.presentation)
 		s.tasks = &tracker
 		s.tasksSession = s.current.ID
 	}
@@ -1301,7 +1312,8 @@ func (s *chatShell) runEnhanced(first string) int {
 func (s *chatShell) enhancedConfig() enhancedchat.Config {
 	return enhancedchat.Config{
 		Context: s.ctx, Interrupts: interruptChannel(s.ctx), API: s.api, CurrentAPI: func() enhancedchat.API { return s.api },
-		Editor: s.editor, Decoder: s.decoder, Renderer: s.renderer, Stderr: s.stderr,
+		Presentation: func() chatview.Presentations { return s.presentation },
+		Editor:       s.editor, Decoder: s.decoder, Renderer: s.renderer, Stderr: s.stderr,
 		Thinking: s.options.thinking, ThinkingEnabled: func() bool { return s.options.thinking },
 		Current: func() v1.Session { return s.current },
 		SetCurrent: func(item v1.Session) {
@@ -1547,7 +1559,8 @@ func (s *chatShell) promptLabel() string {
 
 func (s *chatShell) streamOptions(resume bool) streamOptions {
 	return streamOptions{format: "text", stdout: s.stdout, stderr: s.stderr, promptInput: s.reader,
-		thinking: s.options.thinking, chat: true, resume: resume, renderer: s.renderer, keyInput: s.decoder, tasks: s.taskTracker()}
+		thinking: s.options.thinking, chat: true, resume: resume, renderer: s.renderer, keyInput: s.decoder, tasks: s.taskTracker(),
+		presentation: s.presentation}
 }
 
 func (s *chatShell) commit(text string) {
@@ -1844,11 +1857,16 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 				agent = agents.Items[0].ID
 			}
 		}
+		// Tool presentation is optional: a server without the endpoint returns an
+		// error here, and an empty table renders through the generic fallback.
+		// Failing the connect over display metadata would be disproportionate.
+		remoteTools, _ := remote.Tools(s.ctx)
 		s.api = remote
 		s.current = v1.Session{}
 		s.claimRequest = v1.ClaimSessionRequest{}
 		s.selection = chatSelection{agent: agent}
 		s.models = models.Items
+		s.presentation = chatview.NewPresentations(remoteTools)
 		s.commitStatus("✓ Connected: " + argument)
 	case "/thinking":
 		s.options.thinking = !s.options.thinking
@@ -2748,6 +2766,45 @@ func credentialName(value string) string {
 	return value
 }
 
+// permissionPromptFor lists the declared answers, so a tool which offers a
+// narrower set is prompted for accordingly without naming the tool here.
+func permissionPromptFor(item v1.Permission) string {
+	choices := chatview.PermissionChoiceLabels(item)
+	values := make([]string, 0, len(choices))
+	deny := ""
+	for _, choice := range choices {
+		values = append(values, choice.Value)
+		if deny == "" && choice.Decision == "deny" && !choice.RequiresReason {
+			deny = choice.Value
+		}
+	}
+	if deny == "" {
+		deny = "deny"
+	}
+	return strings.Join(values, "/") + "? [" + deny + "]: "
+}
+
+// requiresPermissionReason reports whether the chosen answer asks for a reason.
+func requiresPermissionReason(item v1.Permission, value string) bool {
+	for _, choice := range chatview.PermissionChoiceLabels(item) {
+		if choice.Value == value {
+			return choice.RequiresReason
+		}
+	}
+	return false
+}
+
+// permissionDefaultReply is the answer for unrecognised input: the first deny
+// the tool offers, so refusing is always what an unclear answer means.
+func permissionDefaultReply(item v1.Permission) v1.PermissionReply {
+	for _, choice := range chatview.PermissionChoiceLabels(item) {
+		if choice.Decision == "deny" && !choice.RequiresReason {
+			return v1.PermissionReply{Decision: choice.Decision, Scope: choice.Scope}
+		}
+	}
+	return v1.PermissionReply{Decision: "deny"}
+}
+
 func loopbackHost(host string) bool {
 	if host == "localhost" {
 		return true
@@ -2769,22 +2826,15 @@ func chatExitReason(code int) string {
 	return "chat_exited"
 }
 
+// permissionChoicesFor renders the answers the requesting tool declared, so a
+// tool which refuses a broader scope simply does not offer one.
 func permissionChoicesFor(item v1.Permission) []terminal.Candidate {
-	if item.ToolID == "request_write_permission" {
-		return []terminal.Candidate{
-			{Value: "grant", Description: "Allow sandboxed writes to this path for the current session"},
-			{Value: "reject", Description: "Reject this request"},
-			{Value: "reject with reason", Description: "Reject and provide feedback to the agent"},
-		}
+	declared := chatview.PermissionChoiceLabels(item)
+	candidates := make([]terminal.Candidate, 0, len(declared))
+	for _, choice := range declared {
+		candidates = append(candidates, terminal.Candidate{Value: choice.Value, Description: choice.Description})
 	}
-	return []terminal.Candidate{
-		{Value: "yes", Description: "Allow this request once"},
-		{Value: "no", Description: "Deny this request"},
-		{Value: "allow all for session", Description: "Allow matching requests for this session"},
-		{Value: "allow all for workspace", Description: "Allow matching requests for this workspace"},
-		{Value: "allow all for process", Description: "Allow matching requests until Parrot exits"},
-		{Value: "enable yolo", Description: "Disable all permission checks for this session"},
-	}
+	return candidates
 }
 
 func permissionReplyFromAnswer(value string) v1.PermissionReply {

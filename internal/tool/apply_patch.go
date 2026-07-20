@@ -8,6 +8,8 @@ import (
 )
 
 type ApplyPatchTool struct {
+	BasePresentation
+	WritableTool
 	Changes *change.Service
 }
 
@@ -16,6 +18,10 @@ func NewApplyPatchTool(changes *change.Service) *ApplyPatchTool {
 }
 
 func (*ApplyPatchTool) ID() string { return "apply_patch" }
+func (*ApplyPatchTool) Presentation() Presentation {
+	return Presentation{Label: LabelSpec{Kind: LabelPatchTargets, Source: []string{"patchText", "patch"}}}
+}
+
 func (*ApplyPatchTool) Description() string {
 	return "Apply reviewed workspace edits written as aider SEARCH/REPLACE blocks: a file path on its own line, then '<<<<<<< SEARCH', the exact existing lines, '=======', the replacement lines, and '>>>>>>> REPLACE'. An empty SEARCH section creates the file."
 }

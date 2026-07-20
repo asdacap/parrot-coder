@@ -8,10 +8,21 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/question"
 )
 
-type QuestionTool struct{ Broker *question.Broker }
+type QuestionTool struct {
+	BasePresentation
+	WritableTool
+	Broker *question.Broker
+}
 
 func NewQuestionTool(broker *question.Broker) *QuestionTool { return &QuestionTool{Broker: broker} }
 func (*QuestionTool) ID() string                            { return "question" }
+func (*QuestionTool) Presentation() Presentation {
+	return Presentation{Label: LabelSpec{Fields: []LabelField{{
+		Names: []string{"questions"}, Array: true,
+		Item: []string{"header", "prompt", "question"}, Overflow: true,
+	}}}}
+}
+
 func (*QuestionTool) Description() string {
 	return "Ask typed questions and block until the user replies or rejects them."
 }

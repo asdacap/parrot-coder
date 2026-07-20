@@ -17,6 +17,8 @@ type MCPCaller interface {
 }
 
 type MCPTool struct {
+	BasePresentation
+	WritableTool
 	definition mcp.ToolDefinition
 	caller     MCPCaller
 	schema     json.RawMessage

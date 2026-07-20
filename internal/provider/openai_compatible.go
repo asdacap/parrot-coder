@@ -100,8 +100,8 @@ func NewOpenAICompatible(options OpenAICompatibleOptions) (*OpenAICompatible, er
 	return &OpenAICompatible{
 		id: options.ID, endpoint: endpoint, modelsEndpoint: modelsEndpoint, protocol: options.Protocol, apiKey: options.APIKey,
 		headers: headers, declared: declared, defaults: defaults,
-		client:  secureClient(options.HTTPClient, endpoint, false),
-		stream:  secureClient(options.HTTPClient, endpoint, true),
+		client: secureClient(options.HTTPClient, endpoint, false),
+		stream: secureClient(options.HTTPClient, endpoint, true),
 		// Until a catalog is fetched the defaults stand in for one, so an
 		// offline start still has models to select.
 		models:        mergeModels(nil, declared, defaults),

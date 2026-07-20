@@ -227,14 +227,16 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 }
 
 func (r *enhancedChatRuntime) insertSubagentActivity(item enhancedActivityItem) {
+	presentation := r.presentation()
 	for i := range r.activity {
-		switch r.activity[i].toolName {
-		case "agent_spawn", "agent_send", "monitor", "review":
-			r.activity = append(r.activity, enhancedActivityItem{})
-			copy(r.activity[i+1:], r.activity[i:])
-			r.activity[i] = item
-			return
+		// Nest the child task beneath the row which spawned or addresses it.
+		if !presentation.Subagent(r.activity[i].toolName) {
+			continue
 		}
+		r.activity = append(r.activity, enhancedActivityItem{})
+		copy(r.activity[i+1:], r.activity[i:])
+		r.activity[i] = item
+		return
 	}
 	r.activity = append(r.activity, item)
 }

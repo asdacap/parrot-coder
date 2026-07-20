@@ -21,6 +21,8 @@ import (
 )
 
 type testTool struct {
+	BasePresentation
+	WritableTool
 	id    string
 	stale bool
 }
@@ -141,8 +143,11 @@ func TestExecutorStoresOversizedOutput(t *testing.T) {
 	if !ok || strings.Contains(result.Text, filepath.Base(dir)) {
 		t.Fatalf("managed output not opaque: %#v", result)
 	}
-	if result.ModelText != result.Text {
-		t.Fatalf("ModelText did not default to Text: %#v", result)
+	if result.Text != "long model output" {
+		t.Fatalf("executor altered the record: %#v", result)
+	}
+	if !strings.Contains(result.ModelText, "read_output id "+id) {
+		t.Fatalf("model copy does not name the managed output: %#v", result)
 	}
 	b, err := store.Read(id, 0, 100)
 	if err != nil || string(b) != "long model output" {
@@ -166,8 +171,43 @@ func TestExecutorReportsLossyOutputWhenStorageFails(t *testing.T) {
 	if lossy, _ := result.Metadata["output_lossy"].(bool); !lossy {
 		t.Fatalf("result does not report lossy output: %#v", result)
 	}
-	if result.Text != "long model output" || result.ModelText != "long model output" {
-		t.Fatalf("executor truncated output it no longer bounds: %#v", result)
+	if result.Text != "long model output" {
+		t.Fatalf("executor altered the record: %#v", result)
+	}
+	if !strings.Contains(result.ModelText, "unrecoverable") {
+		t.Fatalf("model copy does not report the lost output: %#v", result)
+	}
+}
+
+// Definitions is marshalled into the model's tool guidance on every turn, so a
+// field added to Definition costs prompt tokens forever. Presentation is a
+// parallel projection precisely to avoid that; this fences the boundary.
+func TestDefinitionsCarryNoPresentationDetail(t *testing.T) {
+	r := NewRegistry()
+	if err := r.Register(testTool{id: "test"}); err != nil {
+		t.Fatal(err)
+	}
+	snapshot := r.Materialize()
+	encoded, err := json.Marshal(snapshot.Definitions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded []map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	for _, definition := range decoded {
+		if len(definition) != 3 {
+			t.Fatalf("definition has %d keys, want exactly id/description/schema: %v", len(definition), definition)
+		}
+		for _, key := range []string{"id", "description", "schema"} {
+			if _, ok := definition[key]; !ok {
+				t.Fatalf("definition missing %q: %v", key, definition)
+			}
+		}
+	}
+	if entries := snapshot.Presentations(); len(entries) != 1 || entries[0].ID != "test" {
+		t.Fatalf("presentations = %#v", entries)
 	}
 }
 
@@ -215,7 +255,10 @@ func TestJSONToolsKeepModelCopyParseable(t *testing.T) {
 	}
 }
 
-type outputTestTool struct{}
+type outputTestTool struct {
+	BasePresentation
+	WritableTool
+}
 
 func (outputTestTool) ID() string          { return "output_test" }
 func (outputTestTool) Description() string { return "output test" }

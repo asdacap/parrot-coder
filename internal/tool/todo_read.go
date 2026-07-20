@@ -7,7 +7,11 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
-type TodoReadTool struct{ Service *session.TodoService }
+type TodoReadTool struct {
+	BasePresentation
+	ReadOnlyTool
+	Service *session.TodoService
+}
 
 func NewTodoReadTool(service *session.TodoService) *TodoReadTool {
 	return &TodoReadTool{Service: service}

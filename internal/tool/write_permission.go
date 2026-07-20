@@ -13,13 +13,29 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
-type WritePermissionTool struct{ Runner *process.Runner }
+type WritePermissionTool struct {
+	BasePresentation
+	WritableTool
+	Runner *process.Runner
+}
 
 func NewWritePermissionTool(runner *process.Runner) *WritePermissionTool {
 	return &WritePermissionTool{Runner: runner}
 }
 
 func (*WritePermissionTool) ID() string { return "request_write_permission" }
+
+// PermissionChoices omits every scoped allow. This tool already grants a
+// session-scoped write capability, so approving it for a broader scope would
+// let one approval authorize future requests for other paths, escalating the
+// sandbox escape hatch rather than widening a single operation.
+func (*WritePermissionTool) PermissionChoices() []permission.Choice {
+	return []permission.Choice{
+		{Value: "grant", Decision: "allow", Label: "grant", Description: "Allow sandboxed writes to this path for the current session"},
+		{Value: "reject", Decision: "deny", Label: "reject", Description: "Reject this request"},
+		{Value: "reject with reason", Decision: "deny", Label: "reject with reason", Description: "Reject and provide feedback to the agent", RequiresReason: true},
+	}
+}
 func (*WritePermissionTool) Description() string {
 	return "Request session-scoped permission for sandboxed shell commands to write to an existing file or directory."
 }

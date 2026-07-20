@@ -12,10 +12,21 @@ import (
 	"strings"
 )
 
-type WebFetchTool struct{ Service *webfetch.Service }
+type WebFetchTool struct {
+	BasePresentation
+	WritableTool
+	Service *webfetch.Service
+}
 
 func NewWebFetchTool(service *webfetch.Service) *WebFetchTool { return &WebFetchTool{Service: service} }
 func (*WebFetchTool) ID() string                              { return "web_fetch" }
+func (*WebFetchTool) Presentation() Presentation {
+	return Presentation{
+		Muted: true,
+		Label: LabelSpec{Fields: []LabelField{{Names: []string{"url"}}}},
+	}
+}
+
 func (*WebFetchTool) Description() string {
 	return "Fetch bounded HTTP or HTTPS text with GET or HEAD after exact network permission review."
 }

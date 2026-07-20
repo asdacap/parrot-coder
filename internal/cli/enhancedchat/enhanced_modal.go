@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -115,15 +116,15 @@ func permissionChoices() []terminal.Candidate {
 	}
 }
 
+// permissionChoicesFor renders the answers the requesting tool declared, so a
+// tool which refuses a broader scope simply does not offer one.
 func permissionChoicesFor(item v1.Permission) []terminal.Candidate {
-	if item.ToolID == "request_write_permission" {
-		return []terminal.Candidate{
-			{Value: "grant", Description: "Allow sandboxed writes to this path for the current session"},
-			{Value: "reject", Description: "Reject this request"},
-			{Value: "reject with reason", Description: "Reject and provide feedback to the agent"},
-		}
+	declared := chatview.PermissionChoiceLabels(item)
+	candidates := make([]terminal.Candidate, 0, len(declared))
+	for _, choice := range declared {
+		candidates = append(candidates, terminal.Candidate{Value: choice.Value, Description: choice.Description})
 	}
-	return permissionChoices()
+	return candidates
 }
 
 func permissionReplyFromAnswer(value string) v1.PermissionReply {
@@ -365,18 +366,14 @@ func (r *enhancedChatRuntime) answerModal(value string) error {
 		return nil
 	case "permission":
 		var reply v1.PermissionReply
-		if modal.permission.ToolID == "request_write_permission" {
-			switch {
-			case modal.customInput && strings.TrimSpace(value) != "":
-				reply = v1.PermissionReply{Decision: "deny", Reason: strings.TrimSpace(value)}
-			case modal.customInput:
-				return fmt.Errorf("%w: enter a rejection reason", errInvalidModalAnswer)
-			case value == "grant":
-				reply = v1.PermissionReply{Decision: "allow"}
-			default:
-				reply = v1.PermissionReply{Decision: "deny"}
-			}
-		} else {
+		switch declared, ok := chatview.PermissionReplyForChoice(*modal.permission, value, strings.TrimSpace(value)); {
+		case modal.customInput && strings.TrimSpace(value) != "":
+			reply = v1.PermissionReply{Decision: "deny", Reason: strings.TrimSpace(value)}
+		case modal.customInput:
+			return fmt.Errorf("%w: enter a rejection reason", errInvalidModalAnswer)
+		case ok:
+			reply = declared
+		default:
 			reply = permissionReplyFromAnswer(value)
 		}
 		if err := r.shell.api.ReplyPermission(r.shell.ctx, r.shell.current.ID, modal.permission.ID, reply); err != nil {

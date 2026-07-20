@@ -17,7 +17,11 @@ type ProcessMonitor interface {
 	Start(sessionID, taskID string, timeout time.Duration) error
 }
 
-type MonitorTool struct{ Service ProcessMonitor }
+type MonitorTool struct {
+	BasePresentation
+	ReadOnlyTool
+	Service ProcessMonitor
+}
 
 type monitorInput struct {
 	TaskID    string `json:"task_id"`
@@ -27,6 +31,12 @@ type monitorInput struct {
 func NewMonitorTool(service ProcessMonitor) *MonitorTool { return &MonitorTool{Service: service} }
 
 func (*MonitorTool) ID() string { return "monitor" }
+func (*MonitorTool) Presentation() Presentation {
+	return Presentation{
+		Subagent: true,
+		Label:    LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}}}},
+	}
+}
 
 func (*MonitorTool) Description() string {
 	return "Monitors a managed process in the background and steers a notification into the caller session when it exits or the monitor times out."

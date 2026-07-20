@@ -15,6 +15,8 @@ type TaskController interface {
 }
 
 type TaskTool struct {
+	BasePresentation
+	ReadOnlyTool
 	Kind       string
 	Controller TaskController
 }
@@ -28,6 +30,12 @@ func NewTaskTools(controller TaskController) []Tool {
 
 func (t *TaskTool) ID() string { return t.Kind }
 
+func (t *TaskTool) Presentation() Presentation {
+	if t.Kind == "task_interrupt" {
+		return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}}}}}
+	}
+	return Presentation{}
+}
 func (t *TaskTool) Description() string {
 	if t.Kind == "task_interrupt" {
 		return "Interrupt a running shell or agent task. Agent tasks are retained for follow-up messages."

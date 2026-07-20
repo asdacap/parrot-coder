@@ -18,6 +18,8 @@ const (
 type AgentLookup func(string) (bool, error)
 
 type AgentTool struct {
+	BasePresentation
+	ReadOnlyTool
 	Kind    string
 	Manager *subagent.Manager
 	Agents  AgentLookup
@@ -32,6 +34,19 @@ func NewAgentTools(manager *subagent.Manager, agents AgentLookup) []Tool {
 
 func (t *AgentTool) ID() string { return t.Kind }
 
+func (t *AgentTool) Presentation() Presentation {
+	presentation := Presentation{Subagent: true}
+	if t.Kind == agentSpawnID {
+		presentation.Label = LabelSpec{Fields: []LabelField{
+			{Names: []string{"agent"}}, {Names: []string{"prompt"}},
+		}}
+		return presentation
+	}
+	presentation.Label = LabelSpec{Fields: []LabelField{
+		{Names: []string{"task_id"}}, {Names: []string{"message"}},
+	}}
+	return presentation
+}
 func (t *AgentTool) Description() string {
 	switch t.Kind {
 	case agentSpawnID:

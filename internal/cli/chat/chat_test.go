@@ -17,6 +17,7 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/auth"
+	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
@@ -552,7 +553,7 @@ func TestToolActivityStyleMutesReadOnlyRetrievalTools(t *testing.T) {
 		{name: "todowrite", want: terminal.TextStyleDefault},
 	}
 	for _, test := range tests {
-		if got := toolActivityStyle(test.name); got != test.want {
+		if got := toolActivityStyle(chatview.Presentations{}, test.name); got != test.want {
 			t.Errorf("toolActivityStyle(%q) = %v, want %v", test.name, got, test.want)
 		}
 	}
@@ -644,7 +645,7 @@ func taskContent(taskID string, eventType string, data json.RawMessage) v1.Event
 func TestStreamTaskEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	var output bytes.Buffer
 	options := streamOptions{stderr: &output}
-	tracker := newTaskStreamTracker()
+	tracker := newTaskStreamTracker(chatview.Presentations{})
 	// A grandchild task renders two levels deep because the tracker walks its
 	// parent chain, not because the event carries a depth.
 	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-parent", "task_main", "build")); err != nil {
@@ -668,7 +669,7 @@ func TestStreamTaskEventPrefixesCompletedResponseByDepth(t *testing.T) {
 
 func TestStreamTaskEventSkipsEmptyCompletedResponse(t *testing.T) {
 	var output bytes.Buffer
-	tracker := newTaskStreamTracker()
+	tracker := newTaskStreamTracker(chatview.Presentations{})
 	options := streamOptions{stderr: &output}
 	started, _ := json.Marshal(map[string]string{"message_id": "child-message"})
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
@@ -690,7 +691,7 @@ func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
 	options := streamOptions{stderr: io.Discard, renderer: renderer}
-	tracker := newTaskStreamTracker()
+	tracker := newTaskStreamTracker(chatview.Presentations{})
 	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-explore", "task_main", "explore")); err != nil {
 		t.Fatal(err)
 	}
@@ -723,7 +724,7 @@ func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 
 func TestTaskEventWithoutKnownIDReportsUnknownTask(t *testing.T) {
 	var output bytes.Buffer
-	tracker := newTaskStreamTracker()
+	tracker := newTaskStreamTracker(chatview.Presentations{})
 	options := streamOptions{stderr: &output}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "orphan"})
 	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-ghost", v1.EventMessagePartDelta, delta)); err != nil {
@@ -740,7 +741,7 @@ func TestTaskEventWithoutKnownIDReportsUnknownTask(t *testing.T) {
 }
 
 func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T) {
-	tracker := newTaskStreamTracker()
+	tracker := newTaskStreamTracker(chatview.Presentations{})
 	if _, err := tracker.describe(taskStart("task-review", "task_main", "review"), true); err != nil {
 		t.Fatal(err)
 	}
@@ -764,7 +765,7 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 }
 
 func TestSubagentDeltaPresentation(t *testing.T) {
-	tracker := newTaskStreamTracker()
+	tracker := newTaskStreamTracker(chatview.Presentations{})
 	if _, err := tracker.describe(taskStart("task-explore", "task_main", "explore"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -797,7 +798,7 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 }
 
 func TestSubagentRunningStatusIsNotReported(t *testing.T) {
-	tracker := newTaskStreamTracker()
+	tracker := newTaskStreamTracker(chatview.Presentations{})
 	if _, err := tracker.describe(taskStart("task-review", "task_main", "review"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -812,7 +813,7 @@ func TestSubagentRunningStatusIsNotReported(t *testing.T) {
 }
 
 func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
-	tracker := newTaskStreamTracker()
+	tracker := newTaskStreamTracker(chatview.Presentations{})
 	if _, err := tracker.describe(taskStart("task-explore", "task_main", "explore"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -869,7 +870,7 @@ func TestToolActivityLabelDescribesInputs(t *testing.T) {
 		{name: "custom", input: map[string]any{"token": "hidden", "path": "src/main.go"}, want: "custom · path=src/main.go"},
 	}
 	for _, test := range tests {
-		if got := toolActivityLabel(test.name, test.input); got != test.want {
+		if got := toolActivityLabel(chatview.Presentations{}, test.name, test.input); got != test.want {
 			t.Errorf("toolActivityLabel(%q) = %q, want %q", test.name, got, test.want)
 		}
 	}
@@ -877,7 +878,7 @@ func TestToolActivityLabelDescribesInputs(t *testing.T) {
 
 func TestToolActivityLabelSanitizesAndTruncatesDetails(t *testing.T) {
 	input := map[string]any{"path": "src\n\x1b[31m" + strings.Repeat("x", 100)}
-	got := toolActivityLabel("read", input)
+	got := toolActivityLabel(chatview.Presentations{}, "read", input)
 	if strings.ContainsAny(got, "\n\x1b") || !strings.HasSuffix(got, "...") {
 		t.Fatalf("unsafe or unbounded activity label: %q", got)
 	}

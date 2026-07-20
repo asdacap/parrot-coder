@@ -8,15 +8,23 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 )
 
-type ReadOutputTool struct{ MaxBytes int64 }
+type ReadOutputTool struct {
+	BasePresentation
+	ReadOnlyTool
+	MaxBytes int64
+}
 
 func NewReadOutputTool(max int64) *ReadOutputTool {
 	if max <= 0 {
 		max = 1 << 20
 	}
-	return &ReadOutputTool{max}
+	return &ReadOutputTool{MaxBytes: max}
 }
 func (*ReadOutputTool) ID() string { return "read_output" }
+func (*ReadOutputTool) Presentation() Presentation {
+	return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"id"}}}}}
+}
+
 func (*ReadOutputTool) Description() string {
 	return "Read a bounded byte range from an opaque managed output ID."
 }

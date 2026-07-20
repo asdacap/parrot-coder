@@ -12,7 +12,11 @@ import (
 
 // panicTool panics from either Plan or Execute to model a tool that hits an
 // unexpected defect at runtime (for example a bad apply_patch edge case).
-type panicTool struct{ inExecute bool }
+type panicTool struct {
+	tool.BasePresentation
+	tool.WritableTool
+	inExecute bool
+}
 
 func (*panicTool) ID() string                                      { return "boom" }
 func (*panicTool) Description() string                             { return "panics for testing" }

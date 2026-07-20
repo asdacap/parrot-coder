@@ -8,12 +8,23 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
-type TodoWriteTool struct{ Service *session.TodoService }
+type TodoWriteTool struct {
+	BasePresentation
+	WritableTool
+	Service *session.TodoService
+}
 
 func NewTodoWriteTool(service *session.TodoService) *TodoWriteTool {
 	return &TodoWriteTool{Service: service}
 }
 func (*TodoWriteTool) ID() string { return "todowrite" }
+func (*TodoWriteTool) Presentation() Presentation {
+	return Presentation{
+		Result: ResultTodos,
+		Label:  LabelSpec{Kind: LabelItemCount, Source: []string{"todos"}, Prefix: "TODO", Noun: "item"},
+	}
+}
+
 func (*TodoWriteTool) Description() string {
 	return "Transactionally replace the current session's ordered todo list."
 }

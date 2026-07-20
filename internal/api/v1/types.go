@@ -189,8 +189,20 @@ type Permission struct {
 	CanonicalInput json.RawMessage      `json:"canonical_input"`
 	Resources      []PermissionResource `json:"resources"`
 	Review         json.RawMessage      `json:"review,omitempty"`
-	OperationHash  string               `json:"operation_hash"`
-	Reason         string               `json:"reason"`
+	// Choices are the answers the requesting tool offers. A client must reply
+	// with one of them; the server rejects anything else.
+	Choices       []PermissionChoice `json:"choices,omitempty"`
+	OperationHash string             `json:"operation_hash"`
+	Reason        string             `json:"reason"`
+}
+
+type PermissionChoice struct {
+	Value          string `json:"value"`
+	Decision       string `json:"decision"`
+	Scope          string `json:"scope,omitempty"`
+	Label          string `json:"label"`
+	Description    string `json:"description,omitempty"`
+	RequiresReason bool   `json:"requires_reason,omitempty"`
 }
 
 type PermissionList struct {
@@ -300,6 +312,46 @@ type Mode struct {
 
 type ModeList struct {
 	Items []Mode `json:"items"`
+}
+
+// ToolPresentation is display-only metadata a tool declares about itself, so
+// that a renderer can branch on what a tool does rather than on its identity.
+// It mirrors tool.Presentation; a client which does not recognise a field
+// simply falls back to generic rendering.
+type ToolPresentation struct {
+	Label             ToolLabel `json:"label,omitempty"`
+	Redact            []string  `json:"redact,omitempty"`
+	Muted             bool      `json:"muted,omitempty"`
+	Result            string    `json:"result,omitempty"`
+	Output            string    `json:"output,omitempty"`
+	Subagent          bool      `json:"subagent,omitempty"`
+	LabelInPermission bool      `json:"label_in_permission,omitempty"`
+}
+
+type ToolLabel struct {
+	Kind   string          `json:"kind,omitempty"`
+	Fields []ToolLabelPart `json:"fields,omitempty"`
+	Source []string        `json:"source,omitempty"`
+	Prefix string          `json:"prefix,omitempty"`
+	Noun   string          `json:"noun,omitempty"`
+}
+
+type ToolLabelPart struct {
+	Names    []string `json:"names,omitempty"`
+	Quote    bool     `json:"quote,omitempty"`
+	Default  string   `json:"default,omitempty"`
+	Array    bool     `json:"array,omitempty"`
+	Item     []string `json:"item,omitempty"`
+	Overflow bool     `json:"overflow,omitempty"`
+}
+
+type Tool struct {
+	ID           string           `json:"id"`
+	Presentation ToolPresentation `json:"presentation"`
+}
+
+type ToolList struct {
+	Items []Tool `json:"items"`
 }
 
 type Empty struct{}

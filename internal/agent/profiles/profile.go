@@ -1,33 +1,45 @@
 package profiles
 
-import "sort"
+import "slices"
 
 type Profile struct {
 	ID             string
 	Prompt         string
 	AllowedToolIDs []string
+	// DeniedToolIDs removes tools a profile must never use even though they are
+	// otherwise available to it. It applies after AllowedToolIDs.
+	DeniedToolIDs  []string
 	HardRules      []string
 	MaxTurns       int
 	RecursionLimit int
 	ReadOnly       bool
 }
 
+// AllowsTool applies only the profile's own allow and deny lists. Whether a
+// tool is read-only is the tool's own business and is checked separately by the
+// caller, which holds the tool registry; see agent.ProfileAllows.
+//
+// Membership is a linear scan rather than a binary search: the lists are short,
+// checked once per tool per turn, and a sorted-slice invariant is exactly the
+// kind of thing that silently breaks. It did: this list was previously
+// binary-searched while Review's was unsorted, which denied that agent git_diff
+// and every lsp_* tool.
 func (p Profile) AllowsTool(id string) bool {
-	if p.ReadOnly && !readOnlyTool(id) {
+	if slices.Contains(p.DeniedToolIDs, id) {
 		return false
 	}
 	if len(p.AllowedToolIDs) == 0 {
 		return true
 	}
-	i := sort.SearchStrings(p.AllowedToolIDs, id)
-	return i < len(p.AllowedToolIDs) && p.AllowedToolIDs[i] == id
+	return slices.Contains(p.AllowedToolIDs, id)
 }
 
-func readOnlyTool(id string) bool {
-	switch id {
-	case "read", "glob", "git_diff", "grep", "monitor", "read_output", "review", "skill", "lsp_diagnostics", "lsp_definition", "lsp_references", "lsp_hover", "lsp_symbols", "agent_spawn", "agent_send", "task_interrupt", "task_list_active", "todoread", "get_goal":
-		return true
-	default:
-		return false
+// AllowsAll reports whether every listed tool is available to the profile.
+func (p Profile) AllowsAll(ids []string) bool {
+	for _, id := range ids {
+		if !p.AllowsTool(id) {
+			return false
+		}
 	}
+	return true
 }

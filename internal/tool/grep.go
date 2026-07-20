@@ -24,7 +24,11 @@ type GrepConfig struct {
 	MaxVisited   int
 	Timeout      time.Duration
 }
-type GrepTool struct{ Config GrepConfig }
+type GrepTool struct {
+	BasePresentation
+	ReadOnlyTool
+	Config GrepConfig
+}
 
 func NewGrepTool(c GrepConfig) *GrepTool {
 	if c.MaxFiles <= 0 {
@@ -42,9 +46,19 @@ func NewGrepTool(c GrepConfig) *GrepTool {
 	if c.Timeout <= 0 {
 		c.Timeout = 5 * time.Second
 	}
-	return &GrepTool{c}
+	return &GrepTool{Config: c}
 }
 func (*GrepTool) ID() string { return "grep" }
+func (*GrepTool) Presentation() Presentation {
+	return Presentation{
+		Muted: true,
+		Label: LabelSpec{Fields: []LabelField{
+			{Names: []string{"pattern"}, Quote: true},
+			{Names: []string{"path"}, Default: "."},
+		}},
+	}
+}
+
 func (*GrepTool) Description() string {
 	return "Search text files with Go RE2 regular expressions. Relative paths resolve within the workspace."
 }
