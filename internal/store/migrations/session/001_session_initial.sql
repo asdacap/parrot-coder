@@ -3,7 +3,7 @@
 --
 -- The session row is a singleton: it carries the metadata that the shared
 -- session table used to hold. project_id and project_root are denormalized
--- because project.StableID is a pure function of the repository identity, so a
+-- because project.StableID is a pure function of the canonical working directory, so a
 -- project table would only cache a value any host can recompute.
 CREATE TABLE session (
     id TEXT PRIMARY KEY,

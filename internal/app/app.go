@@ -236,7 +236,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 	}()
 	// The project table was a cache of project.StableID, which is a pure
-	// function of the repository identity, so every host recomputes it instead.
+	// function of the canonical working directory, so every host recomputes it instead.
 	repository := event.NewRepository(sessionStore)
 	live := event.NewBroker()
 	sessions := session.NewService(sessionStore, repository)
