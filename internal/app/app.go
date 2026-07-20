@@ -268,7 +268,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: commands: %w", err)
 	}
 	result.Skills, result.Commands = skills, commands
-	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: filepath.Join(paths.Cache, "outputs"), PreviewBytes: 32 << 10, PreviewLines: 400, PerOutput: 64 << 20, Total: 256 << 20, Retention: 7 * 24 * time.Hour})
+	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: filepath.Join(paths.Cache, "outputs"), PreviewBytes: 32 << 10, PreviewLines: 400, PerOutput: 10 << 20, Total: 256 << 20, Retention: 7 * 24 * time.Hour})
 	if err != nil {
 		return nil, fmt.Errorf("app: outputs: %w", err)
 	}

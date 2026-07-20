@@ -338,7 +338,12 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 		} else {
 			result.Metadata["output_id"] = stored.ID
 			result.Metadata["output_bytes"] = stored.Size
-			result.ModelText = modelText(stored.Preview) +
+			lost := ""
+			if stored.OmittedBytes > 0 {
+				result.Metadata["output_lossy"] = true
+				lost = fmt.Sprintf("\n... first %d bytes could not be stored ...", stored.OmittedBytes)
+			}
+			result.ModelText = modelText(stored.Preview) + lost +
 				fmt.Sprintf("\n... %d bytes total; read the remainder with read_output id %s ...", stored.Size, stored.ID)
 		}
 	}

@@ -19,7 +19,10 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
-type memoryOutputStore struct{ data []byte }
+type memoryOutputStore struct {
+	data []byte
+	omit int64
+}
 
 type directSandbox struct{}
 
@@ -56,7 +59,7 @@ func TestRunnerWritablePathsAreExactAndSessionScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandbox := &recordingSandbox{}
-	runner, err := NewRunner(Config{Workspace: ws, MaxOutputBytes: 1024})
+	runner, err := NewRunner(Config{Workspace: ws, MaxOutputBytes: 1024, OutputStore: &memoryOutputStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +173,7 @@ func TestRunnerRejectsWritablePathChangedAfterApproval(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	runner, err := NewRunner(Config{Workspace: ws})
+	runner, err := NewRunner(Config{Workspace: ws, OutputStore: &memoryOutputStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -227,8 +230,21 @@ func TestRunSandboxAllowsExternalWorkingDirectory(t *testing.T) {
 
 func (s *memoryOutputStore) Store(_ context.Context, reader io.Reader) (StoredOutput, error) {
 	data, err := io.ReadAll(reader)
+	if err != nil {
+		return StoredOutput{}, err
+	}
+	if s.omit > 0 && int64(len(data)) > s.omit {
+		data = data[s.omit:]
+	}
 	s.data = append([]byte(nil), data...)
-	return StoredOutput{ID: "stored", Size: int64(len(data))}, err
+	return StoredOutput{ID: "stored", Size: int64(len(data)), OmittedBytes: s.omit}, nil
+}
+
+func (s *memoryOutputStore) Read(_ string, offset, limit int64) ([]byte, error) {
+	if offset < 0 || limit < 0 || offset > int64(len(s.data)) {
+		return nil, errors.New("invalid output read")
+	}
+	return append([]byte(nil), s.data[offset:min(offset+limit, int64(len(s.data)))]...), nil
 }
 
 func testRunner(t *testing.T, config Config) *Runner {
@@ -242,6 +258,9 @@ func testRunner(t *testing.T, config Config) *Runner {
 	config.sandbox = directSandbox{}
 	if config.Timeout == 0 {
 		config.Timeout = 2 * time.Second
+	}
+	if config.OutputStore == nil {
+		config.OutputStore = &memoryOutputStore{}
 	}
 	runner, err := NewRunner(config)
 	if err != nil {
@@ -258,7 +277,7 @@ func TestExitOutputCwdAndEnvironment(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ExitCode != 7 || !result.Truncated || result.Output != "yes::err" {
+	if result.ExitCode != 7 || !result.Truncated || result.Output != "yes:\n... 1 bytes omitted ...\nerrx" {
 		t.Fatalf("result = %#v", result)
 	}
 	if _, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: "true", Env: map[string]string{"BASH_ENV": "x"}}); err == nil {
@@ -281,7 +300,7 @@ func TestRunDetectsShellWhenOmitted(t *testing.T) {
 	}
 }
 
-func TestStreamsFullOutputToStoreWhileBoundingMemory(t *testing.T) {
+func TestStreamsFullOutputToStoreAndBoundsModelOutput(t *testing.T) {
 	store := &memoryOutputStore{}
 	var streamed bytes.Buffer
 	runner := testRunner(t, Config{MaxOutputBytes: 4, OutputStore: store})
@@ -289,7 +308,7 @@ func TestStreamsFullOutputToStoreWhileBoundingMemory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "1234" || !result.Truncated || result.OutputID != "stored" || result.OutputSize != 10 {
+	if result.Output != "12\n... 6 bytes omitted ...\n90" || !result.Truncated || result.OutputID != "stored" || result.OutputSize != 10 {
 		t.Fatalf("result = %#v", result)
 	}
 	if !bytes.Equal(store.data, []byte("1234567890")) {
@@ -300,13 +319,41 @@ func TestStreamsFullOutputToStoreWhileBoundingMemory(t *testing.T) {
 	}
 }
 
+func TestRunRequiresOutputStore(t *testing.T) {
+	root := t.TempDir()
+	ws, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewRunner(Config{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner.sandbox = directSandbox{}
+	if _, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: "true"}); err == nil || !strings.Contains(err.Error(), "output store is required") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestRunReportsBytesLostFromStartOfStoredOutput(t *testing.T) {
+	store := &memoryOutputStore{omit: 4}
+	runner := testRunner(t, Config{OutputStore: store})
+	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: `printf 0123456789`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Output != "... first 4 bytes of output were lost ...\n456789" || !result.Truncated || result.OutputSize != 6 {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
 func TestOutputTailKeepsLastThreeLinesAndCarriageReturnReplacement(t *testing.T) {
 	runner := testRunner(t, Config{MaxOutputBytes: 4})
 	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: `printf 'one\ntwo\n1%%\r2%%\rthree\nfour'`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "one\n" || !result.Truncated || result.OutputTail != "two\nthree\nfour" {
+	if result.Output != "on\n... 20 bytes omitted ...\nur" || !result.Truncated || result.OutputTail != "two\nthree\nfour" {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -664,3 +711,5 @@ func (s *recordingStore) Store(_ context.Context, reader io.Reader) (StoredOutpu
 	close(s.done)
 	return StoredOutput{}, err
 }
+
+func (s *recordingStore) Read(string, int64, int64) ([]byte, error) { return nil, nil }

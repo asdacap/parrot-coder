@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -326,7 +327,7 @@ func TestOutputStoreUTF8QuotasModesAndRetention(t *testing.T) {
 		t.Fatalf("dir mode %o", dirInfo.Mode().Perm())
 	}
 	if _, err := s.Store(context.Background(), bytes.NewReader(make([]byte, 21))); err == nil {
-		t.Fatal("per-output quota ignored")
+		t.Fatal("total quota ignored")
 	}
 	if _, err := s.Store(context.Background(), bytes.NewReader(make([]byte, 10))); err == nil {
 		t.Fatal("total quota ignored")
@@ -342,6 +343,65 @@ func TestOutputStoreUTF8QuotasModesAndRetention(t *testing.T) {
 	}
 	if _, err := s.Read(out.ID, 0, 1); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("retained output: %v", err)
+	}
+}
+
+type chunkedReader struct {
+	data  []byte
+	chunk int
+}
+
+func (r *chunkedReader) Read(p []byte) (int, error) {
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := min(r.chunk, len(r.data))
+	copy(p, r.data[:n])
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func TestOutputStoreStartTruncationKeepsTailAndCountsOmitted(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "outputs")
+	s, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 4, PreviewLines: 2, PerOutput: 10, Total: 1000, Retention: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := "0123456789ABCDEFGHIJKLMNOPQRSTUV"
+	out, err := s.Store(context.Background(), &chunkedReader{data: []byte(input), chunk: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Size != 10 || out.OmittedBytes != 22 {
+		t.Fatalf("stored = %#v", out)
+	}
+	b, err := s.Read(out.ID, 0, 10)
+	if err != nil || string(b) != "MNOPQRSTUV" {
+		t.Fatalf("stored content %q: %v", b, err)
+	}
+}
+
+func TestExecutorReportsBytesLostWhenSpilledOutputExceedsPerOutputLimit(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "outputs")
+	store, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 4, PreviewLines: 2, PerOutput: 5, Total: 100, Retention: time.Hour})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r := NewRegistry()
+	_ = r.Register(outputTestTool{})
+	e := Executor{Snapshot: r.Materialize(), MaxOutputBytes: 4}
+	result, err := e.Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{Outputs: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if lossy, _ := result.Metadata["output_lossy"].(bool); !lossy {
+		t.Fatalf("result does not report lossy output: %#v", result)
+	}
+	if _, ok := result.Metadata["output_id"].(string); !ok {
+		t.Fatalf("result does not name the managed output: %#v", result)
+	}
+	if !strings.Contains(result.ModelText, "first 12 bytes could not be stored") || !strings.Contains(result.ModelText, "read_output id") {
+		t.Fatalf("model copy does not report the lost bytes: %#v", result)
 	}
 }
 
