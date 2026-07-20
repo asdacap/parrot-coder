@@ -315,6 +315,28 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	}
 }
 
+func TestApplyPatchFormatParameter(t *testing.T) {
+	_, ws, changes := workspaceToolHarness(t)
+	tool := NewApplyPatchTool(changes)
+	if schema := string(tool.JSONSchema()); !strings.Contains(schema, `"enum":["aider","unified"]`) {
+		t.Fatalf("apply_patch schema is missing the format enum: %s", schema)
+	}
+	unified := json.RawMessage(`{"patchText":"--- /dev/null\n+++ b/created\n@@ -0,0 +1 @@\n+content\n","format":"unified"}`)
+	planned, err := tool.Plan(context.Background(), unified, CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(planned.Permissions) != 1 || !strings.Contains(planned.Permissions[0].Resources[0].Identifier, "created") {
+		t.Fatalf("plan = %#v", planned)
+	}
+	if described, err := tool.DescribeRequest(unified); err != nil || !strings.Contains(described, "unified diff") {
+		t.Fatalf("describe = %q, %v", described, err)
+	}
+	if _, err := tool.Plan(context.Background(), json.RawMessage(`{"patchText":"x","format":"bogus"}`), CallContext{Workspace: ws}); err == nil {
+		t.Fatal("unknown format accepted")
+	}
+}
+
 func TestTodoToolSchemaUsesOpenCodeEnums(t *testing.T) {
 	schema := string(NewTodoWriteTool(nil).JSONSchema())
 	for _, expected := range []string{`"enum":["pending","in_progress","completed","cancelled"]`, `"enum":["high","medium","low"]`} {

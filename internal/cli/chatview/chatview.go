@@ -448,29 +448,62 @@ func cleanActivityDetail(value string) string {
 
 func patchActivityTargets(patch string) []string {
 	// An aider block names its file on the last non-blank line before the
-	// SEARCH marker, so report the paths that actually introduce a block.
+	// SEARCH marker, so report the paths that actually introduce a block. A
+	// unified diff names it on the +++ header instead, falling back to the ---
+	// header when the target is /dev/null for a deletion.
 	seen := make(map[string]bool)
 	var targets []string
-	candidate := ""
+	candidate, source := "", ""
+	add := func(path string) {
+		path = cleanActivityDetail(path)
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		targets = append(targets, path)
+	}
 	for _, line := range strings.Split(patch, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if trimmed == "" || strings.HasPrefix(trimmed, "```") {
 			continue
 		}
-		if trimmed != "<<<<<<< SEARCH" {
+		switch {
+		case strings.HasPrefix(trimmed, "--- "):
+			source = diffHeaderPath(trimmed)
+		case strings.HasPrefix(trimmed, "+++ "):
+			if path := diffHeaderPath(trimmed); path != "" {
+				add(path)
+			} else {
+				add(source)
+			}
+		case trimmed == "<<<<<<< SEARCH":
+			add(candidate)
+		default:
 			candidate = trimmed
-			continue
-		}
-		path := cleanActivityDetail(candidate)
-		if path != "" && !seen[path] {
-			seen[path] = true
-			targets = append(targets, path)
 		}
 	}
 	if len(targets) <= 2 {
 		return targets
 	}
 	return []string{targets[0], targets[1], fmt.Sprintf("+%d more", len(targets)-2)}
+}
+
+// diffHeaderPath returns the workspace path named by a unified diff --- or +++
+// header, or an empty string for /dev/null.
+func diffHeaderPath(header string) string {
+	value := strings.TrimSpace(header[len("--- "):])
+	if index := strings.IndexByte(value, '\t'); index >= 0 {
+		value = strings.TrimSpace(value[:index])
+	}
+	if value == "/dev/null" {
+		return ""
+	}
+	for _, prefix := range []string{"a/", "b/"} {
+		if after, ok := strings.CutPrefix(value, prefix); ok {
+			return after
+		}
+	}
+	return value
 }
 
 func sensitiveActivityField(key string) bool {

@@ -18,6 +18,16 @@ type PatchOperationKind string
 const (
 	PatchAdd    PatchOperationKind = "add"
 	PatchUpdate PatchOperationKind = "update"
+	PatchDelete PatchOperationKind = "delete"
+)
+
+// PatchFormat selects the edit syntax a patch is written in. Both formats parse
+// into the same Patch value and share the whole apply path.
+type PatchFormat string
+
+const (
+	PatchFormatAider   PatchFormat = "aider"
+	PatchFormatUnified PatchFormat = "unified"
 )
 
 type PatchLine struct {
@@ -51,12 +61,9 @@ const (
 // Blocks apply to the most recent path line, and an empty SEARCH section
 // creates the file.
 func ParsePatch(text string) (Patch, error) {
-	if strings.ContainsRune(text, 0) {
-		return Patch{}, fmt.Errorf("%w: NUL byte", ErrInvalidPatch)
-	}
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	for i := range lines {
-		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	lines, err := patchLines(text)
+	if err != nil {
+		return Patch{}, err
 	}
 	type block struct {
 		path    string
@@ -143,6 +150,24 @@ func ParsePatch(text string) (Patch, error) {
 		}
 		op.Hunks = append(op.Hunks, hunk)
 	}
+	return finalizePatch(patch)
+}
+
+// patchLines rejects NUL bytes and splits text into carriage-return-free lines.
+func patchLines(text string) ([]string, error) {
+	if strings.ContainsRune(text, 0) {
+		return nil, fmt.Errorf("%w: NUL byte", ErrInvalidPatch)
+	}
+	lines := strings.Split(strings.TrimSpace(text), "\n")
+	for i := range lines {
+		lines[i] = strings.TrimSuffix(lines[i], "\r")
+	}
+	return lines, nil
+}
+
+// finalizePatch applies the checks every format shares, so both parsers reject
+// empty creations, duplicate paths and nested paths identically.
+func finalizePatch(patch Patch) (Patch, error) {
 	for _, op := range patch.Operations {
 		if op.Kind == PatchAdd && op.Data == "" {
 			return Patch{}, fmt.Errorf("%w: file creation for %q has no content", ErrInvalidPatch, op.Path)
@@ -186,8 +211,17 @@ func validatePatchPaths(patch Patch) error {
 	return nil
 }
 
-func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text string) (Plan, error) {
-	patch, err := ParsePatch(text)
+func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text string, format PatchFormat) (Plan, error) {
+	var patch Patch
+	var err error
+	switch format {
+	case PatchFormatAider:
+		patch, err = ParsePatch(text)
+	case PatchFormatUnified:
+		patch, err = ParseUnifiedDiff(text)
+	default:
+		return Plan{}, fmt.Errorf("%w: unknown format %q", ErrInvalidPatch, format)
+	}
 	if err != nil {
 		return Plan{}, err
 	}
@@ -249,6 +283,21 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 				return Plan{}, errors.New("change: file byte limit exceeded")
 			}
 			after := regularState(path, data, before.Mode)
+			mutations = append(mutations, Mutation{operation.Path, path, before, after})
+			diff.WriteString(unifiedDiff(ws.Root(), before, after))
+		case PatchDelete:
+			path, err := ws.ResolveRead(operation.Path)
+			if err != nil {
+				return Plan{}, fmt.Errorf("change: source %q is missing: %w", operation.Path, err)
+			}
+			before, err := s.readState(path)
+			if err != nil {
+				return Plan{}, err
+			}
+			if before.SymlinkTarget != "" || !before.Mode.IsRegular() {
+				return Plan{}, errors.New("change: patches require regular files")
+			}
+			after := FileState{Path: path}
 			mutations = append(mutations, Mutation{operation.Path, path, before, after})
 			diff.WriteString(unifiedDiff(ws.Root(), before, after))
 		}

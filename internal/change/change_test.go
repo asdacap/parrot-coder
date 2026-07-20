@@ -99,7 +99,7 @@ func TestPatchAddUpdateAndStrictRejections(t *testing.T) {
 		aiderBlock("second", "one", "ONE") +
 		aiderBlock("", "two", "TWO")
 	service := NewService(Config{})
-	plan, err := service.PlanPatch(ctx, ws, patch)
+	plan, err := service.PlanPatch(ctx, ws, patch, PatchFormatAider)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestPatchAddUpdateAndStrictRejections(t *testing.T) {
 			t.Errorf("%s accepted: %q", name, input)
 		}
 	}
-	if _, err := service.PlanPatch(ctx, ws, aiderBlock("absent", "x", "y")); err == nil {
+	if _, err := service.PlanPatch(ctx, ws, aiderBlock("absent", "x", "y"), PatchFormatAider); err == nil {
 		t.Fatal("update of missing file accepted")
 	}
 }
@@ -185,7 +185,7 @@ func TestPatchUpdateSemantics(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(ws.Root(), name), tc.before, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			plan, err := service.PlanPatch(ctx, ws, name+"\n"+tc.blocks)
+			plan, err := service.PlanPatch(ctx, ws, name+"\n"+tc.blocks, PatchFormatAider)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -247,7 +247,7 @@ func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(ws.Root(), "file"), tc.before, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			_, err := service.PlanPatch(ctx, ws, "file\n"+tc.blocks)
+			_, err := service.PlanPatch(ctx, ws, "file\n"+tc.blocks, PatchFormatAider)
 			if tc.wantErr && !errors.Is(err, ErrConflict) {
 				t.Fatalf("err = %v, want ErrConflict", err)
 			}
@@ -291,7 +291,7 @@ func TestPatchSyntaxTolerance(t *testing.T) {
 			if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("old\n"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			plan, err := NewService(Config{}).PlanPatch(context.Background(), ws, tc.input)
+			plan, err := NewService(Config{}).PlanPatch(context.Background(), ws, tc.input, PatchFormatAider)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -309,7 +309,7 @@ func TestPatchCreationOverwritesExistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	service := NewService(Config{})
-	plan, err := service.PlanPatch(ctx, ws, aiderBlock("added", "", "new add"))
+	plan, err := service.PlanPatch(ctx, ws, aiderBlock("added", "", "new add"), PatchFormatAider)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,7 +327,7 @@ func TestPatchCommitFailureRemovesCreatedParentDirectories(t *testing.T) {
 	ws := testWorkspace(t)
 	planner := NewService(Config{})
 	patch := aiderBlock("deep/nested/a.txt", "", "first") + aiderBlock("deep/nested/b.txt", "", "second")
-	plan, err := planner.PlanPatch(ctx, ws, patch)
+	plan, err := planner.PlanPatch(ctx, ws, patch, PatchFormatAider)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -350,7 +350,7 @@ func TestCommitRollbackAndSymlinkSwap(t *testing.T) {
 	}
 	patch := aiderBlock("a", "old", "new") + aiderBlock("b", "old", "new")
 	planner := NewService(Config{})
-	plan, err := planner.PlanPatch(ctx, ws, patch)
+	plan, err := planner.PlanPatch(ctx, ws, patch, PatchFormatAider)
 	if err != nil {
 		t.Fatal(err)
 	}
