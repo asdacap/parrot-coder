@@ -305,7 +305,7 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	if !strings.Contains(schema, `"required":["patchText"]`) || strings.Contains(schema, `"required":["patch"]`) {
 		t.Fatalf("apply_patch schema is not OpenCode-compatible: %s", schema)
 	}
-	raw := json.RawMessage(`{"patchText":"*** Begin Patch\n*** Add File: file\n+content\n*** End Patch"}`)
+	raw := json.RawMessage(`{"patchText":"file\n<<<<<<< SEARCH\n=======\ncontent\n>>>>>>> REPLACE\n"}`)
 	planned, err := tool.Plan(context.Background(), raw, CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)

@@ -67,135 +67,125 @@ func TestEditExplicitCreation(t *testing.T) {
 	}
 }
 
-func TestPatchAllOperationsAndStrictRejections(t *testing.T) {
+// aiderBlock renders one SEARCH/REPLACE block. An empty path repeats the
+// previous block's file, and an empty search section creates the file.
+func aiderBlock(path, search, replace string) string {
+	block := ""
+	if path != "" {
+		block = path + "\n"
+	}
+	block += patchSearchMarker + "\n"
+	if search != "" {
+		block += search + "\n"
+	}
+	block += "=======\n"
+	if replace != "" {
+		block += replace + "\n"
+	}
+	return block + patchReplaceMarker + "\n"
+}
+
+func TestPatchAddUpdateAndStrictRejections(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
-	for name, data := range map[string]string{"update": "old\n", "delete": "gone\n", "move": "move\n"} {
+	for name, data := range map[string]string{"update": "old\n", "second": "one\ntwo\n"} {
 		if err := os.WriteFile(filepath.Join(ws.Root(), name), []byte(data), 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	patch := "*** Begin Patch\n" +
-		"*** Add File: added\n+new\n" +
-		"*** Update File: update\n@@\n-old\n+changed\n" +
-		"*** Delete File: delete\n" +
-		"*** Update File: move\n*** Move to: moved\n@@\n-move\n+moved\n" +
-		"*** End Patch\n"
+	// The final block omits its path line, so it continues editing "second".
+	patch := aiderBlock("added", "", "new") +
+		aiderBlock("update", "old", "changed") +
+		aiderBlock("second", "one", "ONE") +
+		aiderBlock("", "two", "TWO")
 	service := NewService(Config{})
 	plan, err := service.PlanPatch(ctx, ws, patch)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Mutations) != 5 || !strings.Contains(plan.Diff, "+++ b/added") {
+	if len(plan.Mutations) != 3 || !strings.Contains(plan.Diff, "+++ b/added") {
 		t.Fatalf("plan = %#v", plan)
 	}
 	if err := service.Commit(ctx, ws, plan); err != nil {
 		t.Fatal(err)
 	}
-	for name, want := range map[string]string{"added": "new\n", "update": "changed\n", "moved": "moved\n"} {
+	for name, want := range map[string]string{"added": "new\n", "update": "changed\n", "second": "ONE\nTWO\n"} {
 		got, err := os.ReadFile(filepath.Join(ws.Root(), name))
 		if err != nil || string(got) != want {
 			t.Fatalf("%s = %q, %v", name, got, err)
 		}
 	}
-	for _, name := range []string{"delete", "move"} {
-		if _, err := os.Lstat(filepath.Join(ws.Root(), name)); !errors.Is(err, os.ErrNotExist) {
-			t.Fatalf("%s still exists", name)
-		}
-	}
 
-	malformed := []string{
-		"prose\n*** Begin Patch\n*** End Patch",
-		"*** Begin Patch\n*** Add File: ../escape\n+x\n*** End Patch",
-		"*** Begin Patch\n*** Add File: x\nnot-prefixed\n*** End Patch",
-		"*** Begin Patch\n*** Delete File: absent\ntext\n*** End Patch",
-		"*** Begin Patch\n*** Update File: a\n*** Move to: b\n*** Update File: b\n*** Move to: a\n*** End Patch",
-		"*** Begin Patch\n*** Add File: dir\n+x\n*** Add File: dir/file\n+y\n*** End Patch",
-		"*** Begin Patch\n*** Move File: a -> b\n*** Move to: c\n*** Add File: d\n+x\n*** End Patch",
+	malformed := map[string]string{
+		"no blocks":            "just prose\n",
+		"block without path":   patchSearchMarker + "\na\n=======\nb\n" + patchReplaceMarker,
+		"missing divider":      "file\n" + patchSearchMarker + "\na\n" + patchReplaceMarker,
+		"missing replace":      "file\n" + patchSearchMarker + "\na\n=======\nb",
+		"escaping path":        aiderBlock("../escape", "", "x"),
+		"absolute path":        aiderBlock("/etc/passwd", "", "x"),
+		"empty creation":       aiderBlock("empty", "", ""),
+		"creation then update": aiderBlock("file", "", "x") + aiderBlock("", "x", "y"),
+		"update then creation": aiderBlock("file", "x", "y") + aiderBlock("", "", "z"),
+		"path nested in path":  aiderBlock("dir", "", "x") + aiderBlock("dir/file", "", "y"),
 	}
-	for _, input := range malformed {
+	for name, input := range malformed {
 		if _, err := ParsePatch(input); err == nil {
-			t.Errorf("malformed patch accepted: %q", input)
+			t.Errorf("%s accepted: %q", name, input)
 		}
 	}
-	if _, err := service.PlanPatch(ctx, ws, "*** Begin Patch\n*** Delete File: absent\n*** End Patch"); err == nil {
-		t.Fatal("missing delete accepted")
+	if _, err := service.PlanPatch(ctx, ws, aiderBlock("absent", "x", "y")); err == nil {
+		t.Fatal("update of missing file accepted")
 	}
 }
 
-func TestPatchEndOfFileAnchorsDuplicateAndNormalizesFinalNewline(t *testing.T) {
-	ctx := context.Background()
-	ws := testWorkspace(t)
-	data := []byte("same\r\nsame")
-	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), data, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	patch := "*** Begin Patch\n*** Update File: file\n@@\n-same\n+last\n*** End of File\n*** End Patch"
-	service := NewService(Config{})
-	plan, err := service.PlanPatch(ctx, ws, patch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := string(plan.Mutations[0].After.Data); got != "same\r\nlast\r\n" {
-		t.Fatalf("after = %q", got)
-	}
-}
-
-func TestPatchOpenCodeUpdateSemantics(t *testing.T) {
+func TestPatchUpdateSemantics(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
 	service := NewService(Config{})
 	tests := []struct {
 		name   string
 		before []byte
-		patch  string
+		blocks string
 		want   []byte
 	}{
 		{
-			name:   "pure addition to empty file",
-			before: nil,
-			patch:  "@@\n+First line",
-			want:   []byte("First line\n"),
-		},
-		{
-			name:   "multiple chunks seek forward",
+			name:   "later blocks seek forward past earlier matches",
 			before: []byte("same\nfirst\nsame\nsecond\n"),
-			patch:  "@@\n same\n-first\n+FIRST\n@@\n same\n-second\n+SECOND",
+			blocks: aiderBlock("", "same\nfirst", "same\nFIRST") + aiderBlock("", "same\nsecond", "same\nSECOND"),
 			want:   []byte("same\nFIRST\nsame\nSECOND\n"),
 		},
 		{
-			name:   "hunk header context",
+			name:   "surrounding context disambiguates",
 			before: []byte("before\nfunc greet():\n    old()\nafter\n"),
-			patch:  "@@ func greet():\n-    old()\n+    new()",
+			blocks: aiderBlock("", "func greet():\n    old()", "func greet():\n    new()"),
 			want:   []byte("before\nfunc greet():\n    new()\nafter\n"),
 		},
 		{
 			name:   "trailing whitespace fallback",
 			before: []byte("value   \n"),
-			patch:  "@@\n-value\n+changed",
+			blocks: aiderBlock("", "value", "changed"),
 			want:   []byte("changed\n"),
 		},
 		{
 			name:   "preserve BOM and CRLF",
 			before: append([]byte{0xef, 0xbb, 0xbf}, []byte("old\r\n")...),
-			patch:  "@@\n-old\n+new",
+			blocks: aiderBlock("", "old", "new"),
 			want:   append([]byte{0xef, 0xbb, 0xbf}, []byte("new\r\n")...),
 		},
 		{
-			name:   "sort pure addition before earlier replacement",
+			name:   "replacement may delete lines",
 			before: []byte("one\ntwo\nthree\n"),
-			patch:  "@@\n+last\n@@\n-one\n-two\n-three\n+first",
-			want:   []byte("first\nlast\n"),
+			blocks: aiderBlock("", "one\ntwo", "only"),
+			want:   []byte("only\nthree\n"),
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(ws.Root(), strings.ReplaceAll(tc.name, " ", "_"))
-			if err := os.WriteFile(path, tc.before, 0o600); err != nil {
+			name := strings.ReplaceAll(tc.name, " ", "_")
+			if err := os.WriteFile(filepath.Join(ws.Root(), name), tc.before, 0o600); err != nil {
 				t.Fatal(err)
 			}
-			input := "*** Begin Patch\n*** Update File: " + filepath.Base(path) + "\n" + tc.patch + "\n*** End Patch"
-			plan, err := service.PlanPatch(ctx, ws, input)
+			plan, err := service.PlanPatch(ctx, ws, name+"\n"+tc.blocks)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -206,37 +196,93 @@ func TestPatchOpenCodeUpdateSemantics(t *testing.T) {
 	}
 }
 
-func TestPatchRejectsEmptyAddedFile(t *testing.T) {
-	if _, err := ParsePatch("*** Begin Patch\n*** Add File: empty\n*** End Patch"); err == nil {
-		t.Fatal("empty add hunk accepted")
+func TestPatchRejectsAmbiguousSearch(t *testing.T) {
+	ctx := context.Background()
+	service := NewService(Config{})
+	tests := []struct {
+		name    string
+		before  []byte
+		blocks  string
+		wantErr bool
+	}{
+		{
+			name:    "repeated line is ambiguous",
+			before:  []byte("target\nmiddle\ntarget\n"),
+			blocks:  aiderBlock("", "target", "CHANGED"),
+			wantErr: true,
+		},
+		{
+			name:    "surrounding lines disambiguate",
+			before:  []byte("target\nmiddle\ntarget\n"),
+			blocks:  aiderBlock("", "target\nmiddle", "CHANGED\nmiddle"),
+			wantErr: false,
+		},
+		{
+			// The exact pass matches once, so the looser trimming passes that
+			// would also match the indented copy never run.
+			name:    "exact match wins before looser passes widen",
+			before:  []byte("value\n    value\n"),
+			blocks:  aiderBlock("", "value", "changed"),
+			wantErr: false,
+		},
+		{
+			// Neither copy matches exactly, and both match once trimmed.
+			name:    "ambiguity found by a looser pass still errors",
+			before:  []byte("  value\n    value\n"),
+			blocks:  aiderBlock("", "value", "changed"),
+			wantErr: true,
+		},
+		{
+			// Each block starts seeking past the previous one, so identical
+			// edits at known-distinct sites stay unambiguous.
+			name:    "sequential blocks walk forward",
+			before:  []byte("dup\ndup\n"),
+			blocks:  aiderBlock("", "dup\ndup", "first\nsecond"),
+			wantErr: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := testWorkspace(t)
+			if err := os.WriteFile(filepath.Join(ws.Root(), "file"), tc.before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := service.PlanPatch(ctx, ws, "file\n"+tc.blocks)
+			if tc.wantErr && !errors.Is(err, ErrConflict) {
+				t.Fatalf("err = %v, want ErrConflict", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("err = %v, want success", err)
+			}
+		})
 	}
 }
 
-func TestPatchCodexSyntaxCompatibility(t *testing.T) {
+func TestPatchSyntaxTolerance(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
 		want  string
 	}{
 		{
-			name:  "CRLF and marker whitespace",
-			input: " \r\n*** Begin Patch \r\n*** Update File: file\r\n@@\r\n-old\r\n+new\r\n*** End Patch\r\n ",
+			name:  "CRLF line endings",
+			input: strings.ReplaceAll(aiderBlock("file", "old", "new"), "\n", "\r\n"),
 			want:  "new\n",
 		},
 		{
-			name:  "legacy heredoc wrapper",
-			input: "<<'EOF'\n*** Begin Patch\n*** Update File: file\n@@\n-old\n+new\n*** End Patch\nEOF\n",
+			name:  "fenced code block around the edit",
+			input: "file\n```go\n" + aiderBlock("", "old", "new") + "```\n",
 			want:  "new\n",
 		},
 		{
-			name:  "headerless update",
-			input: "*** Begin Patch\n*** Update File: file\n-old\n+new\n*** End Patch",
+			name:  "blank lines between path and markers",
+			input: "file\n\n" + aiderBlock("", "old", "new") + "\n",
 			want:  "new\n",
 		},
 		{
-			name:  "unprefixed blank context line",
-			input: "*** Begin Patch\n*** Update File: file\n@@\n old\n\n tail\n-old\n+new\n*** End Patch",
-			want:  "old\n\ntail\nnew\n",
+			name:  "over-long divider",
+			input: "file\n" + patchSearchMarker + "\nold\n==========\nnew\n" + patchReplaceMarker,
+			want:  "new\n",
 		},
 	}
 	for _, tc := range tests {
@@ -244,11 +290,6 @@ func TestPatchCodexSyntaxCompatibility(t *testing.T) {
 			ws := testWorkspace(t)
 			if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("old\n"), 0o600); err != nil {
 				t.Fatal(err)
-			}
-			if tc.name == "unprefixed blank context line" {
-				if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("old\n\ntail\nold\n"), 0o600); err != nil {
-					t.Fatal(err)
-				}
 			}
 			plan, err := NewService(Config{}).PlanPatch(context.Background(), ws, tc.input)
 			if err != nil {
@@ -261,63 +302,23 @@ func TestPatchCodexSyntaxCompatibility(t *testing.T) {
 	}
 }
 
-func TestPatchCodexOverwriteSemantics(t *testing.T) {
+func TestPatchCreationOverwritesExistingFile(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
-	for path, data := range map[string]string{"added": "old add\n", "source": "source\n", "destination": "old destination\n"} {
-		if err := os.WriteFile(filepath.Join(ws.Root(), path), []byte(data), 0o640); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.WriteFile(filepath.Join(ws.Root(), "added"), []byte("old add\n"), 0o640); err != nil {
+		t.Fatal(err)
 	}
 	service := NewService(Config{})
-	plan, err := service.PlanPatch(ctx, ws, "*** Begin Patch\n*** Add File: added\n+new add\n*** Update File: source\n*** Move to: destination\n@@\n-source\n+moved\n*** End Patch")
+	plan, err := service.PlanPatch(ctx, ws, aiderBlock("added", "", "new add"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := service.Commit(ctx, ws, plan); err != nil {
 		t.Fatal(err)
 	}
-	for path, want := range map[string]string{"added": "new add\n", "destination": "moved\n"} {
-		data, err := os.ReadFile(filepath.Join(ws.Root(), path))
-		if err != nil || string(data) != want {
-			t.Fatalf("%s = %q, %v", path, data, err)
-		}
-	}
-}
-
-func TestPatchAcceptsMoveFileAliasWithUpdateHunks(t *testing.T) {
-	ctx := context.Background()
-	ws := testWorkspace(t)
-	if err := os.MkdirAll(filepath.Join(ws.Root(), "src", "renderer", "utils"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	oldPath := filepath.Join(ws.Root(), "src", "renderer", "utils", "workspaceFavourites.ts")
-	if err := os.WriteFile(oldPath, []byte("import type { Workspace } from '../types'\n"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	patch := "*** Begin Patch\n" +
-		"*** Move File: src/renderer/utils/workspaceFavourites.ts -> src/shared/workspaceFavourites.ts\n" +
-		"@@\n" +
-		"-import type { Workspace } from '../types'\n" +
-		"+import type { Workspace } from './workspaceFile'\n" +
-		"*** End Patch"
-	service := NewService(Config{})
-	plan, err := service.PlanPatch(ctx, ws, patch)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Mutations) != 2 {
-		t.Fatalf("mutations = %#v", plan.Mutations)
-	}
-	if err := service.Commit(ctx, ws, plan); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(oldPath); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("move source still exists: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(ws.Root(), "src", "shared", "workspaceFavourites.ts"))
-	if err != nil || string(data) != "import type { Workspace } from './workspaceFile'\n" {
-		t.Fatalf("move destination = %q, %v", data, err)
+	data, err := os.ReadFile(filepath.Join(ws.Root(), "added"))
+	if err != nil || string(data) != "new add\n" {
+		t.Fatalf("added = %q, %v", data, err)
 	}
 }
 
@@ -325,10 +326,7 @@ func TestPatchCommitFailureRemovesCreatedParentDirectories(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
 	planner := NewService(Config{})
-	patch := "*** Begin Patch\n" +
-		"*** Add File: deep/nested/a.txt\n+first\n" +
-		"*** Add File: deep/nested/b.txt\n+second\n" +
-		"*** End Patch"
+	patch := aiderBlock("deep/nested/a.txt", "", "first") + aiderBlock("deep/nested/b.txt", "", "second")
 	plan, err := planner.PlanPatch(ctx, ws, patch)
 	if err != nil {
 		t.Fatal(err)
@@ -350,7 +348,7 @@ func TestCommitRollbackAndSymlinkSwap(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	patch := "*** Begin Patch\n*** Update File: a\n@@\n-old\n+new\n*** Update File: b\n@@\n-old\n+new\n*** End Patch"
+	patch := aiderBlock("a", "old", "new") + aiderBlock("b", "old", "new")
 	planner := NewService(Config{})
 	plan, err := planner.PlanPatch(ctx, ws, patch)
 	if err != nil {
