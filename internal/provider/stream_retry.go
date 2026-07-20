@@ -22,17 +22,18 @@ const (
 // StreamWithRetry starts a provider stream and reconnects when the stream
 // fails before delivering any event. A retry cannot duplicate client-visible
 // output, so a stream that already emitted an event is never restarted: its
-// error passes through unchanged.
-func StreamWithRetry(ctx context.Context, client Provider, request protocol.Request) (Stream, error) {
-	return streamWithRetry(ctx, client, request, streamRetryBaseDelay)
+// error passes through unchanged. notify, when set, observes each automatic
+// retry of a transient engine-overload rejection.
+func StreamWithRetry(ctx context.Context, client Provider, request protocol.Request, notify func(RetryNotice)) (Stream, error) {
+	return streamWithRetry(ctx, client, request, streamRetryBaseDelay, notify)
 }
 
-func streamWithRetry(ctx context.Context, client Provider, request protocol.Request, baseDelay time.Duration) (Stream, error) {
-	stream, err := StreamWithHeaderRetry(ctx, client, request)
+func streamWithRetry(ctx context.Context, client Provider, request protocol.Request, baseDelay time.Duration, notify func(RetryNotice)) (Stream, error) {
+	stream, err := streamWithHeaderRetry(ctx, client, request, headerRetryInitialDelay, headerRetryMaximumDelay, notify)
 	if err != nil {
 		return nil, err
 	}
-	return &retryStream{client: client, request: request, stream: stream, remaining: streamMaxRetries, baseDelay: baseDelay}, nil
+	return &retryStream{client: client, request: request, stream: stream, remaining: streamMaxRetries, baseDelay: baseDelay, notify: notify}, nil
 }
 
 type retryStream struct {
@@ -43,6 +44,7 @@ type retryStream struct {
 	attempt   int
 	emitted   bool
 	baseDelay time.Duration
+	notify    func(RetryNotice)
 }
 
 func (s *retryStream) Next(ctx context.Context) (protocol.Event, error) {
@@ -79,7 +81,7 @@ func (s *retryStream) Next(ctx context.Context) (protocol.Event, error) {
 			return protocol.Event{}, ctx.Err()
 		case <-timer.C:
 		}
-		reopened, openErr := streamWithHeaderRetry(ctx, s.client, s.request, headerRetryInitialDelay, headerRetryMaximumDelay)
+		reopened, openErr := streamWithHeaderRetry(ctx, s.client, s.request, headerRetryInitialDelay, headerRetryMaximumDelay, s.notify)
 		if openErr != nil {
 			return protocol.Event{}, errors.Join(err, openErr)
 		}

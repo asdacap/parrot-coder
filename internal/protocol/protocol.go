@@ -104,6 +104,7 @@ const (
 	EventUsage                 EventType = "usage"
 	EventFinish                EventType = "finish"
 	EventProviderError         EventType = "provider_error"
+	EventProviderRetry         EventType = "provider_retry"
 	EventToolOutputDelta       EventType = "tool_output_delta"
 )
 

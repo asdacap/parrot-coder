@@ -357,6 +357,16 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			r.status = "error"
 		case "provider_error":
 			r.status = status.Kind
+		case "provider_retry":
+			// A retry notice is transient progress, not transcript content: flush
+			// it immediately instead of buffering it into the assistant stream.
+			message := status.Message
+			if message == "" {
+				message = "provider is overloaded; retrying"
+			}
+			if r.shell != nil {
+				r.shell.commitNotice(message)
+			}
 		default:
 			r.status = status.Kind
 		}

@@ -142,6 +142,20 @@ func TestEnhancedBusySlashRunsSafeAndRejectsMutation(t *testing.T) {
 	}
 }
 
+func TestEnhancedProviderRetryNoticeFlushesImmediately(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 50})
+	shell := &chatShell{ctx: context.Background(), renderer: renderer}
+	runtime := &enhancedChatRuntime{shell: shell, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
+	status, _ := json.Marshal(v1.SessionStatus{Kind: "provider_retry", Message: "provider fake is overloaded; retrying in 2s (attempt 1)"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: status}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "provider fake is overloaded; retrying in 2s (attempt 1)") {
+		t.Fatalf("retry notice was not flushed: %q", output.String())
+	}
+}
+
 func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
 	api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{
 		{ID: "first", Role: "assistant", Content: "first answer", Status: "complete"},

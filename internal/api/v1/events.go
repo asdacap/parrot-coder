@@ -97,6 +97,7 @@ type SessionStatus struct {
 	Kind         string `json:"kind"`
 	FinishReason string `json:"finish_reason,omitempty"`
 	ErrorCode    string `json:"error_code,omitempty"`
+	Message      string `json:"message,omitempty"`
 	Usage        *Usage `json:"usage,omitempty"`
 }
 

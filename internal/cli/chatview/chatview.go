@@ -910,7 +910,11 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if status.Kind == "running" || status.Kind == "idle" || status.Kind == "finish" || status.Kind == "usage" || status.Kind == "tool_call_complete" {
 			return nil, nil
 		}
-		return []TaskReport{{ID: scope + "status:" + status.MessageID, Line: prefix + "status: " + status.Kind, Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
+		line := "status: " + status.Kind
+		if status.Message != "" {
+			line = status.Message
+		}
+		return []TaskReport{{ID: scope + "status:" + status.MessageID, Line: prefix + line, Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
 	case "session.context.initialized", "session.context.changed", "session.context.replaced":
 		lines := AgentsLoadedActivities(item)
 		reports := make([]TaskReport, 0, len(lines))

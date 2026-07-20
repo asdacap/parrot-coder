@@ -178,9 +178,54 @@ func TestStreamWithHeaderRetryRetriesTimeoutThenSucceeds(t *testing.T) {
 		}
 		return want, nil
 	}}
-	got, err := streamWithHeaderRetry(context.Background(), client, protocol.Request{}, time.Millisecond, 2*time.Millisecond)
+	got, err := streamWithHeaderRetry(context.Background(), client, protocol.Request{}, time.Millisecond, 2*time.Millisecond, nil)
 	if err != nil || got != want || client.calls.Load() != 2 {
 		t.Fatalf("stream = %v, calls = %d, err = %v", got, client.calls.Load(), err)
+	}
+}
+
+func TestStreamWithHeaderRetryRetriesEngineOverloaded(t *testing.T) {
+	for _, testCase := range []struct {
+		name      string
+		err       error
+		wantCalls int32
+		wantRetry bool
+	}{
+		{"code", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "engine_overloaded_error", Message: "The engine is currently overloaded, please try again later"}, 3, true},
+		{"type", &HTTPError{StatusCode: http.StatusTooManyRequests, Type: "engine_overloaded_error"}, 3, true},
+		{"transient rate limit", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "rate_limit_exceeded"}, 1, false},
+		{"usage limit", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "insufficient_quota"}, 1, false},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			want := &testStream{}
+			client := &retryProvider{fn: func(call int) (Stream, error) {
+				if call < 3 {
+					return nil, testCase.err
+				}
+				return want, nil
+			}}
+			var notices []RetryNotice
+			got, err := streamWithHeaderRetry(context.Background(), client, protocol.Request{Model: "m"}, time.Millisecond, 2*time.Millisecond, func(notice RetryNotice) {
+				notices = append(notices, notice)
+			})
+			if !testCase.wantRetry {
+				if !errors.Is(err, testCase.err) || client.calls.Load() != testCase.wantCalls || len(notices) != 0 {
+					t.Fatalf("calls = %d, notices = %v, err = %v", client.calls.Load(), notices, err)
+				}
+				return
+			}
+			if err != nil || got != want || client.calls.Load() != testCase.wantCalls {
+				t.Fatalf("stream = %v, calls = %d, err = %v", got, client.calls.Load(), err)
+			}
+			if len(notices) != 2 {
+				t.Fatalf("notices = %v", notices)
+			}
+			for i, notice := range notices {
+				if notice.Provider != "retry" || notice.Model != "m" || notice.Attempt != i+1 || notice.Delay != time.Millisecond<<i {
+					t.Fatalf("notice[%d] = %#v", i, notice)
+				}
+			}
+		})
 	}
 }
 
@@ -197,7 +242,7 @@ func TestStreamWithHeaderRetryStopsOnCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		_, err := streamWithHeaderRetry(ctx, client, protocol.Request{}, time.Hour, time.Hour)
+		_, err := streamWithHeaderRetry(ctx, client, protocol.Request{}, time.Hour, time.Hour, nil)
 		done <- err
 	}()
 	<-called

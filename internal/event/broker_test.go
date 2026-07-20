@@ -60,6 +60,25 @@ func TestLiveBrokerRejectsUnknownOrInvalidEvents(t *testing.T) {
 	}
 }
 
+func TestLiveBrokerMapsProviderRetryNotice(t *testing.T) {
+	broker := event.NewBroker()
+	events, closeSubscription := broker.Subscribe("ses_test", 1)
+	defer closeSubscription()
+	broker.Publish("ses_test", protocol.Event{Type: protocol.EventProviderRetry, Text: "provider fake is overloaded; retrying in 2s (attempt 1)"})
+	item := <-events
+	if item.Type != v1.EventSessionStatus {
+		t.Fatalf("type = %q", item.Type)
+	}
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := payload.(*v1.SessionStatus)
+	if status.Kind != "provider_retry" || status.Message != "provider fake is overloaded; retrying in 2s (attempt 1)" {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func TestLiveBrokerPreservesReasoningSummaryPartID(t *testing.T) {
 	broker := event.NewBroker()
 	events, closeSubscription := broker.Subscribe("ses_test", 1)
