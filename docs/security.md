@@ -82,7 +82,7 @@ ends when the session runtime or Parrot process exits.
 The default `shell` tool allows arbitrary process execution inside a mandatory
 platform sandbox. On Linux, Parrot uses Bubblewrap with a read-only host
 filesystem, a writable workspace and Git metadata, read-only existing Parrot
-metadata (`.parrot` and project `parrot.jsonc` along the configuration path), a
+metadata (`.parrot` and project `parrot.yaml` along the configuration path), a
 session-private `/tmp` shared across that session's shell commands, user and
 PID namespaces, and no capabilities. Linked-worktree
 common Git directories outside the workspace are writable. On macOS it applies

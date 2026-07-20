@@ -35,7 +35,7 @@ func protectedWorkspacePaths(root, cwd string) []string {
 	}
 	paths := make([]string, 0, len(directories)*3)
 	for _, directory := range directories {
-		for _, name := range []string{".parrot", "parrot.jsonc"} {
+		for _, name := range []string{".parrot", "parrot.yaml"} {
 			path := filepath.Join(directory, name)
 			if _, err := os.Lstat(path); err == nil {
 				paths = append(paths, path)

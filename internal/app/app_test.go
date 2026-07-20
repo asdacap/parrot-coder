@@ -144,20 +144,20 @@ func TestCompositionEndToEndInProcess(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(configHome, "parrot"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	configuration := fmt.Sprintf(`{
-  "model": "local/test-model",
-  "providers": {
-    "local": {
-      "type": "compatible",
-      "protocol": "responses",
-      "base_url": %q,
-      "api_key_env": "PARROT_TEST_KEY",
-      "allow_insecure_localhost": true,
-      "models": {"test-model": {"name": "Test Model", "tools": true}}
-    }
-  }
-}`, provider.URL+"/v1")
-	if err := os.WriteFile(filepath.Join(configHome, "parrot", "parrot.jsonc"), []byte(configuration), 0o600); err != nil {
+	configuration := fmt.Sprintf(`model: local/test-model
+providers:
+  local:
+    type: compatible
+    protocol: responses
+    base_url: %q
+    api_key_env: PARROT_TEST_KEY
+    allow_insecure_localhost: true
+    models:
+      test-model:
+        name: Test Model
+        tools: true
+`, provider.URL+"/v1")
+	if err := os.WriteFile(filepath.Join(configHome, "parrot", "parrot.yaml"), []byte(configuration), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PARROT_TEST_KEY", "test-secret")
@@ -401,8 +401,14 @@ func TestOpenStartsEnabledMCPAndDiscoversBeforeCompletion(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	configuration := fmt.Sprintf(`{"mcp":{"fixture":{"transport":"http","url":%q,"enabled":true,"allow_insecure_localhost":true}}}`, server.URL)
-	if err := os.WriteFile(filepath.Join(configDir, "parrot.jsonc"), []byte(configuration), 0o600); err != nil {
+	configuration := fmt.Sprintf(`mcp:
+  fixture:
+    transport: http
+    url: %q
+    enabled: true
+    allow_insecure_localhost: true
+`, server.URL)
+	if err := os.WriteFile(filepath.Join(configDir, "parrot.yaml"), []byte(configuration), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	paths := appdirs.Overrides{Home: root, ConfigHome: configHome, DataHome: filepath.Join(root, "data"), StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache")}
@@ -430,8 +436,14 @@ func TestOpenDoesNotStartDisabledMCPAndNamesStartupFailure(t *testing.T) {
 		if err := os.MkdirAll(configDir, 0o700); err != nil {
 			return err
 		}
-		configuration := fmt.Sprintf(`{"mcp":{"broken":{"transport":"http","url":%q,"enabled":%t,"allow_insecure_localhost":true}}}`, server.URL, enabled)
-		if err := os.WriteFile(filepath.Join(configDir, "parrot.jsonc"), []byte(configuration), 0o600); err != nil {
+		configuration := fmt.Sprintf(`mcp:
+  broken:
+    transport: http
+    url: %q
+    enabled: %t
+    allow_insecure_localhost: true
+`, server.URL, enabled)
+		if err := os.WriteFile(filepath.Join(configDir, "parrot.yaml"), []byte(configuration), 0o600); err != nil {
 			return err
 		}
 		paths := appdirs.Overrides{Home: root, ConfigHome: configHome, DataHome: filepath.Join(root, "data"), StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache")}
@@ -533,8 +545,19 @@ func TestAgentToolsUseIsolatedChildSessionAndReturnOutput(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	configuration := fmt.Sprintf(`{"model":"local/model","providers":{"local":{"type":"compatible","protocol":"responses","base_url":%q,"api_key_env":"PARROT_TASK_KEY","allow_insecure_localhost":true,"models":{"model":{"tools":true}}}}}`, provider.URL+"/v1")
-	if err := os.WriteFile(filepath.Join(configDir, "parrot.jsonc"), []byte(configuration), 0o600); err != nil {
+	configuration := fmt.Sprintf(`model: local/model
+providers:
+  local:
+    type: compatible
+    protocol: responses
+    base_url: %q
+    api_key_env: PARROT_TASK_KEY
+    allow_insecure_localhost: true
+    models:
+      model:
+        tools: true
+`, provider.URL+"/v1")
+	if err := os.WriteFile(filepath.Join(configDir, "parrot.yaml"), []byte(configuration), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PARROT_TASK_KEY", "secret")

@@ -2,11 +2,11 @@ package config
 
 import "testing"
 
-func FuzzParseJSONC(f *testing.F) {
+func FuzzParseYAML(f *testing.F) {
 	for _, seed := range [][]byte{
 		[]byte(`{}`),
-		[]byte("{\n// comment\n\"model\":\"local/model\",\n}"),
-		[]byte(`{"model":"a","model":"b"}`),
+		[]byte("# comment\nmodel: local/model"),
+		[]byte("model: a\nmodel: b"),
 		[]byte(`[]`),
 	} {
 		f.Add(seed)

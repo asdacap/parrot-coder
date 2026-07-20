@@ -16,7 +16,7 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range []string{".parrot", "parrot.jsonc"} {
+	for _, name := range []string{".parrot", "parrot.yaml"} {
 		if err := os.WriteFile(filepath.Join(root, name), []byte("protected"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -25,7 +25,7 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	if err := os.Mkdir(nested, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(nested, "parrot.jsonc"), []byte("protected"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(nested, "parrot.yaml"), []byte("protected"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", root+string(os.PathListSeparator)+bin)
@@ -50,8 +50,8 @@ func TestLinuxSandboxCommand(t *testing.T) {
 		{"--bind", writable, writable},
 		{"--dir", externalCwd, "--ro-bind", externalCwd, externalCwd},
 		{"--ro-bind", filepath.Join(root, ".parrot"), filepath.Join(root, ".parrot")},
-		{"--ro-bind", filepath.Join(root, "parrot.jsonc"), filepath.Join(root, "parrot.jsonc")},
-		{"--ro-bind", filepath.Join(nested, "parrot.jsonc"), filepath.Join(nested, "parrot.jsonc")},
+		{"--ro-bind", filepath.Join(root, "parrot.yaml"), filepath.Join(root, "parrot.yaml")},
+		{"--ro-bind", filepath.Join(nested, "parrot.yaml"), filepath.Join(nested, "parrot.yaml")},
 		{"--chdir", externalCwd, "--", "/bin/sh", "-c", "printf ok"},
 	} {
 		if !containsSequence(args, expected) {

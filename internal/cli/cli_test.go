@@ -421,7 +421,18 @@ func configureCLIProvider(t *testing.T, text string) (*httptest.Server, func()) 
 
 func configureCLIEnvironment(t *testing.T, providerURL string) {
 	t.Helper()
-	configuration := fmt.Sprintf(`{"model":"local/test","providers":{"local":{"type":"compatible","protocol":"responses","base_url":%q,"api_key_env":"PARROT_CLI_TEST_KEY","allow_insecure_localhost":true,"models":{"test":{"tools":true}}}}}`, providerURL+"/v1")
+	configuration := fmt.Sprintf(`model: local/test
+providers:
+  local:
+    type: compatible
+    protocol: responses
+    base_url: %q
+    api_key_env: PARROT_CLI_TEST_KEY
+    allow_insecure_localhost: true
+    models:
+      test:
+        tools: true
+`, providerURL+"/v1")
 	configureCLIConfig(t, configuration)
 	t.Setenv("PARROT_CLI_TEST_KEY", "secret")
 }
@@ -438,7 +449,7 @@ func configureCLIConfig(t *testing.T, configuration string) string {
 	if err := os.MkdirAll(filepath.Join(configHome, "parrot"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(configHome, "parrot", "parrot.jsonc"), []byte(configuration), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(configHome, "parrot", "parrot.yaml"), []byte(configuration), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", root)

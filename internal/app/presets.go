@@ -8,7 +8,7 @@ import (
 )
 
 // providerPreset supplies built-in defaults for a well-known provider ID so a
-// user only has to supply a credential. Every field a user sets in parrot.jsonc
+// user only has to supply a credential. Every field a user sets in parrot.yaml
 // overrides the preset; the preset only fills what was left empty.
 type providerPreset struct {
 	Protocol      string
@@ -20,7 +20,7 @@ type providerPreset struct {
 
 // providerPresets are built-in, not configuration, so a project-scope file
 // cannot redirect a preset provider's base URL. Model metadata is a starting
-// point that a user may override per model in parrot.jsonc.
+// point that a user may override per model in parrot.yaml.
 var providerPresets = map[string]providerPreset{
 	"openai": {HeaderTimeout: 10 * time.Second},
 	// kimi-code is the Kimi For Coding subscription. Its endpoint serves the

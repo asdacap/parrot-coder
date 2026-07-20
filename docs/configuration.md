@@ -1,21 +1,21 @@
 # Configuration
 
-Parrot reads JSON with comments and trailing commas from files named
-`parrot.jsonc`. Duplicate keys and unknown typed fields are rejected. Maps merge
+Parrot reads YAML from files named
+`parrot.yaml`. Duplicate keys and unknown typed fields are rejected. Maps merge
 recursively; arrays and scalar values replace lower-precedence values.
 
 ## Discovery And Precedence
 
 Files are loaded from lowest to highest precedence:
 
-1. `$XDG_CONFIG_HOME/parrot/parrot.jsonc`, defaulting to
-   `~/.config/parrot/parrot.jsonc`.
-2. `parrot.jsonc` in the project root.
-3. `.parrot/parrot.jsonc` in the project root.
+1. `$XDG_CONFIG_HOME/parrot/parrot.yaml`, defaulting to
+   `~/.config/parrot/parrot.yaml`.
+2. `parrot.yaml` in the project root.
+3. `.parrot/parrot.yaml` in the project root.
 4. The same two project files in each directory from the project root to the
    current working directory.
 
-Within one directory, `.parrot/parrot.jsonc` wins. The project root is the Git
+Within one directory, `.parrot/parrot.yaml` wins. The project root is the Git
 worktree root when available, otherwise the current directory. Discovery never
 walks above that root.
 
@@ -31,66 +31,64 @@ making startup network calls, or redirecting an environment credential.
 All fields are optional at the document root, but coding commands require a
 selected model. Durations are integer milliseconds.
 
-```jsonc
-{
-  "model": "provider/model",
-  "providers": {
-    "provider": {
-      "type": "compatible", // compatible or openai-compatible
-      "protocol": "responses", // responses or chat-completions
-      "base_url": "https://api.example.test/v1",
-      "api_key_env": "PROVIDER_API_KEY",
-      "headers": {"X-Tenant": "non-secret-value"},
-      "allow_insecure_localhost": false,
-      "header_timeout_ms": 10000,
-      "models": {
-        "model": {
-          "name": "Display Name",
-          "context": 128000,
-          "max_tokens": 16384,
-          "tools": true,
-          "reasoning": false,
-          "output": ["text"]
-        }
-      }
-    }
-  },
-  "mcp": {
-    "server-name": {
-      "transport": "stdio", // stdio or http
-      "command": "/absolute/path/to/server",
-      "args": ["--stdio"],
-      "env": {"NAME": "value"},
-      "cwd": "/absolute/working/directory",
-      "url": "https://mcp.example.test/rpc",
-      "headers": {"X-Tenant": "non-secret-value"},
-      "enabled": true,
-      "allow_insecure_localhost": false,
-      "startup_timeout_ms": 15000,
-      "call_timeout_ms": 30000
-    }
-  },
-  "lsp": {
-    "go": {
-      "command": "/absolute/path/to/gopls",
-      "args": ["serve"],
-      "env": {"GOTOOLCHAIN": "local"},
-      "extensions": [".go"],
-      "languages": {".go": "go"},
-      "timeout_ms": 15000
-    }
-  },
-  "formatters": {
-    "gofmt": {
-      "extensions": [".go"],
-      "command": ["/absolute/path/to/gofmt"],
-      "mode": "stdin" // stdin or file
-    }
-  },
-  "web_fetch": {
-    "allow_private": false
-  }
-}
+```yaml
+model: provider/model
+providers:
+  provider:
+    type: compatible # compatible or openai-compatible
+    protocol: responses # responses or chat-completions
+    base_url: https://api.example.test/v1
+    api_key_env: PROVIDER_API_KEY
+    headers:
+      X-Tenant: non-secret-value
+    allow_insecure_localhost: false
+    header_timeout_ms: 10000
+    models:
+      model:
+        name: Display Name
+        context: 128000
+        max_tokens: 16384
+        tools: true
+        reasoning: false
+        output:
+          - text
+mcp:
+  server-name:
+    transport: stdio # stdio or http
+    command: /absolute/path/to/server
+    args:
+      - --stdio
+    env:
+      NAME: value
+    cwd: /absolute/working/directory
+    url: https://mcp.example.test/rpc
+    headers:
+      X-Tenant: non-secret-value
+    enabled: true
+    allow_insecure_localhost: false
+    startup_timeout_ms: 15000
+    call_timeout_ms: 30000
+lsp:
+  go:
+    command: /absolute/path/to/gopls
+    args:
+      - serve
+    env:
+      GOTOOLCHAIN: local
+    extensions:
+      - .go
+    languages:
+      .go: go
+    timeout_ms: 15000
+formatters:
+  gofmt:
+    extensions:
+      - .go
+    command:
+      - /absolute/path/to/gofmt
+    mode: stdin # stdin or file
+web_fetch:
+  allow_private: false
 ```
 
 ### Providers

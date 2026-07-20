@@ -5,7 +5,6 @@ go 1.25.0
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0
 	github.com/creack/pty v1.1.24
-	github.com/tailscale/hujson v0.0.0-20260302212456-ecc657c15afd
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/sys v0.44.0
 	modernc.org/sqlite v1.53.0

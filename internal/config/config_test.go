@@ -48,11 +48,10 @@ func TestDiscoverRejectsCWDOutsideProject(t *testing.T) {
 	}
 }
 
-func TestParseJSONCAndRejectDuplicateKeys(t *testing.T) {
-	parsed, err := Parse([]byte(`{
-		// comment
-		"model": "local/code", // trailing comma
-	}`))
+func TestParseYAMLAndRejectDuplicateKeys(t *testing.T) {
+	parsed, err := Parse([]byte(`# comment
+model: local/code
+`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,14 +60,14 @@ func TestParseJSONCAndRejectDuplicateKeys(t *testing.T) {
 	}
 
 	for _, input := range []string{
-		`{"model":"a","model":"b"}`,
-		`{"providers":{"local":{"base_url":"a","base_url":"b"}}}`,
+		"model: a\nmodel: b",
+		"providers:\n  local:\n    base_url: a\n    base_url: b",
 	} {
 		if _, err := Parse([]byte(input)); err == nil || !strings.Contains(err.Error(), "duplicate") {
 			t.Fatalf("Parse(%s) error = %v", input, err)
 		}
 	}
-	if _, err := Parse([]byte(`[1, 2]`)); err == nil {
+	if _, err := Parse([]byte("- 1\n- 2")); err == nil {
 		t.Fatal("Parse accepted an array root")
 	}
 }
@@ -81,26 +80,38 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 	global := filepath.Join(configDir, FileName)
 	projectFile := filepath.Join(project, FileName)
 	nestedFile := filepath.Join(nested, ".parrot", FileName)
-	writeFile(t, global, `{
-		"model": "openai/small",
-		"providers": {"openai": {
-			"type": "openai-compatible",
-			"protocol": "responses",
-			"base_url": "https://api.example/v1",
-			"api_key_env": "OPENAI_API_KEY",
-			"headers": {"X-Tenant": "one"},
-			"allow_insecure_localhost": true,
-			"header_timeout_ms": 10000,
-			"models": {"small": {"context": 1000, "tools": true, "reasoning": true, "output": ["text"]}}
-		}}
-	}`)
-	writeFile(t, projectFile, `{
-		"model": "openai/large",
-		"providers": {"openai": {"models": {"large": {"context": 2000}}}}
-	}`)
-	writeFile(t, nestedFile, `{
-		"providers": {"openai": {"models": {"large": {"max_tokens": 500}}}}
-	}`)
+	writeFile(t, global, `model: openai/small
+providers:
+  openai:
+    type: openai-compatible
+    protocol: responses
+    base_url: https://api.example/v1
+    api_key_env: OPENAI_API_KEY
+    headers:
+      X-Tenant: one
+    allow_insecure_localhost: true
+    header_timeout_ms: 10000
+    models:
+      small:
+        context: 1000
+        tools: true
+        reasoning: true
+        output:
+          - text
+`)
+	writeFile(t, projectFile, `model: openai/large
+providers:
+  openai:
+    models:
+      large:
+        context: 2000
+`)
+	writeFile(t, nestedFile, `providers:
+  openai:
+    models:
+      large:
+        max_tokens: 500
+`)
 
 	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: nested})
 	if err != nil {
@@ -134,13 +145,44 @@ func TestLoadToolIntegrationMapsMergeAndDecode(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
 	project := filepath.Join(root, "project")
-	writeFile(t, filepath.Join(configDir, FileName), `{
-		"mcp": {"docs": {"transport":"http","url":"https://example.test/mcp","enabled":true,"headers":{"X-One":"1"},"startup_timeout_ms":1000,"call_timeout_ms":2000}},
-		"lsp": {"go": {"command":"/usr/bin/false","args":["serve"],"env":{"A":"B"},"extensions":[".go"],"languages":{".go":"go"}}},
-		"formatters": {"gofmt": {"extensions":["go"],"command":["/usr/bin/gofmt"],"mode":"stdin"}},
-		"web_fetch": {"allow_private": true}
-	}`)
-	writeFile(t, filepath.Join(project, FileName), `{"mcp":{"docs":{"headers":{"X-Two":"2"}}},"lsp":{"go":{"timeout_ms":3000}}}`)
+	writeFile(t, filepath.Join(configDir, FileName), `mcp:
+  docs:
+    transport: http
+    url: https://example.test/mcp
+    enabled: true
+    headers:
+      X-One: "1"
+    startup_timeout_ms: 1000
+    call_timeout_ms: 2000
+lsp:
+  go:
+    command: /usr/bin/false
+    args:
+      - serve
+    env:
+      A: B
+    extensions:
+      - .go
+    languages:
+      .go: go
+formatters:
+  gofmt:
+    extensions:
+      - go
+    command:
+      - /usr/bin/gofmt
+    mode: stdin
+web_fetch:
+  allow_private: true
+`)
+	writeFile(t, filepath.Join(project, FileName), `mcp:
+  docs:
+    headers:
+      X-Two: "2"
+lsp:
+  go:
+    timeout_ms: 3000
+`)
 	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
 	if err != nil {
 		t.Fatal(err)
@@ -164,11 +206,17 @@ func TestLoadToolIntegrationMapsMergeAndDecode(t *testing.T) {
 func TestLoadRejectsUnknownTypedField(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
-	writeFile(t, filepath.Join(configDir, FileName), `{"snapshot":{"root":"/legacy/journal"},"web_fecth":{"allow_private":true}}`)
+	writeFile(t, filepath.Join(configDir, FileName), `snapshot:
+  root: /legacy/journal
+web_fecth:
+  allow_private: true
+`)
 	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("Load error = %v", err)
 	}
-	writeFile(t, filepath.Join(configDir, FileName), `{"snapshot":{"root":"/legacy/journal"}}`)
+	writeFile(t, filepath.Join(configDir, FileName), `snapshot:
+  root: /legacy/journal
+`)
 	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err != nil {
 		t.Fatalf("Load rejected obsolete snapshot config: %v", err)
 	}
@@ -177,7 +225,7 @@ func TestLoadRejectsUnknownTypedField(t *testing.T) {
 func TestLoadRejectsOversizedConfig(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
-	writeFile(t, filepath.Join(configDir, FileName), `{"padding":"`+strings.Repeat("x", maxConfigBytes)+`"}`)
+	writeFile(t, filepath.Join(configDir, FileName), `padding: "`+strings.Repeat("x", maxConfigBytes)+`"`)
 	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), "exceeds") {
 		t.Fatalf("Load error = %v", err)
 	}
