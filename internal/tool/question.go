@@ -10,7 +10,7 @@ import (
 
 type QuestionTool struct {
 	BasePresentation
-	WritableTool
+	ReadOnlyTool
 	Broker *question.Broker
 }
 

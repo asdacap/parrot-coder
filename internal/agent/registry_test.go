@@ -47,6 +47,9 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 				t.Fatalf("%s denied %s", id, allowed)
 			}
 		}
+		if !ProfileAllows(profile, tool.Definition{ID: "question", ReadOnly: tool.NewQuestionTool(nil).ReadOnly()}) {
+			t.Fatalf("%s denied question", id)
+		}
 	}
 	review, err := registry.Get(ReviewID)
 	if err != nil {
