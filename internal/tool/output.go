@@ -27,9 +27,10 @@ type OutputConfig struct {
 }
 
 type StoredOutput struct {
-	ID      string `json:"id"`
-	Size    int64  `json:"size"`
-	Preview string `json:"preview"`
+	ID           string `json:"id"`
+	Size         int64  `json:"size"`
+	OmittedBytes int64  `json:"omitted_bytes,omitempty"`
+	Preview      string `json:"preview"`
 }
 
 type OutputStore struct {
@@ -51,7 +52,11 @@ func NewProcessOutputStore(store *OutputStore) process.OutputStore {
 
 func (a processOutputStore) Store(ctx context.Context, reader io.Reader) (process.StoredOutput, error) {
 	stored, err := a.store.Store(ctx, reader)
-	return process.StoredOutput{ID: stored.ID, Size: stored.Size, Preview: stored.Preview}, err
+	return process.StoredOutput{ID: stored.ID, Size: stored.Size, OmittedBytes: stored.OmittedBytes, Preview: stored.Preview}, err
+}
+
+func (a processOutputStore) Read(id string, offset, limit int64) ([]byte, error) {
+	return a.store.Read(id, offset, limit)
 }
 
 func NewOutputStore(config OutputConfig) (*OutputStore, error) {
@@ -83,7 +88,7 @@ func (s *OutputStore) Store(ctx context.Context, r io.Reader) (StoredOutput, err
 		return StoredOutput{}, err
 	}
 	path := filepath.Join(s.config.Directory, id)
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return StoredOutput{}, err
 	}
@@ -95,16 +100,13 @@ func (s *OutputStore) Store(ctx context.Context, r io.Reader) (StoredOutput, err
 		}
 	}()
 	buffer := make([]byte, 32*1024)
-	var size int64
+	var size, omitted int64
 	for {
 		if err := ctx.Err(); err != nil {
 			return StoredOutput{}, err
 		}
 		n, readErr := r.Read(buffer)
 		if n > 0 {
-			if size+int64(n) > s.config.PerOutput {
-				return StoredOutput{}, errors.New("per-output quota exceeded")
-			}
 			if s.total+size+int64(n) > s.config.Total {
 				return StoredOutput{}, errors.New("total output quota exceeded")
 			}
@@ -116,6 +118,14 @@ func (s *OutputStore) Store(ctx context.Context, r io.Reader) (StoredOutput, err
 			if written != n {
 				return StoredOutput{}, io.ErrShortWrite
 			}
+			if size > 2*s.config.PerOutput {
+				f, err = s.compactOutput(path, f, s.config.PerOutput)
+				if err != nil {
+					return StoredOutput{}, err
+				}
+				omitted += size - s.config.PerOutput
+				size = s.config.PerOutput
+			}
 		}
 		if readErr == io.EOF {
 			break
@@ -123,6 +133,14 @@ func (s *OutputStore) Store(ctx context.Context, r io.Reader) (StoredOutput, err
 		if readErr != nil {
 			return StoredOutput{}, readErr
 		}
+	}
+	if size > s.config.PerOutput {
+		f, err = s.compactOutput(path, f, s.config.PerOutput)
+		if err != nil {
+			return StoredOutput{}, err
+		}
+		omitted += size - s.config.PerOutput
+		size = s.config.PerOutput
 	}
 	if err := f.Close(); err != nil {
 		return StoredOutput{}, err
@@ -133,7 +151,44 @@ func (s *OutputStore) Store(ctx context.Context, r io.Reader) (StoredOutput, err
 	}
 	s.total += size
 	ok = true
-	return StoredOutput{ID: id, Size: size, Preview: preview}, nil
+	return StoredOutput{ID: id, Size: size, OmittedBytes: omitted, Preview: preview}, nil
+}
+
+// compactOutput rewrites the file at path keeping only its last keep bytes and
+// returns a new append handle for the compacted file.
+func (s *OutputStore) compactOutput(path string, f *os.File, keep int64) (*os.File, error) {
+	size, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return nil, err
+	}
+	dropped := size - keep
+	if dropped <= 0 {
+		return f, nil
+	}
+	if _, err := f.Seek(dropped, io.SeekStart); err != nil {
+		return nil, err
+	}
+	tmp, err := os.CreateTemp(s.config.Directory, ".parrot-output-*")
+	if err != nil {
+		return nil, err
+	}
+	tmpPath := tmp.Name()
+	_, copyErr := io.Copy(tmp, io.LimitReader(f, keep))
+	closeErr := tmp.Close()
+	_ = f.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return nil, copyErr
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return nil, closeErr
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return nil, err
+	}
+	return os.OpenFile(path, os.O_RDWR|os.O_APPEND, 0o600)
 }
 
 func (s *OutputStore) Read(id string, offset, limit int64) ([]byte, error) {

@@ -26,7 +26,6 @@ type Config struct {
 	MaxOutputBytes         int64
 	Timeout                time.Duration
 	TerminationGrace       time.Duration
-	Output                 io.Writer
 	OutputStore            OutputStore
 	AllowUnsafeEnvironment bool
 	MaxProcesses           int
@@ -53,13 +52,15 @@ type PersistentEvent struct {
 }
 
 type StoredOutput struct {
-	ID      string
-	Size    int64
-	Preview string
+	ID           string
+	Size         int64
+	OmittedBytes int64
+	Preview      string
 }
 
 type OutputStore interface {
 	Store(context.Context, io.Reader) (StoredOutput, error)
+	Read(id string, offset, limit int64) ([]byte, error)
 }
 
 type Request struct {
@@ -146,7 +147,7 @@ func NewRunner(config Config) (*Runner, error) {
 		return nil, errors.New("process: workspace is required")
 	}
 	if config.MaxOutputBytes <= 0 {
-		config.MaxOutputBytes = 1 << 20
+		config.MaxOutputBytes = 64 << 10
 	}
 	if config.Timeout <= 0 {
 		config.Timeout = 2 * time.Minute
@@ -344,56 +345,44 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		return Result{}, err
 	}
 
-	capture := &boundedWriter{limit: r.config.MaxOutputBytes, output: r.config.Output, stream: request.Output}
-	var outputPipe *io.PipeWriter
-	var stored <-chan storedResult
-	if r.config.OutputStore != nil {
-		reader, writer := io.Pipe()
-		outputPipe = writer
-		capture.output = writer
-		result := make(chan storedResult, 1)
-		stored = result
-		go func() {
-			output, storeErr := r.config.OutputStore.Store(ctx, reader)
-			_ = reader.CloseWithError(storeErr)
-			result <- storedResult{output: output, err: storeErr}
-		}()
+	if r.config.OutputStore == nil {
+		return Result{}, errors.New("process: output store is required")
+	}
+	capture := &streamWriter{stream: request.Output}
+	storeReader, storeWriter := io.Pipe()
+	capture.output = storeWriter
+	stored := make(chan storedResult, 1)
+	// Storage outlives cancellation so a cancelled command still lands in the
+	// store and its partial output remains readable.
+	go func() {
+		output, storeErr := r.config.OutputStore.Store(context.WithoutCancel(ctx), storeReader)
+		_ = storeReader.CloseWithError(storeErr)
+		stored <- storedResult{output: output, err: storeErr}
+	}()
+	fail := func(err error) (Result, error) {
+		_ = storeWriter.CloseWithError(err)
+		<-stored
+		return Result{}, err
 	}
 	resolvedShell, err := executableFile(request.Shell)
 	if err != nil {
-		if outputPipe != nil {
-			_ = outputPipe.CloseWithError(err)
-			<-stored
-		}
-		return Result{}, fmt.Errorf("process: shell: %w", err)
+		return fail(fmt.Errorf("process: shell: %w", err))
 	}
 	program, arguments := resolvedShell, []string{"-c", request.Command}
 	if sandboxed {
 		temporaryDirectory, releaseTemporaryDirectory, temporaryErr := r.acquireTemporaryDirectory(request.SessionID)
 		if temporaryErr != nil {
-			if outputPipe != nil {
-				_ = outputPipe.CloseWithError(temporaryErr)
-				<-stored
-			}
-			return Result{}, temporaryErr
+			return fail(temporaryErr)
 		}
 		defer releaseTemporaryDirectory()
 		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
 		writablePaths, writableErr := r.writableForSession(request.SessionID)
 		if writableErr != nil {
-			if outputPipe != nil {
-				_ = outputPipe.CloseWithError(writableErr)
-				<-stored
-			}
-			return Result{}, writableErr
+			return fail(writableErr)
 		}
 		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, writablePaths, temporaryDirectory)
 		if err != nil {
-			if outputPipe != nil {
-				_ = outputPipe.CloseWithError(err)
-				<-stored
-			}
-			return Result{}, fmt.Errorf("process: sandbox: %w", err)
+			return fail(fmt.Errorf("process: sandbox: %w", err))
 		}
 	}
 	command := exec.Command(program, arguments...)
@@ -404,11 +393,7 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 	command.Stderr = capture
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := command.Start(); err != nil {
-		if outputPipe != nil {
-			_ = outputPipe.CloseWithError(err)
-			<-stored
-		}
-		return Result{}, fmt.Errorf("process: start: %w", err)
+		return fail(fmt.Errorf("process: start: %w", err))
 	}
 	wait := make(chan error, 1)
 	go func() { wait <- command.Wait() }()
@@ -430,24 +415,61 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		result.TimedOut = true
 		waitErr = r.terminate(command.Process.Pid, wait)
 	}
-	if outputPipe != nil {
-		_ = outputPipe.Close()
-		storedResult := <-stored
-		if storedResult.err == nil {
-			result.OutputID = storedResult.output.ID
-			result.OutputSize = storedResult.output.Size
-		}
-	}
-	result.Output, result.Truncated = capture.result()
-	result.OutputTail = capture.tail.String()
+	_ = storeWriter.Close()
+	storedOutput := <-stored
 	if command.ProcessState != nil {
 		result.ExitCode = command.ProcessState.ExitCode()
 	}
+	result.OutputTail = capture.tail.String()
+	if storedOutput.err != nil {
+		return result, fmt.Errorf("process: store output: %w", storedOutput.err)
+	}
+	if capture.err != nil {
+		return result, fmt.Errorf("process: capture output: %w", capture.err)
+	}
+	result.OutputID = storedOutput.output.ID
+	result.OutputSize = storedOutput.output.Size
+	output, truncated, readErr := r.readStoredOutput(storedOutput.output)
+	if readErr != nil {
+		return result, fmt.Errorf("process: read output: %w", readErr)
+	}
+	result.Output, result.Truncated = output, truncated
 	var exitErr *exec.ExitError
 	if waitErr != nil && !errors.As(waitErr, &exitErr) {
 		return result, fmt.Errorf("process: wait: %w", waitErr)
 	}
 	return result, nil
+}
+
+// readStoredOutput bounds stored command output to the model-facing budget,
+// keeping the head and tail and reporting bytes the store dropped up front.
+func (r *Runner) readStoredOutput(stored StoredOutput) (string, bool, error) {
+	budget := r.config.MaxOutputBytes
+	truncated := stored.OmittedBytes > 0
+	var text string
+	if stored.Size <= budget {
+		data, err := r.config.OutputStore.Read(stored.ID, 0, stored.Size)
+		if err != nil {
+			return "", false, err
+		}
+		text = string(bytesToValidUTF8(data))
+	} else {
+		half := budget / 2
+		head, err := r.config.OutputStore.Read(stored.ID, 0, half)
+		if err != nil {
+			return "", false, err
+		}
+		tail, err := r.config.OutputStore.Read(stored.ID, stored.Size-half, half)
+		if err != nil {
+			return "", false, err
+		}
+		text = string(bytesToValidUTF8(head)) + fmt.Sprintf("\n... %d bytes omitted ...\n", stored.Size-budget) + string(bytesToValidUTF8(tail))
+		truncated = true
+	}
+	if stored.OmittedBytes > 0 {
+		text = fmt.Sprintf("... first %d bytes of output were lost ...\n", stored.OmittedBytes) + text
+	}
+	return text, truncated, nil
 }
 
 func setEnvironment(environment []string, name, value string) {
@@ -560,42 +582,30 @@ func unsafeEnvironmentName(name string) bool {
 	}
 }
 
-type boundedWriter struct {
-	mu        sync.Mutex
-	data      []byte
-	limit     int64
-	output    io.Writer
-	stream    io.Writer
-	truncated bool
-	tail      lineTail
+// streamWriter fans command output out to managed storage and the live
+// stream. Storage failures are recorded and reported once the command
+// finishes so the child process is never blocked by a broken sink.
+type streamWriter struct {
+	mu     sync.Mutex
+	output io.Writer
+	stream io.Writer
+	tail   lineTail
+	err    error
 }
 
-func (w *boundedWriter) Write(p []byte) (int, error) {
+func (w *streamWriter) Write(p []byte) (int, error) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.tail.Write(p)
-	remaining := w.limit - int64(len(w.data))
-	if remaining > 0 {
-		keep := int64(len(p))
-		if keep > remaining {
-			keep = remaining
-		}
-		w.data = append(w.data, p[:keep]...)
-	}
-	if w.output != nil {
+	if w.err == nil {
 		if _, err := w.output.Write(p); err != nil {
-			// Managed output is best-effort. Keep the bounded in-memory result
-			// and let the process continue if storage reaches its quota.
-			w.output = nil
+			w.err = err
 		}
 	}
 	if w.stream != nil {
 		if _, err := w.stream.Write(p); err != nil {
 			w.stream = nil
 		}
-	}
-	if int64(len(p)) > remaining {
-		w.truncated = true
 	}
 	return len(p), nil
 }
@@ -650,10 +660,4 @@ func (t lineTail) String() string {
 		lines = lines[len(lines)-outputTailLines:]
 	}
 	return strings.Join(lines, "\n")
-}
-
-func (w *boundedWriter) result() (string, bool) {
-	w.mu.Lock()
-	defer w.mu.Unlock()
-	return string(append([]byte(nil), w.data...)), w.truncated
 }
