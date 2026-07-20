@@ -602,6 +602,7 @@ func (a *reasoningSummaryAccumulator) Len() int { return a.bytes }
 type toolOutcome struct {
 	call        completedCall
 	text        string
+	modelText   string
 	err         error
 	interrupted bool
 	settled     bool
@@ -673,7 +674,7 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 				}
 			}
 			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}}, onPanic)
-			outcome := toolOutcome{call: call, text: result.Text, err: err, interrupted: ctx.Err() != nil}
+			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {
 				status, errorText = "interrupted", ctx.Err().Error()
@@ -743,7 +744,10 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 }
 
 func toolResultMessage(outcome toolOutcome) protocol.Message {
-	text := outcome.text
+	text := outcome.modelText
+	if text == "" {
+		text = outcome.text
+	}
 	if outcome.interrupted {
 		reason := "tool execution interrupted"
 		if outcome.err != nil {

@@ -140,13 +140,16 @@ func TestExecutorStoresOversizedOutput(t *testing.T) {
 	if !ok || strings.Contains(result.Text, filepath.Base(dir)) {
 		t.Fatalf("managed output not opaque: %#v", result)
 	}
+	if result.ModelText != result.Text {
+		t.Fatalf("ModelText did not default to Text: %#v", result)
+	}
 	b, err := store.Read(id, 0, 100)
 	if err != nil || string(b) != "long model output" {
 		t.Fatalf("stored %q: %v", b, err)
 	}
 }
 
-func TestExecutorKeepsBoundedSuccessWhenOutputStorageFails(t *testing.T) {
+func TestExecutorReportsLossyOutputWhenStorageFails(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "outputs")
 	store, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 4, PreviewLines: 2, PerOutput: 5, Total: 5, Retention: time.Hour})
 	if err != nil {
@@ -162,8 +165,8 @@ func TestExecutorKeepsBoundedSuccessWhenOutputStorageFails(t *testing.T) {
 	if lossy, _ := result.Metadata["output_lossy"].(bool); !lossy {
 		t.Fatalf("result does not report lossy output: %#v", result)
 	}
-	if len(result.Text) > 4 {
-		t.Fatalf("bounded output has %d bytes, want at most 4", len(result.Text))
+	if result.Text != "long model output" || result.ModelText != "long model output" {
+		t.Fatalf("executor truncated output it no longer bounds: %#v", result)
 	}
 }
 

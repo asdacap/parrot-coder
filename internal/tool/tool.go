@@ -45,9 +45,14 @@ type Plan struct {
 	Data           any
 }
 
+// Result carries a tool's output to two audiences. Text is the complete record
+// kept by the session and shown to the user. ModelText is what the model reads;
+// it defaults to Text and is the only field bounded against the context budget,
+// so a tool which must tell the model something it can act on puts it there.
 type Result struct {
-	Text     string         `json:"text"`
-	Metadata map[string]any `json:"metadata,omitempty"`
+	Text      string         `json:"text"`
+	ModelText string         `json:"model_text,omitempty"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
 type Tool interface {
@@ -272,28 +277,32 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	}
 	max := e.MaxOutputBytes
 	if max <= 0 {
-		max = 64 << 10
+		max = 1 << 20
 	}
-	if len(result.Text) > max {
-		if call.Outputs != nil {
-			stored, storeErr := call.Outputs.Store(ctx, strings.NewReader(result.Text))
-			if storeErr != nil {
-				if result.Metadata == nil {
-					result.Metadata = make(map[string]any)
-				}
-				result.Metadata["output_lossy"] = true
-				result.Text = boundedText(result.Text, max)
-				return result, nil
-			}
-			if result.Metadata == nil {
-				result.Metadata = make(map[string]any)
-			}
+	if result.ModelText == "" {
+		result.ModelText = result.Text
+	}
+	// Neither field is truncated here: bounding the model copy is each tool's
+	// responsibility, since only the tool knows which part of its output the
+	// model must retain. Oversized output is spilled so the full text stays
+	// recoverable, and an unbounded model copy is reported rather than cut.
+	if len(result.Text) > max && call.Outputs != nil {
+		if result.Metadata == nil {
+			result.Metadata = make(map[string]any)
+		}
+		stored, storeErr := call.Outputs.Store(ctx, strings.NewReader(result.Text))
+		if storeErr != nil {
+			result.Metadata["output_lossy"] = true
+		} else {
 			result.Metadata["output_id"] = stored.ID
 			result.Metadata["output_bytes"] = stored.Size
-			result.Text = boundedText(stored.Preview, max)
-		} else {
-			result.Text = boundedText(result.Text, max)
 		}
+	}
+	if len(result.ModelText) > max {
+		diagnostics.Warn("tool_model_text_unbounded",
+			"session_id", call.SessionID, "tool_call_id", call.ToolCallID, "tool", id,
+			"model_text_bytes", len(result.ModelText), "limit_bytes", max,
+		)
 	}
 	return result, nil
 }
