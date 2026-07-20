@@ -103,6 +103,8 @@ func (b *Broker) Publish(sessionID string, item protocol.Event) {
 			status.ErrorCode = item.ProviderError.Code
 		}
 		eventType, payload = v1.EventSessionStatus, status
+	case protocol.EventProviderRetry:
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "provider_retry", Message: item.Text}
 	case protocol.EventToolOutputDelta:
 		eventType, payload = v1.EventToolOutputDelta, v1.ToolOutputDelta{ToolCallID: item.ToolCallID, Delta: item.Text}
 	default:

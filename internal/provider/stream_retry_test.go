@@ -49,7 +49,7 @@ func TestStreamWithRetry(t *testing.T) {
 			}
 			return &scriptStream{steps: []scriptStep{{event: text}, {event: finish}}}, nil
 		}}
-		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond)
+		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -67,7 +67,7 @@ func TestStreamWithRetry(t *testing.T) {
 		client := &retryProvider{fn: func(int) (Stream, error) {
 			return &scriptStream{steps: []scriptStep{{event: text}, {err: broken}}}, nil
 		}}
-		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond)
+		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -84,7 +84,7 @@ func TestStreamWithRetry(t *testing.T) {
 		client := &retryProvider{fn: func(int) (Stream, error) {
 			return &scriptStream{steps: []scriptStep{{err: broken}}}, nil
 		}}
-		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond)
+		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -110,7 +110,7 @@ func TestStreamWithRetry(t *testing.T) {
 				client := &retryProvider{fn: func(int) (Stream, error) {
 					return &scriptStream{steps: []scriptStep{{err: testCase.err}}}, nil
 				}}
-				stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond)
+				stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -130,7 +130,7 @@ func TestStreamWithRetry(t *testing.T) {
 			}
 			return nil, openErr
 		}}
-		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond)
+		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -142,7 +142,7 @@ func TestStreamWithRetry(t *testing.T) {
 
 	t.Run("passes through a clean empty stream", func(t *testing.T) {
 		client := &retryProvider{fn: func(int) (Stream, error) { return &scriptStream{}, nil }}
-		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond)
+		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, time.Millisecond, nil)
 		if err != nil {
 			t.Fatal(err)
 		}

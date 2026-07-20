@@ -898,12 +898,18 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					}
 				}
 			case *v1.SessionStatus:
+				// Retry notices carry a human-readable message; flush it as-is
+				// instead of buffering it into the assistant stream.
+				label := "status: " + value.Kind
+				if value.Kind == "provider_retry" && value.Message != "" {
+					label = value.Message
+				}
 				if options.format != "jsonl" && value.Kind != "idle" && value.Kind != "finish" && value.Kind != "usage" {
 					if options.renderer != nil {
 						subagentTracker.liveID = ""
-						_ = options.renderer.Update([]string{"status: " + value.Kind})
+						_ = options.renderer.Update([]string{label})
 					} else {
-						fmt.Fprintf(options.stderr, "status: %s\n", value.Kind)
+						fmt.Fprintln(options.stderr, label)
 					}
 				}
 				if value.Kind == "error" || value.Kind == "provider_error" {

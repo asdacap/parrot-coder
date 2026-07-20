@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -85,6 +86,32 @@ func usageLimitValue(value string) bool {
 	default:
 		return false
 	}
+}
+
+// IsEngineOverloadedError reports a transient provider overload signal: the
+// engine asked the client to try again later, so the request is safe to
+// retry. Structured type and code are matched so message text stays
+// display-only.
+func IsEngineOverloadedError(err error) bool {
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) || httpErr.StatusCode != http.StatusTooManyRequests {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(httpErr.Type), "engine_overloaded_error") ||
+		strings.EqualFold(strings.TrimSpace(httpErr.Code), "engine_overloaded_error")
+}
+
+// RetryNotice reports an automatic retry of a transient provider failure so
+// callers can surface progress while a turn waits.
+type RetryNotice struct {
+	Provider string
+	Model    string
+	Attempt  int
+	Delay    time.Duration
+}
+
+func (n RetryNotice) String() string {
+	return fmt.Sprintf("provider %s is overloaded; retrying in %s (attempt %d)", n.Provider, n.Delay, n.Attempt)
 }
 
 type redactingStream struct {
@@ -183,28 +210,40 @@ type UsageReporter interface {
 }
 
 // StreamWithHeaderRetry starts a provider stream and retries response-header
-// timeouts until the caller cancels the operation. A retry cannot duplicate
-// client-visible partial output, although the provider may have processed an
-// earlier request whose response headers never reached the client.
+// timeouts and transient engine-overload rejections until the caller cancels
+// the operation. A retry cannot duplicate client-visible partial output,
+// although the provider may have processed an earlier request whose response
+// headers never reached the client.
 func StreamWithHeaderRetry(ctx context.Context, client Provider, request protocol.Request) (Stream, error) {
-	return streamWithHeaderRetry(ctx, client, request, headerRetryInitialDelay, headerRetryMaximumDelay)
+	return streamWithHeaderRetry(ctx, client, request, headerRetryInitialDelay, headerRetryMaximumDelay, nil)
 }
 
-func streamWithHeaderRetry(ctx context.Context, client Provider, request protocol.Request, initialDelay, maximumDelay time.Duration) (Stream, error) {
+func streamWithHeaderRetry(ctx context.Context, client Provider, request protocol.Request, initialDelay, maximumDelay time.Duration, notify func(RetryNotice)) (Stream, error) {
 	for attempt := 0; ; attempt++ {
 		stream, err := client.Stream(ctx, request)
 		var timeoutErr *HeaderTimeoutError
-		if err == nil || !errors.As(err, &timeoutErr) {
+		overloaded := IsEngineOverloadedError(err)
+		if err == nil || !errors.As(err, &timeoutErr) && !overloaded {
 			return stream, err
 		}
 		delay := initialDelay << min(attempt, 4)
 		if delay > maximumDelay {
 			delay = maximumDelay
 		}
-		diagnostics.Warn("provider_header_retry",
-			"provider", client.ID(), "model", request.Model, "attempt", attempt+1,
-			"header_timeout_ms", timeoutErr.Timeout.Milliseconds(), "retry_delay_ms", delay.Milliseconds(),
-		)
+		if overloaded {
+			diagnostics.Warn("provider_overloaded_retry",
+				"provider", client.ID(), "model", request.Model, "attempt", attempt+1,
+				"retry_delay_ms", delay.Milliseconds(), "error", err,
+			)
+			if notify != nil {
+				notify(RetryNotice{Provider: client.ID(), Model: request.Model, Attempt: attempt + 1, Delay: delay})
+			}
+		} else {
+			diagnostics.Warn("provider_header_retry",
+				"provider", client.ID(), "model", request.Model, "attempt", attempt+1,
+				"header_timeout_ms", timeoutErr.Timeout.Milliseconds(), "retry_delay_ms", delay.Milliseconds(),
+			)
+		}
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
