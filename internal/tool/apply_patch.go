@@ -11,38 +11,11 @@ type ApplyPatchTool struct {
 	Changes *change.Service
 }
 
-// ApplyPatchLarkGrammar constrains freeform apply_patch input. It matches the
-// grammar codex-cli sends for the apply_patch custom tool
-// (codex-rs/core/src/tools/handlers/apply_patch.lark).
-const ApplyPatchLarkGrammar = `start: begin_patch hunk+ end_patch
-begin_patch: "*** Begin Patch" LF
-end_patch: "*** End Patch" LF?
-
-hunk: add_hunk | delete_hunk | update_hunk
-add_hunk: "*** Add File: " filename LF add_line+
-delete_hunk: "*** Delete File: " filename LF
-update_hunk: "*** Update File: " filename LF change_move? change?
-
-filename: /(.+)/
-add_line: "+" /(.*)/ LF -> line
-
-change_move: "*** Move to: " filename LF
-change: (change_context | change_line)+ eof_line?
-change_context: ("@@" | "@@ " /(.+)/) LF
-change_line: ("+" | "-" | " ") /(.*)/ LF
-eof_line: "*** End of File" LF
-
-%import common.LF
-`
-
 func NewApplyPatchTool(changes *change.Service) *ApplyPatchTool {
 	return &ApplyPatchTool{Changes: changes}
 }
 
 func (*ApplyPatchTool) ID() string { return "apply_patch" }
-func (*ApplyPatchTool) Grammar() *Grammar {
-	return &Grammar{Syntax: "lark", Definition: ApplyPatchLarkGrammar}
-}
 func (*ApplyPatchTool) Description() string {
 	return "Apply a Begin Patch containing reviewed add, update, delete, or move operations. Use '*** Update File: OLD' followed by '*** Move to: NEW' for Codex-style moves; '*** Move File: OLD -> NEW' is also accepted."
 }

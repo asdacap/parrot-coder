@@ -55,21 +55,11 @@ type ContentPart struct {
 }
 
 // ToolDefinition describes a callable function. InputSchema must be a JSON
-// Schema object. When Grammar is set, adapters that support freeform custom
-// tools may send the tool as a grammar-constrained custom tool instead of a
-// JSON function.
+// Schema object.
 type ToolDefinition struct {
 	Name        string
 	Description string
 	InputSchema json.RawMessage
-	Grammar     *ToolGrammar
-}
-
-// ToolGrammar constrains a freeform custom tool's raw text input, for
-// example with a Lark grammar.
-type ToolGrammar struct {
-	Syntax     string
-	Definition string
 }
 
 // ToolCall is a finalized function call. Input is always valid JSON when a

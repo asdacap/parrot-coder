@@ -57,7 +57,7 @@ func TestParserInterleavedFunctionsTextReasoningUsageAndCompletion(t *testing.T)
 		`{"type":"response.function_call_arguments.delta","item_id":"item_a","delta":"1}"}`,
 		`{"type":"response.completed","response":{"usage":{"input_tokens":8,"output_tokens":5,"total_tokens":13,"input_tokens_details":{"cached_tokens":2},"output_tokens_details":{"reasoning_tokens":3}}}}`,
 	)
-	parser := NewParser(strings.NewReader(fixture), 4096, nil)
+	parser := NewParser(strings.NewReader(fixture), 4096)
 	events := collect(t, parser)
 	wantTypes := []protocol.EventType{
 		protocol.EventReasoningSummaryDelta, protocol.EventTextDelta,
@@ -93,12 +93,12 @@ func TestParserCallIDFallbackIncompleteAndErrors(t *testing.T) {
 		`{"type":"response.function_call_arguments.delta","call_id":"call_only","name":"run","delta":"{}"}`,
 		`{"type":"response.incomplete","response":{"incomplete_details":{"reason":"max_output_tokens"}}}`,
 	)
-	events := collect(t, NewParser(strings.NewReader(fixture), 2048, nil))
+	events := collect(t, NewParser(strings.NewReader(fixture), 2048))
 	if events[1].ToolCall.ID != "call_only" || events[2].FinishReason != protocol.FinishLength {
 		t.Fatalf("events = %#v", events)
 	}
 
-	events = collect(t, NewParser(strings.NewReader(streamFixture(`{"type":"error","code":"rate_limit","message":"slow down"}`)), 1024, nil))
+	events = collect(t, NewParser(strings.NewReader(streamFixture(`{"type":"error","code":"rate_limit","message":"slow down"}`)), 1024))
 	if len(events) != 1 || events[0].Type != protocol.EventProviderError || events[0].ProviderError.Code != "rate_limit" {
 		t.Fatalf("error events = %#v", events)
 	}
@@ -112,7 +112,7 @@ func TestParserPreservesReasoningSummaryPartIdentity(t *testing.T) {
 		`{"type":"response.reasoning_summary_text.done","item_id":"reasoning_a","summary_index":0,"text":"First item"}`,
 		`{"type":"response.completed","response":{}}`,
 	)
-	events := collect(t, NewParser(strings.NewReader(fixture), 2048, nil))
+	events := collect(t, NewParser(strings.NewReader(fixture), 2048))
 	if len(events) != 5 {
 		t.Fatalf("event count = %d: %#v", len(events), events)
 	}
@@ -127,125 +127,8 @@ func TestParserPreservesReasoningSummaryPartIdentity(t *testing.T) {
 	}
 }
 
-func TestEncodeRequestEmitsCustomToolWithLarkGrammar(t *testing.T) {
-	definition := protocol.ToolDefinition{
-		Name: "apply_patch", Description: "edit files",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string"}},"required":["patchText"]}`),
-		Grammar:     &protocol.ToolGrammar{Syntax: "lark", Definition: "start: begin_patch hunk+ end_patch"},
-	}
-	patch := "*** Begin Patch\n*** Add File: a\n+x\n*** End Patch\n"
-	encoded, err := EncodeRequest(protocol.Request{
-		Model: "gpt-5.4",
-		Messages: []protocol.Message{
-			{Role: protocol.RoleAssistant, Content: []protocol.ContentPart{{Type: protocol.ContentToolCall, ToolCall: &protocol.ToolCall{
-				ID: "call_1", Name: "apply_patch",
-				Input: json.RawMessage(`{"patchText":"*** Begin Patch\n*** Add File: a\n+x\n*** End Patch\n"}`),
-			}}}},
-			{Role: protocol.RoleTool, Content: []protocol.ContentPart{{Type: protocol.ContentToolResult, Text: "ok", ToolCallID: "call_1"}}},
-		},
-		Tools: []protocol.ToolDefinition{definition},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var body map[string]any
-	if err := json.Unmarshal(encoded, &body); err != nil {
-		t.Fatal(err)
-	}
-	tool := body["tools"].([]any)[0].(map[string]any)
-	format := tool["format"].(map[string]any)
-	if tool["type"] != "custom" || format["type"] != "grammar" || format["syntax"] != "lark" || format["definition"] != "start: begin_patch hunk+ end_patch" {
-		t.Fatalf("custom tool = %#v", tool)
-	}
-	input := body["input"].([]any)
-	call := input[0].(map[string]any)
-	if call["type"] != "custom_tool_call" || call["call_id"] != "call_1" || call["input"] != patch {
-		t.Fatalf("history custom tool call = %#v", call)
-	}
-	output := input[1].(map[string]any)
-	if output["type"] != "function_call_output" || output["call_id"] != "call_1" {
-		t.Fatalf("history tool output = %#v", output)
-	}
-}
-
-func TestEncodeRequestFallsBackToFunctionForUnsupportedModels(t *testing.T) {
-	definition := protocol.ToolDefinition{
-		Name:        "apply_patch",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string"}},"required":["patchText"]}`),
-		Grammar:     &protocol.ToolGrammar{Syntax: "lark", Definition: "start: begin_patch hunk+ end_patch"},
-	}
-	for _, model := range []string{"model", "gpt-4.1", "llama-4"} {
-		encoded, err := EncodeRequest(protocol.Request{
-			Model: model,
-			Messages: []protocol.Message{
-				{Role: protocol.RoleAssistant, Content: []protocol.ContentPart{{Type: protocol.ContentToolCall, ToolCall: &protocol.ToolCall{
-					ID: "call_1", Name: "apply_patch", Input: json.RawMessage(`{"patchText":"text"}`),
-				}}}},
-			},
-			Tools: []protocol.ToolDefinition{definition},
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		var body map[string]any
-		if err := json.Unmarshal(encoded, &body); err != nil {
-			t.Fatal(err)
-		}
-		tool := body["tools"].([]any)[0].(map[string]any)
-		call := body["input"].([]any)[0].(map[string]any)
-		if tool["type"] != "function" || call["type"] != "function_call" {
-			t.Fatalf("model %s: tool = %#v, call = %#v", model, tool, call)
-		}
-	}
-}
-
-func TestParserWrapsCustomToolCallInput(t *testing.T) {
-	definitions := []protocol.ToolDefinition{{
-		Name:        "apply_patch",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string"}},"required":["patchText"]}`),
-		Grammar:     &protocol.ToolGrammar{Syntax: "lark", Definition: "start: begin_patch hunk+ end_patch"},
-	}}
-	fixture := streamFixture(
-		`{"type":"response.output_item.added","item":{"id":"item_a","type":"custom_tool_call","call_id":"call_a","name":"apply_patch","input":""}}`,
-		`{"type":"response.custom_tool_call_input.delta","item_id":"item_a","delta":"*** Begin Patch\n"}`,
-		`{"type":"response.custom_tool_call_input.delta","item_id":"item_a","delta":"*** Add File: a\n+x\n"}`,
-		`{"type":"response.custom_tool_call_input.done","item_id":"item_a","input":"*** Begin Patch\n*** Add File: a\n+x\n*** End Patch\n"}`,
-		`{"type":"response.output_item.done","item":{"id":"item_a","type":"custom_tool_call","call_id":"call_a","name":"apply_patch","input":"*** Begin Patch\n*** Add File: a\n+x\n*** End Patch\n"}}`,
-		`{"type":"response.completed","response":{}}`,
-	)
-	events := collect(t, NewParser(strings.NewReader(fixture), 4096, definitions))
-	wantTypes := []protocol.EventType{
-		protocol.EventToolInputDelta, protocol.EventToolInputDelta,
-		protocol.EventToolCallComplete, protocol.EventFinish,
-	}
-	if len(events) != len(wantTypes) {
-		t.Fatalf("event count = %d: %#v", len(events), events)
-	}
-	for index, want := range wantTypes {
-		if events[index].Type != want {
-			t.Fatalf("event %d type = %q, want %q", index, events[index].Type, want)
-		}
-	}
-	call := events[2].ToolCall
-	want := `{"patchText":"*** Begin Patch\n*** Add File: a\n+x\n*** End Patch\n"}`
-	if call.ID != "call_a" || call.Name != "apply_patch" || string(call.Input) != want {
-		t.Fatalf("custom tool call = %#v", call)
-	}
-}
-
-func TestParserRejectsCustomToolCallWithoutGrammarDefinition(t *testing.T) {
-	fixture := streamFixture(
-		`{"type":"response.output_item.added","item":{"id":"item_a","type":"custom_tool_call","call_id":"call_a","name":"apply_patch","input":"*** Begin Patch\n*** End Patch\n"}}`,
-		`{"type":"response.completed","response":{}}`,
-	)
-	parser := NewParser(strings.NewReader(fixture), 2048, nil)
-	if _, err := parser.Next(context.Background()); err == nil || !strings.Contains(err.Error(), "no grammar definition") {
-		t.Fatalf("custom tool error = %v", err)
-	}
-}
-
 func TestParserRejectsMalformedJSON(t *testing.T) {
-	parser := NewParser(strings.NewReader("data: nope\n\n"), 1024, nil)
+	parser := NewParser(strings.NewReader("data: nope\n\n"), 1024)
 	if _, err := parser.Next(context.Background()); err == nil || !strings.Contains(err.Error(), "decode stream event") {
 		t.Fatalf("malformed event error = %v", err)
 	}
@@ -254,14 +137,14 @@ func TestParserRejectsMalformedJSON(t *testing.T) {
 		`{"type":"response.output_item.added","item":{"id":"item","type":"function_call","call_id":"call","name":"bad"}}`,
 		`{"type":"response.completed","response":{}}`,
 	)
-	parser = NewParser(strings.NewReader(fixture), 2048, nil)
+	parser = NewParser(strings.NewReader(fixture), 2048)
 	if _, err := parser.Next(context.Background()); err == nil || !strings.Contains(err.Error(), "invalid JSON input") {
 		t.Fatalf("invalid tool error = %v", err)
 	}
 }
 
 func TestParserRejectsMissingTerminalEventAndToolIdentity(t *testing.T) {
-	parser := NewParser(strings.NewReader(streamFixture(`{"type":"response.output_text.delta","delta":"partial"}`)), 1024, nil)
+	parser := NewParser(strings.NewReader(streamFixture(`{"type":"response.output_text.delta","delta":"partial"}`)), 1024)
 	if _, err := parser.Next(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +154,7 @@ func TestParserRejectsMissingTerminalEventAndToolIdentity(t *testing.T) {
 	parser = NewParser(strings.NewReader(streamFixture(
 		`{"type":"response.output_item.added","item":{"type":"function_call","arguments":"{}"}}`,
 		`{"type":"response.completed","response":{}}`,
-	)), 1024, nil)
+	)), 1024)
 	if _, err := parser.Next(context.Background()); err == nil || !strings.Contains(err.Error(), "ID and name") {
 		t.Fatalf("missing tool identity error = %v", err)
 	}
