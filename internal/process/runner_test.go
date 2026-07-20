@@ -4,12 +4,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -23,6 +23,29 @@ type memoryOutputStore struct {
 	data []byte
 	omit int64
 }
+
+type memoryManagedOutput struct {
+	store *memoryOutputStore
+	data  []byte
+}
+
+func (o *memoryManagedOutput) Write(p []byte) (int, error) {
+	o.data = append(o.data, p...)
+	return len(p), nil
+}
+
+func (o *memoryManagedOutput) ID() string { return "stored" }
+
+func (o *memoryManagedOutput) Finalize(context.Context) (StoredOutput, error) {
+	data := o.data
+	if o.store.omit > 0 && int64(len(data)) > o.store.omit {
+		data = data[o.store.omit:]
+	}
+	o.store.data = append([]byte(nil), data...)
+	return StoredOutput{ID: "stored", Size: int64(len(data)), OmittedBytes: o.store.omit}, nil
+}
+
+func (o *memoryManagedOutput) Discard() {}
 
 type directSandbox struct{}
 
@@ -228,16 +251,8 @@ func TestRunSandboxAllowsExternalWorkingDirectory(t *testing.T) {
 	}
 }
 
-func (s *memoryOutputStore) Store(_ context.Context, reader io.Reader) (StoredOutput, error) {
-	data, err := io.ReadAll(reader)
-	if err != nil {
-		return StoredOutput{}, err
-	}
-	if s.omit > 0 && int64(len(data)) > s.omit {
-		data = data[s.omit:]
-	}
-	s.data = append([]byte(nil), data...)
-	return StoredOutput{ID: "stored", Size: int64(len(data)), OmittedBytes: s.omit}, nil
+func (s *memoryOutputStore) Create(context.Context) (ManagedOutput, error) {
+	return &memoryManagedOutput{store: s}, nil
 }
 
 func (s *memoryOutputStore) Read(_ string, offset, limit int64) ([]byte, error) {
@@ -669,6 +684,19 @@ type recordingStore struct {
 	done chan struct{}
 }
 
+type recordingManagedOutput struct {
+	store *recordingStore
+	once  sync.Once
+}
+
+func (o *recordingManagedOutput) Write(p []byte) (int, error) { return len(p), nil }
+func (o *recordingManagedOutput) ID() string                  { return "recording" }
+func (o *recordingManagedOutput) Finalize(context.Context) (StoredOutput, error) {
+	o.once.Do(func() { close(o.store.done) })
+	return StoredOutput{ID: "recording"}, nil
+}
+func (o *recordingManagedOutput) Discard() { o.once.Do(func() { close(o.store.done) }) }
+
 func TestPersistentEnvironmentOverridesHygieneDefaultsAndRejectsUnsafeNames(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -706,10 +734,8 @@ func TestPersistentEnvironmentOverridesHygieneDefaultsAndRejectsUnsafeNames(t *t
 	}
 }
 
-func (s *recordingStore) Store(_ context.Context, reader io.Reader) (StoredOutput, error) {
-	_, err := io.Copy(io.Discard, reader)
-	close(s.done)
-	return StoredOutput{}, err
+func (s *recordingStore) Create(context.Context) (ManagedOutput, error) {
+	return &recordingManagedOutput{store: s}, nil
 }
 
 func (s *recordingStore) Read(string, int64, int64) ([]byte, error) { return nil, nil }

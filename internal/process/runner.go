@@ -59,8 +59,15 @@ type StoredOutput struct {
 }
 
 type OutputStore interface {
-	Store(context.Context, io.Reader) (StoredOutput, error)
+	Create(context.Context) (ManagedOutput, error)
 	Read(id string, offset, limit int64) ([]byte, error)
+}
+
+type ManagedOutput interface {
+	io.Writer
+	ID() string
+	Finalize(ctx context.Context) (StoredOutput, error)
+	Discard()
 }
 
 type Request struct {
@@ -348,20 +355,13 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 	if r.config.OutputStore == nil {
 		return Result{}, errors.New("process: output store is required")
 	}
-	capture := &streamWriter{stream: request.Output}
-	storeReader, storeWriter := io.Pipe()
-	capture.output = storeWriter
-	stored := make(chan storedResult, 1)
-	// Storage outlives cancellation so a cancelled command still lands in the
-	// store and its partial output remains readable.
-	go func() {
-		output, storeErr := r.config.OutputStore.Store(context.WithoutCancel(ctx), storeReader)
-		_ = storeReader.CloseWithError(storeErr)
-		stored <- storedResult{output: output, err: storeErr}
-	}()
+	managedOutput, err := r.config.OutputStore.Create(ctx)
+	if err != nil {
+		return Result{}, fmt.Errorf("process: create output: %w", err)
+	}
+	capture := &streamWriter{stream: request.Output, output: managedOutput}
 	fail := func(err error) (Result, error) {
-		_ = storeWriter.CloseWithError(err)
-		<-stored
+		managedOutput.Discard()
 		return Result{}, err
 	}
 	resolvedShell, err := executableFile(request.Shell)
@@ -415,21 +415,20 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		result.TimedOut = true
 		waitErr = r.terminate(command.Process.Pid, wait)
 	}
-	_ = storeWriter.Close()
-	storedOutput := <-stored
+	storedOutput, storeErr := managedOutput.Finalize(context.WithoutCancel(ctx))
 	if command.ProcessState != nil {
 		result.ExitCode = command.ProcessState.ExitCode()
 	}
 	result.OutputTail = capture.tail.String()
-	if storedOutput.err != nil {
-		return result, fmt.Errorf("process: store output: %w", storedOutput.err)
+	if storeErr != nil {
+		return result, fmt.Errorf("process: store output: %w", storeErr)
 	}
 	if capture.err != nil {
 		return result, fmt.Errorf("process: capture output: %w", capture.err)
 	}
-	result.OutputID = storedOutput.output.ID
-	result.OutputSize = storedOutput.output.Size
-	output, truncated, readErr := r.readStoredOutput(storedOutput.output)
+	result.OutputID = storedOutput.ID
+	result.OutputSize = storedOutput.Size
+	output, truncated, readErr := r.readStoredOutput(storedOutput)
 	if readErr != nil {
 		return result, fmt.Errorf("process: read output: %w", readErr)
 	}
@@ -443,8 +442,10 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 
 // readStoredOutput bounds stored command output to the model-facing budget,
 // keeping the head and tail and reporting bytes the store dropped up front.
-func (r *Runner) readStoredOutput(stored StoredOutput) (string, bool, error) {
-	budget := r.config.MaxOutputBytes
+func (r *Runner) readStoredOutputWithBudget(stored StoredOutput, budget int64) (string, bool, error) {
+	if budget <= 0 {
+		budget = r.config.MaxOutputBytes
+	}
 	truncated := stored.OmittedBytes > 0
 	var text string
 	if stored.Size <= budget {
@@ -497,9 +498,8 @@ func executableFile(path string) (string, error) {
 	return resolved, nil
 }
 
-type storedResult struct {
-	output StoredOutput
-	err    error
+func (r *Runner) readStoredOutput(stored StoredOutput) (string, bool, error) {
+	return r.readStoredOutputWithBudget(stored, r.config.MaxOutputBytes)
 }
 
 func (r *Runner) terminate(pid int, wait <-chan error) error {

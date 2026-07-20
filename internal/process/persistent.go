@@ -63,6 +63,9 @@ type PersistentResult struct {
 	ExitCode           *int
 	OriginalTokenCount int
 	OmittedBytes       int
+	OutputID           string
+	OutputSize         int64
+	Truncated          bool
 }
 
 // PersistentCompletion describes the terminal state of a managed process.
@@ -126,14 +129,17 @@ type persistentProcess struct {
 	announced    bool
 	finishedSent bool
 
-	mu         sync.Mutex
-	output     headTailBuffer
-	stream     io.Writer
-	waitErr    error
-	exitCode   *int
-	notify     chan struct{}
-	finished   chan struct{}
-	readerDone chan struct{}
+	mu            sync.Mutex
+	output        headTailBuffer
+	stream        io.Writer
+	waitErr       error
+	exitCode      *int
+	managedOutput ManagedOutput
+	storedOutput  *StoredOutput
+	storeErr      error
+	notify        chan struct{}
+	finished      chan struct{}
+	readerDone    chan struct{}
 }
 
 func (r *Runner) emitPersistent(event PersistentEvent) {
@@ -211,14 +217,25 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 	if pruned != nil {
 		r.terminatePersistent(pruned)
 	}
+	if r.config.OutputStore == nil {
+		r.releaseReservedID(processID)
+		return PersistentResult{}, errors.New("process: output store is required")
+	}
+	managedOutput, err := r.config.OutputStore.Create(ctx)
+	if err != nil {
+		r.releaseReservedID(processID)
+		return PersistentResult{}, fmt.Errorf("process: create output: %w", err)
+	}
 	command := exec.Command(program, arguments...)
 	command.Dir, command.Env = resolved, environment
 	item := &persistentProcess{
 		id: processID, owner: request.SessionID, command: command, tty: request.TTY,
 		started: time.Now(), lastUsed: time.Now(), output: newHeadTailBuffer(persistentOutputBytes),
+		managedOutput: managedOutput,
 		notify: make(chan struct{}, 1), finished: make(chan struct{}), readerDone: make(chan struct{}),
 	}
-	if err := r.startPersistent(item); err != nil {
+	if err := r.startPersistent(ctx, item); err != nil {
+		managedOutput.Discard()
 		r.releaseReservedID(processID)
 		return PersistentResult{}, fmt.Errorf("process: start: %w", err)
 	}
@@ -326,7 +343,7 @@ func (r *Runner) WritePersistent(ctx context.Context, request PersistentWriteReq
 	return result, nil
 }
 
-func (r *Runner) startPersistent(item *persistentProcess) error {
+func (r *Runner) startPersistent(ctx context.Context, item *persistentProcess) error {
 	if item.tty {
 		terminal, err := pty.Start(item.command)
 		if err != nil {
@@ -369,12 +386,15 @@ func (r *Runner) startPersistent(item *persistentProcess) error {
 			_ = item.reader.Close()
 		}
 		<-item.readerDone
+		stored, storeErr := item.managedOutput.Finalize(context.WithoutCancel(ctx))
 		item.mu.Lock()
 		item.waitErr = err
 		if item.command.ProcessState != nil {
 			code := item.command.ProcessState.ExitCode()
 			item.exitCode = &code
 		}
+		item.storedOutput = &stored
+		item.storeErr = storeErr
 		emit := item.announced && !item.finishedSent
 		if emit {
 			item.finishedSent = true
@@ -412,6 +432,9 @@ type persistentOutputWriter struct{ process *persistentProcess }
 func (w persistentOutputWriter) Write(value []byte) (int, error) {
 	w.process.mu.Lock()
 	w.process.output.push(value)
+	if w.process.managedOutput != nil {
+		_, _ = w.process.managedOutput.Write(value)
+	}
 	if w.process.stream != nil {
 		_, _ = w.process.stream.Write(value)
 	}
@@ -445,13 +468,13 @@ func (r *Runner) collectPersistent(ctx context.Context, item *persistentProcess,
 	for {
 		select {
 		case <-item.finished:
-			return persistentResult(item, time.Since(started), false, maxTokens), nil
+			return r.persistentResult(item, time.Since(started), false, maxTokens), nil
 		case <-timer.C:
 			select {
 			case <-item.finished:
-				return persistentResult(item, time.Since(started), false, maxTokens), nil
+				return r.persistentResult(item, time.Since(started), false, maxTokens), nil
 			default:
-				return persistentResult(item, time.Since(started), true, maxTokens), nil
+				return r.persistentResult(item, time.Since(started), true, maxTokens), nil
 			}
 		case <-ctx.Done():
 			return PersistentResult{}, ctx.Err()
@@ -459,20 +482,50 @@ func (r *Runner) collectPersistent(ctx context.Context, item *persistentProcess,
 	}
 }
 
-func persistentResult(item *persistentProcess, wallTime time.Duration, running bool, maxTokens *int) PersistentResult {
+func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duration, running bool, maxTokens *int) PersistentResult {
 	item.mu.Lock()
 	output := item.output.drain()
 	exitCode := item.exitCode
+	var managedOutput ManagedOutput
+	if item.managedOutput != nil {
+		managedOutput = item.managedOutput
+	}
+	storedOutput := item.storedOutput
+	storeErr := item.storeErr
 	item.mu.Unlock()
+
+	outputID := ""
+	if managedOutput != nil {
+		outputID = managedOutput.ID()
+	}
 	result := PersistentResult{
 		ChunkID: generateChunkID(), WallTime: wallTime,
-		Output: output.text(), ExitCode: exitCode,
-		OriginalTokenCount: tokensForBytes(output.totalBytes()), OmittedBytes: output.omitted,
+		ExitCode: exitCode, OutputID: outputID,
 	}
-	result.Output = truncatePersistentOutput(result.Output, maxTokens, result.OriginalTokenCount, result.OmittedBytes)
+
 	if running {
+		result.Output = truncatePersistentOutput(output.text(), maxTokens, tokensForBytes(output.totalBytes()), output.omitted)
+		result.OriginalTokenCount = tokensForBytes(output.totalBytes())
+		result.OmittedBytes = output.omitted
 		id := item.id
 		result.ProcessID, result.ExitCode = &id, nil
+		return result
+	}
+
+	if storeErr != nil {
+		result.Output = fmt.Sprintf("Error storing output: %v", storeErr)
+	} else if storedOutput != nil {
+		budget := int64(normalizeOutputTokens(maxTokens) * 4)
+		text, truncated, err := r.readStoredOutputWithBudget(*storedOutput, budget)
+		if err != nil {
+			result.Output = fmt.Sprintf("Error reading output: %v", err)
+		} else {
+			result.Output = text
+			result.Truncated = truncated
+			result.OutputSize = storedOutput.Size
+			result.OriginalTokenCount = tokensForBytes(int(storedOutput.Size))
+			result.OmittedBytes = int(storedOutput.OmittedBytes)
+		}
 	}
 	return result
 }
