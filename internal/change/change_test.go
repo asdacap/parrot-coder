@@ -212,6 +212,68 @@ func TestPatchUpdateSemantics(t *testing.T) {
 	}
 }
 
+func TestPatchRejectsAmbiguousSearch(t *testing.T) {
+	ctx := context.Background()
+	service := NewService(Config{})
+	tests := []struct {
+		name    string
+		before  []byte
+		blocks  string
+		wantErr bool
+	}{
+		{
+			name:    "repeated line is ambiguous",
+			before:  []byte("target\nmiddle\ntarget\n"),
+			blocks:  aiderBlock("", "target", "CHANGED"),
+			wantErr: true,
+		},
+		{
+			name:    "surrounding lines disambiguate",
+			before:  []byte("target\nmiddle\ntarget\n"),
+			blocks:  aiderBlock("", "target\nmiddle", "CHANGED\nmiddle"),
+			wantErr: false,
+		},
+		{
+			// The exact pass matches once, so the looser trimming passes that
+			// would also match the indented copy never run.
+			name:    "exact match wins before looser passes widen",
+			before:  []byte("value\n    value\n"),
+			blocks:  aiderBlock("", "value", "changed"),
+			wantErr: false,
+		},
+		{
+			// Neither copy matches exactly, and both match once trimmed.
+			name:    "ambiguity found by a looser pass still errors",
+			before:  []byte("  value\n    value\n"),
+			blocks:  aiderBlock("", "value", "changed"),
+			wantErr: true,
+		},
+		{
+			// Each block starts seeking past the previous one, so identical
+			// edits at known-distinct sites stay unambiguous.
+			name:    "sequential blocks walk forward",
+			before:  []byte("dup\ndup\n"),
+			blocks:  aiderBlock("", "dup\ndup", "first\nsecond"),
+			wantErr: false,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := testWorkspace(t)
+			if err := os.WriteFile(filepath.Join(ws.Root(), "file"), tc.before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := service.PlanPatch(ctx, ws, "file\n"+tc.blocks)
+			if tc.wantErr && !errors.Is(err, ErrConflict) {
+				t.Fatalf("err = %v, want ErrConflict", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("err = %v, want success", err)
+			}
+		})
+	}
+}
+
 func TestPatchSyntaxTolerance(t *testing.T) {
 	tests := []struct {
 		name  string

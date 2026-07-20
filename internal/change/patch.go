@@ -282,9 +282,9 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 	lineIndex := 0
 	for _, hunk := range hunks {
 		if hunk.Context != "" {
-			contextIndex := seekPatchSequence(lines, []string{hunk.Context}, lineIndex, false)
-			if contextIndex < 0 {
-				return nil, fmt.Errorf("%w: failed to find hunk context %q", ErrConflict, hunk.Context)
+			contextIndex, err := seekPatchSequence(lines, []string{hunk.Context}, lineIndex, false)
+			if err != nil {
+				return nil, fmt.Errorf("hunk context %q: %w", hunk.Context, err)
 			}
 			lineIndex = contextIndex + 1
 		}
@@ -301,9 +301,9 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 			replacements = append(replacements, replacement{start: len(lines), lines: newLines})
 			continue
 		}
-		found := seekPatchSequence(lines, oldLines, lineIndex, hunk.EndOfFile)
-		if found < 0 {
-			return nil, fmt.Errorf("%w: failed to find expected hunk lines", ErrConflict)
+		found, err := seekPatchSequence(lines, oldLines, lineIndex, hunk.EndOfFile)
+		if err != nil {
+			return nil, err
 		}
 		replacements = append(replacements, replacement{start: found, old: len(oldLines), lines: newLines})
 		lineIndex = found + len(oldLines)
@@ -325,9 +325,15 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 	return append(bom, []byte(output)...), nil
 }
 
-func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) int {
+// seekPatchSequence locates the single place pattern occurs at or after start.
+// Comparators are tried from strictest to loosest and the first one to match
+// anything decides the outcome, so a block that is exact in one place is not
+// dragged into ambiguity by a looser pass. Matching more than once is an error
+// rather than a silent pick of the first site: the caller must include more
+// surrounding lines to say which occurrence it meant.
+func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) (int, error) {
 	if len(pattern) == 0 || start < 0 || start > len(lines) {
-		return -1
+		return -1, fmt.Errorf("%w: failed to find expected lines", ErrConflict)
 	}
 	comparators := []func(string, string) bool{
 		func(a, b string) bool { return a == b },
@@ -343,16 +349,27 @@ func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) int {
 		if endOfFile {
 			candidate := len(lines) - len(pattern)
 			if candidate >= start && patchSequenceEqual(lines[candidate:], pattern, equal) {
-				return candidate
+				return candidate, nil
 			}
 		}
+		found, count := -1, 0
 		for i := start; i <= len(lines)-len(pattern); i++ {
-			if patchSequenceEqual(lines[i:], pattern, equal) {
-				return i
+			if !patchSequenceEqual(lines[i:], pattern, equal) {
+				continue
 			}
+			count++
+			if found < 0 {
+				found = i
+			}
+		}
+		if count > 1 {
+			return -1, fmt.Errorf("%w: found %d matches, include more surrounding lines", ErrConflict, count)
+		}
+		if count == 1 {
+			return found, nil
 		}
 	}
-	return -1
+	return -1, fmt.Errorf("%w: failed to find expected lines", ErrConflict)
 }
 
 func patchSequenceEqual(lines, pattern []string, equal func(string, string) bool) bool {
