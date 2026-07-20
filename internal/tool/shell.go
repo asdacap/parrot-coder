@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -52,12 +51,7 @@ func (t *ShellTool) DescribeRequest(raw json.RawMessage) (string, error) {
 		description += "\nWorking directory: " + input.Cwd
 	}
 	if len(input.Env) > 0 {
-		names := make([]string, 0, len(input.Env))
-		for name := range input.Env {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		description += "\nEnvironment variables: " + strings.Join(names, ", ")
+		description += "\nEnvironment variables: " + strings.Join(sortedEnvironmentNames(input.Env), ", ")
 	}
 	return description, nil
 }
@@ -113,11 +107,7 @@ func (t *ShellTool) Plan(ctx context.Context, raw json.RawMessage, call CallCont
 	resource := permission.Resource{Kind: "process", Identifier: resolvedShell, Operation: "execute", Attributes: map[string]string{
 		"cwd": resolved, "command_sha256": hex.EncodeToString(sum[:]),
 	}}
-	environmentNames := make([]string, 0, len(input.Env))
-	for name := range input.Env {
-		environmentNames = append(environmentNames, name)
-	}
-	sort.Strings(environmentNames)
+	environmentNames := sortedEnvironmentNames(input.Env)
 	warning := "This permits arbitrary process execution inside the OS sandbox."
 	if t.unrestricted {
 		warning = "This permits arbitrary process execution without the OS sandbox, using the invoking user's local authority."

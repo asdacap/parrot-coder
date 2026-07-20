@@ -37,6 +37,7 @@ type PersistentRequest struct {
 	Shell           string
 	Command         string
 	Cwd             string
+	Env             map[string]string
 	SessionID       string
 	Yield           time.Duration
 	MaxOutputTokens *int
@@ -162,10 +163,16 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 	if err != nil {
 		return PersistentResult{}, fmt.Errorf("process: resolve cwd: %w", err)
 	}
-	environment, err := r.environment(map[string]string{
+	// Caller-supplied values are merged last so an explicit request overrides
+	// the output-hygiene defaults rather than being silently dropped.
+	overrides := map[string]string{
 		"NO_COLOR": "1", "TERM": "dumb", "LANG": "C.UTF-8", "LC_CTYPE": "C.UTF-8", "LC_ALL": "C.UTF-8",
 		"COLORTERM": "", "PAGER": "cat", "GIT_PAGER": "cat", "GH_PAGER": "cat", "CODEX_CI": "1",
-	})
+	}
+	for name, value := range request.Env {
+		overrides[name] = value
+	}
+	environment, err := r.environment(overrides)
 	if err != nil {
 		return PersistentResult{}, err
 	}

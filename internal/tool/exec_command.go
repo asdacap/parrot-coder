@@ -16,22 +16,22 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
-const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["use_default","require_escalated"],"description":"Per-command sandbox override. Defaults to \u0060use_default\u0060; use \u0060require_escalated\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060require_escalated\u0060; omit otherwise."},"prefix_rule":{"type":"array","items":{"type":"string"},"description":"Reusable approval prefix for \u0060cmd\u0060, only with \u0060sandbox_permissions: \u0022require_escalated\u0022\u0060; for example [\"git\", \"pull\"]."}},"required":["cmd"],"additionalProperties":false}`
+const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["use_default","require_escalated"],"description":"Per-command sandbox override. Defaults to \u0060use_default\u0060; use \u0060require_escalated\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060require_escalated\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
 
 type ExecCommandTool struct{ Runner *process.Runner }
 
 type execCommandInput struct {
-	Command            string   `json:"cmd"`
-	Workdir            string   `json:"workdir"`
-	TTY                bool     `json:"tty"`
-	YieldTimeMS        uint64   `json:"yield_time_ms"`
-	MaxOutputTokens    *int     `json:"max_output_tokens"`
-	Shell              string   `json:"shell"`
-	SandboxPermissions string   `json:"sandbox_permissions"`
-	Justification      string   `json:"justification"`
-	PrefixRule         []string `json:"prefix_rule"`
-	ResolvedShell      string   `json:"-"`
-	ResolvedWorkdir    string   `json:"-"`
+	Command            string            `json:"cmd"`
+	Workdir            string            `json:"workdir"`
+	Env                map[string]string `json:"env"`
+	TTY                bool              `json:"tty"`
+	YieldTimeMS        uint64            `json:"yield_time_ms"`
+	MaxOutputTokens    *int              `json:"max_output_tokens"`
+	Shell              string            `json:"shell"`
+	SandboxPermissions string            `json:"sandbox_permissions"`
+	Justification      string            `json:"justification"`
+	ResolvedShell      string            `json:"-"`
+	ResolvedWorkdir    string            `json:"-"`
 }
 
 func NewExecCommandTool(runner *process.Runner) *ExecCommandTool {
@@ -51,16 +51,15 @@ func (*ExecCommandTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", err
 	}
-	command := input.Command
-	if len(input.PrefixRule) != 0 {
-		command = "commands prefixed by " + strings.Join(input.PrefixRule, " ")
-	}
-	description := "Run command in the OS sandbox:\n" + command
+	description := "Run command in the OS sandbox:\n" + input.Command
 	if input.SandboxPermissions == "require_escalated" {
-		description = "Run command without the OS sandbox (full local authority):\n" + command
+		description = "Run command without the OS sandbox (full local authority):\n" + input.Command
 	}
 	if input.Workdir != "" {
 		description += "\nWorking directory: " + input.Workdir
+	}
+	if len(input.Env) > 0 {
+		description += "\nEnvironment variables: " + strings.Join(sortedEnvironmentNames(input.Env), ", ")
 	}
 	return description, nil
 }
@@ -91,13 +90,8 @@ func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call Call
 	if input.SandboxPermissions == "require_escalated" && input.Justification == "" {
 		return Plan{}, errors.New("exec_command: justification is required for escalated execution")
 	}
-	if input.SandboxPermissions != "require_escalated" && (input.Justification != "" || len(input.PrefixRule) != 0) {
-		return Plan{}, errors.New("exec_command: justification and prefix_rule require escalated execution")
-	}
-	if len(input.PrefixRule) != 0 {
-		if !safePrefixCommand(input.Command, input.PrefixRule) {
-			return Plan{}, errors.New("exec_command: prefix_rule must prefix cmd")
-		}
+	if input.SandboxPermissions != "require_escalated" && input.Justification != "" {
+		return Plan{}, errors.New("exec_command: justification requires escalated execution")
 	}
 	if input.Shell == "" {
 		var err error
@@ -136,55 +130,17 @@ func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call Call
 	resource := permission.Resource{Kind: "process", Identifier: resolvedShell, Operation: operation, Attributes: map[string]string{
 		"cwd": resolvedWorkdir, "command_sha256": hex.EncodeToString(sum[:]),
 	}}
-	if len(input.PrefixRule) != 0 {
-		prefix := sha256.Sum256([]byte(strings.Join(input.PrefixRule, "\x00")))
-		resource.Attributes["prefix_rule_sha256"] = hex.EncodeToString(prefix[:])
-		delete(resource.Attributes, "command_sha256")
-	}
-	reviewValue := map[string]any{
+	review, _ := json.Marshal(map[string]any{
 		"warning": input.SandboxPermissions, "shell": resolvedShell, "command": input.Command,
 		"cwd": resolvedWorkdir, "tty": input.TTY, "yield_time_ms": input.YieldTimeMS,
-		"max_output_tokens": input.MaxOutputTokens, "justification": input.Justification, "prefix_rule": input.PrefixRule,
-	}
-	review, _ := json.Marshal(reviewValue)
-	permissionInput, permissionReview := raw, review
-	if len(input.PrefixRule) != 0 {
-		permissionInput, _ = json.Marshal(map[string]any{
-			"shell": resolvedShell, "workdir": resolvedWorkdir, "sandbox_permissions": input.SandboxPermissions,
-			"prefix_rule": input.PrefixRule,
-		})
-		delete(reviewValue, "command")
-		delete(reviewValue, "justification")
-		delete(reviewValue, "yield_time_ms")
-		delete(reviewValue, "max_output_tokens")
-		delete(reviewValue, "tty")
-		permissionReview, _ = json.Marshal(reviewValue)
-	}
-	request, err := permission.NewRequest(t.ID(), permissionInput, []permission.Resource{resource}, permissionReview)
+		"max_output_tokens": input.MaxOutputTokens, "justification": input.Justification,
+		"environment_names": sortedEnvironmentNames(input.Env),
+	})
+	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{resource}, review)
 	if err != nil {
 		return Plan{}, err
 	}
 	return NewPlan(t.ID(), raw, []permission.Request{request}, review, input)
-}
-
-func safePrefixCommand(command string, prefix []string) bool {
-	if len(prefix) == 0 || containsShellSyntax(command) {
-		return false
-	}
-	words := strings.Fields(command)
-	if len(words) < len(prefix) {
-		return false
-	}
-	for i := range prefix {
-		if prefix[i] == "" || strings.ContainsAny(prefix[i], " \t") || containsShellSyntax(prefix[i]) || words[i] != prefix[i] {
-			return false
-		}
-	}
-	return true
-}
-
-func containsShellSyntax(value string) bool {
-	return strings.ContainsAny(value, "\"'\\$;&|<>()[]{}*?!~#\r\n") || strings.ContainsRune(value, '`')
 }
 
 func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
@@ -205,7 +161,7 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 		return Result{}, errors.New("exec_command: workdir changed after planning")
 	}
 	result, err := runner.RunPersistent(ctx, process.PersistentRequest{
-		Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedWorkdir,
+		Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedWorkdir, Env: input.Env,
 		SessionID: call.SessionID, Yield: time.Duration(input.YieldTimeMS) * time.Millisecond,
 		MaxOutputTokens: input.MaxOutputTokens, TTY: input.TTY, Output: call.Output,
 		Unrestricted: input.SandboxPermissions == "require_escalated",

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"unicode/utf8"
 )
@@ -29,6 +30,18 @@ func readBoundedLine(r *bufio.Reader, max int64) (string, error) {
 		}
 	}
 }
+
+// sortedEnvironmentNames returns the variable names of env in a stable order,
+// for permission context which must not disclose their values.
+func sortedEnvironmentNames(env map[string]string) []string {
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 func isBinary(b []byte) bool {
 	if bytes.IndexByte(b, 0) >= 0 {
 		return true

@@ -622,6 +622,43 @@ type recordingStore struct {
 	done chan struct{}
 }
 
+func TestPersistentEnvironmentOverridesHygieneDefaultsAndRejectsUnsafeNames(t *testing.T) {
+	tests := []struct {
+		name    string
+		env     map[string]string
+		read    string
+		want    string
+		wantErr string
+	}{
+		{name: "hygiene default applies", read: "TERM", want: "dumb"},
+		{name: "caller overrides hygiene", env: map[string]string{"TERM": "xterm"}, read: "TERM", want: "xterm"},
+		{name: "caller value passes through", env: map[string]string{"PARROT_TEST": "value"}, read: "PARROT_TEST", want: "value"},
+		{name: "unrelated caller value keeps hygiene", env: map[string]string{"PARROT_TEST": "value"}, read: "NO_COLOR", want: "1"},
+		{name: "unsafe name rejected", env: map[string]string{"LD_PRELOAD": "/tmp/evil.so"}, read: "TERM", wantErr: "unsafe environment variable"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runner := testRunner(t, Config{TerminationGrace: 50 * time.Millisecond})
+			result, err := runner.RunPersistent(context.Background(), PersistentRequest{
+				Shell: "/bin/sh", Command: `printf '%s' "$` + test.read + `"`,
+				Env: test.env, SessionID: "owner", Yield: time.Second,
+			})
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("error = %v, want containing %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("RunPersistent = %v", err)
+			}
+			if !strings.Contains(result.Output, test.want) {
+				t.Fatalf("$%s output = %q, want containing %q", test.read, result.Output, test.want)
+			}
+		})
+	}
+}
+
 func (s *recordingStore) Store(_ context.Context, reader io.Reader) (StoredOutput, error) {
 	_, err := io.Copy(io.Discard, reader)
 	close(s.done)
