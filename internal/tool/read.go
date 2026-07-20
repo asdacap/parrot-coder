@@ -119,7 +119,8 @@ func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 			}
 			b.WriteByte('\n')
 		}
-		return Result{Text: b.String(), Metadata: map[string]any{"entries": len(entries), "path": p.Input.Path}}, nil
+		text := b.String()
+		return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"entries": len(entries), "path": p.Input.Path}}, nil
 	}
 	f, err := os.Open(p.Path)
 	if err != nil {
@@ -184,5 +185,6 @@ func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		return Result{}, err
 	}
 	fmt.Fprintf(&b, "sha256: %s\n", hex.EncodeToString(hash.Sum(nil)))
-	return Result{Text: b.String(), Metadata: map[string]any{"lines": returned, "path": p.Input.Path}}, nil
+	text := b.String()
+	return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"lines": returned, "path": p.Input.Path}}, nil
 }

@@ -49,5 +49,5 @@ func executeMutation(ctx context.Context, changes *change.Service, plan Plan, ca
 	if err := changes.Commit(ctx, call.Workspace, planned.Change); err != nil {
 		return Result{}, err
 	}
-	return Result{Text: planned.Change.Diff, Metadata: map[string]any{"files": len(planned.Change.Mutations)}}, nil
+	return Result{Text: planned.Change.Diff, ModelText: modelText(planned.Change.Diff), Metadata: map[string]any{"files": len(planned.Change.Mutations)}}, nil
 }

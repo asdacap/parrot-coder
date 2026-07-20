@@ -175,7 +175,16 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 func agentResult(task subagent.Task) Result {
 	metadata := agentMetadata(task)
 	text, _ := json.Marshal(metadata)
-	return Result{Text: string(text), Metadata: metadata}
+	// The subagent transcript is bounded before encoding: truncating the encoded
+	// document would hand the model invalid JSON.
+	bounded := agentMetadata(task)
+	for _, field := range []string{"output", "error"} {
+		if value, ok := bounded[field].(string); ok {
+			bounded[field] = modelText(value)
+		}
+	}
+	encoded, _ := json.Marshal(bounded)
+	return Result{Text: string(text), ModelText: string(encoded), Metadata: metadata}
 }
 
 func agentMetadata(task subagent.Task) map[string]any {

@@ -46,5 +46,6 @@ func (t *QuestionTool) Execute(ctx context.Context, plan Plan, call CallContext)
 		return Result{}, err
 	}
 	data, _ := json.Marshal(response)
-	return Result{Text: string(data)}, nil
+	text := string(data)
+	return Result{Text: text, ModelText: text}, nil
 }

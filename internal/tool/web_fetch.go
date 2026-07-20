@@ -71,7 +71,7 @@ func (t *WebFetchTool) Execute(ctx context.Context, plan Plan, _ CallContext) (R
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Text: response.Text, Metadata: map[string]any{"final_url": response.FinalURL, "status": response.Status, "content_type": response.ContentType, "truncated": response.Truncated}}, nil
+	return Result{Text: response.Text, ModelText: modelText(response.Text), Metadata: map[string]any{"final_url": response.FinalURL, "status": response.Status, "content_type": response.ContentType, "truncated": response.Truncated}}, nil
 }
 
 type webFetchPlan struct {

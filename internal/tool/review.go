@@ -110,5 +110,5 @@ func reviewResult(task subagent.Task) Result {
 	if task.Error != "" {
 		metadata["error"] = task.Error
 	}
-	return Result{Text: task.Output, Metadata: metadata}
+	return Result{Text: task.Output, ModelText: modelText(task.Output), Metadata: metadata}
 }

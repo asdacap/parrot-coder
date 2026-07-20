@@ -63,5 +63,6 @@ func (t *ReadOutputTool) Execute(ctx context.Context, plan Plan, call CallContex
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Text: string(bytesToUTF8(b)), Metadata: map[string]any{"bytes": len(b)}}, nil
+	text := string(bytesToUTF8(b))
+	return Result{Text: text, ModelText: text, Metadata: map[string]any{"bytes": len(b)}}, nil
 }

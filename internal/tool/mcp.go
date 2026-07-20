@@ -90,7 +90,8 @@ func (t *MCPTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Result
 	if len(result.StructuredContent) != 0 {
 		metadata["structured_content"] = json.RawMessage(append([]byte(nil), result.StructuredContent...))
 	}
-	return Result{Text: text.String(), Metadata: metadata}, nil
+	output := text.String()
+	return Result{Text: output, ModelText: modelText(output), Metadata: metadata}, nil
 }
 
 type mcpPlan struct {

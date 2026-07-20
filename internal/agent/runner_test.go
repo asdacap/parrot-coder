@@ -128,7 +128,7 @@ func (t *fakeTool) Plan(_ context.Context, raw json.RawMessage, _ tool.CallConte
 }
 func (t *fakeTool) Execute(ctx context.Context, _ tool.Plan, _ tool.CallContext) (tool.Result, error) {
 	if t.execute == nil {
-		return tool.Result{Text: "ok"}, nil
+		return tool.Result{Text: "ok", ModelText: "ok"}, nil
 	}
 	return t.execute(ctx)
 }
@@ -293,7 +293,7 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 			return tool.Result{}, errors.New("tool call was not durably running")
 		}
 		executed <- struct{}{}
-		return tool.Result{Text: "tool output"}, nil
+		return tool.Result{Text: "tool output", ModelText: "tool output"}, nil
 	}}
 	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
 		if index == 0 {
@@ -339,7 +339,7 @@ func TestRunnerBoundsConcurrentToolsAndSettlesAllBeforeContinuation(t *testing.T
 		started <- struct{}{}
 		<-gate
 		active.Add(-1)
-		return tool.Result{Text: "ok"}, nil
+		return tool.Result{Text: "ok", ModelText: "ok"}, nil
 	}}
 	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
 		if index == 0 {
@@ -567,7 +567,7 @@ func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {
 	var executed atomic.Bool
 	mutation := &fakeTool{id: "mutate", execute: func(context.Context) (tool.Result, error) {
 		executed.Store(true)
-		return tool.Result{Text: "mutated"}, nil
+		return tool.Result{Text: "mutated", ModelText: "mutated"}, nil
 	}}
 	fake := &fakeProvider{stream: func(index int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		if index == 0 {

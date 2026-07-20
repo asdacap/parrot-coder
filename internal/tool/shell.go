@@ -157,5 +157,5 @@ func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 		metadata["output_id"] = result.OutputID
 		metadata["output_bytes"] = result.OutputSize
 	}
-	return Result{Text: result.Output, Metadata: metadata}, nil
+	return Result{Text: result.Output, ModelText: modelText(result.Output), Metadata: metadata}, nil
 }

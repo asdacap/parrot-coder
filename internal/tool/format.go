@@ -95,7 +95,7 @@ func (t *FormatTool) Execute(ctx context.Context, plan Plan, call CallContext) (
 		if err != nil || change.SHA256(data) != noop.Hash {
 			return Result{}, change.ErrStale
 		}
-		return Result{Text: "File is already formatted.", Metadata: map[string]any{"path": noop.Path, "formatter": noop.Formatter, "changed": false}}, nil
+		return Result{Text: "File is already formatted.", ModelText: "File is already formatted.", Metadata: map[string]any{"path": noop.Path, "formatter": noop.Formatter, "changed": false}}, nil
 	}
 	return executeMutation(ctx, t.Changes, plan, call)
 }

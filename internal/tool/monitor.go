@@ -75,5 +75,6 @@ func (t *MonitorTool) Execute(_ context.Context, plan Plan, call CallContext) (R
 	if input.TimeoutMS > 0 {
 		text += fmt.Sprintf(" or after %d ms", input.TimeoutMS)
 	}
-	return Result{Text: text + "."}, nil
+	output := text + "."
+	return Result{Text: output, ModelText: output}, nil
 }

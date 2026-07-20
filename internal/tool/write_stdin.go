@@ -79,5 +79,6 @@ func (t *WriteStdinTool) Execute(ctx context.Context, plan Plan, call CallContex
 	if err != nil {
 		return Result{}, fmt.Errorf("write_stdin failed: %w", err)
 	}
-	return Result{Text: formatPersistentResult(result)}, nil
+	text := formatPersistentResult(result)
+	return Result{Text: text, ModelText: modelText(text)}, nil
 }

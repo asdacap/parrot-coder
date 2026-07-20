@@ -36,5 +36,6 @@ func (t *TodoReadTool) Execute(ctx context.Context, _ Plan, call CallContext) (R
 		return Result{}, err
 	}
 	data, _ := json.Marshal(items)
-	return Result{Text: string(data), Metadata: map[string]any{"count": len(items)}}, nil
+	text := string(data)
+	return Result{Text: text, ModelText: text, Metadata: map[string]any{"count": len(items)}}, nil
 }

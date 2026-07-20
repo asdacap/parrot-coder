@@ -92,12 +92,14 @@ func (t *TaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	}
 	metadata := map[string]any{"tasks": items}
 	text, _ := json.Marshal(metadata)
-	return Result{Text: string(text), Metadata: metadata}, nil
+	output := string(text)
+	return Result{Text: output, ModelText: output, Metadata: metadata}, nil
 }
 
 func taskResult(item managedtask.Active) Result {
 	data, _ := json.Marshal(item)
 	var metadata map[string]any
 	_ = json.Unmarshal(data, &metadata)
-	return Result{Text: string(data), Metadata: metadata}
+	text := string(data)
+	return Result{Text: text, ModelText: text, Metadata: metadata}
 }

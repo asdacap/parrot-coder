@@ -16,6 +16,7 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
+	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -38,7 +39,7 @@ func (t testTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (P
 	return p, err
 }
 func (testTool) Execute(_ context.Context, _ Plan, _ CallContext) (Result, error) {
-	return Result{Text: "ok"}, nil
+	return Result{Text: "ok", ModelText: "ok"}, nil
 }
 
 func TestRegistryDuplicateAndDeterministicDefinitions(t *testing.T) {
@@ -170,6 +171,50 @@ func TestExecutorReportsLossyOutputWhenStorageFails(t *testing.T) {
 	}
 }
 
+func TestModelTextBoundsWithoutTouchingTheRecord(t *testing.T) {
+	large := strings.Repeat("x", maxModelTextBytes*2)
+	for _, test := range []struct {
+		name string
+		text string
+		want bool
+	}{
+		{name: "under the limit is verbatim", text: "short output"},
+		{name: "over the limit is truncated", text: large, want: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := modelText(test.text)
+			if truncated := got != test.text; truncated != test.want {
+				t.Fatalf("modelText truncated = %t, want %t", truncated, test.want)
+			}
+			if len(got) > maxModelTextBytes {
+				t.Fatalf("model copy has %d bytes, want at most %d", len(got), maxModelTextBytes)
+			}
+		})
+	}
+}
+
+// A model copy must stay parseable, so tools encoding JSON bound the oversized
+// field before encoding rather than cutting the encoded document.
+func TestJSONToolsKeepModelCopyParseable(t *testing.T) {
+	large := strings.Repeat("y", maxModelTextBytes*2)
+	result := agentResult(subagent.Task{ID: "tsk_1", Agent: "reviewer", Status: "completed", Output: large, Error: large})
+	if len(result.Text) <= maxModelTextBytes {
+		t.Fatalf("record was bounded: %d bytes", len(result.Text))
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal([]byte(result.ModelText), &decoded); err != nil {
+		t.Fatalf("model copy is not valid JSON: %v", err)
+	}
+	for _, field := range []string{"output", "error"} {
+		if value, _ := decoded[field].(string); len(value) > maxModelTextBytes {
+			t.Fatalf("%s has %d bytes, want at most %d", field, len(value), maxModelTextBytes)
+		}
+	}
+	if decoded["task_id"] != "tsk_1" {
+		t.Fatalf("model copy lost its identifiers: %v", decoded)
+	}
+}
+
 type outputTestTool struct{}
 
 func (outputTestTool) ID() string          { return "output_test" }
@@ -184,7 +229,7 @@ func (outputTestTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext
 	return NewPlan("output_test", raw, nil, nil, nil)
 }
 func (outputTestTool) Execute(context.Context, Plan, CallContext) (Result, error) {
-	return Result{Text: "long model output"}, nil
+	return Result{Text: "long model output", ModelText: "long model output"}, nil
 }
 
 func TestOutputStoreUTF8QuotasModesAndRetention(t *testing.T) {

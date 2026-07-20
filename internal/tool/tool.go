@@ -46,12 +46,13 @@ type Plan struct {
 }
 
 // Result carries a tool's output to two audiences. Text is the complete record
-// kept by the session and shown to the user. ModelText is what the model reads;
-// it defaults to Text and is the only field bounded against the context budget,
-// so a tool which must tell the model something it can act on puts it there.
+// kept by the session and shown to the user. ModelText is what the model reads.
+// A tool returning any output must set both: there is no fallback, because only
+// the tool knows which part of its output the model must retain and how large
+// that copy may safely grow.
 type Result struct {
 	Text      string         `json:"text"`
-	ModelText string         `json:"model_text,omitempty"`
+	ModelText string         `json:"model_text"`
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
@@ -279,8 +280,8 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	if max <= 0 {
 		max = 1 << 20
 	}
-	if result.ModelText == "" {
-		result.ModelText = result.Text
+	if result.ModelText == "" && result.Text != "" {
+		return Result{}, fmt.Errorf("tool %q returned output without a model copy", id)
 	}
 	// Neither field is truncated here: bounding the model copy is each tool's
 	// responsibility, since only the tool knows which part of its output the

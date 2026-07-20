@@ -194,7 +194,8 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 					matches++
 					if matches >= t.Config.MaxMatches {
 						f.Close()
-						return Result{Text: out.String(), Metadata: map[string]any{"matches": matches, "truncated": true}}, nil
+						text := out.String()
+						return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"matches": matches, "truncated": true}}, nil
 					}
 				}
 			}
@@ -204,5 +205,6 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		}
 		f.Close()
 	}
-	return Result{Text: out.String(), Metadata: map[string]any{"matches": matches, "files": len(files)}}, nil
+	text := out.String()
+	return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"matches": matches, "files": len(files)}}, nil
 }

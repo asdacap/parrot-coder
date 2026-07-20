@@ -123,5 +123,6 @@ func (t *GlobTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		return Result{}, err
 	}
 	sort.Strings(results)
-	return Result{Text: strings.Join(results, "\n"), Metadata: map[string]any{"matches": len(results), "visited": visited}}, nil
+	text := strings.Join(results, "\n")
+	return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"matches": len(results), "visited": visited}}, nil
 }

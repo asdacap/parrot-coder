@@ -169,7 +169,8 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Text: formatPersistentResult(result)}, nil
+	text := formatPersistentResult(result)
+	return Result{Text: text, ModelText: modelText(text)}, nil
 }
 
 func formatPersistentResult(result process.PersistentResult) string {

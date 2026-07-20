@@ -31,7 +31,7 @@ func (t *GetGoalTool) Execute(ctx context.Context, _ Plan, call CallContext) (Re
 	}
 	goal, err := t.Service.Get(ctx, call.SessionID)
 	if errors.Is(err, session.ErrGoalNotFound) {
-		return Result{Text: "no goal set"}, nil
+		return Result{Text: "no goal set", ModelText: "no goal set"}, nil
 	}
 	if err != nil {
 		return Result{}, err
@@ -128,5 +128,6 @@ func goalResult(goal session.Goal) Result {
 		session.Goal
 		RemainingTokens *int64 `json:"remaining_tokens,omitempty"`
 	}{Goal: goal, RemainingTokens: goal.RemainingTokens()})
-	return Result{Text: string(data), Metadata: map[string]any{"goal_id": goal.ID, "status": string(goal.Status)}}
+	text := string(data)
+	return Result{Text: text, ModelText: text, Metadata: map[string]any{"goal_id": goal.ID, "status": string(goal.Status)}}
 }

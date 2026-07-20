@@ -106,5 +106,6 @@ func (t *WritePermissionTool) Execute(_ context.Context, plan Plan, call CallCon
 	if err := runner.AllowWrite(call.SessionID, input.ResolvedPath); err != nil {
 		return Result{}, err
 	}
-	return Result{Text: "Sandboxed shell writes allowed for this session: " + input.ResolvedPath}, nil
+	text := "Sandboxed shell writes allowed for this session: " + input.ResolvedPath
+	return Result{Text: text, ModelText: text}, nil
 }

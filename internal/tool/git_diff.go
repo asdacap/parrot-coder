@@ -117,7 +117,7 @@ func (t *GitDiffTool) Execute(ctx context.Context, plan Plan, call CallContext) 
 	if truncated {
 		output += "\n\n[git_diff output truncated; narrow the review target before drawing conclusions.]"
 	}
-	return Result{Text: output, Metadata: map[string]any{"target": input.Target, "ref": input.Ref, "truncated": truncated}}, nil
+	return Result{Text: output, ModelText: output, Metadata: map[string]any{"target": input.Target, "ref": input.Ref, "truncated": truncated}}, nil
 }
 
 func validGitRef(ref string) bool {

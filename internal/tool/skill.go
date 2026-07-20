@@ -55,5 +55,5 @@ func (t *SkillTool) Execute(_ context.Context, plan Plan, _ CallContext) (Result
 	if !ok {
 		return Result{}, errors.New("skill: incompatible plan")
 	}
-	return Result{Text: loaded.Prompt, Metadata: map[string]any{"name": loaded.Name, "description": loaded.Description, "agent": loaded.Agent, "model": loaded.Model, "allowed_tools": loaded.AllowedTools}}, nil
+	return Result{Text: loaded.Prompt, ModelText: modelText(loaded.Prompt), Metadata: map[string]any{"name": loaded.Name, "description": loaded.Description, "agent": loaded.Agent, "model": loaded.Model, "allowed_tools": loaded.AllowedTools}}, nil
 }

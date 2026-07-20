@@ -167,7 +167,14 @@ func (t *LSPTool) Execute(ctx context.Context, plan Plan, call CallContext) (Res
 	if err != nil {
 		return Result{}, err
 	}
-	return Result{Text: string(encoded), Metadata: map[string]any{"server": planned.Input.Server, "path": planned.Input.Path, "kind": t.kind}}, nil
+	text := string(encoded)
+	// An LSP response is a single encoded document, so an oversized one is
+	// replaced rather than cut: truncating it would not parse.
+	model := text
+	if len(model) > maxModelTextBytes {
+		model = fmt.Sprintf(`{"truncated":true,"kind":%q,"bytes":%d,"message":"response too large for the model context; narrow the query or request a specific path"}`, t.kind, len(text))
+	}
+	return Result{Text: text, ModelText: model, Metadata: map[string]any{"server": planned.Input.Server, "path": planned.Input.Path, "kind": t.kind}}, nil
 }
 func (t *LSPTool) language(server, path string) string {
 	extension := strings.ToLower(filepath.Ext(path))

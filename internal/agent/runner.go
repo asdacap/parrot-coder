@@ -745,9 +745,6 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 
 func toolResultMessage(outcome toolOutcome) protocol.Message {
 	text := outcome.modelText
-	if text == "" {
-		text = outcome.text
-	}
 	if outcome.interrupted {
 		reason := "tool execution interrupted"
 		if outcome.err != nil {

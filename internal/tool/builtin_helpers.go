@@ -31,6 +31,17 @@ func readBoundedLine(r *bufio.Reader, max int64) (string, error) {
 	}
 }
 
+// maxModelTextBytes bounds the copy of a tool's output which enters the model
+// context. It matches the ceiling the executor applied before bounding became
+// each tool's responsibility, so a tool adopting it preserves the size the
+// model previously saw while Result.Text keeps the complete record.
+const maxModelTextBytes = 64 << 10
+
+// modelText bounds text for the model copy of a tool result. Callers producing
+// JSON must not use it: truncating an encoded document yields invalid JSON, so
+// those tools bound the oversized field before encoding instead.
+func modelText(text string) string { return boundedText(text, maxModelTextBytes) }
+
 // sortedEnvironmentNames returns the variable names of env in a stable order,
 // for permission context which must not disclose their values.
 func sortedEnvironmentNames(env map[string]string) []string {
