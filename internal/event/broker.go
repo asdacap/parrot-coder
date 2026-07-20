@@ -15,10 +15,29 @@ type Broker struct {
 	mu        sync.Mutex
 	next      uint64
 	listeners map[string]map[uint64]chan v1.Event
+	taskIDFor func(string) string
 }
 
 func NewBroker() *Broker {
 	return &Broker{listeners: make(map[string]map[uint64]chan v1.Event)}
+}
+
+// SetTaskIDFor installs the resolver attributing locally produced session
+// events to their main task. It must be set before the first drain publishes.
+func (b *Broker) SetTaskIDFor(resolver func(sessionID string) string) {
+	b.mu.Lock()
+	b.taskIDFor = resolver
+	b.mu.Unlock()
+}
+
+func (b *Broker) taskID(sessionID string) string {
+	b.mu.Lock()
+	resolver := b.taskIDFor
+	b.mu.Unlock()
+	if resolver == nil {
+		return ""
+	}
+	return resolver(sessionID)
 }
 
 func (b *Broker) Subscribe(sessionID string, capacity int) (<-chan v1.Event, func()) {
@@ -93,7 +112,7 @@ func (b *Broker) Publish(sessionID string, item protocol.Event) {
 	if err != nil {
 		return
 	}
-	b.PublishEvent(v1.Event{Type: eventType, SessionID: sessionID, Data: data})
+	b.PublishEvent(v1.Event{Type: eventType, SessionID: sessionID, TaskID: b.taskID(sessionID), Data: data})
 }
 
 // PublishEvent never blocks a producer. Overflow closes only the slow
@@ -136,14 +155,7 @@ func (b *Broker) PublishEvent(event v1.Event) {
 }
 
 func disposableToolOutput(event v1.Event) bool {
-	if event.Type == v1.EventToolOutputDelta {
-		return true
-	}
-	if event.Type != v1.EventSubagent {
-		return false
-	}
-	payload, err := v1.DecodeEventData(event)
-	return err == nil && disposableToolOutput(payload.(*v1.SubagentEvent).Event)
+	return event.Type == v1.EventToolOutputDelta
 }
 
 func evictDisposableToolOutput(listener chan v1.Event) bool {

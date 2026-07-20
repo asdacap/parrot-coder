@@ -31,6 +31,9 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		r.contextTokens = 0
 		r.lastCompleteID = ""
 		r.turnCompleteID = ""
+		// Task ids are unique per tree, but the old session's task tree is
+		// meaningless to the new one. Rebuild it rather than carry stale nodes.
+		r.subagents = taskStreamTracker{}
 		r.knownMessages = make(map[string]bool, len(messages.Items))
 		r.unsyncedMessages = make(map[string]bool)
 		for _, item := range messages.Items {
@@ -167,7 +170,10 @@ func (r *enhancedChatRuntime) stopStream() {
 	r.streamGeneration++
 }
 
-func (r *enhancedChatRuntime) handleSubagentEvent(item *v1.SubagentEvent) error {
+// handleTaskEvent renders one flat task event through the task tree tracker.
+// The tracker owns which task is a child of which; this runtime only maps the
+// resulting reports onto the live activity list and the transcript.
+func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 	thinking := r.shell != nil && r.shell.options.thinking
 	reports, err := r.subagents.describe(item, thinking)
 	if err != nil {
@@ -234,13 +240,10 @@ func (r *enhancedChatRuntime) insertSubagentActivity(item enhancedActivityItem) 
 }
 
 func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
+	if isTaskEvent(item) {
+		return r.handleTaskEvent(item)
+	}
 	switch item.Type {
-	case v1.EventSubagent:
-		payload, err := v1.DecodeEventData(item)
-		if err != nil {
-			return err
-		}
-		return r.handleSubagentEvent(payload.(*v1.SubagentEvent))
 	case v1.EventMessagePartDelta:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {
@@ -374,12 +377,6 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			return err
 		}
 		r.status = "working"
-	case v1.EventTaskProgress:
-		payload, err := v1.DecodeEventData(item)
-		if err != nil {
-			return err
-		}
-		r.updateTaskProgress(payload.(*v1.TaskProgress))
 	case v1.EventToolOutputDelta:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {

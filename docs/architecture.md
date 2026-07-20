@@ -110,6 +110,28 @@ A safe provider-turn boundary performs these operations in order:
 Tool calls are recorded before execution. Tools may execute concurrently, but
 event publication is serialized and all tools settle before continuation.
 
+## Sessions and Tasks
+
+A session is a user session; it has an id and exactly one main task. A task is
+a unit of work within a session: the main task runs the session's own turns, and
+a task starts other tasks — agent tasks through `agent_spawn` and shell tasks
+through backgrounded `exec_command` processes. A task may have a parent task,
+so tasks form a tree rooted at the session's main task. The main task of a
+subagent child session is the subagent task itself.
+
+Tasks emit a flat lifecycle on their session's event stream: `task.start`,
+`task.working`, `task.idle`, and `task.finished`. Task events are never
+nested inside a parent task's event. Every event instead carries the
+`task_id` of the task which produced it and the `session_id` of its stream,
+and `task.start` carries the `parent_task_id`. A child session's events are
+republished on its parent's stream as-is, keeping their own type, data, and
+task attribution, so a client needs one subscription regardless of subagent
+recursion.
+
+Clients own the task tree. The server emits only flat events; the client
+tracks which task is a child of which from `parent_task_id`, and an event
+referencing a task the client has never seen produces an unknown-task error.
+
 ## Context Epochs
 
 A context epoch stores the exact baseline text sent to the provider, typed

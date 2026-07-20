@@ -11,6 +11,7 @@ import (
 	"unicode"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 	"go.yaml.in/yaml/v3"
 )
@@ -517,14 +518,15 @@ type StreamToolReport struct {
 	Style    terminal.TextStyle
 }
 
-type subagentMessageState struct {
+type taskMessageState struct {
 	text             strings.Builder
 	reasoning        strings.Builder
 	reasoningSummary bool
 	reasoningDone    bool
 }
 
-type SubagentReport struct {
+// TaskReport is one renderable unit derived from a flat task event.
+type TaskReport struct {
 	ID        string
 	Line      string
 	Block     string
@@ -534,28 +536,49 @@ type SubagentReport struct {
 	Style     terminal.TextStyle
 }
 
-type SubagentStreamTracker struct {
-	messages map[string]*subagentMessageState
-	tools    map[string]*StreamToolTracker
+// taskNode is one task in the tracker's tree. Tasks form a tree through
+// ParentID; every session's tree is rooted at the session's main task.
+type taskNode struct {
+	id       string
+	parentID string
+	kind     string
+	agent    string
+	status   string
+	orphan   bool
+
+	messages map[string]*taskMessageState
+	tools    *StreamToolTracker
 	done     map[string]bool
 }
 
-func subagentPrefix(item *v1.SubagentEvent) string {
-	if item == nil {
-		return ""
-	}
-	depth := item.Depth
+// TaskTracker rebuilds the task tree from flat task events and renders task
+// activity. The tracker, not the server, tracks which task is a child of
+// which: events arrive with only a task_id and a session_id, and only
+// task.start carries the parent_task_id linking a task into the tree. Any
+// event for a task the tracker has never seen produces an unknown-task error.
+type TaskTracker struct {
+	tasks           map[string]*taskNode
+	unknownReported map[string]bool
+}
+
+func NewTaskTracker() *TaskTracker {
+	tracker := &TaskTracker{tasks: make(map[string]*taskNode)}
+	tracker.tasks[managedtask.MainTaskID] = &taskNode{id: managedtask.MainTaskID, kind: string(managedtask.KindMain)}
+	return tracker
+}
+
+func taskPrefix(depth int, name string) string {
 	if depth < 1 {
 		depth = 1
 	}
-	name := strings.TrimSpace(item.TaskName)
+	name = strings.TrimSpace(name)
 	if name == "" {
 		name = "agent"
 	}
 	return strings.Repeat("  ", depth) + "[" + name + "] "
 }
 
-func prefixSubagentText(prefix, text string) string {
+func prefixTaskText(prefix, text string) string {
 	lines := strings.Split(text, "\n")
 	for i := range lines {
 		lines[i] = prefix + lines[i]
@@ -563,7 +586,7 @@ func prefixSubagentText(prefix, text string) string {
 	return strings.Join(lines, "\n")
 }
 
-func prefixSubagentActivity(prefix, text string) string {
+func prefixTaskActivity(prefix, text string) string {
 	lines := strings.Split(text, "\n")
 	icons := append([]string{"○", "◌", "✓", "✗", "■"}, SpinnerFrames...)
 	for _, icon := range icons {
@@ -579,18 +602,74 @@ func prefixSubagentActivity(prefix, text string) string {
 	return prefix + text
 }
 
-func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) ([]SubagentReport, error) {
-	if item == nil || item.TaskID == "" || item.Depth < 1 || !v1.KnownEvent(item.Event.Type) {
+// depth resolves a task's indentation by walking the parent chain to the main
+// task. Orphaned tasks, whose ancestry is unknown, render at depth one.
+func (t *TaskTracker) depth(node *taskNode) int {
+	depth := 0
+	for current := node; current != nil; {
+		if current.id == managedtask.MainTaskID || current.parentID == "" {
+			return depth
+		}
+		parent := t.tasks[current.parentID]
+		if parent == nil || depth > len(t.tasks) {
+			return depth + 1
+		}
+		depth++
+		current = parent
+	}
+	return depth
+}
+
+func (t *TaskTracker) prefix(node *taskNode) string {
+	return taskPrefix(t.depth(node), node.agent)
+}
+
+// unknownTask reports an event for a task the tracker never registered. The
+// error is emitted once per unknown task; later events for the same unknown
+// task are dropped so one bad id cannot flood the transcript.
+func (t *TaskTracker) unknownTask(taskID, eventType string) []TaskReport {
+	if t.unknownReported == nil {
+		t.unknownReported = make(map[string]bool)
+	}
+	if t.unknownReported[taskID] {
+		return nil
+	}
+	t.unknownReported[taskID] = true
+	return []TaskReport{{ID: "unknown-task:" + taskID, Line: "✗ unknown task " + taskID + " (" + eventType + ")", Terminal: true, EmitPlain: true, Style: terminal.TextStyleDefault}}
+}
+
+func (t *TaskTracker) known(id string) *taskNode {
+	if id == "" {
+		return nil
+	}
+	return t.tasks[id]
+}
+
+// Apply folds one flat event into the task tree and returns what to render.
+// Events belonging to the session's main task return nil; the caller renders
+// those through the main transcript path instead.
+func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) {
+	if item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
+		return t.applyLifecycle(item)
+	}
+	if item.TaskID == "" || item.TaskID == managedtask.MainTaskID {
 		return nil, nil
 	}
-	scope := fmt.Sprintf("%d:%s:", item.Depth, item.TaskID)
-	prefix := subagentPrefix(item)
-	switch item.Event.Type {
+	node := t.known(item.TaskID)
+	if node == nil {
+		return t.unknownTask(item.TaskID, item.Type), nil
+	}
+	if !v1.KnownEvent(item.Type) {
+		return nil, nil
+	}
+	scope := node.id + ":"
+	prefix := t.prefix(node)
+	switch item.Type {
 	case "session.assistant.started":
 		var payload struct {
 			MessageID string `json:"message_id"`
 		}
-		if err := json.Unmarshal(item.Event.Data, &payload); err != nil {
+		if err := json.Unmarshal(item.Data, &payload); err != nil {
 			return nil, err
 		}
 		messageID := payload.MessageID
@@ -598,18 +677,18 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			messageID = "assistant"
 		}
 		key := scope + "message:" + messageID
-		if t.done[key] {
+		if node.done[key] {
 			return nil, nil
 		}
-		if t.messages == nil {
-			t.messages = make(map[string]*subagentMessageState)
+		if node.messages == nil {
+			node.messages = make(map[string]*taskMessageState)
 		}
-		if t.messages[key] == nil {
-			t.messages[key] = &subagentMessageState{}
+		if node.messages[key] == nil {
+			node.messages[key] = &taskMessageState{}
 		}
 		return nil, nil
 	case v1.EventMessagePartDelta:
-		payload, err := v1.DecodeEventData(item.Event)
+		payload, err := v1.DecodeEventData(item)
 		if err != nil {
 			return nil, err
 		}
@@ -619,16 +698,16 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			messageID = "assistant"
 		}
 		key := scope + "message:" + messageID
-		if t.done[key] {
+		if node.done[key] {
 			return nil, nil
 		}
-		if t.messages == nil {
-			t.messages = make(map[string]*subagentMessageState)
+		if node.messages == nil {
+			node.messages = make(map[string]*taskMessageState)
 		}
-		state := t.messages[key]
+		state := node.messages[key]
 		if state == nil {
-			state = &subagentMessageState{}
-			t.messages[key] = state
+			state = &taskMessageState{}
+			node.messages[key] = state
 		}
 		switch delta.Kind {
 		case "text":
@@ -636,8 +715,8 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			if strings.TrimSpace(state.text.String()) == "" {
 				return nil, nil
 			}
-			line := prefixSubagentActivity(prefix, "○ response: "+state.text.String())
-			return []SubagentReport{{ID: key + ":response", Line: line, Style: terminal.TextStyleMuted}}, nil
+			line := prefixTaskActivity(prefix, "○ response: "+state.text.String())
+			return []TaskReport{{ID: key + ":response", Line: line, Style: terminal.TextStyleMuted}}, nil
 		case "reasoning_summary":
 			if !state.reasoningSummary {
 				state.reasoning.Reset()
@@ -657,8 +736,8 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			if delta.Done {
 				icon = "✓"
 			}
-			line := prefixSubagentActivity(prefix, icon+" Thought: "+SingleLineReasoningSummary(state.reasoning.String()))
-			return []SubagentReport{{ID: key + ":reasoning", Line: line, Terminal: delta.Done, EmitPlain: delta.Done, Style: terminal.TextStyleMuted}}, nil
+			line := prefixTaskActivity(prefix, icon+" Thought: "+SingleLineReasoningSummary(state.reasoning.String()))
+			return []TaskReport{{ID: key + ":reasoning", Line: line, Terminal: delta.Done, EmitPlain: delta.Done, Style: terminal.TextStyleMuted}}, nil
 		case "reasoning":
 			if !thinking || state.reasoningSummary {
 				return nil, nil
@@ -667,19 +746,19 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			if strings.TrimSpace(state.reasoning.String()) == "" {
 				return nil, nil
 			}
-			line := prefixSubagentActivity(prefix, SpinnerFrames[0]+" Reasoning: "+SingleLineReasoningSummary(state.reasoning.String()))
-			return []SubagentReport{{ID: key + ":reasoning", Line: line, Style: terminal.TextStyleMuted}}, nil
+			line := prefixTaskActivity(prefix, SpinnerFrames[0]+" Reasoning: "+SingleLineReasoningSummary(state.reasoning.String()))
+			return []TaskReport{{ID: key + ":reasoning", Line: line, Style: terminal.TextStyleMuted}}, nil
 		case "tool_input":
 			return nil, nil
 		default:
-			return []SubagentReport{{ID: key + ":status", Line: prefix + "status: " + delta.Kind, Style: terminal.TextStyleMuted}}, nil
+			return []TaskReport{{ID: key + ":status", Line: prefix + "status: " + delta.Kind, Style: terminal.TextStyleMuted}}, nil
 		}
 	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
 		var payload struct {
 			MessageID string `json:"message_id"`
 			Error     string `json:"error"`
 		}
-		if err := json.Unmarshal(item.Event.Data, &payload); err != nil {
+		if err := json.Unmarshal(item.Data, &payload); err != nil {
 			return nil, err
 		}
 		messageID := payload.MessageID
@@ -687,15 +766,15 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			messageID = "assistant"
 		}
 		key := scope + "message:" + messageID
-		state := t.messages[key]
-		if t.done == nil {
-			t.done = make(map[string]bool)
+		state := node.messages[key]
+		if node.done == nil {
+			node.done = make(map[string]bool)
 		}
-		t.done[key] = true
+		node.done[key] = true
 		status := "○"
-		if item.Event.Type == "session.assistant.error" {
+		if item.Type == "session.assistant.error" {
 			status = "✗"
-		} else if item.Event.Type == "session.assistant.interrupted" {
+		} else if item.Type == "session.assistant.interrupted" {
 			status = "■"
 		}
 		text := ""
@@ -708,68 +787,60 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 			}
 			text += payload.Error
 		}
-		delete(t.messages, key)
-		var reports []SubagentReport
+		delete(node.messages, key)
+		var reports []TaskReport
 		if state != nil && !state.reasoningDone && strings.TrimSpace(state.reasoning.String()) != "" {
-			reasoning := SubagentReport{ID: key + ":reasoning", Terminal: true, Skip: text != "", Style: terminal.TextStyleMuted}
+			reasoning := TaskReport{ID: key + ":reasoning", Terminal: true, Skip: text != "", Style: terminal.TextStyleMuted}
 			if text == "" || state.reasoningSummary {
 				label := "Reasoning: "
 				if state.reasoningSummary {
 					label = "Thought: "
 				}
-				reasoning.Line = prefixSubagentActivity(prefix, "✓ "+label+SingleLineReasoningSummary(state.reasoning.String()))
+				reasoning.Line = prefixTaskActivity(prefix, "✓ "+label+SingleLineReasoningSummary(state.reasoning.String()))
 				reasoning.EmitPlain = true
 				reasoning.Skip = false
 			}
 			reports = append(reports, reasoning)
 		}
-		if text == "" && item.Event.Type == "session.assistant.complete" {
-			return append(reports, SubagentReport{ID: key + ":response", Terminal: true, Skip: true}), nil
+		if text == "" && item.Type == "session.assistant.complete" {
+			return append(reports, TaskReport{ID: key + ":response", Terminal: true, Skip: true}), nil
 		}
 		if text == "" {
 			text = "response complete"
 		}
-		return append(reports, SubagentReport{ID: key + ":response", Line: prefixSubagentActivity(prefix, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
+		return append(reports, TaskReport{ID: key + ":response", Line: prefixTaskActivity(prefix, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
 	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
-		if t.tools == nil {
-			t.tools = make(map[string]*StreamToolTracker)
+		if node.tools == nil {
+			node.tools = &StreamToolTracker{}
 		}
-		tracker := t.tools[scope]
-		if tracker == nil {
-			tracker = &StreamToolTracker{}
-			t.tools[scope] = tracker
-		}
-		callID, _, _, _ := ToolActivityPayload(item.Event.Data)
-		report := tracker.DescribeReport(item.Event)
+		callID, _, _, _ := ToolActivityPayload(item.Data)
+		report := node.tools.DescribeReport(item)
 		line := report.Line
 		if report.Label != "" {
 			line = strings.Replace(line, "tool", report.Label, 1)
 		}
 		block := ""
 		if report.Block != "" {
-			block = prefixSubagentText(strings.Repeat("  ", max(1, item.Depth))+"  ", report.Block)
+			block = prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
 		}
-		return []SubagentReport{{ID: scope + "tool:" + callID, Line: prefixSubagentActivity(prefix, line), Block: block, Terminal: report.Terminal, EmitPlain: true, Style: report.Style}}, nil
+		return []TaskReport{{ID: scope + "tool:" + callID, Line: prefixTaskActivity(prefix, line), Block: block, Terminal: report.Terminal, EmitPlain: true, Style: report.Style}}, nil
 	case v1.EventToolOutputDelta:
-		if t.tools == nil {
-			t.tools = make(map[string]*StreamToolTracker)
+		if node.tools == nil {
+			node.tools = &StreamToolTracker{}
 		}
-		if t.tools[scope] == nil {
-			t.tools[scope] = &StreamToolTracker{}
-		}
-		payload, err := v1.DecodeEventData(item.Event)
+		payload, err := v1.DecodeEventData(item)
 		if err != nil {
 			return nil, err
 		}
 		output := payload.(*v1.ToolOutputDelta)
-		report := t.tools[scope].Output(output)
+		report := node.tools.Output(output)
 		if report.Line == "" {
 			return nil, nil
 		}
-		block := prefixSubagentText(strings.Repeat("  ", max(1, item.Depth))+"  ", report.Block)
-		return []SubagentReport{{ID: scope + "tool:" + output.ToolCallID, Line: prefixSubagentActivity(prefix, report.Line), Block: block, Style: report.Style}}, nil
+		block := prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
+		return []TaskReport{{ID: scope + "tool:" + output.ToolCallID, Line: prefixTaskActivity(prefix, report.Line), Block: block, Style: report.Style}}, nil
 	case v1.EventTaskProgress:
-		payload, err := v1.DecodeEventData(item.Event)
+		payload, err := v1.DecodeEventData(item)
 		if err != nil {
 			return nil, err
 		}
@@ -778,20 +849,20 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 		if progress.ToolCallID == "" {
 			id = scope + "task:" + progress.TaskID
 		}
-		if t.done[id] {
+		if node.done[id] {
 			return nil, nil
 		}
 		line := fmt.Sprintf("agent: %s · %s tokens · %d tools", progress.Agent, FormatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
 		terminalEvent := progress.Status != "pending" && progress.Status != "running"
 		if terminalEvent {
-			if t.done == nil {
-				t.done = make(map[string]bool)
+			if node.done == nil {
+				node.done = make(map[string]bool)
 			}
-			t.done[id] = true
+			node.done[id] = true
 		}
-		return []SubagentReport{{ID: id, Line: prefix + line, Terminal: terminalEvent, EmitPlain: !terminalEvent, Skip: terminalEvent, Style: terminal.TextStyleMuted}}, nil
+		return []TaskReport{{ID: id, Line: prefix + line, Terminal: terminalEvent, EmitPlain: !terminalEvent, Skip: terminalEvent, Style: terminal.TextStyleMuted}}, nil
 	case v1.EventSessionStatus:
-		payload, err := v1.DecodeEventData(item.Event)
+		payload, err := v1.DecodeEventData(item)
 		if err != nil {
 			return nil, err
 		}
@@ -799,14 +870,82 @@ func (t *SubagentStreamTracker) Describe(item *v1.SubagentEvent, thinking bool) 
 		if status.Kind == "running" || status.Kind == "idle" || status.Kind == "finish" || status.Kind == "usage" || status.Kind == "tool_call_complete" {
 			return nil, nil
 		}
-		return []SubagentReport{{ID: scope + "status:" + status.MessageID, Line: prefix + "status: " + status.Kind, Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
+		return []TaskReport{{ID: scope + "status:" + status.MessageID, Line: prefix + "status: " + status.Kind, Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
 	case "session.context.initialized", "session.context.changed", "session.context.replaced":
-		lines := AgentsLoadedActivities(item.Event)
-		reports := make([]SubagentReport, 0, len(lines))
+		lines := AgentsLoadedActivities(item)
+		reports := make([]TaskReport, 0, len(lines))
 		for i, line := range lines {
-			reports = append(reports, SubagentReport{ID: fmt.Sprintf("%scontext:%d", scope, i), Line: prefixSubagentActivity(prefix, line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted})
+			reports = append(reports, TaskReport{ID: fmt.Sprintf("%scontext:%d", scope, i), Line: prefixTaskActivity(prefix, line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted})
 		}
 		return reports, nil
+	default:
+		return nil, nil
+	}
+}
+
+// applyLifecycle folds one task lifecycle event into the tree. task.start is
+// the only event which introduces a task; every other lifecycle event for an
+// unregistered task is an unknown-task error.
+func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		return nil, err
+	}
+	event := payload.(*v1.TaskEvent)
+	if event.TaskID == "" {
+		return nil, nil
+	}
+	switch item.Type {
+	case v1.EventTaskStart:
+		node := t.tasks[event.TaskID]
+		if node == nil {
+			node = &taskNode{id: event.TaskID}
+			t.tasks[event.TaskID] = node
+		}
+		node.kind = event.Kind
+		if event.Agent != "" {
+			node.agent = event.Agent
+		}
+		node.status = "working"
+		if event.ParentTaskID != "" {
+			node.parentID = event.ParentTaskID
+			if t.tasks[event.ParentTaskID] == nil {
+				node.orphan = true
+				return t.unknownTask(event.ParentTaskID, "parent of "+event.TaskID), nil
+			}
+		}
+		return nil, nil
+	case v1.EventTaskWorking:
+		node := t.known(event.TaskID)
+		if node == nil {
+			return t.unknownTask(event.TaskID, item.Type), nil
+		}
+		node.status = "working"
+		return nil, nil
+	case v1.EventTaskIdle:
+		node := t.known(event.TaskID)
+		if node == nil {
+			return t.unknownTask(event.TaskID, item.Type), nil
+		}
+		node.status = "idle"
+		return nil, nil
+	case v1.EventTaskFinished:
+		node := t.known(event.TaskID)
+		if node == nil {
+			return t.unknownTask(event.TaskID, item.Type), nil
+		}
+		node.status = event.Status
+		if node.id == managedtask.MainTaskID {
+			return nil, nil
+		}
+		if event.Status == "" || event.Status == "succeeded" {
+			return []TaskReport{{ID: node.id + ":lifecycle", Terminal: true, Skip: true, Style: terminal.TextStyleMuted}}, nil
+		}
+		line := "✗ " + event.Status
+		if event.Error != "" {
+			line += ": " + cleanActivityDetail(event.Error)
+		}
+		return []TaskReport{{ID: node.id + ":lifecycle", Line: prefixTaskActivity(t.prefix(node), line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleDefault}}, nil
 	default:
 		return nil, nil
 	}

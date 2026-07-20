@@ -235,10 +235,9 @@ type enhancedChatRuntime struct {
 	lastCompleteID    string
 	borderCommitted   bool
 	contextTokens     int
-	subagents         subagentStreamTracker
+	subagents         taskStreamTracker
 	pendingToolOutput map[string]shellOutputTail
 	completedToolIDs  map[string]bool
-	completedTaskIDs  map[string]bool
 
 	stream           *client.EventStream
 	streamSessionID  string

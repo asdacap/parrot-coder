@@ -31,7 +31,25 @@ type Config struct {
 	AllowUnsafeEnvironment bool
 	MaxProcesses           int
 	MaxSessionProcesses    int
+	OnPersistentEvent      func(PersistentEvent)
 	sandbox                sandbox
+}
+
+// Persistent lifecycle kinds reported through Config.OnPersistentEvent.
+const (
+	PersistentEventStart    = "start"
+	PersistentEventFinished = "finished"
+)
+
+// PersistentEvent is one flat shell-task lifecycle emission. A shell task is a
+// persistent process which outlived the command that started it.
+type PersistentEvent struct {
+	Kind      string
+	SessionID string
+	TaskID    string
+	StartedAt time.Time
+	ExitCode  *int
+	Error     string
 }
 
 type StoredOutput struct {
@@ -167,6 +185,21 @@ func NewRunner(config Config) (*Runner, error) {
 
 // WorkingDirectory returns the canonical default cwd used by process tools.
 func (r *Runner) WorkingDirectory() string { return r.config.WorkingDirectory }
+
+// SetPersistentEventHandler installs the shell-task lifecycle observer after
+// composition, when the event sink exists. It replaces any previous handler.
+func (r *Runner) SetPersistentEventHandler(handler func(PersistentEvent)) {
+	r.mu.Lock()
+	r.config.OnPersistentEvent = handler
+	r.mu.Unlock()
+}
+
+func (r *Runner) persistentEventHandler() func(PersistentEvent) {
+	r.mu.RLock()
+	handler := r.config.OnPersistentEvent
+	r.mu.RUnlock()
+	return handler
+}
 
 // AllowWrite grants sandboxed commands in one session write access to an exact
 // existing file or directory. Grants are held only for this Runner's lifetime.
