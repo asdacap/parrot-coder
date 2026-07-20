@@ -89,6 +89,23 @@ func (s OptionalCLIUtilitiesSource) Observe(context.Context) (Observation, error
 	return Observation{Available: true, Value: raw, Baseline: text, Update: text}, nil
 }
 
+type SubagentsSource struct {
+	Available []string
+}
+
+func (SubagentsSource) Key() string { return "runtime:subagents" }
+
+func (s SubagentsSource) Observe(context.Context) (Observation, error) {
+	available := append([]string(nil), s.Available...)
+	raw, _ := json.Marshal(available)
+	agents := "none"
+	if len(available) > 0 {
+		agents = strings.Join(available, ", ")
+	}
+	text := "Available subagents: " + agents
+	return Observation{Available: true, Value: raw, Baseline: text, Update: text}, nil
+}
+
 type FileSource struct {
 	SourceKey string
 	Path      string
@@ -135,6 +152,7 @@ type BuiltinOptions struct {
 	ProjectID                     string
 	AvailableCLIUtilities         []string
 	AvailableOptionalCLIUtilities []string
+	Subagents                     []string
 	Now                           func() time.Time
 }
 
@@ -155,6 +173,9 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 	}
 	if options.ToolGuidance != "" {
 		sources = append(sources, StaticSource{"runtime:tool-guidance", options.ToolGuidance})
+	}
+	if len(options.Subagents) > 0 {
+		sources = append(sources, SubagentsSource{Available: options.Subagents})
 	}
 	paths := []struct{ path, key, label string }{}
 	if options.ConfigDir != "" {

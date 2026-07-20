@@ -183,3 +183,50 @@ func TestFileSourceRejectsOversizedInput(t *testing.T) {
 		t.Fatal("oversized context file was accepted")
 	}
 }
+
+func TestSubagentsSourceListsAvailableSubagents(t *testing.T) {
+	observation, err := (SubagentsSource{Available: []string{"explorer", "review", "worker"}}).Observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Baseline != "Available subagents: explorer, review, worker" {
+		t.Fatalf("baseline = %q", observation.Baseline)
+	}
+	if string(observation.Value) != `["explorer","review","worker"]` {
+		t.Fatalf("value = %s", observation.Value)
+	}
+}
+
+func TestSubagentsSourceReportsNoneAvailable(t *testing.T) {
+	observation, err := (SubagentsSource{}).Observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if observation.Baseline != "Available subagents: none" {
+		t.Fatalf("baseline = %q", observation.Baseline)
+	}
+}
+
+func TestBuiltinsIncludeSubagentsSource(t *testing.T) {
+	root := t.TempDir()
+	sources, err := Builtins(BuiltinOptions{
+		ProjectRoot:      root,
+		WorkingDirectory: root,
+		Subagents:        []string{"explorer", "worker"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := NewRegistry(sources...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := registry.Observe(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, ok := snapshot["runtime:subagents"]
+	if !ok || observation.Baseline != "Available subagents: explorer, worker" {
+		t.Fatalf("subagent observation = %#v", observation)
+	}
+}

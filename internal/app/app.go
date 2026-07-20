@@ -206,6 +206,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: subagents: %w", err)
 	}
+	subagentIDs := make([]string, 0, len(agent.Subagents()))
+	for _, p := range taskAgents.List() {
+		subagentIDs = append(subagentIDs, p.ID)
+	}
 	providerRegistry, err := agent.NewProviderRegistry(providers...)
 	if err != nil {
 		return nil, fmt.Errorf("app: providers: %w", err)
@@ -404,6 +408,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
 		AgentPrompt: "You are Parrot Coder, a local coding agent.", ToolGuidance: string(guidance),
 		Skills:    skillMetadata(skills),
+		Subagents: subagentIDs,
 		ConfigDir: paths.Config, ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
 		AvailableCLIUtilities: availableCLIUtilities, AvailableOptionalCLIUtilities: availableOptionalCLIUtilities,
 	})
