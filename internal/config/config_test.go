@@ -240,3 +240,110 @@ func writeFile(t *testing.T, path, contents string) {
 		t.Fatal(err)
 	}
 }
+
+func TestLoadGeneratesDefaultConfigWhenMissing(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Sources) != 1 {
+		t.Fatalf("sources = %d, want 1", len(result.Sources))
+	}
+	if result.Sources[0].Kind != SourceGlobal {
+		t.Fatalf("source kind = %q, want global", result.Sources[0].Kind)
+	}
+	expectedPath := filepath.Join(configDir, FileName)
+	if result.Sources[0].Path != expectedPath {
+		t.Fatalf("source path = %q, want %q", result.Sources[0].Path, expectedPath)
+	}
+
+	data, err := os.ReadFile(expectedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Parse(data); err != nil {
+		t.Fatalf("generated YAML is not parseable: %v", err)
+	}
+	if !strings.Contains(string(data), "Default model selected as provider/model.") {
+		t.Fatal("generated YAML missing readable comment")
+	}
+	if result.Config.DefaultModel != "" {
+		t.Fatalf("DefaultModel = %q, want empty", result.Config.DefaultModel)
+	}
+	if len(result.Config.Providers) != 0 || len(result.Config.MCP) != 0 || len(result.Config.LSP) != 0 || len(result.Config.Formatters) != 0 {
+		t.Fatalf("generated starter should be empty, got %#v", result.Config)
+	}
+	if result.Config.WebFetch.AllowPrivate {
+		t.Fatal("WebFetch.AllowPrivate should be false in generated starter")
+	}
+}
+
+func TestLoadDoesNotOverwriteExistingConfig(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	project := filepath.Join(root, "project")
+	globalPath := filepath.Join(configDir, FileName)
+	writeFile(t, globalPath, "model: existing/model")
+
+	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.DefaultModel != "existing/model" {
+		t.Fatalf("DefaultModel = %q", result.Config.DefaultModel)
+	}
+
+	data, err := os.ReadFile(globalPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "Default model selected as provider/model.") {
+		t.Fatal("existing config was overwritten with default comments")
+	}
+}
+
+func TestLoadWithoutConfigDirDoesNotWrite(t *testing.T) {
+	root := t.TempDir()
+	result, err := Load(Options{ConfigDir: "", ProjectRoot: root, CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Sources) != 0 {
+		t.Fatalf("sources = %d, want 0", len(result.Sources))
+	}
+}
+
+func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), FileName)
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(data)
+	for _, comment := range []string{
+		"Parrot Coder configuration file.",
+		"Default model selected as provider/model.",
+		"OpenAI-compatible providers and their model catalogs.",
+		"Provider adapter type: 'compatible' or 'openai-compatible'.",
+		"API protocol: 'responses' or 'chat-completions'.",
+		"Transport: 'stdio' or 'http'.",
+		"Absolute path to the language server executable.",
+		"Formatting mode: 'stdin' or 'file'.",
+		"Web fetch restrictions.",
+		"Allow fetching from private addresses; increases SSRF risk.",
+	} {
+		if !strings.Contains(output, comment) {
+			t.Errorf("generated YAML missing comment: %q", comment)
+		}
+	}
+}

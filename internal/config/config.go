@@ -196,11 +196,23 @@ func discoveryBounds(root, cwd string) (string, string, error) {
 	return root, cwd, nil
 }
 
-// Load discovers and merges all applicable files.
+// Load discovers and merges all applicable files. If no file exists and a
+// ConfigDir is provided, a commented starter template is written there first.
 func Load(options Options) (Result, error) {
 	sources, err := Discover(options)
 	if err != nil {
 		return Result{}, err
+	}
+	if len(sources) == 0 && options.ConfigDir != "" {
+		globalPath := filepath.Join(options.ConfigDir, FileName)
+		if err := writeDefaultConfig(globalPath); err != nil {
+			return Result{}, fmt.Errorf("write default config: %w", err)
+		}
+		absPath, err := filepath.Abs(globalPath)
+		if err != nil {
+			return Result{}, fmt.Errorf("resolve default config path: %w", err)
+		}
+		sources = []Source{{Path: absPath, Kind: SourceGlobal}}
 	}
 	merged := make(map[string]any)
 	provenance := make(map[string]string)
@@ -348,4 +360,128 @@ func markProvenance(value any, path, source string, provenance map[string]string
 	for key, child := range object {
 		markProvenance(child, path+"."+key, source, provenance)
 	}
+}
+
+// defaultConfigYAML is a commented starter template. Example values are
+// commented out so the file is safe to parse; only web_fetch carries the
+// safe default value so the document root remains a valid YAML object.
+const defaultConfigYAML = `# Parrot Coder configuration file.
+# Uncomment and edit the sections below to configure Parrot.
+
+# Default model selected as provider/model.
+# model: provider/model
+
+# OpenAI-compatible providers and their model catalogs.
+# providers:
+#   provider:
+#     # Provider adapter type: 'compatible' or 'openai-compatible'.
+#     type: openai-compatible
+#     # API protocol: 'responses' or 'chat-completions'.
+#     protocol: responses
+#     # Provider base URL, e.g. https://api.example.test/v1.
+#     base_url: https://api.example.test/v1
+#     # Environment variable holding the API key.
+#     api_key_env: PROVIDER_API_KEY
+#     # Extra headers to send. Do not store secrets here.
+#     headers:
+#       X-Tenant: non-secret-value
+#     # Allow plain HTTP for localhost endpoints.
+#     allow_insecure_localhost: false
+#     # Milliseconds to wait for response headers; zero disables.
+#     header_timeout_ms: 10000
+#     # Model metadata not available from the endpoint catalog.
+#     models:
+#       model:
+#         # Display name for the model.
+#         name: Display Name
+#         # Context window in tokens.
+#         context: 128000
+#         # Maximum output tokens.
+#         max_tokens: 16384
+#         # Whether the model supports tool calls.
+#         tools: true
+#         # Whether the model supports reasoning tokens.
+#         reasoning: false
+#         # Supported output modalities, e.g. text.
+#         output:
+#           - text
+#         # Named provider request options.
+#         variants:
+#           high:
+#             # Reasoning effort passed to the provider, e.g. low/medium/high.
+#             reasoning_effort: high
+
+# Model Context Protocol servers to start.
+# mcp:
+#   server-name:
+#     # Transport: 'stdio' or 'http'.
+#     transport: stdio
+#     # Absolute path to the server executable for stdio.
+#     command: /absolute/path/to/server
+#     # Arguments for the server command.
+#     args:
+#       - --stdio
+#     # Environment variables for the server process.
+#     env:
+#       NAME: value
+#     # Working directory for the server process.
+#     cwd: /absolute/working/directory
+#     # Endpoint URL for http transport.
+#     url: https://mcp.example.test/rpc
+#     # Extra headers for http requests. Do not store secrets here.
+#     headers:
+#       X-Tenant: non-secret-value
+#     # Whether the server is started.
+#     enabled: false
+#     # Allow plain HTTP for localhost endpoints.
+#     allow_insecure_localhost: false
+#     # Milliseconds to wait for the server to start; zero uses default.
+#     startup_timeout_ms: 15000
+#     # Milliseconds to wait for a call; zero uses default.
+#     call_timeout_ms: 30000
+
+# Language servers for the workspace.
+# lsp:
+#   go:
+#     # Absolute path to the language server executable.
+#     command: /absolute/path/to/gopls
+#     # Arguments for the language server.
+#     args:
+#       - serve
+#     # Environment variables for the language server.
+#     env:
+#       GOTOOLCHAIN: local
+#     # File extensions associated with this server.
+#     extensions:
+#       - .go
+#     # Maps file extensions to language IDs.
+#     languages:
+#       .go: go
+#     # Milliseconds to wait for responses; zero uses default.
+#     timeout_ms: 15000
+
+# Code formatters run by formatting tools.
+# formatters:
+#   gofmt:
+#     # File extensions this formatter handles.
+#     extensions:
+#       - .go
+#     # Argv command to run; first element must be an absolute executable path.
+#     command:
+#       - /absolute/path/to/gofmt
+#     # Formatting mode: 'stdin' or 'file'.
+#     mode: stdin
+
+# Web fetch restrictions.
+web_fetch:
+  # Allow fetching from private addresses; increases SSRF risk.
+  allow_private: false
+`
+
+// writeDefaultConfig writes a commented starter template to path.
+func writeDefaultConfig(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(defaultConfigYAML), 0o600)
 }
