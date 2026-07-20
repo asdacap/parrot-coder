@@ -2,7 +2,6 @@
 package change
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -42,9 +41,7 @@ func NewService(config Config) *Service {
 type Edit struct {
 	Path           string `json:"path"`
 	ExpectedSHA256 string `json:"expected_sha256"`
-	Old            string `json:"old"`
 	New            string `json:"new"`
-	ReplaceAll     bool   `json:"replace_all"`
 	Create         bool   `json:"create"`
 }
 
@@ -104,8 +101,8 @@ func (s *Service) PlanEdit(ctx context.Context, ws *workspace.Workspace, edit Ed
 		return Plan{}, errors.New("change: workspace and path are required")
 	}
 	if edit.Create {
-		if edit.ExpectedSHA256 != "" || edit.Old != "" || edit.ReplaceAll {
-			return Plan{}, errors.New("change: creation must not include a preimage or replacement")
+		if edit.ExpectedSHA256 != "" {
+			return Plan{}, errors.New("change: creation must not include a preimage")
 		}
 		path, err := ws.ResolveCreate(edit.Path)
 		if err != nil {
@@ -143,39 +140,13 @@ func (s *Service) PlanEdit(ctx context.Context, ws *workspace.Workspace, edit Ed
 	if !validHash(edit.ExpectedSHA256) || edit.ExpectedSHA256 != before.SHA256 {
 		return Plan{}, ErrStale
 	}
-	if edit.Old == "" {
-		return Plan{}, errors.New("change: old text must not be empty")
-	}
-	oldText, newText := normalizeEditNewlines(before.Data, edit.Old, edit.New)
-	old, replacement := []byte(oldText), []byte(newText)
-	count := bytes.Count(before.Data, old)
-	if count == 0 || (!edit.ReplaceAll && count != 1) {
-		return Plan{}, fmt.Errorf("%w: found %d matches", ErrConflict, count)
-	}
-	data := bytes.Replace(before.Data, old, replacement, 1)
-	if edit.ReplaceAll {
-		data = bytes.ReplaceAll(before.Data, old, replacement)
-	}
+	data := []byte(edit.New)
 	if int64(len(data)) > s.config.MaxFileBytes {
 		return Plan{}, errors.New("change: file byte limit exceeded")
 	}
 	after := regularState(path, data, before.Mode)
 	mutation := Mutation{edit.Path, path, before, after}
 	return Plan{Mutations: []Mutation{mutation}, Diff: unifiedDiff(ws.Root(), before, after)}, nil
-}
-
-func normalizeEditNewlines(data []byte, old, replacement string) (string, string) {
-	withoutBOM := data
-	if bytes.HasPrefix(withoutBOM, []byte{0xef, 0xbb, 0xbf}) {
-		withoutBOM = withoutBOM[3:]
-	}
-	if bytes.Contains(withoutBOM, []byte("\r\n")) && !bytes.Contains(bytes.ReplaceAll(withoutBOM, []byte("\r\n"), nil), []byte("\n")) {
-		convert := func(value string) string {
-			return strings.ReplaceAll(strings.ReplaceAll(value, "\r\n", "\n"), "\n", "\r\n")
-		}
-		return convert(old), convert(replacement)
-	}
-	return old, replacement
 }
 
 func (s *Service) readState(path string) (FileState, error) {

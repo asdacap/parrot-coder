@@ -356,7 +356,7 @@ func TestReadAndGrepExplicitExternalPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if read.Text != "1: external match\n" || !strings.Contains(grep.Text, "outside.txt:1:external match\n") {
+	if !strings.HasPrefix(read.Text, "1: external match\nsha256: ") || !strings.Contains(grep.Text, "outside.txt:1:external match\n") {
 		t.Fatalf("read = %q, grep = %q", read.Text, grep.Text)
 	}
 }

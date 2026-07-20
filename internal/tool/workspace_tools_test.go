@@ -52,7 +52,7 @@ func TestEditPermissionReviewHashAndCommitIntegration(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","old":"before","new":"after"}`)
+	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","new":"after"}`)
 	edit := NewEditTool(changes)
 	planned, err := edit.Plan(ctx, raw, CallContext{Workspace: ws})
 	if err != nil {
@@ -78,6 +78,9 @@ func TestEditPermissionReviewHashAndCommitIntegration(t *testing.T) {
 	if result.Metadata["files"] != 1 || authorizer.request.OperationHash == "" {
 		t.Fatalf("result/request = %#v / %#v", result, authorizer.request)
 	}
+	if !strings.HasSuffix(result.Text, "sha256: "+change.SHA256([]byte("after"))+"\n") {
+		t.Fatalf("edit result lacks after sha256: %q", result.Text)
+	}
 	if authorizer.request.Description != `Edit workspace file "file"` {
 		t.Fatalf("permission description = %q", authorizer.request.Description)
 	}
@@ -89,7 +92,7 @@ func TestEditPermissionReviewHashAndCommitIntegration(t *testing.T) {
 		t.Fatalf("edit result lacks before/after diff: %q", result.Text)
 	}
 	data, _ := os.ReadFile(path)
-	if string(data) != "after\n" {
+	if string(data) != "after" {
 		t.Fatalf("committed file = %q", data)
 	}
 }
@@ -101,7 +104,7 @@ func TestEditRevalidatesAfterPermission(t *testing.T) {
 	if err := os.WriteFile(path, before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","old":"before","new":"after"}`)
+	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","new":"after"}`)
 	registry := NewRegistry()
 	_ = registry.Register(NewEditTool(changes))
 	authorizer := &recordingAuthorizer{before: func() { _ = os.WriteFile(path, []byte("changed while asking"), 0o600) }}
@@ -112,6 +115,42 @@ func TestEditRevalidatesAfterPermission(t *testing.T) {
 	data, _ := os.ReadFile(path)
 	if string(data) != "changed while asking" {
 		t.Fatalf("stale execution overwrote file: %q", data)
+	}
+}
+
+func TestReadReturnsSHA256ForFilesAndRoundTripsIntoEdit(t *testing.T) {
+	ctx, ws, changes := workspaceToolHarness(t)
+	before := []byte("line one\nline two\n")
+	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	registry := NewRegistry()
+	for _, tool := range []Tool{NewReadTool(ReadConfig{}), NewEditTool(changes)} {
+		if err := registry.Register(tool); err != nil {
+			t.Fatal(err)
+		}
+	}
+	executor := Executor{Snapshot: registry.Materialize(), Permissions: &recordingAuthorizer{}}
+
+	partial, err := executor.Execute(ctx, "read", json.RawMessage(`{"path":"file","limit":1}`), CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(partial.Text, "sha256: "+change.SHA256(before)+"\n") {
+		t.Fatalf("partial read lacks whole-file sha256: %q", partial.Text)
+	}
+
+	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","new":"after"}`)
+	if _, err := executor.Execute(ctx, "edit", raw, CallContext{Workspace: ws}); err != nil {
+		t.Fatalf("read-hash edit round trip: %v", err)
+	}
+
+	listing, err := executor.Execute(ctx, "read", json.RawMessage(`{"path":"."}`), CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(listing.Text, "sha256:") {
+		t.Fatalf("directory listing must not include sha256: %q", listing.Text)
 	}
 }
 
@@ -266,7 +305,7 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	if !strings.Contains(schema, `"required":["patchText"]`) || strings.Contains(schema, `"required":["patch"]`) {
 		t.Fatalf("apply_patch schema is not OpenCode-compatible: %s", schema)
 	}
-	raw := json.RawMessage(`{"patchText":"*** Begin Patch\n*** Add File: file\n+content\n*** End Patch"}`)
+	raw := json.RawMessage(`{"patchText":"file\n<<<<<<< SEARCH\n=======\ncontent\n>>>>>>> REPLACE\n"}`)
 	planned, err := tool.Plan(context.Background(), raw, CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)

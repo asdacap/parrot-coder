@@ -4,10 +4,11 @@ import "testing"
 
 func FuzzParsePatch(f *testing.F) {
 	for _, seed := range []string{
-		"*** Begin Patch\n*** Add File: a.txt\n+hello\n*** End Patch",
-		"*** Begin Patch\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch",
-		"*** Begin Patch\n*** Move File: a.txt -> b.txt\n@@\n-old\n+new\n*** End Patch",
-		"*** Begin Patch\n*** Delete File: a.txt\n*** End Patch",
+		aiderBlock("a.txt", "", "hello"),
+		aiderBlock("a.txt", "old", "new"),
+		aiderBlock("a.txt", "old", "new") + aiderBlock("", "other", "changed"),
+		aiderBlock("a.txt", "old", "new") + aiderBlock("b.txt", "", "created"),
+		"a.txt\n" + patchSearchMarker + "\nunterminated\n",
 		"not a patch",
 	} {
 		f.Add(seed)

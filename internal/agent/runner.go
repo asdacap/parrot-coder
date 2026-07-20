@@ -388,7 +388,7 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 	if err != nil {
 		return nil, "", err
 	}
-	stream, err := provider.StreamWithHeaderRetry(ctx, client, request)
+	stream, err := provider.StreamWithRetry(ctx, client, request)
 	if err != nil {
 		finishErr := r.finishOnCleanup(sessionID, assistant.ID, nil, protocol.FinishError, err.Error(), "error")
 		code, overflow := contextOverflowError(err)

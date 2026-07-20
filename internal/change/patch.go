@@ -18,7 +18,6 @@ type PatchOperationKind string
 const (
 	PatchAdd    PatchOperationKind = "add"
 	PatchUpdate PatchOperationKind = "update"
-	PatchDelete PatchOperationKind = "delete"
 )
 
 type PatchLine struct {
@@ -33,17 +32,24 @@ type PatchHunk struct {
 }
 
 type PatchOperation struct {
-	Kind   PatchOperationKind
-	Path   string
-	MoveTo string
-	Data   string
-	Hunks  []PatchHunk
+	Kind  PatchOperationKind
+	Path  string
+	Data  string
+	Hunks []PatchHunk
 }
 
 type Patch struct{ Operations []PatchOperation }
 
-// ParsePatch parses the Codex apply_patch format. It retains the Move File
-// alias for compatibility with older Parrot callers.
+// Aider format block markers.
+const (
+	patchSearchMarker  = "<<<<<<< SEARCH"
+	patchReplaceMarker = ">>>>>>> REPLACE"
+)
+
+// ParsePatch parses the aider SEARCH/REPLACE edit format: a file path line
+// followed by one or more <<<<<<< SEARCH / ======= / >>>>>>> REPLACE blocks.
+// Blocks apply to the most recent path line, and an empty SEARCH section
+// creates the file.
 func ParsePatch(text string) (Patch, error) {
 	if strings.ContainsRune(text, 0) {
 		return Patch{}, fmt.Errorf("%w: NUL byte", ErrInvalidPatch)
@@ -52,108 +58,95 @@ func ParsePatch(text string) (Patch, error) {
 	for i := range lines {
 		lines[i] = strings.TrimSuffix(lines[i], "\r")
 	}
-	if len(lines) >= 4 && (lines[0] == "<<EOF" || lines[0] == "<<'EOF'" || lines[0] == `<<"EOF"`) && strings.HasSuffix(lines[len(lines)-1], "EOF") {
-		lines = lines[1 : len(lines)-1]
+	type block struct {
+		path    string
+		line    int
+		search  []string
+		replace []string
 	}
-	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "*** Begin Patch" || strings.TrimSpace(lines[len(lines)-1]) != "*** End Patch" {
-		return Patch{}, fmt.Errorf("%w: missing exact patch envelope", ErrInvalidPatch)
-	}
-	var patch Patch
-	for i := 1; i < len(lines)-1; {
-		kind, path, moveTo, ok := parseOperationHeader(strings.TrimSpace(lines[i]))
-		if !ok {
-			return Patch{}, fmt.Errorf("%w at line %d: expected operation header", ErrInvalidPatch, i+1)
+	var blocks []block
+	path := ""
+	for i := 0; i < len(lines); {
+		line := strings.TrimSpace(lines[i])
+		if line == "" || strings.HasPrefix(line, "```") {
+			i++
+			continue
 		}
-		if err := validPatchPath(path); err != nil {
-			return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+1, err)
-		}
-		if moveTo != "" {
-			if err := validPatchPath(moveTo); err != nil {
+		if line != patchSearchMarker {
+			path = line
+			if err := validPatchPath(path); err != nil {
 				return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+1, err)
 			}
+			i++
+			continue
 		}
-		op := PatchOperation{Kind: kind, Path: path, MoveTo: moveTo}
+		if path == "" {
+			return Patch{}, fmt.Errorf("%w at line %d: block has no file path", ErrInvalidPatch, i+1)
+		}
+		current := block{path: path, line: i + 1}
 		i++
-		switch kind {
-		case PatchAdd:
-			var data strings.Builder
-			for i < len(lines)-1 && !isOperationHeader(strings.TrimSpace(lines[i])) {
-				if !strings.HasPrefix(lines[i], "+") {
-					return Patch{}, fmt.Errorf("%w at line %d: add lines must start with +", ErrInvalidPatch, i+1)
-				}
-				data.WriteString(lines[i][1:])
-				data.WriteByte('\n')
-				i++
-			}
-			if data.Len() == 0 {
-				return Patch{}, fmt.Errorf("%w: empty add hunk", ErrInvalidPatch)
-			}
-			op.Data = data.String()
-		case PatchDelete:
-			if i < len(lines)-1 && !isOperationHeader(strings.TrimSpace(lines[i])) {
-				return Patch{}, fmt.Errorf("%w at line %d: delete operation has content", ErrInvalidPatch, i+1)
-			}
-		case PatchUpdate:
-			if i < len(lines)-1 && strings.HasPrefix(strings.TrimSpace(lines[i]), "*** Move to: ") {
-				if op.MoveTo != "" {
-					return Patch{}, fmt.Errorf("%w at line %d: move destination specified twice", ErrInvalidPatch, i+1)
-				}
-				op.MoveTo = strings.TrimPrefix(strings.TrimSpace(lines[i]), "*** Move to: ")
-				if err := validPatchPath(op.MoveTo); err != nil {
-					return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+1, err)
-				}
-				i++
-			}
-			var hunk *PatchHunk
-			for i < len(lines)-1 && !isOperationHeader(strings.TrimSpace(lines[i])) {
-				line, trimmed := lines[i], strings.TrimSpace(lines[i])
-				if trimmed == "@@" || strings.HasPrefix(strings.TrimRight(line, " \t"), "@@ ") {
-					if hunk != nil && len(hunk.Lines) == 0 {
-						return Patch{}, fmt.Errorf("%w: empty update hunk", ErrInvalidPatch)
-					}
-					op.Hunks = append(op.Hunks, PatchHunk{Context: strings.TrimSpace(strings.TrimPrefix(strings.TrimRight(line, " \t"), "@@"))})
-					hunk = &op.Hunks[len(op.Hunks)-1]
-					i++
-					continue
-				}
-				if trimmed == "*** End of File" {
-					if hunk == nil || len(hunk.Lines) == 0 {
-						return Patch{}, fmt.Errorf("%w: empty update hunk", ErrInvalidPatch)
-					}
-					hunk.EndOfFile = true
-					i++
-					for i < len(lines)-1 && strings.TrimSpace(lines[i]) == "" {
-						i++
-					}
-					continue
-				}
-				if hunk != nil && hunk.EndOfFile {
-					return Patch{}, fmt.Errorf("%w at line %d: expected hunk header", ErrInvalidPatch, i+1)
-				}
-				if hunk == nil {
-					op.Hunks = append(op.Hunks, PatchHunk{})
-					hunk = &op.Hunks[len(op.Hunks)-1]
-				}
-				if line == "" {
-					hunk.Lines = append(hunk.Lines, PatchLine{' ', ""})
-				} else if line[0] == ' ' || line[0] == '+' || line[0] == '-' {
-					hunk.Lines = append(hunk.Lines, PatchLine{line[0], line[1:]})
-				} else {
-					return Patch{}, fmt.Errorf("%w at line %d: hunk lines require space, +, or -", ErrInvalidPatch, i+1)
-				}
-				i++
-			}
-			if hunk != nil && len(hunk.Lines) == 0 {
-				return Patch{}, fmt.Errorf("%w: empty update hunk", ErrInvalidPatch)
-			}
-			if len(op.Hunks) == 0 && op.MoveTo == "" {
-				return Patch{}, fmt.Errorf("%w: update has neither hunks nor move", ErrInvalidPatch)
-			}
+		start := i
+		for i < len(lines) && !isPatchDivider(lines[i]) {
+			i++
 		}
-		patch.Operations = append(patch.Operations, op)
+		if i >= len(lines) {
+			return Patch{}, fmt.Errorf("%w at line %d: SEARCH section is missing =======", ErrInvalidPatch, current.line)
+		}
+		current.search = lines[start:i]
+		i++
+		start = i
+		for i < len(lines) && strings.TrimSpace(lines[i]) != patchReplaceMarker {
+			i++
+		}
+		if i >= len(lines) {
+			return Patch{}, fmt.Errorf("%w at line %d: section is missing %s", ErrInvalidPatch, current.line, patchReplaceMarker)
+		}
+		current.replace = lines[start:i]
+		i++
+		blocks = append(blocks, current)
 	}
-	if len(patch.Operations) == 0 {
-		return Patch{}, fmt.Errorf("%w: patch has no operations", ErrInvalidPatch)
+	if len(blocks) == 0 {
+		return Patch{}, fmt.Errorf("%w: patch has no SEARCH/REPLACE blocks", ErrInvalidPatch)
+	}
+	// Merge blocks into one operation per file, keeping first-appearance
+	// order so sequential edits to the same file apply in patch order.
+	var patch Patch
+	operations := make(map[string]int)
+	for _, current := range blocks {
+		index, ok := operations[current.path]
+		if !ok {
+			patch.Operations = append(patch.Operations, PatchOperation{Path: current.path})
+			index = len(patch.Operations) - 1
+			operations[current.path] = index
+		}
+		op := &patch.Operations[index]
+		if len(current.search) == 0 {
+			if op.Kind != "" {
+				return Patch{}, fmt.Errorf("%w at line %d: %q mixes file creation and updates", ErrInvalidPatch, current.line, current.path)
+			}
+			op.Kind = PatchAdd
+			for _, line := range current.replace {
+				op.Data += line + "\n"
+			}
+			continue
+		}
+		if op.Kind == PatchAdd {
+			return Patch{}, fmt.Errorf("%w at line %d: %q mixes file creation and updates", ErrInvalidPatch, current.line, current.path)
+		}
+		op.Kind = PatchUpdate
+		var hunk PatchHunk
+		for _, line := range current.search {
+			hunk.Lines = append(hunk.Lines, PatchLine{Kind: '-', Text: line})
+		}
+		for _, line := range current.replace {
+			hunk.Lines = append(hunk.Lines, PatchLine{Kind: '+', Text: line})
+		}
+		op.Hunks = append(op.Hunks, hunk)
+	}
+	for _, op := range patch.Operations {
+		if op.Kind == PatchAdd && op.Data == "" {
+			return Patch{}, fmt.Errorf("%w: file creation for %q has no content", ErrInvalidPatch, op.Path)
+		}
 	}
 	if err := validatePatchPaths(patch); err != nil {
 		return Patch{}, err
@@ -161,33 +154,9 @@ func ParsePatch(text string) (Patch, error) {
 	return patch, nil
 }
 
-func parseOperationHeader(line string) (PatchOperationKind, string, string, bool) {
-	// Codex represents a move as an Update File operation followed by a Move to
-	// directive. Accept the commonly generated one-line spelling as an alias so
-	// patches produced from the tool's "move operations" description remain
-	// interoperable. A Move File may also contain update hunks.
-	if strings.HasPrefix(line, "*** Move File: ") {
-		move := strings.TrimPrefix(line, "*** Move File: ")
-		path, moveTo, ok := strings.Cut(move, " -> ")
-		if !ok || path == "" || moveTo == "" {
-			return "", "", "", false
-		}
-		return PatchUpdate, path, moveTo, true
-	}
-	for prefix, kind := range map[string]PatchOperationKind{
-		"*** Add File: ": PatchAdd, "*** Update File: ": PatchUpdate, "*** Delete File: ": PatchDelete,
-	} {
-		if strings.HasPrefix(line, prefix) {
-			path := strings.TrimPrefix(line, prefix)
-			return kind, path, "", path != ""
-		}
-	}
-	return "", "", "", false
-}
-
-func isOperationHeader(line string) bool {
-	_, _, _, ok := parseOperationHeader(line)
-	return ok
+func isPatchDivider(line string) bool {
+	line = strings.TrimSpace(line)
+	return len(line) >= 7 && strings.Trim(line, "=") == ""
 }
 
 func validPatchPath(path string) error {
@@ -201,9 +170,6 @@ func validatePatchPaths(patch Patch) error {
 	var paths []string
 	for _, op := range patch.Operations {
 		paths = append(paths, filepath.Clean(op.Path))
-		if op.MoveTo != "" {
-			paths = append(paths, filepath.Clean(op.MoveTo))
-		}
 	}
 	sort.Strings(paths)
 	for i, path := range paths {
@@ -263,7 +229,7 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 			after := regularState(path, []byte(operation.Data), mode)
 			mutations = append(mutations, Mutation{operation.Path, path, before, after})
 			diff.WriteString(unifiedDiff(ws.Root(), before, after))
-		case PatchDelete, PatchUpdate:
+		case PatchUpdate:
 			path, err := ws.ResolveRead(operation.Path)
 			if err != nil {
 				return Plan{}, fmt.Errorf("change: source %q is missing: %w", operation.Path, err)
@@ -275,12 +241,6 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 			if before.SymlinkTarget != "" || !before.Mode.IsRegular() {
 				return Plan{}, errors.New("change: patches require regular files")
 			}
-			if operation.Kind == PatchDelete {
-				after := absentState(path)
-				mutations = append(mutations, Mutation{operation.Path, path, before, after})
-				diff.WriteString(unifiedDiff(ws.Root(), before, after))
-				continue
-			}
 			data, err := applyHunks(before.Data, operation.Hunks)
 			if err != nil {
 				return Plan{}, fmt.Errorf("change: update %q: %w", operation.Path, err)
@@ -288,35 +248,9 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 			if int64(len(data)) > s.config.MaxFileBytes {
 				return Plan{}, errors.New("change: file byte limit exceeded")
 			}
-			if operation.MoveTo == "" {
-				after := regularState(path, data, before.Mode)
-				mutations = append(mutations, Mutation{operation.Path, path, before, after})
-				diff.WriteString(unifiedDiff(ws.Root(), before, after))
-				continue
-			}
-			destination, err := ws.ResolveCreate(operation.MoveTo)
-			if err != nil {
-				return Plan{}, err
-			}
-			parents, err := missingParentDirectories(destination)
-			if err != nil {
-				return Plan{}, err
-			}
-			directories = append(directories, parents...)
-			sourceAfter := absentState(path)
-			destinationBefore, err := s.readState(destination)
-			if err != nil {
-				return Plan{}, err
-			}
-			if destinationBefore.Exists && (destinationBefore.SymlinkTarget != "" || !destinationBefore.Mode.IsRegular()) {
-				return Plan{}, errors.New("change: patches require regular files")
-			}
-			destinationAfter := regularState(destination, data, before.Mode)
-			mutations = append(mutations,
-				Mutation{operation.Path, path, before, sourceAfter},
-				Mutation{operation.MoveTo, destination, destinationBefore, destinationAfter})
-			diff.WriteString(unifiedDiff(ws.Root(), before, sourceAfter))
-			diff.WriteString(unifiedDiff(ws.Root(), destinationBefore, destinationAfter))
+			after := regularState(path, data, before.Mode)
+			mutations = append(mutations, Mutation{operation.Path, path, before, after})
+			diff.WriteString(unifiedDiff(ws.Root(), before, after))
 		}
 	}
 	sort.Slice(mutations, func(i, j int) bool { return mutations[i].Path < mutations[j].Path })
@@ -348,9 +282,9 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 	lineIndex := 0
 	for _, hunk := range hunks {
 		if hunk.Context != "" {
-			contextIndex := seekPatchSequence(lines, []string{hunk.Context}, lineIndex, false)
-			if contextIndex < 0 {
-				return nil, fmt.Errorf("%w: failed to find hunk context %q", ErrConflict, hunk.Context)
+			contextIndex, err := seekPatchSequence(lines, []string{hunk.Context}, lineIndex, false)
+			if err != nil {
+				return nil, fmt.Errorf("hunk context %q: %w", hunk.Context, err)
 			}
 			lineIndex = contextIndex + 1
 		}
@@ -367,9 +301,9 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 			replacements = append(replacements, replacement{start: len(lines), lines: newLines})
 			continue
 		}
-		found := seekPatchSequence(lines, oldLines, lineIndex, hunk.EndOfFile)
-		if found < 0 {
-			return nil, fmt.Errorf("%w: failed to find expected hunk lines", ErrConflict)
+		found, err := seekPatchSequence(lines, oldLines, lineIndex, hunk.EndOfFile)
+		if err != nil {
+			return nil, err
 		}
 		replacements = append(replacements, replacement{start: found, old: len(oldLines), lines: newLines})
 		lineIndex = found + len(oldLines)
@@ -391,9 +325,15 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 	return append(bom, []byte(output)...), nil
 }
 
-func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) int {
+// seekPatchSequence locates the single place pattern occurs at or after start.
+// Comparators are tried from strictest to loosest and the first one to match
+// anything decides the outcome, so a block that is exact in one place is not
+// dragged into ambiguity by a looser pass. Matching more than once is an error
+// rather than a silent pick of the first site: the caller must include more
+// surrounding lines to say which occurrence it meant.
+func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) (int, error) {
 	if len(pattern) == 0 || start < 0 || start > len(lines) {
-		return -1
+		return -1, fmt.Errorf("%w: failed to find expected lines", ErrConflict)
 	}
 	comparators := []func(string, string) bool{
 		func(a, b string) bool { return a == b },
@@ -409,16 +349,27 @@ func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) int {
 		if endOfFile {
 			candidate := len(lines) - len(pattern)
 			if candidate >= start && patchSequenceEqual(lines[candidate:], pattern, equal) {
-				return candidate
+				return candidate, nil
 			}
 		}
+		found, count := -1, 0
 		for i := start; i <= len(lines)-len(pattern); i++ {
-			if patchSequenceEqual(lines[i:], pattern, equal) {
-				return i
+			if !patchSequenceEqual(lines[i:], pattern, equal) {
+				continue
 			}
+			count++
+			if found < 0 {
+				found = i
+			}
+		}
+		if count > 1 {
+			return -1, fmt.Errorf("%w: found %d matches, include more surrounding lines", ErrConflict, count)
+		}
+		if count == 1 {
+			return found, nil
 		}
 	}
-	return -1
+	return -1, fmt.Errorf("%w: failed to find expected lines", ErrConflict)
 }
 
 func patchSequenceEqual(lines, pattern []string, equal func(string, string) bool) bool {

@@ -6,6 +6,12 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Changed
 
+- Breaking tool contract: `edit` now replaces the entire file content guarded by
+  `expected_sha256` instead of exact-text substitution; the `old` and
+  `replace_all` parameters are removed. File `read` results end with a
+  whole-file `sha256:` line suitable for `edit`'s `expected_sha256`, and
+  successful `edit` results end with the after-edit `sha256:` line. Directory
+  listings do not include a hash, and `apply_patch` results are unchanged.
 - Removed filesystem journaling and the public undo/redo commands and API.
 - Interactive assistant output now renders a terminal-safe Markdown subset and
   syntax-highlights recognized fenced code on color-capable TTYs, with bounded
