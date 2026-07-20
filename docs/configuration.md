@@ -216,7 +216,7 @@ services and materially increases SSRF impact.
   config file.
 - `api_key_env` names an environment variable; it is not the key value.
 - `parrot auth login PROVIDER --api-key-stdin` stores a compatible-provider key
-  in `credentials.json` with private file permissions.
+  in `~/.config/parrot/credentials.json` with private file permissions.
 - `PARROT_API_KEY` is accepted only by the compatible-provider login command.
 - API keys are never accepted as `parrot` command-line arguments, where they
   would land in shell history and in the process argument list.
@@ -297,3 +297,13 @@ command file and included files are hash-checked between discovery and use.
 When `subtask: true`, the foreground agent is instructed to start the configured
 child agent with `agent_spawn`, wait for it with `monitor`, and return its
 output.
+
+## Migration
+
+Parrot upgrades state from earlier layouts automatically:
+
+- A legacy `credentials.json` stored under the data directory is moved to the
+  config directory on first run, unless a credentials file already exists there.
+- A legacy shared `parrot.db` in the state directory is adopted once: each
+  session is copied into its own per-session database, and the original file is
+  renamed aside with a `.migrated-` timestamp suffix rather than deleted.

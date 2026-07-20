@@ -279,7 +279,7 @@ Parrot follows XDG variables on both macOS and Linux:
 | Purpose | Default path |
 | --- | --- |
 | Configuration, skills, commands | `~/.config/parrot/` |
-| Credentials | `~/.local/share/parrot/credentials.json` |
+| Credentials | `~/.config/parrot/credentials.json` |
 | SQLite state | `~/.local/state/parrot/parrot.db` |
 | Process diagnostics | `~/.local/state/parrot/diagnostics/` |
 | Managed tool output | `~/.cache/parrot/outputs/` |
@@ -288,6 +288,17 @@ Parrot follows XDG variables on both macOS and Linux:
 replace their corresponding parent directories. Application directories are
 created with mode `0700`; credential, database, and diagnostic files use mode
 `0600`.
+
+### Migration from previous versions
+
+Parrot migrates state from earlier layouts automatically:
+
+- A legacy `credentials.json` that was stored under the data directory is moved
+  to the config directory, unless a credentials file already exists at the new
+  location.
+- A legacy shared `parrot.db` in the state directory is adopted once: its
+  sessions are copied into per-session databases, and the original file is
+  renamed aside with a `.migrated-` timestamp suffix rather than deleted.
 
 ### Process Diagnostics
 
