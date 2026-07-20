@@ -24,7 +24,7 @@ func (*QuestionTool) Presentation() Presentation {
 }
 
 func (*QuestionTool) Description() string {
-	return "Ask typed questions and block until the user replies or rejects them."
+	return "Ask typed questions and block until the user replies or rejects them. Use this tool rather than asking the user through normal message."
 }
 func (*QuestionTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input question.Request
