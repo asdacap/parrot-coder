@@ -37,6 +37,7 @@ type OutputStore struct {
 	mu     sync.Mutex
 	config OutputConfig
 	total  int64
+	active map[string]*managedOutput
 }
 
 type processOutputStore struct{ store *OutputStore }
@@ -50,14 +51,27 @@ func NewProcessOutputStore(store *OutputStore) process.OutputStore {
 	return processOutputStore{store: store}
 }
 
-func (a processOutputStore) Store(ctx context.Context, reader io.Reader) (process.StoredOutput, error) {
-	stored, err := a.store.Store(ctx, reader)
-	return process.StoredOutput{ID: stored.ID, Size: stored.Size, OmittedBytes: stored.OmittedBytes, Preview: stored.Preview}, err
+func (a processOutputStore) Create(ctx context.Context) (process.ManagedOutput, error) {
+	out, err := a.store.Create(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &processManagedOutput{managed: out}, nil
 }
 
 func (a processOutputStore) Read(id string, offset, limit int64) ([]byte, error) {
 	return a.store.Read(id, offset, limit)
 }
+
+type processManagedOutput struct{ managed ManagedOutput }
+
+func (o *processManagedOutput) Write(p []byte) (int, error) { return o.managed.Write(p) }
+func (o *processManagedOutput) ID() string                  { return o.managed.ID() }
+func (o *processManagedOutput) Finalize(ctx context.Context) (process.StoredOutput, error) {
+	stored, err := o.managed.Finalize(ctx)
+	return process.StoredOutput{ID: stored.ID, Size: stored.Size, OmittedBytes: stored.OmittedBytes, Preview: stored.Preview}, err
+}
+func (o *processManagedOutput) Discard() { o.managed.Discard() }
 
 func NewOutputStore(config OutputConfig) (*OutputStore, error) {
 	if config.Directory == "" || config.PreviewBytes <= 0 || config.PreviewLines <= 0 || config.PerOutput <= 0 || config.Total <= 0 || config.PerOutput > config.Total {
@@ -69,89 +83,178 @@ func NewOutputStore(config OutputConfig) (*OutputStore, error) {
 	if err := os.Chmod(config.Directory, 0o700); err != nil {
 		return nil, err
 	}
-	s := &OutputStore{config: config}
+	s := &OutputStore{config: config, active: make(map[string]*managedOutput)}
 	if err := s.cleanupLocked(time.Now()); err != nil {
 		return nil, err
 	}
 	return s, nil
 }
 
-// Store streams r directly to a private managed file while enforcing quotas.
+// ManagedOutput is a writable output handle that exposes an ID immediately and
+// returns a StoredOutput on Finalize. The output may be read with Read while it
+// is still being written.
+type ManagedOutput interface {
+	io.Writer
+	ID() string
+	Finalize(ctx context.Context) (StoredOutput, error)
+	Discard()
+}
+
+// Store writes all data from r into a new managed output and finalizes it.
 func (s *OutputStore) Store(ctx context.Context, r io.Reader) (StoredOutput, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err := ctx.Err(); err != nil {
+	out, err := s.Create(ctx)
+	if err != nil {
 		return StoredOutput{}, err
+	}
+	if _, err := io.Copy(out, r); err != nil {
+		out.Discard()
+		return StoredOutput{}, err
+	}
+	return out.Finalize(context.WithoutCancel(ctx))
+}
+
+// Create starts a new managed output and returns a writable handle. The file
+// is created immediately so read_output can access it before Finalize is called.
+func (s *OutputStore) Create(ctx context.Context) (ManagedOutput, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	id, err := randomOutputID()
 	if err != nil {
-		return StoredOutput{}, err
+		return nil, err
 	}
 	path := filepath.Join(s.config.Directory, id)
 	f, err := os.OpenFile(path, os.O_RDWR|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
+		return nil, err
+	}
+	out := &managedOutput{store: s, id: id, path: path, file: f}
+	s.mu.Lock()
+	s.active[id] = out
+	s.mu.Unlock()
+	return out, nil
+}
+
+type managedOutput struct {
+	store   *OutputStore
+	mu      sync.Mutex
+	id      string
+	path    string
+	file    *os.File
+	size    int64
+	omitted int64
+	closed  bool
+}
+
+func (o *managedOutput) ID() string { return o.id }
+
+func (o *managedOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return 0, errors.New("managed output is closed")
+	}
+	written := 0
+	const bufferSize = 32 * 1024
+	for written < len(p) {
+		chunkSize := len(p) - written
+		if chunkSize > bufferSize {
+			chunkSize = bufferSize
+		}
+		chunk := p[written : written+chunkSize]
+		if err := o.writeChunk(chunk); err != nil {
+			return written, err
+		}
+		written += chunkSize
+	}
+	return written, nil
+}
+
+func (o *managedOutput) writeChunk(p []byte) error {
+	if len(p) == 0 {
+		return nil
+	}
+	o.store.mu.Lock()
+	if o.store.total+o.size+int64(len(p)) > o.store.config.Total {
+		o.store.mu.Unlock()
+		return errors.New("total output quota exceeded")
+	}
+	o.store.mu.Unlock()
+	n, err := o.file.Write(p)
+	o.size += int64(n)
+	if err != nil {
+		return err
+	}
+	if n != len(p) {
+		return io.ErrShortWrite
+	}
+	if o.size > 2*o.store.config.PerOutput {
+		if err := o.compact(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (o *managedOutput) compact() error {
+	keep := o.store.config.PerOutput
+	f, err := o.store.compactOutput(o.path, o.file, keep)
+	if err != nil {
+		return err
+	}
+	o.omitted += o.size - keep
+	o.size = keep
+	o.file = f
+	return nil
+}
+
+func (o *managedOutput) Finalize(ctx context.Context) (StoredOutput, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return StoredOutput{}, errors.New("managed output already finalized")
+	}
+	o.closed = true
+	if err := ctx.Err(); err != nil {
+		o.remove()
 		return StoredOutput{}, err
 	}
-	ok := false
-	defer func() {
-		_ = f.Close()
-		if !ok {
-			_ = os.Remove(path)
-		}
-	}()
-	buffer := make([]byte, 32*1024)
-	var size, omitted int64
-	for {
-		if err := ctx.Err(); err != nil {
+	if o.size > o.store.config.PerOutput {
+		if err := o.compact(); err != nil {
+			o.remove()
 			return StoredOutput{}, err
 		}
-		n, readErr := r.Read(buffer)
-		if n > 0 {
-			if s.total+size+int64(n) > s.config.Total {
-				return StoredOutput{}, errors.New("total output quota exceeded")
-			}
-			written, writeErr := f.Write(buffer[:n])
-			size += int64(written)
-			if writeErr != nil {
-				return StoredOutput{}, writeErr
-			}
-			if written != n {
-				return StoredOutput{}, io.ErrShortWrite
-			}
-			if size > 2*s.config.PerOutput {
-				f, err = s.compactOutput(path, f, s.config.PerOutput)
-				if err != nil {
-					return StoredOutput{}, err
-				}
-				omitted += size - s.config.PerOutput
-				size = s.config.PerOutput
-			}
-		}
-		if readErr == io.EOF {
-			break
-		}
-		if readErr != nil {
-			return StoredOutput{}, readErr
-		}
 	}
-	if size > s.config.PerOutput {
-		f, err = s.compactOutput(path, f, s.config.PerOutput)
-		if err != nil {
-			return StoredOutput{}, err
-		}
-		omitted += size - s.config.PerOutput
-		size = s.config.PerOutput
-	}
-	if err := f.Close(); err != nil {
+	if err := o.file.Close(); err != nil {
 		return StoredOutput{}, err
 	}
-	preview, err := s.preview(path, size)
+	preview, err := o.store.preview(o.path, o.size)
 	if err != nil {
 		return StoredOutput{}, err
 	}
-	s.total += size
-	ok = true
-	return StoredOutput{ID: id, Size: size, OmittedBytes: omitted, Preview: preview}, nil
+	o.store.mu.Lock()
+	delete(o.store.active, o.id)
+	o.store.total += o.size
+	o.store.mu.Unlock()
+	return StoredOutput{ID: o.id, Size: o.size, OmittedBytes: o.omitted, Preview: preview}, nil
+}
+
+func (o *managedOutput) Discard() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.closed {
+		return
+	}
+	o.closed = true
+	o.remove()
+}
+
+func (o *managedOutput) remove() {
+	_ = o.file.Close()
+	_ = os.Remove(o.path)
+	o.store.mu.Lock()
+	delete(o.store.active, o.id)
+	o.store.mu.Unlock()
 }
 
 // compactOutput rewrites the file at path keeping only its last keep bytes and
@@ -233,9 +336,13 @@ func (s *OutputStore) Maintain(now time.Time, staleAfter time.Duration, limit in
 			if entry.IsDir() {
 				continue
 			}
-			managed := validOutputID(entry.Name())
-			temporary := strings.HasPrefix(entry.Name(), ".parrot-output-")
+			name := entry.Name()
+			managed := validOutputID(name)
+			temporary := strings.HasPrefix(name, ".parrot-output-")
 			if !managed && !temporary {
+				continue
+			}
+			if managed && s.active[name] != nil {
 				continue
 			}
 			info, infoErr := entry.Info()
@@ -247,7 +354,7 @@ func (s *OutputStore) Maintain(now time.Time, staleAfter time.Duration, limit in
 			if !expired && !stale {
 				continue
 			}
-			if err := os.Remove(filepath.Join(s.config.Directory, entry.Name())); err != nil {
+			if err := os.Remove(filepath.Join(s.config.Directory, name)); err != nil {
 				return removed, err
 			}
 			if managed {
@@ -275,7 +382,17 @@ func (s *OutputStore) cleanupLocked(now time.Time) error {
 	}
 	s.total = 0
 	for _, entry := range entries {
-		if entry.IsDir() || !validOutputID(entry.Name()) {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if strings.HasPrefix(name, ".parrot-output-") {
+			continue
+		}
+		if !validOutputID(name) {
+			continue
+		}
+		if s.active[name] != nil {
 			continue
 		}
 		info, err := entry.Info()
@@ -283,7 +400,7 @@ func (s *OutputStore) cleanupLocked(now time.Time) error {
 			return err
 		}
 		if s.config.Retention > 0 && now.Sub(info.ModTime()) > s.config.Retention {
-			if err := os.Remove(filepath.Join(s.config.Directory, entry.Name())); err != nil {
+			if err := os.Remove(filepath.Join(s.config.Directory, name)); err != nil {
 				return err
 			}
 			continue

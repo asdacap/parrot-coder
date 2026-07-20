@@ -12,6 +12,22 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
+type discardOutputStore struct{}
+
+type discardManagedOutput struct{}
+
+func (discardManagedOutput) Write(p []byte) (int, error) { return len(p), nil }
+func (discardManagedOutput) ID() string                  { return "" }
+func (discardManagedOutput) Finalize(context.Context) (process.StoredOutput, error) {
+	return process.StoredOutput{}, nil
+}
+func (discardManagedOutput) Discard() {}
+
+func (discardOutputStore) Create(context.Context) (process.ManagedOutput, error) {
+	return discardManagedOutput{}, nil
+}
+func (discardOutputStore) Read(string, int64, int64) ([]byte, error) { return nil, nil }
+
 type recordingAdmitter struct{ admitted chan session.AdmitParams }
 
 func (a *recordingAdmitter) Admit(_ context.Context, _ string, params session.AdmitParams) (session.Admission, error) {
@@ -28,7 +44,7 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond})
+	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: discardOutputStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +131,7 @@ func TestServiceRequiresWakerAndStopsNotificationsOnClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond})
+	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: discardOutputStore{}})
 	if err != nil {
 		t.Fatal(err)
 	}
