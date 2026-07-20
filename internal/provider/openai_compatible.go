@@ -268,7 +268,7 @@ func (p *OpenAICompatible) Stream(ctx context.Context, request protocol.Request)
 	switch p.protocol {
 	case ProtocolResponses:
 		body, err = responses.EncodeRequest(request)
-		parser = func(reader io.Reader, limit int) Stream { return responses.NewParser(reader, limit) }
+		parser = func(reader io.Reader, limit int) Stream { return responses.NewParser(reader, limit, request.Tools) }
 	case ProtocolChatCompletions:
 		body, err = chatcompletions.EncodeRequest(request)
 		parser = func(reader io.Reader, limit int) Stream { return chatcompletions.NewParser(reader, limit) }

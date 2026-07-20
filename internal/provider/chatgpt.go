@@ -312,7 +312,7 @@ func (p *ChatGPT) Stream(ctx context.Context, request protocol.Request) (Stream,
 	headers.Set("originator", "parrot")
 	headers.Set("User-Agent", "parrot")
 	headers.Set("session-id", p.sessionID)
-	parser := func(reader io.Reader, limit int) Stream { return responses.NewParser(reader, limit) }
+	parser := func(reader io.Reader, limit int) Stream { return responses.NewParser(reader, limit, request.Tools) }
 	return startStream(ctx, p.stream, p.endpoint, body, headers, []string{credential.AccessToken.Value()}, chatGPTHeaderTimeout, parser)
 }
 

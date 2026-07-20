@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
 
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/protocol/sse"
@@ -16,6 +17,7 @@ import (
 
 // EncodeRequest encodes a streaming Responses API request.
 func EncodeRequest(request protocol.Request) ([]byte, error) {
+	custom := customToolDefinitions(request.Model, request.Tools)
 	input := make([]any, 0, len(request.Messages))
 	for _, message := range request.Messages {
 		role := message.Role
@@ -40,6 +42,17 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 				if part.ToolCall == nil || !json.Valid(part.ToolCall.Input) {
 					return nil, fmt.Errorf("responses: message contains invalid tool call")
 				}
+				if definition, ok := custom[part.ToolCall.Name]; ok {
+					text, err := unwrapCustomInput(definition, part.ToolCall.Input)
+					if err != nil {
+						return nil, fmt.Errorf("responses: message contains invalid custom tool call: %w", err)
+					}
+					afterMessage = append(afterMessage, map[string]any{
+						"type": "custom_tool_call", "call_id": part.ToolCall.ID,
+						"name": part.ToolCall.Name, "input": text,
+					})
+					continue
+				}
 				afterMessage = append(afterMessage, map[string]any{
 					"type": "function_call", "call_id": part.ToolCall.ID,
 					"name": part.ToolCall.Name, "arguments": string(part.ToolCall.Input),
@@ -58,6 +71,13 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 
 	tools := make([]any, 0, len(request.Tools))
 	for _, definition := range request.Tools {
+		if customDef, ok := custom[definition.Name]; ok {
+			tools = append(tools, customTool{
+				Type: "custom", Name: definition.Name, Description: definition.Description,
+				Format: customToolFormat{Type: "grammar", Syntax: customDef.Grammar.Syntax, Definition: customDef.Grammar.Definition},
+			})
+			continue
+		}
 		schema := definition.InputSchema
 		if len(schema) == 0 {
 			schema = json.RawMessage(`{}`)
@@ -92,6 +112,95 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 	return encoded, nil
 }
 
+type customTool struct {
+	Type        string           `json:"type"`
+	Name        string           `json:"name"`
+	Description string           `json:"description,omitempty"`
+	Format      customToolFormat `json:"format"`
+}
+
+type customToolFormat struct {
+	Type       string `json:"type"`
+	Syntax     string `json:"syntax"`
+	Definition string `json:"definition"`
+}
+
+// customToolDefinitions returns the grammar-constrained tools that the model
+// supports as freeform custom tools, keyed by name. Models without custom
+// tool support receive the JSON function form of the same tools instead.
+func customToolDefinitions(model string, tools []protocol.ToolDefinition) map[string]customToolDefinition {
+	if !supportsCustomTools(model) {
+		return nil
+	}
+	definitions := make(map[string]customToolDefinition)
+	for _, definition := range tools {
+		if definition.Grammar != nil {
+			definitions[definition.Name] = customToolDefinition{Grammar: *definition.Grammar, InputSchema: definition.InputSchema}
+		}
+	}
+	return definitions
+}
+
+type customToolDefinition struct {
+	Grammar     protocol.ToolGrammar
+	InputSchema json.RawMessage
+}
+
+func supportsCustomTools(model string) bool {
+	return strings.HasPrefix(model, "gpt-5") || strings.Contains(model, "codex")
+}
+
+// customInputProperty returns the tool's single required string property,
+// which carries the raw freeform input inside the canonical JSON tool input.
+func customInputProperty(schema json.RawMessage) (string, bool) {
+	var parsed struct {
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(schema, &parsed); err != nil || len(parsed.Required) != 1 {
+		return "", false
+	}
+	property, ok := parsed.Properties[parsed.Required[0]]
+	if !ok || property.Type != "string" {
+		return "", false
+	}
+	return parsed.Required[0], true
+}
+
+// wrapCustomInput converts raw freeform input into the canonical JSON tool
+// input expected by the tool's JSON schema.
+func wrapCustomInput(definition customToolDefinition, input string) (json.RawMessage, error) {
+	property, ok := customInputProperty(definition.InputSchema)
+	if !ok {
+		return nil, fmt.Errorf("custom tool requires a single required string property, schema %s", definition.InputSchema)
+	}
+	wrapped, err := json.Marshal(map[string]string{property: input})
+	if err != nil {
+		return nil, err
+	}
+	return wrapped, nil
+}
+
+// unwrapCustomInput recovers the raw freeform input from the canonical JSON
+// tool input so history replays the custom tool call in its original form.
+func unwrapCustomInput(definition customToolDefinition, input json.RawMessage) (string, error) {
+	property, ok := customInputProperty(definition.InputSchema)
+	if !ok {
+		return "", fmt.Errorf("custom tool requires a single required string property, schema %s", definition.InputSchema)
+	}
+	var wrapped map[string]string
+	if err := json.Unmarshal(input, &wrapped); err != nil {
+		return "", err
+	}
+	text, ok := wrapped[property]
+	if !ok {
+		return "", fmt.Errorf("custom tool input %s lacks property %q", input, property)
+	}
+	return text, nil
+}
+
 type reasoningOptions struct {
 	Effort  string `json:"effort,omitempty"`
 	Summary string `json:"summary,omitempty"`
@@ -99,23 +208,32 @@ type reasoningOptions struct {
 
 type toolAccumulator struct {
 	key, itemID, callID, name, input string
-	finalized                        bool
+	custom, finalized                bool
 }
 
 // Parser converts a Responses API SSE stream into canonical events.
 type Parser struct {
 	decoder *sse.Decoder
 	tools   map[string]*toolAccumulator
+	custom  map[string]customToolDefinition
 	aliases map[string]string
 	pending []protocol.Event
 	done    bool
 }
 
-// NewParser creates a streaming parser.
-func NewParser(reader io.Reader, maxEventBytes int) *Parser {
+// NewParser creates a streaming parser. Grammar-constrained custom tools
+// declared in tools have their raw freeform input wrapped into the canonical
+// JSON tool input before a ToolCallComplete event is emitted.
+func NewParser(reader io.Reader, maxEventBytes int, tools []protocol.ToolDefinition) *Parser {
+	custom := make(map[string]customToolDefinition)
+	for _, definition := range tools {
+		if definition.Grammar != nil {
+			custom[definition.Name] = customToolDefinition{Grammar: *definition.Grammar, InputSchema: definition.InputSchema}
+		}
+	}
 	return &Parser{
 		decoder: sse.NewDecoder(reader, maxEventBytes),
-		tools:   make(map[string]*toolAccumulator), aliases: make(map[string]string),
+		tools:   make(map[string]*toolAccumulator), custom: custom, aliases: make(map[string]string),
 	}
 }
 
@@ -157,6 +275,7 @@ func (p *Parser) consume(data []byte) error {
 		CallID       string `json:"call_id"`
 		Name         string `json:"name"`
 		Arguments    string `json:"arguments"`
+		Input        string `json:"input"`
 		Code         string `json:"code"`
 		Message      string `json:"message"`
 		Item         struct {
@@ -165,6 +284,7 @@ func (p *Parser) consume(data []byte) error {
 			CallID    string `json:"call_id"`
 			Name      string `json:"name"`
 			Arguments string `json:"arguments"`
+			Input     string `json:"input"`
 		} `json:"item"`
 		Error    *wireError `json:"error"`
 		Response struct {
@@ -199,13 +319,16 @@ func (p *Parser) consume(data []byte) error {
 			p.pending = append(p.pending, protocol.Event{Type: protocol.EventReasoningDelta, Text: event.Delta})
 		}
 	case "response.output_item.added":
-		if event.Item.Type == "function_call" {
-			p.addTool(event.Item.ID, event.Item.CallID, event.Item.Name, event.Item.Arguments)
+		switch event.Item.Type {
+		case "function_call":
+			p.addTool(event.Item.ID, event.Item.CallID, event.Item.Name, event.Item.Arguments, false)
+		case "custom_tool_call":
+			p.addTool(event.Item.ID, event.Item.CallID, event.Item.Name, event.Item.Input, true)
 		}
 	case "response.function_call_arguments.delta":
 		item := p.findTool(event.ItemID, event.CallID)
 		if item == nil {
-			item = p.addTool(event.ItemID, event.CallID, event.Name, "")
+			item = p.addTool(event.ItemID, event.CallID, event.Name, "", false)
 		}
 		item.input += event.Delta
 		if event.Delta != "" {
@@ -216,17 +339,47 @@ func (p *Parser) consume(data []byte) error {
 	case "response.function_call_arguments.done":
 		item := p.findTool(event.ItemID, event.CallID)
 		if item == nil {
-			item = p.addTool(event.ItemID, event.CallID, event.Name, event.Arguments)
+			item = p.addTool(event.ItemID, event.CallID, event.Name, event.Arguments, false)
 		} else if event.Arguments != "" {
 			item.input = event.Arguments
 		}
+	case "response.custom_tool_call_input.delta":
+		item := p.findTool(event.ItemID, event.CallID)
+		if item == nil {
+			item = p.addTool(event.ItemID, event.CallID, event.Name, "", true)
+		}
+		item.input += event.Delta
+		if event.Delta != "" {
+			p.pending = append(p.pending, protocol.Event{Type: protocol.EventToolInputDelta, ToolInput: &protocol.ToolInputDelta{
+				ID: toolID(item), Name: item.name, Delta: event.Delta,
+			}})
+		}
+	case "response.custom_tool_call_input.done":
+		item := p.findTool(event.ItemID, event.CallID)
+		if item == nil {
+			item = p.addTool(event.ItemID, event.CallID, event.Name, event.Input, true)
+		} else {
+			item.custom = true
+			if event.Input != "" {
+				item.input = event.Input
+			}
+		}
 	case "response.output_item.done":
-		if event.Item.Type == "function_call" {
+		switch event.Item.Type {
+		case "function_call", "custom_tool_call":
+			custom := event.Item.Type == "custom_tool_call"
+			input := event.Item.Arguments
+			if custom {
+				input = event.Item.Input
+			}
 			item := p.findTool(event.Item.ID, event.Item.CallID)
 			if item == nil {
-				item = p.addTool(event.Item.ID, event.Item.CallID, event.Item.Name, event.Item.Arguments)
-			} else if event.Item.Arguments != "" {
-				item.input = event.Item.Arguments
+				item = p.addTool(event.Item.ID, event.Item.CallID, event.Item.Name, input, custom)
+			} else {
+				item.custom = item.custom || custom
+				if input != "" {
+					item.input = input
+				}
 			}
 			if err := p.finalize(item); err != nil {
 				return err
@@ -295,16 +448,17 @@ type wireUsage struct {
 	} `json:"output_tokens_details"`
 }
 
-func (p *Parser) addTool(itemID, callID, name, input string) *toolAccumulator {
+func (p *Parser) addTool(itemID, callID, name, input string, custom bool) *toolAccumulator {
 	key := itemID
 	if key == "" {
 		key = callID
 	}
 	item := p.findTool(itemID, callID)
 	if item == nil {
-		item = &toolAccumulator{key: key, itemID: itemID, callID: callID, name: name, input: input}
+		item = &toolAccumulator{key: key, itemID: itemID, callID: callID, name: name, input: input, custom: custom}
 		p.tools[key] = item
 	} else {
+		item.custom = item.custom || custom
 		if item.itemID == "" {
 			item.itemID = itemID
 		}
@@ -362,6 +516,17 @@ func (p *Parser) finalize(item *toolAccumulator) error {
 		return errors.New("responses: tool call requires an ID and name")
 	}
 	input := json.RawMessage(item.input)
+	if item.custom {
+		definition, ok := p.custom[item.name]
+		if !ok {
+			return fmt.Errorf("responses: custom tool call %q has no grammar definition", item.name)
+		}
+		wrapped, err := wrapCustomInput(definition, item.input)
+		if err != nil {
+			return fmt.Errorf("responses: custom tool call %q: %w", toolID(item), err)
+		}
+		input = wrapped
+	}
 	if !json.Valid(input) {
 		return fmt.Errorf("responses: tool call %q has invalid JSON input", toolID(item))
 	}

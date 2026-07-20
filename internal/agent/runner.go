@@ -771,7 +771,11 @@ func toolDefinitions(snapshot tool.Snapshot, profile Profile) []protocol.ToolDef
 	result := make([]protocol.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
 		if profile.AllowsTool(definition.ID) {
-			result = append(result, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
+			item := protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema}
+			if definition.Grammar != nil {
+				item.Grammar = &protocol.ToolGrammar{Syntax: definition.Grammar.Syntax, Definition: definition.Grammar.Definition}
+			}
+			result = append(result, item)
 		}
 	}
 	return result

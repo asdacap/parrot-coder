@@ -276,6 +276,43 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	}
 }
 
+func TestApplyPatchExposesCodexLarkGrammar(t *testing.T) {
+	grammar := NewApplyPatchTool(nil).Grammar()
+	if grammar == nil || grammar.Syntax != "lark" {
+		t.Fatalf("grammar = %#v", grammar)
+	}
+	for _, expected := range []string{
+		"start: begin_patch hunk+ end_patch",
+		`begin_patch: "*** Begin Patch" LF`,
+		`end_patch: "*** End Patch" LF?`,
+		`add_hunk: "*** Add File: " filename LF add_line+`,
+		`delete_hunk: "*** Delete File: " filename LF`,
+		`update_hunk: "*** Update File: " filename LF change_move? change?`,
+		`change_move: "*** Move to: " filename LF`,
+		`change_line: ("+" | "-" | " ") /(.*)/ LF`,
+		`eof_line: "*** End of File" LF`,
+		"%import common.LF",
+	} {
+		if !strings.Contains(grammar.Definition, expected) {
+			t.Fatalf("grammar missing %q:\n%s", expected, grammar.Definition)
+		}
+	}
+
+	registry := NewRegistry()
+	if err := registry.Register(NewApplyPatchTool(nil)); err != nil {
+		t.Fatal(err)
+	}
+	definitions := registry.Definitions()
+	if len(definitions) != 1 || definitions[0].Grammar == nil || definitions[0].Grammar.Syntax != "lark" {
+		t.Fatalf("registry definitions = %#v", definitions)
+	}
+	// The system prompt guidance marshals definitions; the grammar must stay
+	// out of it because the provider receives it through the tool format.
+	if encoded, _ := json.Marshal(definitions); strings.Contains(string(encoded), "begin_patch") {
+		t.Fatalf("grammar leaked into definition JSON: %s", encoded)
+	}
+}
+
 func TestTodoToolSchemaUsesOpenCodeEnums(t *testing.T) {
 	schema := string(NewTodoWriteTool(nil).JSONSchema())
 	for _, expected := range []string{`"enum":["pending","in_progress","completed","cancelled"]`, `"enum":["high","medium","low"]`} {

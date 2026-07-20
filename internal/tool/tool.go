@@ -85,10 +85,24 @@ func planHash(p Plan) (string, error) {
 	return r.OperationHash, nil
 }
 
+// Grammar constrains a freeform tool's raw text input when a provider
+// supports grammar-constrained custom tools.
+type Grammar struct {
+	Syntax     string
+	Definition string
+}
+
+// GrammarTool is implemented by tools that also accept freeform
+// grammar-constrained input.
+type GrammarTool interface {
+	Grammar() *Grammar
+}
+
 type Definition struct {
 	ID          string          `json:"id"`
 	Description string          `json:"description"`
 	Schema      json.RawMessage `json:"schema"`
+	Grammar     *Grammar        `json:"-"`
 }
 
 type Registry struct {
@@ -152,7 +166,11 @@ func (s Snapshot) Definitions() []Definition {
 func definitions(tools map[string]Tool) []Definition {
 	out := make([]Definition, 0, len(tools))
 	for _, t := range tools {
-		out = append(out, Definition{t.ID(), t.Description(), append(json.RawMessage(nil), t.JSONSchema()...)})
+		definition := Definition{ID: t.ID(), Description: t.Description(), Schema: append(json.RawMessage(nil), t.JSONSchema()...)}
+		if grammarTool, ok := t.(GrammarTool); ok {
+			definition.Grammar = grammarTool.Grammar()
+		}
+		out = append(out, definition)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
