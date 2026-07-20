@@ -456,7 +456,8 @@ func TestPlainFinishRendersAssistantMarkdown(t *testing.T) {
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
-	if got, want := output.String(), "● Heading\n  package main\n"; got != want {
+	// Assistant commits lead with one spacing row, matching enhanced chat.
+	if got, want := output.String(), "\n● Heading\n  package main\n"; got != want {
 		t.Fatalf("plain assistant Markdown = %q; want %q", got, want)
 	}
 }
@@ -627,39 +628,56 @@ func TestJSONLRedactorOnlyRedactsWriteStdinAndKeepsLateOutputPrivate(t *testing.
 	}
 }
 
-func TestStreamSubagentEventPrefixesCompletedResponseByDepth(t *testing.T) {
+// taskStart builds the flat task.start event introducing one task into the
+// tracker's tree. Every other event for the task arrives with only its
+// task_id; the start event is what links the task to its parent.
+func taskStart(taskID, parentTaskID, agent string) v1.Event {
+	data, _ := json.Marshal(v1.TaskEvent{TaskID: taskID, ParentTaskID: parentTaskID, Kind: "agent", Agent: agent})
+	return v1.Event{Type: v1.EventTaskStart, TaskID: taskID, Data: data}
+}
+
+func taskContent(taskID string, eventType string, data json.RawMessage) v1.Event {
+	return v1.Event{Type: eventType, TaskID: taskID, Data: data}
+}
+
+func TestStreamTaskEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	var output bytes.Buffer
 	options := streamOptions{stderr: &output}
-	var tracker subagentStreamTracker
+	tracker := newTaskStreamTracker()
+	// A grandchild task renders two levels deep because the tracker walks its
+	// parent chain, not because the event carries a depth.
+	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-parent", "task_main", "build")); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-review", "task-parent", "review")); err != nil {
+		t.Fatal(err)
+	}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "review result\nmore detail"})
-	item := &v1.SubagentEvent{TaskID: "task-review", TaskName: "review", Depth: 2, Event: v1.Event{Type: v1.EventMessagePartDelta, Data: delta}}
-	if err := writeStreamSubagentEvent(options, &tracker, item); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	item.Event = v1.Event{Type: "session.assistant.complete", Data: complete}
-	if err := writeStreamSubagentEvent(options, &tracker, item); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", "session.assistant.complete", complete)); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); got != "    ○ [review] response: review result\n    [review] more detail\n" {
-		t.Fatalf("subagent output = %q", got)
+		t.Fatalf("task output = %q", got)
 	}
 }
 
-func TestStreamSubagentEventSkipsEmptyCompletedResponse(t *testing.T) {
+func TestStreamTaskEventSkipsEmptyCompletedResponse(t *testing.T) {
 	var output bytes.Buffer
+	tracker := newTaskStreamTracker()
+	options := streamOptions{stderr: &output}
 	started, _ := json.Marshal(map[string]string{"message_id": "child-message"})
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	item := &v1.SubagentEvent{
-		TaskID: "task-review", TaskName: "review", Depth: 1,
-		Event: v1.Event{Type: "session.assistant.started", Data: started},
-	}
-	tracker := &subagentStreamTracker{}
-	if err := writeStreamSubagentEvent(streamOptions{stderr: &output}, tracker, item); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-review", "task_main", "review")); err != nil {
 		t.Fatal(err)
 	}
-	item.Event = v1.Event{Type: "session.assistant.complete", Data: complete}
-	if err := writeStreamSubagentEvent(streamOptions{stderr: &output}, tracker, item); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", "session.assistant.started", started)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", "session.assistant.complete", complete)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != 0 {
@@ -667,17 +685,18 @@ func TestStreamSubagentEventSkipsEmptyCompletedResponse(t *testing.T) {
 	}
 }
 
-func TestStreamSubagentTerminalTaskProgressClearsLiveRow(t *testing.T) {
+func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
 	options := streamOptions{stderr: io.Discard, renderer: renderer}
-	tracker := &subagentStreamTracker{}
-	item := &v1.SubagentEvent{TaskID: "parent-task", TaskName: "review", Depth: 1}
+	tracker := newTaskStreamTracker()
+	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-explore", "task_main", "explore")); err != nil {
+		t.Fatal(err)
+	}
 	for _, status := range []string{"running", "succeeded"} {
-		data, _ := json.Marshal(v1.TaskProgress{TaskID: "child-task", ToolCallID: "call-1", Agent: "explore", Status: status})
-		item.Event = v1.Event{Type: v1.EventTaskProgress, Data: data}
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-explore", ToolCallID: "call-1", Agent: "explore", Status: status})
 		before := output.Len()
-		if err := writeStreamSubagentEvent(options, tracker, item); err != nil {
+		if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
 			t.Fatal(err)
 		}
 		if output.Len() == before {
@@ -685,17 +704,15 @@ func TestStreamSubagentTerminalTaskProgressClearsLiveRow(t *testing.T) {
 		}
 	}
 	before := output.Len()
-	data, _ := json.Marshal(v1.TaskProgress{TaskID: "child-task", ToolCallID: "call-1", Agent: "explore", Status: "running"})
-	item.Event = v1.Event{Type: v1.EventTaskProgress, Data: data}
-	if err := writeStreamSubagentEvent(options, tracker, item); err != nil {
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-explore", ToolCallID: "call-1", Agent: "explore", Status: "running"})
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != before {
 		t.Fatal("late task progress repainted renderer")
 	}
-	data, _ = json.Marshal(v1.TaskProgress{TaskID: "child-task", ToolCallID: "call-2", Agent: "explore", Status: "running"})
-	item.Event = v1.Event{Type: v1.EventTaskProgress, Data: data}
-	if err := writeStreamSubagentEvent(options, tracker, item); err != nil {
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-explore", ToolCallID: "call-2", Agent: "explore", Status: "running"})
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() == before {
@@ -703,56 +720,40 @@ func TestStreamSubagentTerminalTaskProgressClearsLiveRow(t *testing.T) {
 	}
 }
 
-func TestStreamDirectTaskTerminalOnlyClearsOwnedRow(t *testing.T) {
+func TestTaskEventWithoutKnownIDReportsUnknownTask(t *testing.T) {
 	var output bytes.Buffer
-	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
-	options := streamOptions{stderr: io.Discard, renderer: renderer}
-	tracker := &subagentStreamTracker{}
-	running := &v1.TaskProgress{TaskID: "task", ToolCallID: "call-1", Agent: "explore", Status: "running"}
-	if err := writeStreamTaskProgress(options, tracker, running); err != nil {
+	tracker := newTaskStreamTracker()
+	options := streamOptions{stderr: &output}
+	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "orphan"})
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-ghost", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
-	if err := renderer.Update([]string{"parent response"}); err != nil {
+	// The unknown task error is shown once; repeated unknown ids do not flood
+	// the transcript.
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-ghost", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
-	tracker.liveID = ""
-	before := output.Len()
-	if err := writeStreamTaskProgress(options, tracker, &v1.TaskProgress{TaskID: "task", ToolCallID: "call-1", Agent: "explore", Status: "succeeded"}); err != nil {
-		t.Fatal(err)
-	}
-	if output.Len() != before {
-		t.Fatal("terminal task progress cleared an unrelated row")
-	}
-	if err := writeStreamTaskProgress(options, tracker, running); err != nil {
-		t.Fatal(err)
-	}
-	if output.Len() != before {
-		t.Fatal("late task progress repainted renderer")
-	}
-	if err := writeStreamTaskProgress(options, tracker, &v1.TaskProgress{TaskID: "task", ToolCallID: "call-2", Agent: "explore", Status: "running"}); err != nil {
-		t.Fatal(err)
-	}
-	if output.Len() == before {
-		t.Fatal("follow-up task progress was suppressed")
+	if got := output.String(); got != "✗ unknown task task-ghost (message.part.delta)\n" {
+		t.Fatalf("unknown task output = %q", got)
 	}
 }
 
 func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T) {
-	var tracker subagentStreamTracker
-	item := &v1.SubagentEvent{TaskID: "task-review", TaskName: "review", Depth: 1}
+	tracker := newTaskStreamTracker()
+	if _, err := tracker.describe(taskStart("task-review", "task_main", "review"), true); err != nil {
+		t.Fatal(err)
+	}
 	for _, delta := range []v1.MessagePartDelta{
 		{MessageID: "child-message", Kind: "text", Delta: "  "},
 		{MessageID: "child-message", Kind: "reasoning", Delta: "Checking the change"},
 	} {
 		data, _ := json.Marshal(delta)
-		item.Event = v1.Event{Type: v1.EventMessagePartDelta, Data: data}
-		if _, err := tracker.describe(item, true); err != nil {
+		if _, err := tracker.describe(taskContent("task-review", v1.EventMessagePartDelta, data), true); err != nil {
 			t.Fatal(err)
 		}
 	}
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	item.Event = v1.Event{Type: "session.assistant.complete", Data: complete}
-	reports, err := tracker.describe(item, true)
+	reports, err := tracker.describe(taskContent("task-review", "session.assistant.complete", complete), true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -762,8 +763,10 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 }
 
 func TestSubagentDeltaPresentation(t *testing.T) {
-	var tracker subagentStreamTracker
-	item := &v1.SubagentEvent{TaskID: "task-explore", TaskName: "explore", Depth: 1}
+	tracker := newTaskStreamTracker()
+	if _, err := tracker.describe(taskStart("task-explore", "task_main", "explore"), false); err != nil {
+		t.Fatal(err)
+	}
 
 	for _, delta := range []v1.MessagePartDelta{
 		{MessageID: "child-message", Kind: "tool_input", Delta: `{"path":"file.go"}`},
@@ -771,8 +774,7 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 		{MessageID: "child-message", Kind: "reasoning_summary", Done: true},
 	} {
 		data, _ := json.Marshal(delta)
-		item.Event = v1.Event{Type: v1.EventMessagePartDelta, Data: data}
-		reports, err := tracker.describe(item, false)
+		reports, err := tracker.describe(taskContent("task-explore", v1.EventMessagePartDelta, data), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -794,11 +796,12 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 }
 
 func TestSubagentRunningStatusIsNotReported(t *testing.T) {
+	tracker := newTaskStreamTracker()
+	if _, err := tracker.describe(taskStart("task-review", "task_main", "review"), false); err != nil {
+		t.Fatal(err)
+	}
 	status, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
-	reports, err := (&subagentStreamTracker{}).describe(&v1.SubagentEvent{
-		TaskID: "task-review", TaskName: "review", Depth: 1,
-		Event: v1.Event{Type: v1.EventSessionStatus, Data: status},
-	}, false)
+	reports, err := tracker.describe(taskContent("task-review", v1.EventSessionStatus, status), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,18 +811,19 @@ func TestSubagentRunningStatusIsNotReported(t *testing.T) {
 }
 
 func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
-	var tracker subagentStreamTracker
+	tracker := newTaskStreamTracker()
+	if _, err := tracker.describe(taskStart("task-explore", "task_main", "explore"), false); err != nil {
+		t.Fatal(err)
+	}
 	pending := json.RawMessage(`{"call_id":"shell-call","name":"shell","input":{"command":"exit 1"}}`)
-	item := &v1.SubagentEvent{TaskID: "task-explore", TaskName: "explore", Depth: 1, Event: v1.Event{Type: "session.tool.pending", Data: pending}}
-	reports, err := tracker.describe(item, false)
+	reports, err := tracker.describe(taskContent("task-explore", "session.tool.pending", pending), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(reports) != 1 || reports[0].line != "  ○ [explore] Queued shell · exit 1" {
 		t.Fatalf("pending tool report = %#v", reports)
 	}
-	item.Event = v1.Event{Type: "session.tool.failure", Data: json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)}
-	reports, err = tracker.describe(item, false)
+	reports, err = tracker.describe(taskContent("task-explore", "session.tool.failure", json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1210,5 +1214,17 @@ func TestEnhancedConfigReportsTheCurrentModelNotTheStartupOne(t *testing.T) {
 	}
 	if got := config.ModelName(); got != "kimi-code/kimi-for-coding" {
 		t.Fatalf("ModelName() = %q after switching; want the current model", got)
+	}
+}
+
+func TestChatTaskTrackerPersistsAcrossTurnsOfOneSession(t *testing.T) {
+	shell := &chatShell{current: v1.Session{ID: "session-a"}}
+	first := shell.taskTracker()
+	if shell.taskTracker() != first {
+		t.Fatal("task tracker was rebuilt between turns of one session")
+	}
+	shell.current = v1.Session{ID: "session-b"}
+	if shell.taskTracker() == first {
+		t.Fatal("task tracker survived a session change")
 	}
 }

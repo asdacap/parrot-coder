@@ -72,6 +72,19 @@ token deltas are not authoritative.
 The event manifest is the source of truth for event names, payload codecs,
 OpenAPI schemas, and client dispatch.
 
+## Tasks
+
+Every session has a main task, and tasks start other tasks: agent tasks via
+`agent_spawn` and shell tasks via backgrounded shell processes. Task lifecycle
+events — `task.start`, `task.working`, `task.idle`, `task.finished` — are
+flat: they are never nested inside a parent task's event. Each event envelope
+carries the `task_id` of the task which produced it alongside the
+`session_id`, and `task.start` carries the `parent_task_id`. A child session's
+events are republished on its parent's stream unchanged, so clients subscribe
+to one session and rebuild the task tree themselves from `parent_task_id`.
+Events referencing an unknown `task_id` indicate a client-side tracking gap
+and are reported as unknown-task errors.
+
 ## Local Transport
 
 Local CLI commands use the same API client and handler through a streaming

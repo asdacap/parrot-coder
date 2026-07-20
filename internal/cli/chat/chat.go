@@ -28,6 +28,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/processidentity"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -94,14 +95,6 @@ func writeJSONLine(output io.Writer, item v1.Event) error {
 type jsonlRedactor struct{ tools map[string]string }
 
 func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
-	if item.Type == v1.EventSubagent {
-		var nested v1.SubagentEvent
-		if json.Unmarshal(item.Data, &nested) == nil {
-			nested.Event = r.redact(nested.Event)
-			item.Data, _ = json.Marshal(nested)
-		}
-		return item
-	}
 	if item.Type == v1.EventPermission {
 		var request v1.Permission
 		if json.Unmarshal(item.Data, &request) == nil && request.ToolID == "write_stdin" {
@@ -542,6 +535,7 @@ type streamOptions struct {
 	resume      bool
 	renderer    *terminal.LiveRenderer
 	keyInput    *terminal.KeyDecoder
+	tasks       *taskStreamTracker
 }
 
 type streamResult struct {
@@ -580,7 +574,7 @@ func streamToolReportFromView(report chatview.StreamToolReport) streamToolReport
 	return streamToolReport{line: report.Line, label: report.Label, block: report.Block, terminal: report.Terminal, style: report.Style}
 }
 
-type subagentReport struct {
+type taskReport struct {
 	id        string
 	line      string
 	block     string
@@ -590,25 +584,45 @@ type subagentReport struct {
 	style     terminal.TextStyle
 }
 
-type subagentStreamTracker struct {
-	tracker             chatview.SubagentStreamTracker
-	liveID              string
-	completedDirectTask map[string]bool
+// taskStreamTracker adapts the shared task tree tracker to the plain chat
+// renderer. The tracker owns the parent-child relationships of every task on
+// the stream; this wrapper only owns which report is currently live.
+type taskStreamTracker struct {
+	tracker *chatview.TaskTracker
+	liveID  string
 }
 
-func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) ([]subagentReport, error) {
-	reports, err := t.tracker.Describe(item, thinking)
+func newTaskStreamTracker() taskStreamTracker {
+	return taskStreamTracker{tracker: chatview.NewTaskTracker()}
+}
+
+// isTaskEvent reports whether an event belongs to the task tree rather than
+// to the main transcript: task lifecycle events always do, and any event
+// attributed to a task other than the session's main task does.
+func isTaskEvent(item v1.Event) bool {
+	switch item.Type {
+	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
+		return true
+	}
+	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
+}
+
+func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
+	if t.tracker == nil {
+		t.tracker = chatview.NewTaskTracker()
+	}
+	reports, err := t.tracker.Apply(item, thinking)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]subagentReport, len(reports))
+	result := make([]taskReport, len(reports))
 	for i, report := range reports {
-		result[i] = subagentReport{id: report.ID, line: report.Line, block: report.Block, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
+		result[i] = taskReport{id: report.ID, line: report.Line, block: report.Block, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
 	}
 	return result, nil
 }
 
-func writeStreamSubagentEvent(options streamOptions, tracker *subagentStreamTracker, item *v1.SubagentEvent) error {
+func writeStreamTaskEvent(options streamOptions, tracker *taskStreamTracker, item v1.Event) error {
 	reports, err := tracker.describe(item, options.thinking)
 	if err != nil {
 		return err
@@ -649,42 +663,6 @@ func writeStreamSubagentEvent(options streamOptions, tracker *subagentStreamTrac
 		}
 	}
 	return nil
-}
-
-func writeStreamTaskProgress(options streamOptions, tracker *subagentStreamTracker, progress *v1.TaskProgress) error {
-	id := "direct-task:" + taskProgressID(progress)
-	terminalEvent := progress.Status != "pending" && progress.Status != "running"
-	if terminalEvent {
-		if tracker.completedDirectTask == nil {
-			tracker.completedDirectTask = make(map[string]bool)
-		}
-		tracker.completedDirectTask[id] = true
-		if options.renderer != nil && tracker.liveID == id {
-			tracker.liveID = ""
-			return options.renderer.Update(nil)
-		}
-		return nil
-	}
-	if tracker.completedDirectTask[id] {
-		return nil
-	}
-	line := fmt.Sprintf("agent: %s · %s tokens · %d tools", progress.Agent, formatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
-	if options.renderer == nil {
-		_, err := fmt.Fprintln(options.stderr, line)
-		return err
-	}
-	if err := options.renderer.Update([]string{line}); err != nil {
-		return err
-	}
-	tracker.liveID = id
-	return nil
-}
-
-func taskProgressID(progress *v1.TaskProgress) string {
-	if progress.ToolCallID != "" {
-		return progress.ToolCallID
-	}
-	return progress.TaskID
 }
 
 func toolActivityStyle(name string) terminal.TextStyle { return chatview.ToolActivityStyle(name) }
@@ -787,7 +765,11 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 	interrupted := false
 	interruptCount := 0
 	var toolTracker streamToolTracker
-	var subagentTracker subagentStreamTracker
+	subagentTracker := options.tasks
+	if subagentTracker == nil {
+		fresh := newTaskStreamTracker()
+		subagentTracker = &fresh
+	}
 	interrupts, _ := ctx.Value(interruptKey{}).(<-chan os.Signal)
 	requestInterrupt := func() error {
 		interruptCount++
@@ -852,6 +834,12 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					return streamResult{err: err}
 				}
 			}
+			if options.format != "jsonl" && isTaskEvent(item) {
+				if err := writeStreamTaskEvent(options, subagentTracker, item); err != nil {
+					return streamResult{err: err}
+				}
+				continue
+			}
 			if options.format != "jsonl" && strings.HasPrefix(item.Type, "session.tool.") {
 				subagentTracker.liveID = ""
 				if err := writeStreamToolEvent(options, &toolTracker, item); err != nil {
@@ -869,12 +857,6 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				return streamResult{err: decodeErr}
 			}
 			switch value := payload.(type) {
-			case *v1.SubagentEvent:
-				if options.format != "jsonl" {
-					if err := writeStreamSubagentEvent(options, &subagentTracker, value); err != nil {
-						return streamResult{err: err}
-					}
-				}
 			case *v1.MessagePartDelta:
 				if value.Kind == "text" {
 					streamed.WriteString(value.Delta)
@@ -910,12 +892,6 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 						finished.err = nil
 					}
 					return finished
-				}
-			case *v1.TaskProgress:
-				if options.format != "jsonl" {
-					if err := writeStreamTaskProgress(options, &subagentTracker, value); err != nil {
-						return streamResult{err: err}
-					}
 				}
 			case *v1.ToolOutputDelta:
 				if options.format != "jsonl" {
@@ -1298,6 +1274,23 @@ type chatShell struct {
 	inputEcho    bool
 	inputEchoed  bool
 	columns      int
+
+	// tasks tracks the session's task tree across turns. A task started in one
+	// turn can still emit events in a later one, so the tracker is rebuilt only
+	// when the session changes, never between turns of one session.
+	tasks        *taskStreamTracker
+	tasksSession string
+}
+
+// taskTracker returns the task tree tracker for the current session, starting
+// a fresh tree when the session changes.
+func (s *chatShell) taskTracker() *taskStreamTracker {
+	if s.tasks == nil || s.tasksSession != s.current.ID {
+		tracker := newTaskStreamTracker()
+		s.tasks = &tracker
+		s.tasksSession = s.current.ID
+	}
+	return s.tasks
 }
 
 func (s *chatShell) runEnhanced(first string) int {
@@ -1554,7 +1547,7 @@ func (s *chatShell) promptLabel() string {
 
 func (s *chatShell) streamOptions(resume bool) streamOptions {
 	return streamOptions{format: "text", stdout: s.stdout, stderr: s.stderr, promptInput: s.reader,
-		thinking: s.options.thinking, chat: true, resume: resume, renderer: s.renderer, keyInput: s.decoder}
+		thinking: s.options.thinking, chat: true, resume: resume, renderer: s.renderer, keyInput: s.decoder, tasks: s.taskTracker()}
 }
 
 func (s *chatShell) commit(text string) {

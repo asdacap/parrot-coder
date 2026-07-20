@@ -112,16 +112,18 @@ func (o *PersistentObserver) Wait(ctx context.Context) (PersistentCompletion, er
 }
 
 type persistentProcess struct {
-	id          string
-	owner       string
-	command     *exec.Cmd
-	stdin       io.WriteCloser
-	reader      io.ReadCloser
-	tty         bool
-	started     time.Time
-	lastUsed    time.Time
-	interaction sync.Mutex
-	terminate   sync.Once
+	id           string
+	owner        string
+	command      *exec.Cmd
+	stdin        io.WriteCloser
+	reader       io.ReadCloser
+	tty          bool
+	started      time.Time
+	lastUsed     time.Time
+	interaction  sync.Mutex
+	terminate    sync.Once
+	announced    bool
+	finishedSent bool
 
 	mu         sync.Mutex
 	output     headTailBuffer
@@ -131,6 +133,12 @@ type persistentProcess struct {
 	notify     chan struct{}
 	finished   chan struct{}
 	readerDone chan struct{}
+}
+
+func (r *Runner) emitPersistent(event PersistentEvent) {
+	if handler := r.persistentEventHandler(); handler != nil {
+		handler(event)
+	}
 }
 
 // RunPersistent starts a command in the mandatory sandbox and returns after it
@@ -223,8 +231,43 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 	}
 	if result.ProcessID == nil {
 		r.removePersistent(item)
+	} else {
+		r.announcePersistent(item)
 	}
 	return result, nil
+}
+
+// announcePersistent promotes a retained process to a shell task. A process
+// which exits before promotion never emits task events; one which exits
+// afterwards emits exactly one finished event, from whichever side observes
+// the exit first.
+func (r *Runner) announcePersistent(item *persistentProcess) {
+	item.mu.Lock()
+	item.announced = true
+	started := item.started
+	item.mu.Unlock()
+	r.emitPersistent(PersistentEvent{Kind: PersistentEventStart, SessionID: item.owner, TaskID: item.id, StartedAt: started})
+	select {
+	case <-item.finished:
+		item.mu.Lock()
+		if item.finishedSent {
+			item.mu.Unlock()
+			return
+		}
+		item.finishedSent = true
+		exitCode, waitErr := item.exitCode, item.waitErr
+		item.mu.Unlock()
+		r.emitPersistent(finishedPersistentEvent(item, exitCode, waitErr))
+	default:
+	}
+}
+
+func finishedPersistentEvent(item *persistentProcess, exitCode *int, waitErr error) PersistentEvent {
+	event := PersistentEvent{Kind: PersistentEventFinished, SessionID: item.owner, TaskID: item.id, StartedAt: item.started, ExitCode: exitCode}
+	if waitErr != nil {
+		event.Error = waitErr.Error()
+	}
+	return event
 }
 
 // WritePersistent writes to or polls an existing process. Pipe-backed
@@ -325,9 +368,17 @@ func (r *Runner) startPersistent(item *persistentProcess) error {
 			code := item.command.ProcessState.ExitCode()
 			item.exitCode = &code
 		}
+		emit := item.announced && !item.finishedSent
+		if emit {
+			item.finishedSent = true
+		}
+		exitCode, waitErr := item.exitCode, item.waitErr
 		item.mu.Unlock()
 		close(item.finished)
 		item.signalOutput()
+		if emit {
+			r.emitPersistent(finishedPersistentEvent(item, exitCode, waitErr))
+		}
 	}()
 	return nil
 }

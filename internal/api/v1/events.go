@@ -22,16 +22,23 @@ const (
 	EventGoalUpdated          = "goal.updated"
 	EventGoalCleared          = "goal.cleared"
 	EventTaskProgress         = "task.progress"
-	EventSubagent             = "subagent.event"
+	EventTaskStart            = "task.start"
+	EventTaskWorking          = "task.working"
+	EventTaskIdle             = "task.idle"
+	EventTaskFinished         = "task.finished"
 	EventToolOutputDelta      = "tool.output.delta"
 )
 
 // Event is used for both durable and disposable live events. Sequence and
-// CreatedAt are present only for durable session events.
+// CreatedAt are present only for durable session events. TaskID identifies the
+// task which produced the event; every event belongs to exactly one task. Task
+// events are flat: a subtask's events are never nested inside a parent task's
+// event, they carry their own task_id and session_id instead.
 type Event struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"`
 	SessionID string          `json:"session_id,omitempty"`
+	TaskID    string          `json:"task_id,omitempty"`
 	Sequence  *int64          `json:"sequence,omitempty"`
 	Data      json.RawMessage `json:"data"`
 	CreatedAt *time.Time      `json:"created_at,omitempty"`
@@ -57,6 +64,7 @@ type Usage struct {
 
 type TaskProgress struct {
 	TaskID     string `json:"task_id"`
+	SessionID  string `json:"session_id,omitempty"`
 	ToolCallID string `json:"tool_call_id,omitempty"`
 	Agent      string `json:"agent"`
 	Status     string `json:"status"`
@@ -69,15 +77,19 @@ type ToolOutputDelta struct {
 	Delta      string `json:"delta"`
 }
 
-// SubagentEvent projects an event from an isolated child session onto its
-// parent's event stream. Depth is relative to the session receiving this
-// event: a direct child has depth 1. TaskName is currently the child agent ID,
-// which is the human-facing name available on child-agent requests.
-type SubagentEvent struct {
-	TaskID   string `json:"task_id"`
-	TaskName string `json:"task_name"`
-	Depth    int    `json:"depth"`
-	Event    Event  `json:"event"`
+// TaskEvent is the flat lifecycle record every task emits on its session's
+// event stream. A task belongs to one session and may have a parent task;
+// clients rebuild the task tree from ParentTaskID rather than from nested
+// event envelopes. SessionID is empty on task.start when a subagent task has
+// not bound its child session yet. Status and Error are set on task.finished.
+type TaskEvent struct {
+	TaskID       string `json:"task_id"`
+	SessionID    string `json:"session_id,omitempty"`
+	ParentTaskID string `json:"parent_task_id,omitempty"`
+	Kind         string `json:"kind"`
+	Agent        string `json:"agent,omitempty"`
+	Status       string `json:"status,omitempty"`
+	Error        string `json:"error,omitempty"`
 }
 
 type SessionStatus struct {
@@ -136,7 +148,10 @@ var EventManifest = []EventDefinition{
 	{Name: EventGoalUpdated, Durable: true, Payload: "Goal"},
 	{Name: EventGoalCleared, Durable: true, Payload: "Goal"},
 	{Name: EventTaskProgress, Payload: "TaskProgress"},
-	{Name: EventSubagent, Payload: "SubagentEvent"},
+	{Name: EventTaskStart, Payload: "TaskEvent"},
+	{Name: EventTaskWorking, Payload: "TaskEvent"},
+	{Name: EventTaskIdle, Payload: "TaskEvent"},
+	{Name: EventTaskFinished, Payload: "TaskEvent"},
 	{Name: EventToolOutputDelta, Payload: "ToolOutputDelta"},
 	{Name: "session.selection.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.initialized", Durable: true, Payload: "object"},
@@ -197,8 +212,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &Goal{}
 	case EventTaskProgress:
 		target = &TaskProgress{}
-	case EventSubagent:
-		target = &SubagentEvent{}
+	case EventTaskStart, EventTaskWorking, EventTaskIdle, EventTaskFinished:
+		target = &TaskEvent{}
 	case EventToolOutputDelta:
 		target = &ToolOutputDelta{}
 	default:

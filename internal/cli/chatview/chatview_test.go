@@ -1,6 +1,12 @@
 package chatview
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+)
 
 func TestTaskActivityLabelsUseTaskID(t *testing.T) {
 	for _, test := range []struct {
@@ -17,5 +23,91 @@ func TestTaskActivityLabelsUseTaskID(t *testing.T) {
 		if got := ToolActivityLabel(test.name, test.input); got != test.want {
 			t.Errorf("ToolActivityLabel(%q) = %q, want %q", test.name, got, test.want)
 		}
+	}
+}
+
+func taskLifecycleEvent(eventType string, event v1.TaskEvent) v1.Event {
+	data, _ := json.Marshal(event)
+	return v1.Event{Type: eventType, TaskID: event.TaskID, Data: data}
+}
+
+func taskDelta(taskID string, delta v1.MessagePartDelta) v1.Event {
+	data, _ := json.Marshal(delta)
+	return v1.Event{Type: v1.EventMessagePartDelta, TaskID: taskID, Data: data}
+}
+
+func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
+	tracker := NewTaskTracker()
+
+	// Content for a task which never started is an unknown task error, shown
+	// once no matter how many events reference the unknown id.
+	for i := 0; i < 2; i++ {
+		reports, err := tracker.Apply(taskDelta("task-ghost", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "hi"}), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := 1
+		if i == 1 {
+			want = 0
+		}
+		if len(reports) != want {
+			t.Fatalf("ghost reports[%d] = %#v", i, reports)
+		}
+		if want == 1 && (!reports[0].Terminal || reports[0].Line != "✗ unknown task task-ghost (message.part.delta)") {
+			t.Fatalf("unknown task report = %#v", reports[0])
+		}
+	}
+
+	// A start with an unknown parent registers the task and reports the
+	// missing parent; the orphan still renders its own content.
+	reports, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "task-orphan", ParentTaskID: "task-missing", Kind: "agent", Agent: "explore"}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].Line != "✗ unknown task task-missing (parent of task-orphan)" {
+		t.Fatalf("orphan parent reports = %#v", reports)
+	}
+	reports, err = tracker.Apply(taskDelta("task-orphan", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "orphan work"}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || !strings.Contains(reports[0].Line, "[explore] response: orphan work") {
+		t.Fatalf("orphan content reports = %#v", reports)
+	}
+
+	// Depth comes from the parent chain the tracker builds, not from the
+	// events themselves.
+	for _, start := range []v1.TaskEvent{
+		{TaskID: "task-parent", ParentTaskID: "task_main", Kind: "agent", Agent: "build"},
+		{TaskID: "task-child", ParentTaskID: "task-parent", Kind: "agent", Agent: "review"},
+	} {
+		if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, start), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reports, err = tracker.Apply(taskDelta("task-child", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "nested"}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].Line != "    ○ [review] response: nested" {
+		t.Fatalf("nested content report = %#v", reports)
+	}
+
+	// Main task content returns nothing: the caller renders it directly.
+	reports, err = tracker.Apply(taskDelta("task_main", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "mine"}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 0 {
+		t.Fatalf("main task reports = %#v", reports)
+	}
+
+	// Failed tasks surface a terminal error line under their own prefix.
+	reports, err = tracker.Apply(taskLifecycleEvent(v1.EventTaskFinished, v1.TaskEvent{TaskID: "task-child", Kind: "agent", Status: "failed", Error: "boom"}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || !reports[0].Terminal || reports[0].Line != "    ✗ [review] failed: boom" {
+		t.Fatalf("finished report = %#v", reports)
 	}
 }

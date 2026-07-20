@@ -46,6 +46,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 	"github.com/amirulashraf/parrot-coder/internal/transport/inproc"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
@@ -349,10 +350,38 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 		return profile.RecursionLimit
 	}, OnProgress: func(task subagent.Task) {
-		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
-		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, Data: data})
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
+		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.ID, Data: data})
+	}, OnEvent: func(item subagent.LifecycleEvent) {
+		publishSubagentLifecycle(live, item)
 	}})
 	result.subagents = subagents
+	live.SetTaskIDFor(func(sessionID string) string {
+		if task, ok := subagents.TaskForSession(sessionID); ok {
+			return task.ID
+		}
+		return managedtask.MainTaskID
+	})
+	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
+		parent := managedtask.MainTaskID
+		if task, ok := subagents.TaskForSession(item.SessionID); ok {
+			parent = task.ID
+		}
+		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, ParentTaskID: parent, Kind: string(managedtask.KindShell), Error: item.Error}
+		eventType := managedtask.EventStart
+		if item.Kind == process.PersistentEventFinished {
+			eventType = managedtask.EventFinished
+			payload.Status = "succeeded"
+			if item.ExitCode != nil && *item.ExitCode != 0 {
+				payload.Status = "failed"
+			}
+			if item.Error != "" {
+				payload.Status = "failed"
+			}
+		}
+		data, _ := json.Marshal(payload)
+		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
+	})
 	monitors := monitor.NewService(processes, subagents, sessions)
 	result.monitors = monitors
 	tools := tool.NewRegistry()
@@ -410,7 +439,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: runner: %w", err)
 	}
-	drainer := statusDrainer{runner: runner, live: live}
+	drainer := statusDrainer{runner: runner, live: live, subagents: subagents, started: &sync.Map{}}
 	coordinator := agent.NewCoordinator(drainer, drainer)
 	monitors.SetWaker(coordinator)
 	subagentExecutor.coordinator = coordinator
@@ -613,8 +642,13 @@ func (b *compositionBackend) Wake(sessionID string) {
 }
 
 type statusDrainer struct {
-	runner agent.Drainer
-	live   *event.Broker
+	runner    agent.Drainer
+	live      *event.Broker
+	subagents *subagent.Manager
+
+	// started records sessions whose main task already emitted task.start.
+	// It is a pointer so the coordinator's value copies share one registry.
+	started *sync.Map
 }
 
 func (d statusDrainer) PrepareContinuation(ctx context.Context, sessionID string) (bool, error) {
@@ -633,6 +667,7 @@ func (d statusDrainer) LifecycleStarted(sessionID string) {
 	diagnostics.Event("session_run_started", "session_id", sessionID)
 	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
+	d.mainTaskStarted(sessionID)
 }
 
 func (d statusDrainer) LifecycleComplete(sessionID string, err error) {
@@ -645,6 +680,7 @@ func (d statusDrainer) LifecycleComplete(sessionID string, err error) {
 	}
 	data, _ := json.Marshal(status)
 	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
+	d.mainTaskIdle(sessionID, err)
 	attributes := []any{"session_id", sessionID, "status", status.Kind}
 	if err != nil {
 		attributes = append(attributes, "error_type", diagnostics.ErrorType(err))
@@ -654,6 +690,50 @@ func (d statusDrainer) LifecycleComplete(sessionID string, err error) {
 		}
 	}
 	diagnostics.Event("session_run_finished", attributes...)
+}
+
+// mainTaskOwns reports whether sessionID's lifecycle belongs to the session's
+// own main task. A subagent child session's lifecycle belongs to the subagent
+// task instead, whose manager emits its task events.
+func (d statusDrainer) mainTaskOwns(sessionID string) bool {
+	if d.subagents == nil {
+		return true
+	}
+	_, subagentOwned := d.subagents.TaskForSession(sessionID)
+	return !subagentOwned
+}
+
+// mainTaskStarted emits the main task's flat start and working events. Start
+// is emitted once per session; every drain marks the main task as working.
+func (d statusDrainer) mainTaskStarted(sessionID string) {
+	if !d.mainTaskOwns(sessionID) {
+		return
+	}
+	first := true
+	if d.started != nil {
+		_, seen := d.started.LoadOrStore(sessionID, true)
+		first = !seen
+	}
+	if first {
+		data, _ := json.Marshal(v1.TaskEvent{TaskID: managedtask.MainTaskID, SessionID: sessionID, Kind: string(managedtask.KindMain)})
+		d.live.PublishEvent(v1.Event{Type: managedtask.EventStart, SessionID: sessionID, TaskID: managedtask.MainTaskID, Data: data})
+	}
+	data, _ := json.Marshal(v1.TaskEvent{TaskID: managedtask.MainTaskID, SessionID: sessionID, Kind: string(managedtask.KindMain)})
+	d.live.PublishEvent(v1.Event{Type: managedtask.EventWorking, SessionID: sessionID, TaskID: managedtask.MainTaskID, Data: data})
+}
+
+// mainTaskIdle emits the main task's flat idle event when a drain completes.
+// The main task never finishes while the session lives; it waits for input.
+func (d statusDrainer) mainTaskIdle(sessionID string, err error) {
+	if !d.mainTaskOwns(sessionID) {
+		return
+	}
+	payload := v1.TaskEvent{TaskID: managedtask.MainTaskID, SessionID: sessionID, Kind: string(managedtask.KindMain)}
+	if err != nil && err != context.Canceled {
+		payload.Status = "error"
+	}
+	data, _ := json.Marshal(payload)
+	d.live.PublishEvent(v1.Event{Type: managedtask.EventIdle, SessionID: sessionID, TaskID: managedtask.MainTaskID, Data: data})
 }
 
 type questionPrompter struct{}
@@ -1165,9 +1245,10 @@ func (e *appSubagentExecutor) Send(ctx context.Context, execution subagent.Execu
 }
 
 // forwardEvents projects both durable child lifecycle/tool events and
-// disposable provider deltas onto the parent session. Nested projections are
-// flattened while their relative depth is increased, so a terminal only needs
-// one subscription regardless of subagent recursion.
+// disposable provider deltas onto the parent session as flat events. Nothing
+// is nested: every event keeps its own type and data, and its task_id
+// identifies the task which produced it. A terminal only needs one
+// subscription regardless of subagent recursion.
 func (e *appSubagentExecutor) forwardEvents(childSession string, execution subagent.Execution) func() {
 	if e.live == nil {
 		return func() {}
@@ -1183,11 +1264,10 @@ func (e *appSubagentExecutor) forwardEvents(childSession string, execution subag
 	done := make(chan struct{})
 	forwardLive := func(item v1.Event) {
 		reportSubagentEvent(execution.ReportProgress, item)
-		e.publishSubagentEvent(execution, item)
+		e.forwardEvent(execution, item)
 	}
 	forwardDurable := func(item event.Event) {
-		sequence, created := item.Sequence, item.CreatedAt
-		e.publishSubagentEvent(execution, v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, Sequence: &sequence, Data: item.Data, CreatedAt: &created})
+		e.forwardEvent(execution, v1.Event{Type: item.Type, SessionID: item.SessionID, Data: item.Data})
 	}
 	go func() {
 		defer close(done)
@@ -1269,33 +1349,43 @@ func (e *appSubagentExecutor) forwardEvents(childSession string, execution subag
 	}
 }
 
-func (e *appSubagentExecutor) publishSubagentEvent(execution subagent.Execution, item v1.Event) {
-	projected := v1.SubagentEvent{TaskID: execution.TaskID, TaskName: execution.Request.Agent, Depth: 1, Event: item}
-	if item.Type == v1.EventSubagent {
-		payload, err := v1.DecodeEventData(item)
-		if err != nil {
-			return
-		}
-		projected = *payload.(*v1.SubagentEvent)
-		projected.Depth++
-	} else if item.Type == v1.EventTaskProgress {
-		// A task.progress event on a child session describes that child's own
-		// subtask. Attribute it to the nested task rather than to the child that
-		// launched it.
-		payload, err := v1.DecodeEventData(item)
-		if err != nil {
-			return
-		}
-		progress := payload.(*v1.TaskProgress)
-		projected.TaskID = progress.TaskID
-		projected.TaskName = progress.Agent
-		projected.Depth = 2
+// forwardEvent republishes one child-session event on the parent session's
+// stream. The republished event is live and sequence-free on the parent, and
+// its task attribution is the child's main task unless the event already
+// belongs to one of the child's own subtasks.
+func (e *appSubagentExecutor) forwardEvent(execution subagent.Execution, item v1.Event) {
+	taskID := item.TaskID
+	if taskID == "" {
+		taskID = execution.TaskID
 	}
-	data, err := json.Marshal(projected)
-	if err != nil {
+	e.live.PublishEvent(v1.Event{Type: item.Type, SessionID: execution.ParentSession, TaskID: taskID, Data: item.Data})
+}
+
+// publishSubagentLifecycle publishes one flat task lifecycle event for an
+// agent task on its parent session's stream.
+func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) {
+	task := item.Task
+	payload := v1.TaskEvent{TaskID: task.ID, SessionID: task.SessionID, ParentTaskID: task.ParentAgentID, Agent: task.Agent, Kind: string(managedtask.KindAgent)}
+	if payload.ParentTaskID == "" {
+		payload.ParentTaskID = managedtask.MainTaskID
+	}
+	eventType := ""
+	switch item.Kind {
+	case subagent.LifecycleStart:
+		eventType = managedtask.EventStart
+	case subagent.LifecycleWorking:
+		eventType = managedtask.EventWorking
+	case subagent.LifecycleIdle:
+		eventType = managedtask.EventIdle
+	case subagent.LifecycleFinished:
+		eventType = managedtask.EventFinished
+		payload.Status = string(task.Status)
+		payload.Error = task.Error
+	default:
 		return
 	}
-	e.live.PublishEvent(v1.Event{Type: v1.EventSubagent, SessionID: execution.ParentSession, Data: data})
+	data, _ := json.Marshal(payload)
+	live.PublishEvent(v1.Event{Type: eventType, SessionID: task.ParentSession, TaskID: task.ID, Data: data})
 }
 
 func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {

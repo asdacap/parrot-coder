@@ -378,11 +378,24 @@ func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
 	}
 }
 
+// taskStart builds the flat task.start event introducing one task into the
+// UI's task tree. Every other event for the task carries only its task_id.
+func taskStart(taskID, parentTaskID, agent string) v1.Event {
+	data, _ := json.Marshal(v1.TaskEvent{TaskID: taskID, ParentTaskID: parentTaskID, Kind: "agent", Agent: agent})
+	return v1.Event{Type: v1.EventTaskStart, TaskID: taskID, Data: data}
+}
+
+func taskContent(taskID string, eventType string, data json.RawMessage) v1.Event {
+	return v1.Event{Type: eventType, TaskID: taskID, Data: data}
+}
+
 func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
-	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
-	runtime.upsertActivity("call-agent", "agent · explore", "running", false, false, false)
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
+	if err := runtime.handleEvent(taskStart("task-1", "task_main", "explore")); err != nil {
+		t.Fatal(err)
+	}
 	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 1 {
@@ -394,7 +407,7 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	}
 
 	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "succeeded", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {
@@ -402,7 +415,7 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	}
 
 	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "running"})
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {
@@ -410,34 +423,30 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	}
 
 	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent-2", Agent: "explore", Status: "running"})
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventTaskProgress, Data: data}); err != nil {
+	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.activity) != 1 || runtime.activity[0].id != "call-agent-2" {
+	if len(runtime.activity) != 1 {
 		t.Fatalf("follow-up task progress = %#v", runtime.activity)
 	}
 }
 
-func TestEnhancedChildAgentProgressDoesNotRecreateCompletedSpawn(t *testing.T) {
-	runtime := &enhancedChatRuntime{completedToolIDs: map[string]bool{"call-agent": true}}
-	runtime.updateTaskProgress(&v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "running"})
-	if len(runtime.activity) != 0 {
-		t.Fatalf("activity = %#v", runtime.activity)
-	}
-}
-
-func TestEnhancedSubagentEventUsesDepthAndAgentPrefix(t *testing.T) {
+func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
 	runtime.activity = append(runtime.activity,
 		enhancedActivityItem{id: "call-read", label: "read · file.go", toolName: "read", status: "running", started: time.Now()},
 		enhancedActivityItem{id: "call-agent", label: "agent · review", toolName: "monitor", status: "running", started: time.Now()},
 	)
+	// A grandchild renders two levels deep because the UI walks the parent
+	// chain it tracks, not because an event envelope carries a depth.
+	if err := runtime.handleEvent(taskStart("task-parent", "task_main", "build")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.handleEvent(taskStart("task-review", "task-parent", "review")); err != nil {
+		t.Fatal(err)
+	}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "checking"})
-	envelope, _ := json.Marshal(v1.SubagentEvent{
-		TaskID: "task-review", TaskName: "review", Depth: 2,
-		Event: v1.Event{Type: v1.EventMessagePartDelta, Data: delta},
-	})
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: envelope}); err != nil {
+	if err := runtime.handleEvent(taskContent("task-review", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 3 {
@@ -471,15 +480,15 @@ func TestTaskActivityLabelsUseTaskID(t *testing.T) {
 
 func TestEnhancedSubagentCompletionRemovesAllRowsAndIgnoresLateEvents(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{options: codingFlags{thinking: true}}, knownMessages: map[string]bool{}}
-	item := v1.SubagentEvent{TaskID: "task-review", TaskName: "review", Depth: 1}
+	if err := runtime.handleEvent(taskStart("task-review", "task_main", "review")); err != nil {
+		t.Fatal(err)
+	}
 	for _, delta := range []v1.MessagePartDelta{
 		{MessageID: "child-message", Kind: "reasoning", Delta: "checking"},
 		{MessageID: "child-message", Kind: "text", Delta: "result"},
 	} {
-		item.Event.Type = v1.EventMessagePartDelta
-		item.Event.Data, _ = json.Marshal(delta)
-		data, _ := json.Marshal(item)
-		if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: data}); err != nil {
+		data, _ := json.Marshal(delta)
+		if err := runtime.handleEvent(taskContent("task-review", v1.EventMessagePartDelta, data)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -487,20 +496,16 @@ func TestEnhancedSubagentCompletionRemovesAllRowsAndIgnoresLateEvents(t *testing
 		t.Fatalf("live subagent activity = %#v", runtime.activity)
 	}
 
-	item.Event.Type = "session.assistant.complete"
-	item.Event.Data, _ = json.Marshal(map[string]string{"message_id": "child-message"})
-	data, _ := json.Marshal(item)
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: data}); err != nil {
+	data, _ := json.Marshal(map[string]string{"message_id": "child-message"})
+	if err := runtime.handleEvent(taskContent("task-review", "session.assistant.complete", data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {
 		t.Fatalf("completed subagent activity remains live: %#v", runtime.activity)
 	}
 
-	item.Event.Type = v1.EventMessagePartDelta
-	item.Event.Data, _ = json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "late"})
-	data, _ = json.Marshal(item)
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventSubagent, Data: data}); err != nil {
+	data, _ = json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "late"})
+	if err := runtime.handleEvent(taskContent("task-review", v1.EventMessagePartDelta, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {

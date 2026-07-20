@@ -85,6 +85,24 @@ type Config struct {
 	AgentIdentity          func(string) string
 	AgentRecursionLimit    func(string) int
 	OnProgress             func(Task)
+	OnEvent                func(LifecycleEvent)
+}
+
+// Lifecycle kinds a task reports as flat events on its parent session's
+// stream. Working marks the start of a turn, Finished its terminal state, and
+// Idle a retained agent waiting for follow-up work.
+const (
+	LifecycleStart    = "start"
+	LifecycleWorking  = "working"
+	LifecycleIdle     = "idle"
+	LifecycleFinished = "finished"
+)
+
+// LifecycleEvent is one flat task lifecycle emission. Task is a snapshot taken
+// when the event fired.
+type LifecycleEvent struct {
+	Kind string
+	Task Task
 }
 
 type Status string
@@ -229,9 +247,32 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 	m.running++
 	m.byParent[parentSession]++
 	m.workers.Add(1)
+	start := LifecycleEvent{Kind: LifecycleStart, Task: cloneTask(state.task)}
 	m.mu.Unlock()
+	m.emit(start)
 	go m.run(ctx, state)
 	return id, nil
+}
+
+func (m *Manager) emit(event LifecycleEvent) {
+	if m.config.OnEvent != nil {
+		m.config.OnEvent(event)
+	}
+}
+
+// TaskForSession returns the agent task bound to a child session, if any. The
+// main task of a subagent child session is the subagent task itself.
+func (m *Manager) TaskForSession(sessionID string) (Task, bool) {
+	if m == nil || sessionID == "" {
+		return Task{}, false
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	state := m.bySession[sessionID]
+	if state == nil {
+		return Task{}, false
+	}
+	return cloneTask(state.task), true
 }
 
 func (m *Manager) agentIdentity(id string) string {
@@ -331,7 +372,9 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 			m.bySession[sessionID] = state
 		}
 		m.closeRegisteredLocked(state)
+		working := LifecycleEvent{Kind: LifecycleWorking, Task: cloneTask(state.task)}
 		m.mu.Unlock()
+		m.emit(working)
 	}
 	execution := Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentAgentID: state.task.ParentAgentID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: report, RegisterSession: register}
 	output, executeErr := m.executor.Execute(ctx, execution)
@@ -373,11 +416,13 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	snapshot := cloneTask(state.task)
 	state.turn.result = snapshot
 	callback := m.config.OnProgress
+	finished := LifecycleEvent{Kind: LifecycleFinished, Task: snapshot}
 	done := state.turn.done
 	m.mu.Unlock()
 	state.op.Unlock()
 	close(done)
 	m.workers.Done()
+	m.emit(finished)
 	if callback != nil {
 		callback(snapshot)
 	}
@@ -527,6 +572,7 @@ func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, err
 	m.workers.Add(1)
 	task := cloneTask(state.task)
 	m.mu.Unlock()
+	m.emit(LifecycleEvent{Kind: LifecycleWorking, Task: task})
 	go m.run(ctx, state)
 	return task, nil
 }

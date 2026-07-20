@@ -15,55 +15,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
-func (r *enhancedChatRuntime) updateTaskProgress(progress *v1.TaskProgress) {
-	if progress == nil {
-		return
-	}
-	id := progress.ToolCallID
-	if id == "" {
-		id = progress.TaskID
-	}
-	if r.completedTaskIDs[id] {
-		return
-	}
-	terminalEvent := progress.Status != "pending" && progress.Status != "running"
-	for i := range r.activity {
-		if r.activity[i].id != id {
-			continue
-		}
-		r.activity[i].tokens = progress.Usage.TotalTokens
-		if r.activity[i].tokens == 0 {
-			r.activity[i].tokens = progress.Usage.InputTokens + progress.Usage.OutputTokens
-		}
-		r.activity[i].hasUsage = r.activity[i].tokens > 0
-		r.activity[i].toolUses = progress.ToolUses
-		if terminalEvent {
-			if r.completedTaskIDs == nil {
-				r.completedTaskIDs = make(map[string]bool)
-			}
-			r.completedTaskIDs[id] = true
-			r.activity = append(r.activity[:i], r.activity[i+1:]...)
-		}
-		return
-	}
-	// agent_spawn completes once the child session exists. Ignore later
-	// progress tied to that completed tool call instead of recreating a row
-	// which no tool lifecycle event can finish. Existing rows still receive
-	// progress so an event racing with tool completion can settle them.
-	if progress.ToolCallID != "" && r.completedToolIDs[progress.ToolCallID] {
-		return
-	}
-	if terminalEvent {
-		if r.completedTaskIDs == nil {
-			r.completedTaskIDs = make(map[string]bool)
-		}
-		r.completedTaskIDs[id] = true
-		return
-	}
-	r.upsertActivity(id, "agent · "+progress.Agent, "running", false, false, false)
-	r.updateTaskProgress(progress)
-}
-
 func (r *enhancedChatRuntime) updateToolOutput(output *v1.ToolOutputDelta) {
 	if output == nil || output.ToolCallID == "" || r.completedToolIDs[output.ToolCallID] {
 		return

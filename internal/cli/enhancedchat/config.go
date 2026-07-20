@@ -15,6 +15,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -299,25 +300,43 @@ func (s *chatShell) slash(name, arguments string) (bool, int) {
 	return s.config.Slash(name, arguments)
 }
 
-type subagentReport struct {
+type taskReport struct {
 	id, line, block           string
 	terminal, emitPlain, skip bool
 	style                     terminal.TextStyle
 }
-type subagentStreamTracker struct {
-	tracker chatview.SubagentStreamTracker
+
+// taskStreamTracker adapts the shared task tree tracker to the enhanced chat
+// activity list. The tracker owns every parent-child task relationship; the
+// enhanced runtime only renders the reports it returns.
+type taskStreamTracker struct {
+	tracker *chatview.TaskTracker
 }
 
-func (t *subagentStreamTracker) describe(item *v1.SubagentEvent, thinking bool) ([]subagentReport, error) {
-	reports, err := t.tracker.Describe(item, thinking)
+func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
+	if t.tracker == nil {
+		t.tracker = chatview.NewTaskTracker()
+	}
+	reports, err := t.tracker.Apply(item, thinking)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]subagentReport, len(reports))
+	result := make([]taskReport, len(reports))
 	for i, report := range reports {
-		result[i] = subagentReport{id: report.ID, line: report.Line, block: report.Block, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
+		result[i] = taskReport{id: report.ID, line: report.Line, block: report.Block, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
 	}
 	return result, nil
+}
+
+// isTaskEvent reports whether an event belongs to the task tree rather than
+// to the main transcript: task lifecycle events always do, and any event
+// attributed to a task other than the session's main task does.
+func isTaskEvent(item v1.Event) bool {
+	switch item.Type {
+	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
+		return true
+	}
+	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
 }
 func chatExitReason(code int) string {
 	if code == exitInterrupt {

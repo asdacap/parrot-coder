@@ -6,8 +6,21 @@ import "time"
 type Kind string
 
 const (
+	KindMain  Kind = "main"
 	KindAgent Kind = "agent"
 	KindShell Kind = "shell"
+)
+
+// MainTaskID identifies the main task every session starts with. It is unique
+// within one session's event stream; subtasks receive generated identifiers.
+const MainTaskID = "task_main"
+
+// Lifecycle statuses emitted as flat task events on a session's event stream.
+const (
+	EventStart    = "task.start"
+	EventWorking  = "task.working"
+	EventIdle     = "task.idle"
+	EventFinished = "task.finished"
 )
 
 type Active struct {
