@@ -193,7 +193,8 @@ Model IDs carry no vendor prefix (for example `glm-5.2`, `kimi-k3`,
 cleanly on the first slash. Correct or extend any catalog metadata with a
 `providers.opencode-go.models` entry.
 
-OpenCode Go has no usage route, so `parrot usage` reports nothing for it.
+OpenCode Go now has a usage endpoint (`/zen/go/v1/usage`), so `parrot usage`
+shows the current subscription windows and credit balance.
 
 ### Compatible Endpoint
 

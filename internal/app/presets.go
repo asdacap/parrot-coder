@@ -52,8 +52,8 @@ var providerPresets = map[string]providerPreset{
 	// frequently changing catalog from /v1/models, so the preset carries no
 	// model metadata: the fetched catalog is authoritative. Model IDs carry
 	// no vendor prefix (e.g. "glm-5.2", "kimi-k3"), so model selection splits
-	// "opencode-go/<model-id>" cleanly on the first slash. The endpoint has
-	// no balance route, so parrot usage reports nothing for it.
+	// "opencode-go/<model-id>" cleanly on the first slash. The /zen/go/v1/usage
+	// endpoint reports subscription usage for the Go plan.
 	//
 	// The Models map supplies metadata (context window, max tokens, reasoning
 	// variants) that the endpoint's model list does not expose. Each entry
