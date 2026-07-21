@@ -34,6 +34,19 @@ type CallContext struct {
 	Agent      string
 	ToolCallID string
 	Output     io.Writer
+	SecurityProfile SecurityProfile
+}
+
+// CheckTool reports an error if the given tool is not permitted by the
+// current security profile.
+func (c CallContext) CheckTool(t Tool) error {
+	if c.SecurityProfile == nil {
+		return nil
+	}
+	if !c.SecurityProfile.AllowsTool(t.ID(), t.ReadOnly()) {
+		return fmt.Errorf("tool %q is not permitted by the current security profile", t.ID())
+	}
+	return nil
 }
 
 type Plan struct {

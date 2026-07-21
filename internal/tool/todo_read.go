@@ -28,6 +28,9 @@ func (t *TodoReadTool) Plan(_ context.Context, raw json.RawMessage, _ CallContex
 	return NewPlan(t.ID(), raw, nil, nil, nil)
 }
 func (t *TodoReadTool) Execute(ctx context.Context, _ Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	service := t.Service
 	if service == nil {
 		service = call.Todos

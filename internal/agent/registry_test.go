@@ -16,7 +16,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !build.AllowsTool("write") || !build.AllowsTool("shell") || !build.AllowsTool("exec_command") || !build.AllowsTool("write_stdin") {
+	if !build.ListAllowsTool("write") || !build.ListAllowsTool("shell") || !build.ListAllowsTool("exec_command") || !build.ListAllowsTool("write_stdin") {
 		t.Fatal("build agent unexpectedly denied mutation tools")
 	}
 	for _, id := range []string{PlanID, ExploreID, ExplorerID, ReviewID} {
@@ -69,7 +69,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, denied := range []string{"agent_spawn", "agent_send", "monitor", "task_interrupt", "task_list_active"} {
-		if review.AllowsTool(denied) {
+		if review.ListAllowsTool(denied) {
 			t.Fatalf("review agent allowed nested delegation tool %s", denied)
 		}
 	}
@@ -80,7 +80,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if worker.ReadOnly || !worker.AllowsTool("apply_patch") || !worker.AllowsTool("exec_command") {
+	if worker.ReadOnly || !worker.ListAllowsTool("apply_patch") || !worker.ListAllowsTool("exec_command") {
 		t.Fatalf("worker profile = %#v", worker)
 	}
 }
@@ -98,7 +98,7 @@ func TestSubagentsIncludeExplorerWorkerAndDedicatedReviewProfiles(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !review.ReadOnly || review.AllowsTool("agent_spawn") || !review.AllowsTool("read") {
+	if !review.ReadOnly || review.ListAllowsTool("agent_spawn") || !review.ListAllowsTool("read") {
 		t.Fatalf("review profile = %#v", review)
 	}
 	if review.Prompt == "" || review.MaxTurns <= 0 {
@@ -138,7 +138,7 @@ func TestListDoesNotExposeProfileSliceStorage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if review.AllowsTool("agent_spawn") || review.HardRules[0] == "allow everything" {
+	if review.ListAllowsTool("agent_spawn") || review.HardRules[0] == "allow everything" {
 		t.Fatalf("List mutated registered review profile: %#v", review)
 	}
 }

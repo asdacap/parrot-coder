@@ -74,6 +74,9 @@ func (t *MonitorTool) Plan(_ context.Context, raw json.RawMessage, call CallCont
 }
 
 func (t *MonitorTool) Execute(_ context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	if t.Service == nil {
 		return Result{}, errors.New("monitor: service is required")
 	}

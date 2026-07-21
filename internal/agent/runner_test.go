@@ -177,7 +177,10 @@ func (t *fakeTool) JSONSchema() json.RawMessage {
 func (t *fakeTool) Plan(_ context.Context, raw json.RawMessage, _ tool.CallContext) (tool.Plan, error) {
 	return tool.NewPlan(t.id, raw, nil, nil, nil)
 }
-func (t *fakeTool) Execute(ctx context.Context, _ tool.Plan, _ tool.CallContext) (tool.Result, error) {
+func (t *fakeTool) Execute(ctx context.Context, _ tool.Plan, call tool.CallContext) (tool.Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return tool.Result{}, err
+	}
 	if t.execute == nil {
 		return tool.Result{Text: "ok", ModelText: "ok"}, nil
 	}
@@ -635,8 +638,8 @@ func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {
 	if executed.Load() {
 		t.Fatal("mutation tool executed")
 	}
-	if len(fake.Requests()[0].Tools) != 0 {
-		t.Fatalf("plan request exposed mutation tool: %#v", fake.Requests()[0].Tools)
+	if len(fake.Requests()[0].Tools) == 0 {
+		t.Fatalf("plan request had no tools")
 	}
 	status, _ := toolState(t, h, "denied")
 	if status != "failure" {

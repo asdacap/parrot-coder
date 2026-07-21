@@ -51,6 +51,9 @@ func (t *TodoWriteTool) Plan(_ context.Context, raw json.RawMessage, _ CallConte
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 func (t *TodoWriteTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	service := t.Service
 	if service == nil {
 		service = call.Todos

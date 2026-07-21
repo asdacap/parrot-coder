@@ -23,7 +23,7 @@ func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 		t.Fatalf("plan mode still enumerates tools: %#v", items[1].Profile().AllowedToolIDs)
 	}
 	for _, toolID := range []string{"monitor", "task_interrupt", "task_list_active"} {
-		if !items[1].Profile().AllowsTool(toolID) {
+		if !items[1].Profile().ListAllowsTool(toolID) {
 			t.Fatalf("plan mode does not allow %s", toolID)
 		}
 	}

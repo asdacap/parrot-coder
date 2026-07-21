@@ -1,6 +1,10 @@
 package profiles
 
-import "slices"
+import (
+	"slices"
+
+	"github.com/amirulashraf/parrot-coder/internal/tool"
+)
 
 type Profile struct {
 	ID             string
@@ -19,16 +23,14 @@ type Profile struct {
 	ReadOnly               bool
 }
 
-// AllowsTool applies only the profile's own allow and deny lists. Whether a
-// tool is read-only is the tool's own business and is checked separately by the
-// caller, which holds the tool registry; see agent.ProfileAllows.
+// ListAllowsTool applies only the profile's own allow and deny lists.
 //
 // Membership is a linear scan rather than a binary search: the lists are short,
 // checked once per tool per turn, and a sorted-slice invariant is exactly the
 // kind of thing that silently breaks. It did: this list was previously
 // binary-searched while Review's was unsorted, which denied that agent git_diff
 // and every lsp_* tool.
-func (p Profile) AllowsTool(id string) bool {
+func (p Profile) ListAllowsTool(id string) bool {
 	if slices.Contains(p.DeniedToolIDs, id) {
 		return false
 	}
@@ -41,7 +43,7 @@ func (p Profile) AllowsTool(id string) bool {
 // AllowsAll reports whether every listed tool is available to the profile.
 func (p Profile) AllowsAll(ids []string) bool {
 	for _, id := range ids {
-		if !p.AllowsTool(id) {
+		if !p.ListAllowsTool(id) {
 			return false
 		}
 	}
@@ -54,3 +56,18 @@ func (p Profile) AllowsAll(ids []string) bool {
 func (p Profile) AllowsWritableTool(id string) bool {
 	return slices.Contains(p.AllowedWritableToolIDs, id)
 }
+
+// AllowsTool implements tool.SecurityProfile by checking the profile's allow
+// and deny lists together with the tool's read-only status.
+func (p Profile) AllowsTool(id string, readOnly bool) bool {
+	if !p.ListAllowsTool(id) {
+		return false
+	}
+	if p.ReadOnly && !readOnly && !p.AllowsWritableTool(id) {
+		return false
+	}
+	return true
+}
+
+// GetSecurityProfile returns the profile as a tool.SecurityProfile.
+func (p Profile) GetSecurityProfile() tool.SecurityProfile { return p }
