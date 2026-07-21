@@ -286,6 +286,8 @@ type Model struct {
 	ContextWindow   int
 	MaxOutputTokens int
 	Capabilities    Capabilities
+	InputPrice      float64 // USD per input token
+	OutputPrice     float64 // USD per output token
 }
 
 func cloneModels(models []Model) []Model {
