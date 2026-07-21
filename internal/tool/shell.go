@@ -132,9 +132,6 @@ func (t *ShellTool) Plan(ctx context.Context, raw json.RawMessage, call CallCont
 }
 
 func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
-		return Result{}, errors.New("shell is not permitted by the current security profile")
-	}
 	runner := t.Runner
 	if runner == nil {
 		runner = call.Processes

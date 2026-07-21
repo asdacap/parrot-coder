@@ -50,9 +50,6 @@ func (t *TodoWriteTool) Plan(_ context.Context, raw json.RawMessage, _ CallConte
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 func (t *TodoWriteTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
-		return Result{}, errors.New("todo_write is not permitted by the current security profile")
-	}
 	service := t.Service
 	if service == nil {
 		service = call.Todos

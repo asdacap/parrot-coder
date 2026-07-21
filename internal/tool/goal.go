@@ -78,7 +78,6 @@ func (t *CreateGoalTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 func (t *CreateGoalTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-
 	if t.Service == nil || call.SessionID == "" {
 		return Result{}, errors.New("create_goal: service and session are required")
 	}
@@ -124,7 +123,6 @@ func (t *UpdateGoalTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 func (t *UpdateGoalTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-
 	if t.Service == nil || call.SessionID == "" {
 		return Result{}, errors.New("update_goal: service and session are required")
 	}

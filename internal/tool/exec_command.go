@@ -153,9 +153,6 @@ func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call Call
 }
 
 func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
-		return Result{}, errors.New("exec_command is not permitted by the current security profile")
-	}
 	runner := t.Runner
 	if runner == nil {
 		runner = call.Processes
