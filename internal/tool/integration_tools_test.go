@@ -1,7 +1,6 @@
 package tool
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -15,8 +14,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/amirulashraf/parrot-coder/internal/change"
-	"github.com/amirulashraf/parrot-coder/internal/formatter"
 	"github.com/amirulashraf/parrot-coder/internal/lsp"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
@@ -301,78 +298,3 @@ func TestGitDiffToolReadsUncommittedChangesAndRejectsOptionRefs(t *testing.T) {
 	}
 }
 
-func TestFormatterHelper(t *testing.T) {
-	if os.Getenv("PARROT_TOOL_FORMAT_HELPER") != "1" {
-		return
-	}
-	data, _ := io.ReadAll(os.Stdin)
-	_, _ = os.Stdout.Write(bytes.ToUpper(data))
-	os.Exit(0)
-}
-
-func TestFormatToolCommitsReviewedBytes(t *testing.T) {
-	ctx, ws, changes := workspaceToolHarness(t)
-	path := filepath.Join(ws.Root(), "source.go")
-	before := []byte("package p\n")
-	if err := os.WriteFile(path, before, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	executable, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
-	}
-	formatters, err := formatter.NewRegistry(formatter.Config{Workspace: ws.Root(), Environment: map[string]string{"PARROT_TOOL_FORMAT_HELPER": "1"}}, formatter.Formatter{Name: "upper", Extensions: []string{".go"}, Command: []string{executable, "-test.run=TestFormatterHelper"}, Mode: formatter.ModeStdin})
-	if err != nil {
-		t.Fatal(err)
-	}
-	item := NewFormatTool(formatters, changes)
-	registry := NewRegistry()
-	_ = registry.Register(item)
-	authorizer := &recordingAuthorizer{}
-	raw := json.RawMessage(`{"path":"source.go","expected_sha256":"` + change.SHA256(before) + `"}`)
-	result, err := (Executor{Snapshot: registry.Materialize(), Permissions: authorizer}).Execute(ctx, item.ID(), raw, CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	after, _ := os.ReadFile(path)
-	if string(after) != "PACKAGE P\n" || result.Metadata["files"] != 1 || !strings.Contains(string(authorizer.request.Review), `"command"`) {
-		t.Fatalf("after/result/review = %q / %#v / %s", after, result, authorizer.request.Review)
-	}
-}
-
-func TestFormatToolNoopDoesNotRequireCommit(t *testing.T) {
-	root := t.TempDir()
-	path := filepath.Join(root, "file.txt")
-	before := []byte("already\n")
-	if err := os.WriteFile(path, before, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	cat, err := exec.LookPath("cat")
-	if err != nil {
-		t.Fatal(err)
-	}
-	formatters, err := formatter.NewRegistry(formatter.Config{Workspace: root}, formatter.Formatter{Name: "identity", Extensions: []string{".txt"}, Command: []string{cat}, Mode: formatter.ModeStdin})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ws, err := workspace.New(root)
-	if err != nil {
-		t.Fatal(err)
-	}
-	item := NewFormatTool(formatters, change.NewService(change.Config{}))
-	raw := json.RawMessage(`{"path":"file.txt","expected_sha256":"` + change.SHA256(before) + `"}`)
-	plan, err := item.Plan(context.Background(), raw, CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(plan.Permissions) != 0 {
-		t.Fatalf("no-op permissions = %#v", plan.Permissions)
-	}
-	result, err := item.Execute(context.Background(), plan, CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if changed, _ := result.Metadata["changed"].(bool); changed {
-		t.Fatalf("no-op result = %#v", result)
-	}
-}

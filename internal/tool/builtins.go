@@ -6,7 +6,6 @@ import (
 	"sort"
 
 	"github.com/amirulashraf/parrot-coder/internal/change"
-	"github.com/amirulashraf/parrot-coder/internal/formatter"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/question"
@@ -33,13 +32,12 @@ type BuiltinServices struct {
 	MCPTools   []mcp.ToolDefinition
 	WebFetch   *webfetch.Service
 	LSP        LSPToolConfig
-	Formatters *formatter.Registry
 	Subagents  *subagent.Manager
 	Agents     AgentLookup
 }
 
-// RegisterBuiltins registers the complete built-in tool set. LSP, formatter,
-// and MCP tools are added only when those integrations are configured.
+// RegisterBuiltins registers the complete built-in tool set. LSP, MCP, and
+// subagent tools are added only when those integrations are configured.
 func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 	if registry == nil {
 		return errors.New("tool: registry is required")
@@ -74,9 +72,6 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 	items = append(items, NewTaskTools(services.Tasks)...)
 	if services.LSP.Client != nil {
 		items = append(items, NewLSPTools(services.LSP)...)
-	}
-	if services.Formatters != nil {
-		items = append(items, NewFormatTool(services.Formatters, services.Changes))
 	}
 	items = append(items, NewReviewTool(services.Subagents, services.Agents))
 	items = append(items, NewAgentTools(services.Subagents, services.Agents)...)

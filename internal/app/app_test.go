@@ -482,7 +482,6 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 		"providers.local.header_timeout_ms",
 		"mcp.server.command",
 		"lsp.go.command",
-		"formatters.gofmt.command",
 		"web_fetch.allow_private",
 	} {
 		loaded := config.Result{

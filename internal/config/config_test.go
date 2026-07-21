@@ -166,13 +166,6 @@ lsp:
       - .go
     languages:
       .go: go
-formatters:
-  gofmt:
-    extensions:
-      - go
-    command:
-      - /usr/bin/gofmt
-    mode: stdin
 web_fetch:
   allow_private: true
 `)
@@ -196,9 +189,6 @@ lsp:
 	if language.Command != "/usr/bin/false" || language.TimeoutMS != 3000 || language.Languages[".go"] != "go" {
 		t.Fatalf("LSP = %#v", language)
 	}
-	if formatter := result.Config.Formatters["gofmt"]; formatter.Mode != "stdin" || !reflect.DeepEqual(formatter.Extensions, []string{"go"}) {
-		t.Fatalf("formatter = %#v", formatter)
-	}
 	if !result.Config.WebFetch.AllowPrivate {
 		t.Fatal("web_fetch.allow_private was not decoded")
 	}
@@ -210,6 +200,7 @@ func TestLoadRejectsUnknownTypedField(t *testing.T) {
 	writeFile(t, filepath.Join(configDir, FileName), `snapshot:
   root: /legacy/journal
 web_fecth:
+web_fetch:
   allow_private: true
 `)
 	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), "unknown field") {
@@ -278,7 +269,7 @@ func TestLoadGeneratesDefaultConfigWhenMissing(t *testing.T) {
 	if result.Config.DefaultModel != "" {
 		t.Fatalf("DefaultModel = %q, want empty", result.Config.DefaultModel)
 	}
-	if len(result.Config.Providers) != 0 || len(result.Config.MCP) != 0 || len(result.Config.LSP) != 0 || len(result.Config.Formatters) != 0 {
+	if len(result.Config.Providers) != 0 || len(result.Config.MCP) != 0 || len(result.Config.LSP) != 0  {
 		t.Fatalf("generated starter should be empty, got %#v", result.Config)
 	}
 	if result.Config.WebFetch.AllowPrivate {
@@ -339,7 +330,6 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 		"API protocol: 'responses' or 'chat-completions'.",
 		"Transport: 'stdio' or 'http'.",
 		"Absolute path to the language server executable.",
-		"Formatting mode: 'stdin' or 'file'.",
 		"Web fetch restrictions.",
 		"Allow fetching from private addresses; increases SSRF risk.",
 		"OpenRouter-style provider routing preferences, forwarded as the",

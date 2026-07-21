@@ -26,7 +26,6 @@ type Config struct {
 	Providers    map[string]Provider  `json:"providers,omitempty"`
 	MCP          map[string]MCP       `json:"mcp,omitempty"`
 	LSP          map[string]LSP       `json:"lsp,omitempty"`
-	Formatters   map[string]Formatter `json:"formatters,omitempty"`
 	WebFetch     WebFetch             `json:"web_fetch,omitempty"`
 }
 
@@ -51,12 +50,6 @@ type LSP struct {
 	Extensions []string          `json:"extensions,omitempty"`
 	Languages  map[string]string `json:"languages,omitempty"`
 	TimeoutMS  int               `json:"timeout_ms,omitempty"`
-}
-
-type Formatter struct {
-	Extensions []string `json:"extensions"`
-	Command    []string `json:"command"`
-	Mode       string   `json:"mode,omitempty"`
 }
 
 type WebFetch struct {
@@ -257,9 +250,6 @@ func Load(options Options) (Result, error) {
 	}
 	if typed.LSP == nil {
 		typed.LSP = make(map[string]LSP)
-	}
-	if typed.Formatters == nil {
-		typed.Formatters = make(map[string]Formatter)
 	}
 	if options.ConfigDir != "" {
 		if err := WritePredefinedConfig(filepath.Join(options.ConfigDir, PredefinedFileName)); err != nil {
@@ -485,18 +475,6 @@ model: ""
 #     # Milliseconds to wait for responses; zero uses default.
 #     timeout_ms: 15000
 
-# Code formatters run by formatting tools.
-# formatters:
-#   gofmt:
-#     # File extensions this formatter handles.
-#     extensions:
-#       - .go
-#     # Argv command to run; first element must be an absolute executable path.
-#     command:
-#       - /absolute/path/to/gofmt
-#     # Formatting mode: 'stdin' or 'file'.
-#     mode: stdin
-
 # Web fetch restrictions.
 web_fetch:
   # Allow fetching from private addresses; increases SSRF risk.
@@ -619,18 +597,6 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 #       .go: go
 #     # Milliseconds to wait for responses; zero uses default.
 #     timeout_ms: 15000
-
-# Code formatters run by formatting tools.
-# formatters:
-#   gofmt:
-#     # File extensions this formatter handles.
-#     extensions:
-#       - .go
-#     # Argv command to run; first element must be an absolute executable path.
-#     command:
-#       - /absolute/path/to/gofmt
-#     # Formatting mode: 'stdin' or 'file'.
-#     mode: stdin
 
 # Web fetch restrictions.
 web_fetch:

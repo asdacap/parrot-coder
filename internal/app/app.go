@@ -29,7 +29,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/event"
-	"github.com/amirulashraf/parrot-coder/internal/formatter"
 	"github.com/amirulashraf/parrot-coder/internal/httpapi"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/lsp"
@@ -420,7 +419,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		result.lsp = lspManager
 		lspClient = func(ctx context.Context, name string) (tool.LSPClient, error) { return lspManager.Client(ctx, name) }
 	}
-	formatterRegistry, err := buildFormatters(loaded.Config.Formatters, info.Root)
 	if err != nil {
 		return nil, err
 	}
@@ -482,7 +480,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
 		Changes: changes, Processes: processes, Monitor: monitors, Tasks: monitors, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
-		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages}, Formatters: formatterRegistry,
+		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages},
 		Subagents: subagents, Agents: agentLookup,
 	}); err != nil {
 		return nil, fmt.Errorf("app: register built-in tools: %w", err)
@@ -611,7 +609,6 @@ func validateConfigTrust(loaded config.Result) error {
 		}
 		restricted := strings.HasPrefix(field, "mcp.") ||
 			strings.HasPrefix(field, "lsp.") ||
-			strings.HasPrefix(field, "formatters.") ||
 			field == "web_fetch.allow_private"
 		if strings.HasPrefix(field, "providers.") {
 			parts := strings.Split(field, ".")
@@ -1163,27 +1160,6 @@ func buildLSPConfigs(configs map[string]config.LSP, root string) ([]lsp.Config, 
 	return result, languages, nil
 }
 
-func buildFormatters(configs map[string]config.Formatter, root string) (*formatter.Registry, error) {
-	if len(configs) == 0 {
-		return nil, nil
-	}
-	items := make([]formatter.Formatter, 0, len(configs))
-	for _, name := range sortedKeys(configs) {
-		item := configs[name]
-		if len(item.Command) == 0 {
-			return nil, fmt.Errorf("app: formatter %q command argv is required", name)
-		}
-		if err := requireExecutable("formatter "+strconv.Quote(name)+" command", item.Command[0]); err != nil {
-			return nil, err
-		}
-		items = append(items, formatter.Formatter{Name: name, Extensions: append([]string(nil), item.Extensions...), Command: append([]string(nil), item.Command...), Mode: formatter.Mode(item.Mode)})
-	}
-	registry, err := formatter.NewRegistry(formatter.Config{Workspace: root}, items...)
-	if err != nil {
-		return nil, fmt.Errorf("app: formatter config: %w", err)
-	}
-	return registry, nil
-}
 
 func requireExecutable(label, path string) error {
 	if path == "" || !filepath.IsAbs(path) {
