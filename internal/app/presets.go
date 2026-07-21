@@ -23,6 +23,19 @@ type providerPreset struct {
 // point that a user may override per model in parrot.yaml.
 var providerPresets = map[string]providerPreset{
 	"openai": {HeaderTimeout: 10 * time.Second},
+	// openrouter is the OpenRouter aggregation API. It speaks the
+	// chat-completions protocol and serves a large, frequently changing catalog
+	// from /api/v1/models, so the preset carries no model metadata: the fetched
+	// catalog is authoritative. Model IDs include a vendor prefix (such as
+	// "openai/gpt-4o"); model selection splits on the first slash, so the
+	// model portion keeps the vendor prefix, as in
+	// "openrouter/openai/gpt-4o".
+	"openrouter": {
+		Protocol:      "chat-completions",
+		BaseURL:       "https://openrouter.ai/api/v1",
+		APIKeyEnv:     "OPENROUTER_API_KEY",
+		HeaderTimeout: 10 * time.Second,
+	},
 	// kimi-code is the Kimi For Coding subscription. Its endpoint serves the
 	// plan rather than an account balance, so it reports no usage, and it
 	// serves a single plan-named model rather than the platform model IDs.

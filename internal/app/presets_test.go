@@ -83,6 +83,13 @@ func TestApplyProviderPresetFillsOnlyEmptyFields(t *testing.T) {
 			wantTimeoutMS: func() *int { value := 10000; return &value }(),
 		},
 		{
+			name: "openrouter fills chat-completions endpoint and env from preset", id: "openrouter",
+			wantBaseURL:   "https://openrouter.ai/api/v1",
+			wantProtocol:  "chat-completions",
+			wantAPIKeyEnv: "OPENROUTER_API_KEY",
+			wantTimeoutMS: func() *int { value := 10000; return &value }(),
+		},
+		{
 			name: "unknown providers are untouched", id: "whatever",
 			item:        config.Provider{BaseURL: "https://example.com/v1"},
 			wantBaseURL: "https://example.com/v1",
@@ -150,6 +157,13 @@ func TestBuildProvidersUsesPresetsForUnconfiguredProviders(t *testing.T) {
 	}
 	if _, ok := api.(provider.UsageReporter); !ok {
 		t.Fatal("kimi-api does not report its balance")
+	}
+	built, err = BuildProviders(ctx, cfg, storeWithKeys(t, "openrouter"), offlineClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findProvider(built, "openrouter") == nil {
+		t.Fatal("openrouter was not built from a stored credential alone")
 	}
 }
 

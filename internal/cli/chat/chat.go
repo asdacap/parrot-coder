@@ -2740,6 +2740,8 @@ func subscriptionProviderName(id string) string {
 	switch id {
 	case "chatgpt":
 		return "ChatGPT"
+	case "openrouter":
+		return "OpenRouter"
 	case "kimi-code":
 		return "Kimi For Coding"
 	case "kimi-api":

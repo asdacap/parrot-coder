@@ -141,6 +141,37 @@ variants — for the Kimi K2 models. Correct or extend any of it with a
 `providers.kimi-code` or `providers.kimi-api` entry, for example to use a
 regional endpoint or to give a newly served model its real context window.
 
+### OpenRouter
+
+OpenRouter is a built-in provider preset that exposes a large, frequently
+changing catalog through the OpenAI-compatible chat-completions protocol. No
+`providers` entry is needed:
+
+```sh
+printf '%s' "$OPENROUTER_API_KEY" | parrot auth login openrouter --api-key-stdin
+# Or simply export OPENROUTER_API_KEY before starting Parrot.
+
+parrot models
+parrot chat --model openrouter/openai/gpt-4o
+```
+
+`parrot models` lists whatever OpenRouter serves from `/api/v1/models` at
+startup. OpenRouter model IDs include a vendor prefix (for example
+`openai/gpt-4o`, `anthropic/claude-3.7-sonnet`), which model selection keeps as
+the model portion of `openrouter/<vendor>/<model>`. Correct or extend any
+catalog metadata with a `providers.openrouter.models` entry. To set the
+optional ranking headers, add them under `providers.openrouter.headers`:
+
+```yaml
+providers:
+  openrouter:
+    headers:
+      HTTP-Referer: https://your-app.example
+      X-Title: Parrot Coder
+```
+
+OpenRouter has no usage route, so `parrot usage` reports nothing for it.
+
 ### Compatible Endpoint
 
 Create `~/.config/parrot/parrot.yaml`. Configuration stores the name of an
