@@ -8,11 +8,15 @@ type Profile struct {
 	AllowedToolIDs []string
 	// DeniedToolIDs removes tools a profile must never use even though they are
 	// otherwise available to it. It applies after AllowedToolIDs.
-	DeniedToolIDs  []string
-	HardRules      []string
-	MaxTurns       int
-	RecursionLimit int
-	ReadOnly       bool
+	DeniedToolIDs []string
+	// AllowedWritableToolIDs lists tools that are technically writable but are
+	// permitted to a read-only profile because the sandbox prevents filesystem
+	// mutations. It only has effect when ReadOnly is true.
+	AllowedWritableToolIDs []string
+	HardRules              []string
+	MaxTurns               int
+	RecursionLimit         int
+	ReadOnly               bool
 }
 
 // AllowsTool applies only the profile's own allow and deny lists. Whether a
@@ -42,4 +46,11 @@ func (p Profile) AllowsAll(ids []string) bool {
 		}
 	}
 	return true
+}
+
+// AllowsWritableTool reports whether a read-only profile explicitly permits a
+// tool that is marked as writable. Such tools are safe only when the runtime
+// sandbox prevents them from mutating the workspace.
+func (p Profile) AllowsWritableTool(id string) bool {
+	return slices.Contains(p.AllowedWritableToolIDs, id)
 }

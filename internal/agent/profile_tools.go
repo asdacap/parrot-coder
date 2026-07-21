@@ -14,16 +14,22 @@ var GoalContinuationTools = []string{"get_goal", "update_goal"}
 // profile's own lists with the tool's declared read-onlyness, which lives on
 // the tool rather than in a list this package would have to maintain.
 func ProfileAllows(profile profiles.Profile, definition tool.Definition) bool {
-	if profile.ReadOnly && !definition.ReadOnly {
+	if !profile.AllowsTool(definition.ID) {
 		return false
 	}
-	return profile.AllowsTool(definition.ID)
+	if profile.ReadOnly && !definition.ReadOnly && !profile.AllowsWritableTool(definition.ID) {
+		return false
+	}
+	return true
 }
 
 // ProfileAllowsID is ProfileAllows for a call site holding only a tool name.
 func ProfileAllowsID(profile profiles.Profile, snapshot tool.Snapshot, id string) bool {
-	if profile.ReadOnly && !snapshot.ReadOnly(id) {
+	if !profile.AllowsTool(id) {
 		return false
 	}
-	return profile.AllowsTool(id)
+	if profile.ReadOnly && !snapshot.ReadOnly(id) && !profile.AllowsWritableTool(id) {
+		return false
+	}
+	return true
 }
