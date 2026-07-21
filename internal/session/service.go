@@ -432,6 +432,23 @@ func (s *Service) PromoteNextQueue(ctx context.Context, sessionID string) ([]Mes
 	return s.promote(ctx, sessionID, DeliveryQueue, -1)
 }
 
+// HasPendingInputs reports whether the session has any inputs that have been
+// admitted but not yet promoted. The interrupt path uses this to decide
+// whether to automatically resume the drain so queued steers are processed
+// without the user re-prompting.
+func (s *Service) HasPendingInputs(ctx context.Context, sessionID string) (bool, error) {
+	db, err := s.sessions.Session(ctx, sessionID)
+	if err != nil {
+		return false, err
+	}
+	var count int
+	if err := db.SQL().QueryRowContext(ctx, `
+        SELECT COUNT(*) FROM session_input WHERE session_id = ? AND status = 'pending'`, sessionID).Scan(&count); err != nil {
+		return false, fmt.Errorf("session: count pending inputs: %w", err)
+	}
+	return count > 0, nil
+}
+
 func (s *Service) promote(ctx context.Context, sessionID string, delivery Delivery, cutoff int64) ([]Message, error) {
 	var promoted []Input
 	var messages []Message

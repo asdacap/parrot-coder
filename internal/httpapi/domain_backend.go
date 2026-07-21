@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
@@ -348,6 +349,17 @@ func (b *DomainBackend) Interrupt(ctx context.Context, id string) error {
 	}
 	if b.Processes != nil {
 		err = errors.Join(err, b.Processes.InterruptSession(id))
+	}
+	// If the interrupted turn leaves queued inputs behind, resume the drain so
+	// they are processed without the user re-prompting. A fresh context is used
+	// because the request context may have elapsed while waiting for the drain
+	// to unwind; Wake itself starts the new drain on a detached context.
+	if b.Coordinator != nil && b.Sessions != nil {
+		wakeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if pending, pendingErr := b.Sessions.HasPendingInputs(wakeCtx, id); pendingErr == nil && pending {
+			b.Wake(id)
+		}
 	}
 	return err
 }

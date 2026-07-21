@@ -315,6 +315,114 @@ func TestSelectionRejectsActiveSession(t *testing.T) {
 	}
 }
 
+func waitForCondition(t *testing.T, condition func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !condition() {
+		if time.Now().After(deadline) {
+			t.Fatal("condition was not met")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// restartOnceDrainer blocks on the first drain until its context is canceled,
+// then returns the context error. On the second drain it reports that it
+// restarted and completes, so a test can observe the auto-resume triggered by
+// Interrupt when pending inputs remain. The coordinator runs drains for one
+// session sequentially, so the boolean is never read concurrently.
+type restartOnceDrainer struct {
+	started   chan struct{}
+	restarted chan struct{}
+	drained   bool
+}
+
+func (d *restartOnceDrainer) Drain(ctx context.Context, _ string) error {
+	if !d.drained {
+		d.drained = true
+		select {
+		case d.started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	select {
+	case d.restarted <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
+	backend, sessions := newSelectionBackend(t)
+	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	drainer := &restartOnceDrainer{started: make(chan struct{}, 2), restarted: make(chan struct{}, 1)}
+	backend.Coordinator = agent.NewCoordinator(drainer)
+
+	ctx := context.Background()
+	created, err := backend.CreateSession(ctx, v1.CreateSessionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessions.Admit(ctx, created.ID, session.AdmitParams{MessageID: "msg_steer", Content: "queued", Delivery: session.DeliverySteer}); err != nil {
+		t.Fatal(err)
+	}
+
+	backend.Coordinator.Wake(created.ID)
+	select {
+	case <-drainer.started:
+	case <-time.After(time.Second):
+		t.Fatal("first drain did not start")
+	}
+
+	interruptCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := backend.Interrupt(interruptCtx, created.ID); err != nil {
+		t.Fatalf("Interrupt = %v", err)
+	}
+
+	select {
+	case <-drainer.restarted:
+	case <-time.After(3 * time.Second):
+		t.Fatal("queued steer did not auto-resume the drain after interrupt")
+	}
+	waitForCondition(t, func() bool { return backend.Coordinator.Status(created.ID) == agent.StatusIdle })
+}
+
+func TestInterruptDoesNotAutoResumeWithoutPendingInputs(t *testing.T) {
+	backend, _ := newSelectionBackend(t)
+	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	drainer := &restartOnceDrainer{started: make(chan struct{}, 2), restarted: make(chan struct{}, 1)}
+	backend.Coordinator = agent.NewCoordinator(drainer)
+
+	ctx := context.Background()
+	created, err := backend.CreateSession(ctx, v1.CreateSessionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	backend.Coordinator.Wake(created.ID)
+	select {
+	case <-drainer.started:
+	case <-time.After(time.Second):
+		t.Fatal("first drain did not start")
+	}
+
+	interruptCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := backend.Interrupt(interruptCtx, created.ID); err != nil {
+		t.Fatalf("Interrupt = %v", err)
+	}
+
+	select {
+	case <-drainer.restarted:
+		t.Fatal("drain restarted without pending inputs")
+	case <-time.After(200 * time.Millisecond):
+	}
+	waitForCondition(t, func() bool { return backend.Coordinator.Status(created.ID) == agent.StatusIdle })
+}
+
 func TestStrictJSONContentTypeAndLimit(t *testing.T) {
 	server := New(&stubBackend{}, Config{MaxBodyBytes: 32})
 	tests := []struct {
