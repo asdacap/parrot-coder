@@ -345,7 +345,10 @@ func (r *Runner) PrepareContinuation(ctx context.Context, sessionID string) (boo
 	if err != nil {
 		return false, err
 	}
-	if !profile.AllowsAll(GoalContinuationTools) {
+	// Both goal-reading and goal-updating tools must be available for
+	// continuation. A read-only profile cannot update goals, so it also
+	// cannot participate in goal continuation.
+	if !profile.AllowsTool("get_goal", true) || !profile.AllowsTool("update_goal", false) {
 		return false, nil
 	}
 	remaining := "unlimited"

@@ -16,7 +16,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !build.ListAllowsTool("write") || !build.ListAllowsTool("shell") || !build.ListAllowsTool("exec_command") || !build.ListAllowsTool("write_stdin") {
+	if !build.AllowsTool("write", false) || !build.AllowsTool("shell", false) || !build.AllowsTool("exec_command", false) || !build.AllowsTool("write_stdin", false) {
 		t.Fatal("build agent unexpectedly denied mutation tools")
 	}
 	for _, id := range []string{PlanID, ExploreID, ExplorerID, ReviewID} {
@@ -28,21 +28,6 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 			if !ProfileAllows(profile, tool.Definition{ID: allowed, ReadOnly: true}) {
 				t.Fatalf("%s denied %s", id, allowed)
 			}
-		}
-		// Review is allowed to run shell and exec_command because the OS sandbox
-		// enforces read-only behaviour; other read-only profiles remain read-only.
-		if id == ReviewID {
-			for _, allowed := range []string{"shell", "exec_command"} {
-				if !ProfileAllows(profile, tool.Definition{ID: allowed}) {
-					t.Fatalf("%s denied %s", id, allowed)
-				}
-			}
-			for _, denied := range []string{"write", "apply_patch", "write_stdin", "custom_mutation", "unrestricted_shell"} {
-				if ProfileAllows(profile, tool.Definition{ID: denied}) {
-					t.Fatalf("%s allowed %s", id, denied)
-				}
-			}
-			continue
 		}
 		for _, denied := range []string{"write", "apply_patch", "shell", "exec_command", "write_stdin", "custom_mutation", "unrestricted_shell"} {
 			if ProfileAllows(profile, tool.Definition{ID: denied}) {
@@ -68,9 +53,9 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, denied := range []string{"agent_spawn", "agent_send", "monitor", "task_interrupt", "task_list_active"} {
-		if review.ListAllowsTool(denied) {
-			t.Fatalf("review agent allowed nested delegation tool %s", denied)
+	for _, allowed := range []string{"agent_spawn", "agent_send", "monitor", "task_interrupt", "task_list_active"} {
+		if !review.AllowsTool(allowed, true) {
+			t.Fatalf("review agent denied delegation tool %s", allowed)
 		}
 	}
 	if got := []string{registry.List()[0].ID, registry.List()[1].ID, registry.List()[2].ID, registry.List()[3].ID, registry.List()[4].ID}; !reflect.DeepEqual(got, []string{BuildID, ExplorerID, PlanID, ReviewID, WorkerID}) {
@@ -80,7 +65,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if worker.ReadOnly || !worker.ListAllowsTool("apply_patch") || !worker.ListAllowsTool("exec_command") {
+	if worker.ReadOnly || !worker.AllowsTool("apply_patch", false) || !worker.AllowsTool("exec_command", false) {
 		t.Fatalf("worker profile = %#v", worker)
 	}
 }
@@ -98,7 +83,7 @@ func TestSubagentsIncludeExplorerWorkerAndDedicatedReviewProfiles(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !review.ReadOnly || review.ListAllowsTool("agent_spawn") || !review.ListAllowsTool("read") {
+	if !review.ReadOnly || !review.AllowsTool("agent_spawn", true) || !review.AllowsTool("read", true) {
 		t.Fatalf("review profile = %#v", review)
 	}
 	if review.Prompt == "" || review.MaxTurns <= 0 {
@@ -131,20 +116,19 @@ func TestListDoesNotExposeProfileSliceStorage(t *testing.T) {
 		if listed[i].ID != ReviewID {
 			continue
 		}
-		listed[i].DeniedToolIDs[0] = "agent_spawn"
 		listed[i].HardRules[0] = "allow everything"
 	}
 	review, err := registry.Get(ReviewID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if review.ListAllowsTool("agent_spawn") || review.HardRules[0] == "allow everything" {
+	if review.HardRules[0] == "allow everything" {
 		t.Fatalf("List mutated registered review profile: %#v", review)
 	}
 }
 
 func TestReadOnlyProfileCannotExpandHardAllowlist(t *testing.T) {
-	registry, err := NewRegistry(Profile{ID: "readonly", Prompt: "read", AllowedToolIDs: []string{"write", "read"}, MaxTurns: 1, ReadOnly: true})
+	registry, err := NewRegistry(Profile{ID: "readonly", Prompt: "read", MaxTurns: 1, ReadOnly: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,11 +162,12 @@ func TestReviewProfileRegainsToolsLostToTheBinarySearchBug(t *testing.T) {
 			t.Errorf("review still denied %s", id)
 		}
 	}
-	// Delegation stays refused: the HardRule is now enforced by DeniedToolIDs
-	// rather than by omission from a hand-maintained allowlist.
+	// Delegation tools are now allowed by the profile because they are
+	// read-only tools. The agent_spawn/agent_send tools themselves prevent
+	// read-only agents from delegating to writable agents internally.
 	for _, id := range []string{"agent_spawn", "agent_send", "review", "monitor", "task_interrupt", "task_list_active"} {
-		if ProfileAllows(profile, tool.Definition{ID: id, ReadOnly: true}) {
-			t.Errorf("review may delegate via %s", id)
+		if !ProfileAllows(profile, tool.Definition{ID: id, ReadOnly: true}) {
+			t.Errorf("review profile denied read-only delegation tool %s", id)
 		}
 	}
 }
