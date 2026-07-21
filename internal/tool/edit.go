@@ -5,7 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"strings"
+
 	"github.com/amirulashraf/parrot-coder/internal/change"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type EditTool struct {
@@ -58,6 +62,9 @@ func (t *EditTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
+	if looksLikeUnifiedDiff(input.New) && !existingFileIsUnifiedDiff(call.Workspace, input.Path) {
+		return Plan{}, fmt.Errorf("edit: the content looks like a unified diff, but edit replaces the whole file. Use apply_patch to apply the diff instead")
+	}
 	planned, err := service.PlanEdit(ctx, call.Workspace, input)
 	if err != nil {
 		return Plan{}, err
@@ -75,4 +82,48 @@ func (t *EditTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		result.Text += "sha256: " + planned.Mutations[0].After.SHA256 + "\n"
 	}
 	return result, nil
+}
+
+// looksLikeUnifiedDiff reports whether text appears to be a git-style unified
+// diff rather than a plain file replacement. This is a heuristic: a file whose
+// first non-empty line starts with "--- " and whose second starts with "+++ "
+// is almost certainly a patch, not a file whose content happens to resemble one.
+func looksLikeUnifiedDiff(text string) bool {
+	lines := strings.Split(text, "\n")
+	firstNonEmpty := -1
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+			continue
+		}
+		firstNonEmpty = i
+		break
+	}
+	if firstNonEmpty < 0 || !strings.HasPrefix(strings.TrimRight(lines[firstNonEmpty], "\r"), "--- ") {
+		return false
+	}
+	for j := firstNonEmpty + 1; j < len(lines); j++ {
+		trimmed := strings.TrimSpace(lines[j])
+		if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+			continue
+		}
+		return strings.HasPrefix(trimmed, "+++ ")
+	}
+	return false
+}
+
+// existingFileIsUnifiedDiff reads the existing file at the given path (if it
+// exists) and reports whether its content looks like a unified diff. This lets
+// the edit tool allow edits to files that legitimately contain diff-like content
+// (e.g. patch files, test fixtures).
+func existingFileIsUnifiedDiff(ws *workspace.Workspace, path string) bool {
+	resolved, err := ws.ResolveRead(path)
+	if err != nil {
+		return false
+	}
+	data, err := os.ReadFile(resolved)
+	if err != nil {
+		return false
+	}
+	return looksLikeUnifiedDiff(string(data))
 }
