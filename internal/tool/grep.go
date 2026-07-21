@@ -118,6 +118,9 @@ func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	return NewPlan(t.ID(), raw, []permission.Request{req}, nil, grepPlan{input, root, rx})
 }
 func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	p := plan.Data.(grepPlan)
 	requestedPath := p.Input.Path
 	if requestedPath == "" {

@@ -30,6 +30,9 @@ func (t *GetGoalTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext
 	return NewPlan(t.ID(), raw, nil, nil, nil)
 }
 func (t *GetGoalTool) Execute(ctx context.Context, _ Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	if t.Service == nil || call.SessionID == "" {
 		return Result{}, errors.New("get_goal: service and session are required")
 	}
@@ -79,6 +82,9 @@ func (t *CreateGoalTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 func (t *CreateGoalTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	if t.Service == nil || call.SessionID == "" {
 		return Result{}, errors.New("create_goal: service and session are required")
 	}
@@ -125,6 +131,9 @@ func (t *UpdateGoalTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 func (t *UpdateGoalTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	if t.Service == nil || call.SessionID == "" {
 		return Result{}, errors.New("update_goal: service and session are required")
 	}

@@ -78,6 +78,9 @@ func (t *WriteStdinTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 }
 
 func (t *WriteStdinTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	runner := t.Runner
 	if runner == nil {
 		runner = call.Processes

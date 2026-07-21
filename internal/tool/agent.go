@@ -151,6 +151,9 @@ func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContex
 }
 
 func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	input, ok := plan.Data.(agentInput)
 	if !ok {
 		return Result{}, errors.New("agent: incompatible plan")

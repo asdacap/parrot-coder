@@ -687,12 +687,6 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 			// Record the call before any cancellable operation. This lets cleanup
 			// settle and answer calls that were still waiting for the semaphore.
 			outcomes[i].call = call
-			if !ProfileAllowsID(profile, snapshot, call.call.Name) {
-				err := fmt.Errorf("tool %q denied by agent %q", call.call.Name, profile.ID)
-				settleErr := r.config.Sessions.SettleTool(ctx, sessionID, call.call.ID, "failure", "", err.Error())
-				outcomes[i] = toolOutcome{call: call, err: err, settled: settleErr == nil, persistErr: settleErr}
-				return
-			}
 			select {
 			case sem <- struct{}{}:
 			case <-ctx.Done():
@@ -710,7 +704,7 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 					logger(ctx, sessionID, call.call.Name, recovered, stack)
 				}
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile()}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {
@@ -804,13 +798,11 @@ func (r *Runner) finishAssistantOnCleanup(sessionID, messageID string, final ses
 	return r.config.Sessions.FinishAssistant(ctx, sessionID, messageID, final)
 }
 
-func toolDefinitions(snapshot tool.Snapshot, profile Profile) []protocol.ToolDefinition {
+func toolDefinitions(snapshot tool.Snapshot, _ Profile) []protocol.ToolDefinition {
 	definitions := snapshot.Definitions()
 	result := make([]protocol.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {
-		if ProfileAllows(profile, definition) {
-			result = append(result, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
-		}
+		result = append(result, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
 	}
 	return result
 }

@@ -58,7 +58,7 @@ func (t *SkillTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) 
 	review, _ := json.Marshal(map[string]any{"name": loaded.Name, "description": loaded.Description, "agent": loaded.Agent, "model": loaded.Model, "allowed_tools": loaded.AllowedTools})
 	return NewPlan(t.ID(), raw, nil, review, loaded)
 }
-func (t *SkillTool) Execute(_ context.Context, plan Plan, _ CallContext) (Result, error) {
+func (t *SkillTool) Execute(_ context.Context, plan Plan, call CallContext) (Result, error) {
 	loaded, ok := plan.Data.(skill.Skill)
 	if !ok {
 		return Result{}, errors.New("skill: incompatible plan")

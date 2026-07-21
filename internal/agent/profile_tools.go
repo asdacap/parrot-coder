@@ -11,25 +11,7 @@ import (
 var GoalContinuationTools = []string{"get_goal", "update_goal"}
 
 // ProfileAllows reports whether a profile may call a tool. It combines the
-// profile's own lists with the tool's declared read-onlyness, which lives on
-// the tool rather than in a list this package would have to maintain.
+// profile's own lists with the tool's declared read-onlyness.
 func ProfileAllows(profile profiles.Profile, definition tool.Definition) bool {
-	if !profile.AllowsTool(definition.ID) {
-		return false
-	}
-	if profile.ReadOnly && !definition.ReadOnly && !profile.AllowsWritableTool(definition.ID) {
-		return false
-	}
-	return true
-}
-
-// ProfileAllowsID is ProfileAllows for a call site holding only a tool name.
-func ProfileAllowsID(profile profiles.Profile, snapshot tool.Snapshot, id string) bool {
-	if !profile.AllowsTool(id) {
-		return false
-	}
-	if profile.ReadOnly && !snapshot.ReadOnly(id) && !profile.AllowsWritableTool(id) {
-		return false
-	}
-	return true
+	return profile.AllowsTool(definition.ID, definition.ReadOnly)
 }

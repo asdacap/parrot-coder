@@ -69,7 +69,7 @@ func (t *WebFetchTool) Plan(_ context.Context, raw json.RawMessage, _ CallContex
 	}
 	return NewPlan(t.ID(), raw, []permission.Request{request}, review, webFetchPlan{Input: input, Normalized: normalized})
 }
-func (t *WebFetchTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Result, error) {
+func (t *WebFetchTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	planned, ok := plan.Data.(webFetchPlan)
 	if !ok {
 		return Result{}, errors.New("web_fetch: incompatible plan")

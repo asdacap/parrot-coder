@@ -64,7 +64,7 @@ func (t *MCPTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (P
 	}
 	return NewPlan(t.ID(), raw, []permission.Request{request}, review, mcpPlan{arguments: canonical, hash: hash})
 }
-func (t *MCPTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Result, error) {
+func (t *MCPTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	planned, ok := plan.Data.(mcpPlan)
 	if !ok {
 		return Result{}, errors.New("mcp tool: incompatible plan")

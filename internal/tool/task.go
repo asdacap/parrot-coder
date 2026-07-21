@@ -83,6 +83,9 @@ func (t *TaskTool) Plan(_ context.Context, raw json.RawMessage, call CallContext
 }
 
 func (t *TaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	input, ok := plan.Data.(taskInput)
 	if !ok {
 		return Result{}, errors.New("task: incompatible plan")

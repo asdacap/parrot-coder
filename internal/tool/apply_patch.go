@@ -86,5 +86,8 @@ func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call Cal
 }
 
 func (t *ApplyPatchTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	if err := call.CheckTool(t); err != nil {
+		return Result{}, err
+	}
 	return executeMutation(ctx, t.Changes, plan, call)
 }

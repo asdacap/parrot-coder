@@ -564,9 +564,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 		definitions := make([]protocol.ToolDefinition, 0)
 		for _, definition := range toolSnapshot.Definitions() {
-			if agent.ProfileAllows(profile, definition) {
-				definitions = append(definitions, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
-			}
+			definitions = append(definitions, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
 		}
 		instructions := profile.Prompt
 		if len(profile.HardRules) > 0 {
