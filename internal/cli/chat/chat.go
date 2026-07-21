@@ -628,6 +628,10 @@ func isTaskEvent(item v1.Event) bool {
 	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
 }
 
+func (t *taskStreamTracker) Tracker() *chatview.TaskTracker {
+	return t.tracker
+}
+
 func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
 	if t.tracker == nil {
 		t.tracker = chatview.NewTaskTracker()

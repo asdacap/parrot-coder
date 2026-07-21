@@ -590,6 +590,10 @@ type taskNode struct {
 	messages map[string]*taskMessageState
 	tools    *StreamToolTracker
 	done     map[string]bool
+
+	directInputTokens   int
+	directOutputTokens  int
+	directCachedTokens  int
 }
 
 // TaskTracker rebuilds the task tree from flat task events and renders task
@@ -687,6 +691,31 @@ func (t *TaskTracker) known(id string) *taskNode {
 		return nil
 	}
 	return t.tasks[id]
+}
+
+// CumulativeUsage returns the task's own token counts plus all descendants.
+// This walks the tree once per call — safe for small task counts (<100).
+func (t *TaskTracker) CumulativeUsage(taskID string) (input, output, cached int) {
+	node := t.tasks[taskID]
+	if node == nil {
+		return 0, 0, 0
+	}
+	return t.nodeCumulativeUsage(node)
+}
+
+func (t *TaskTracker) nodeCumulativeUsage(node *taskNode) (input, output, cached int) {
+	input = node.directInputTokens
+	output = node.directOutputTokens
+	cached = node.directCachedTokens
+	for _, child := range t.tasks {
+		if child.parentID == node.id {
+			ci, co, cc := t.nodeCumulativeUsage(child)
+			input += ci
+			output += co
+			cached += cc
+		}
+	}
+	return
 }
 
 // Apply folds one flat event into the task tree and returns what to render.
@@ -896,6 +925,9 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if node.done[id] {
 			return nil, nil
 		}
+		node.directInputTokens = progress.Usage.InputTokens
+		node.directOutputTokens = progress.Usage.OutputTokens
+		node.directCachedTokens = progress.Usage.CachedInputTokens
 		line := fmt.Sprintf("agent: %s · %s tokens · %d tools", progress.Agent, FormatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
 		terminalEvent := progress.Status != "pending" && progress.Status != "running"
 		if terminalEvent {
