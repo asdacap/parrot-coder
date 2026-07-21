@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,6 +25,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
 	"github.com/amirulashraf/parrot-coder/internal/client"
+	configpkg "github.com/amirulashraf/parrot-coder/internal/config"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
@@ -414,7 +416,7 @@ func command(ctx context.Context, config Config) int {
 	plainOut := terminal.Writer{W: stdout}
 	shell := &chatShell{
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
-		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, claimRequest: claimRequest, commands: runtime.Commands,
+		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, configDir: runtime.Paths.Config, claimRequest: claimRequest, commands: runtime.Commands,
 		build: config.Build, credentials: runtime.Credentials, handler: runtime.Handler,
 		reloadProviders: func(ctx context.Context) error { return runtime.ReloadProviders(ctx) },
 		models:          models.Items, presentation: chatview.NewPresentations(toolList),
@@ -1277,6 +1279,7 @@ type chatShell struct {
 	options      codingFlags
 	projectID    string
 	projectRoot  string
+	configDir    string
 	claimRequest v1.ClaimSessionRequest
 	commands     *customcommand.Registry
 	build        BuildInfo
@@ -2487,6 +2490,11 @@ func (s *chatShell) applyModel(value string) error {
 	}
 	s.selection.provider, s.selection.model, s.selection.variant = provider, model, variant
 	s.current.Provider, s.current.Model, s.current.Variant = provider, model, variant
+	if s.configDir != "" {
+		if err := configpkg.UpdateDefaultModel(filepath.Join(s.configDir, configpkg.FileName), value); err != nil {
+			return err
+		}
+	}
 	s.commitStatus("✓ Model selected: " + value)
 	return nil
 }

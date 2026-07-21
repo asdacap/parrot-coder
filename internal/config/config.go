@@ -504,3 +504,52 @@ func writeDefaultConfig(path string) error {
 	}
 	return os.WriteFile(path, []byte(defaultConfigYAML), 0o600)
 }
+
+// UpdateDefaultModel updates or adds the top-level "model" field in a YAML
+// config file at path, preserving comments and other fields. The value must
+// be in provider/model format. It is a no-op when the file already contains
+// the same value.
+func UpdateDefaultModel(path, model string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read config for model update: %w", err)
+	}
+	var doc yaml.Node
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse config for model update: %w", err)
+	}
+
+	// Walk to the root mapping node.
+	root := &doc
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		root = doc.Content[0]
+	}
+	if root.Kind != yaml.MappingNode {
+		return errors.New("config root must be a mapping")
+	}
+
+	// Check whether the model key already exists.
+	for i := 0; i < len(root.Content)-1; i += 2 {
+		if root.Content[i].Value == "model" {
+			if root.Content[i+1].Value == model {
+				return nil // already set; nothing to do
+			}
+			root.Content[i+1].Value = model
+			out, err := yaml.Marshal(&doc)
+			if err != nil {
+				return fmt.Errorf("encode updated config: %w", err)
+			}
+			return os.WriteFile(path, out, 0o600)
+		}
+	}
+
+	// Not found; insert at the beginning of the mapping.
+	key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "model"}
+	value := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: model}
+	root.Content = append([]*yaml.Node{key, value}, root.Content...)
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return fmt.Errorf("encode updated config: %w", err)
+	}
+	return os.WriteFile(path, out, 0o600)
+}

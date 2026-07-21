@@ -91,6 +91,12 @@ web_fetch:
   allow_private: false
 ```
 
+The `model` field is also updated in-place by the interactive `/model` chat
+command and the model picker: when you select a model interactively, Parrot
+writes it to the global config file so the selection persists across restarts.
+This makes the global config file a form of persistent state as well as
+configuration. Project-scope config files are not written to.
+
 ### Providers
 
 The built-in provider ID is `chatgpt`; it is not configured in `providers`.
