@@ -4,19 +4,24 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 )
 
 // DecodeOpenRouterModels parses an OpenRouter model list. OpenRouter extends the
-// standard OpenAI /v1/models format with a reasoning object (supported_efforts,
-// default_effort) and a top_provider object (max_completion_tokens), which a
-// plain model list cannot express. Reasoning efforts become variants so /effort
-// works without configuration.
+// standard OpenAI /v1/models format with a pricing object (prompt, completion)
+// and a reasoning object (supported_efforts, default_effort) and a top_provider
+// object (max_completion_tokens), which a plain model list cannot express.
+// Reasoning efforts become variants so /effort works without configuration.
 func DecodeOpenRouterModels(data []byte) ([]Model, error) {
 	var wire struct {
 		Data []struct {
-			ID          string `json:"id"`
-			Name        string `json:"name"`
-			ContextLength int  `json:"context_length"`
+			ID            string `json:"id"`
+			Name          string `json:"name"`
+			ContextLength int    `json:"context_length"`
+			Pricing       *struct {
+				Prompt     string `json:"prompt"`
+				Completion string `json:"completion"`
+			} `json:"pricing,omitempty"`
 			TopProvider *struct {
 				MaxCompletionTokens int `json:"max_completion_tokens,omitempty"`
 			} `json:"top_provider,omitempty"`
@@ -51,10 +56,17 @@ func DecodeOpenRouterModels(data []byte) ([]Model, error) {
 		if item.Reasoning != nil {
 			variants = effortVariants(item.Reasoning.SupportedEfforts, item.Reasoning.DefaultEffort)
 		}
+		inputPrice, outputPrice := 0.0, 0.0
+		if item.Pricing != nil {
+			inputPrice, _ = strconv.ParseFloat(item.Pricing.Prompt, 64)
+			outputPrice, _ = strconv.ParseFloat(item.Pricing.Completion, 64)
+		}
 		models = append(models, Model{
 			ID: item.ID, Name: name,
 			ContextWindow:   item.ContextLength,
 			MaxOutputTokens: maxTokens,
+			InputPrice:      inputPrice,
+			OutputPrice:     outputPrice,
 			Capabilities: Capabilities{
 				Tools: true, Output: []string{"text"}, Variants: variants,
 			},

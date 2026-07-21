@@ -279,6 +279,12 @@ func mergeModels(fetched []Model, declared, defaults []Model) []Model {
 			if model.MaxOutputTokens == 0 {
 				model.MaxOutputTokens = item.MaxOutputTokens
 			}
+			if model.InputPrice == 0 {
+				model.InputPrice = item.InputPrice
+			}
+			if model.OutputPrice == 0 {
+				model.OutputPrice = item.OutputPrice
+			}
 			if len(model.Capabilities.Variants) == 0 {
 				model.Capabilities.Variants = item.Capabilities.Variants
 			}
