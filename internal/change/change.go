@@ -17,7 +17,7 @@ import (
 )
 
 var (
-	ErrStale        = errors.New("change: file changed after planning")
+	ErrStale        = errors.New("change: file hash mismatch")
 	ErrConflict     = errors.New("change: edit does not match exactly once")
 	ErrInvalidPatch = errors.New("change: invalid patch")
 )
