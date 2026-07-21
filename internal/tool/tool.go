@@ -163,6 +163,25 @@ func (s Snapshot) Definitions() []Definition {
 	return out
 }
 
+// Without returns a new Snapshot with the specified tool IDs removed.
+// It returns the same Snapshot when the blacklist is empty.
+func (s Snapshot) Without(blacklisted []string) Snapshot {
+	if len(blacklisted) == 0 {
+		return s
+	}
+	blacklist := make(map[string]bool, len(blacklisted))
+	for _, id := range blacklisted {
+		blacklist[id] = true
+	}
+	tools := make(map[string]Tool, len(s.tools))
+	for id, t := range s.tools {
+		if !blacklist[id] {
+			tools[id] = t
+		}
+	}
+	return Snapshot{tools: tools, definitions: definitions(tools)}
+}
+
 // Presentations projects the declared display metadata of every tool. It is
 // deliberately separate from Definitions so that presentation detail never
 // reaches the model's tool guidance.

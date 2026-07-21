@@ -293,3 +293,6 @@ func TestSetConfigTool_Integration_ExecuteRemove(t *testing.T) {
 type readOnlyProfile struct{}
 
 func (readOnlyProfile) IsReadOnly() bool { return true }
+func (readOnlyProfile) AllowReadPaths() []string  { return nil }
+func (readOnlyProfile) AllowWritePaths() []string { return nil }
+func (readOnlyProfile) DenyWritePaths() []string  { return nil }

@@ -27,6 +27,7 @@ type Config struct {
 	MCP          map[string]MCP       `json:"mcp,omitempty"`
 	LSP          map[string]LSP       `json:"lsp,omitempty"`
 	WebFetch     WebFetch             `json:"web_fetch,omitempty"`
+	ToolBlacklist []string            `json:"tool_blacklist,omitempty"`
 }
 
 type MCP struct {
@@ -380,6 +381,10 @@ const predefinedConfigYAML = `# Predefined configuration reference.
 # Default model selected as provider/model.
 model: ""
 
+# Tool blacklist: tools listed here are disabled and not available to the model.
+# tool_blacklist:
+#   - unrestricted_shell
+
 # OpenAI-compatible providers and their model catalogs.
 # providers:
 #   provider:
@@ -496,6 +501,10 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 
 # Default model selected as provider/model.
 # model: provider/model
+
+# Tool blacklist: tools listed here are disabled and not available to the model.
+# tool_blacklist:
+#   - unrestricted_shell
 
 # OpenAI-compatible providers and their model catalogs.
 # providers:
