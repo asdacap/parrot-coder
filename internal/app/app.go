@@ -487,6 +487,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: register built-in tools: %w", err)
 	}
 	toolSnapshot := tools.Materialize()
+	if len(loaded.Config.ToolBlacklist) > 0 {
+		toolSnapshot = toolSnapshot.Without(loaded.Config.ToolBlacklist)
+	}
 	guidance, _ := json.Marshal(toolSnapshot.Definitions())
 	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
 	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)

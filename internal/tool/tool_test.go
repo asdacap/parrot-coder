@@ -237,6 +237,62 @@ func TestDefinitionsCarryNoPresentationDetail(t *testing.T) {
 	}
 }
 
+func TestSnapshotWithout(t *testing.T) {
+	r := NewRegistry()
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if err := r.Register(testTool{id: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s := r.Materialize()
+
+	if len(s.Definitions()) != 4 {
+		t.Fatalf("expected 4 definitions, got %d", len(s.Definitions()))
+	}
+
+	// Filter out "b" and "d"
+	filtered := s.Without([]string{"b", "d"})
+	defs := filtered.Definitions()
+	if len(defs) != 2 {
+		t.Fatalf("expected 2 definitions, got %d", len(defs))
+	}
+	if defs[0].ID != "a" || defs[1].ID != "c" {
+		t.Fatalf("filtered definitions = %#v", defs)
+	}
+
+	// Original snapshot is unchanged
+	if len(s.Definitions()) != 4 {
+		t.Fatal("original snapshot was modified")
+	}
+
+	// Empty blacklist returns the same snapshot
+	same := s.Without(nil)
+	if len(same.Definitions()) != 4 {
+		t.Fatalf("empty blacklist returned %d definitions", len(same.Definitions()))
+	}
+
+	// Empty slice blacklist returns the same snapshot
+	same = s.Without([]string{})
+	if len(same.Definitions()) != 4 {
+		t.Fatalf("empty slice blacklist returned %d definitions", len(same.Definitions()))
+	}
+
+	// Executor rejects blacklisted tools
+	executor := Executor{Snapshot: filtered}
+	if _, err := executor.Execute(context.Background(), "b", json.RawMessage(`{"value":"x"}`), CallContext{}); err == nil {
+		t.Fatal("blacklisted tool was executable")
+	}
+	if _, err := executor.Execute(context.Background(), "a", json.RawMessage(`{"value":"x"}`), CallContext{}); err != nil {
+		t.Fatalf("allowed tool was rejected: %v", err)
+	}
+
+	// Blacklisting unknown IDs is a no-op
+	filtered = s.Without([]string{"unknown"})
+	if len(filtered.Definitions()) != 4 {
+		t.Fatalf("unknown blacklist changed the snapshot: %d definitions", len(filtered.Definitions()))
+	}
+}
+
 func TestModelTextBoundsWithoutTouchingTheRecord(t *testing.T) {
 	large := strings.Repeat("x", maxModelTextBytes*2)
 	for _, test := range []struct {
