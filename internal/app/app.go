@@ -976,7 +976,9 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 		}
 		var compatible provider.Provider
 		var createErr error
-		if id == "kimi-api" {
+		if id == "opencode-go" {
+			compatible, createErr = provider.NewOpenCodeGo(options)
+		} else if id == "kimi-api" {
 			// Only the Moonshot platform API exposes a balance; the Kimi For
 			// Coding subscription endpoint has no such route.
 			compatible, createErr = provider.NewKimi(options)
