@@ -3,6 +3,7 @@ package enhancedchat
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
@@ -83,6 +84,7 @@ func (r *enhancedChatRuntime) detectModal() {
 		r.modal = &enhancedModal{
 			kind: "permission", state: state, permission: &item,
 			prompt: "permission decision: ", choices: permissionChoicesFor(item),
+			createdAt: time.Now(),
 		}
 		r.inputMode.advance()
 		r.showPermissionContext(item)
@@ -98,7 +100,7 @@ func (r *enhancedChatRuntime) detectModal() {
 			r.status = "question editor unavailable"
 			return
 		}
-		r.modal = &enhancedModal{kind: "question", state: state, question: &request}
+		r.modal = &enhancedModal{kind: "question", state: state, question: &request, createdAt: time.Now()}
 		r.inputMode.advance()
 		r.updateQuestionPrompt()
 		r.showQuestionContext(request.Questions[0])
@@ -455,4 +457,16 @@ func (r *enhancedChatRuntime) finishModal() {
 	}
 	r.modal = nil
 	r.inputMode.advance()
+}
+
+func (r *enhancedChatRuntime) timeoutModal() {
+	if r.modal == nil {
+		return
+	}
+	modal := r.modal
+	if modal.kind == "permission" && modal.permission != nil {
+		_ = r.shell.api.ReplyPermission(r.shell.ctx, r.shell.current.ID, modal.permission.ID, v1.PermissionReply{Decision: "deny", Reason: "user is away"})
+	}
+	r.status = "permission denied: user is away"
+	r.finishModal()
 }

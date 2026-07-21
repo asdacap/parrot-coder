@@ -23,6 +23,7 @@ const (
 	maxToolBlockLines   = 10
 	maxShellOutputLines = 3
 	maxShellOutputBytes = 16 << 10
+	permissionTimeout  = 2 * time.Minute
 )
 
 func isExecutionHaltKey(key terminal.Key) bool {
@@ -203,6 +204,7 @@ type enhancedModal struct {
 	answers         []v1.Answer
 	customInput     bool
 	selectedOptions map[string]bool
+	createdAt       time.Time
 }
 
 type enhancedInputOutcome struct {
@@ -500,6 +502,9 @@ func (s *chatShell) runEnhanced(first string) int {
 				if err != nil {
 					runtime.status = "runtime reconciliation failed"
 				}
+			}
+			if runtime.modal != nil && runtime.modal.kind == "permission" && !runtime.modal.createdAt.IsZero() && time.Since(runtime.modal.createdAt) > permissionTimeout {
+				runtime.timeoutModal()
 			}
 			if err := runtime.render(); err != nil {
 				return s.enhancedRenderError(err)
