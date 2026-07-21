@@ -29,9 +29,22 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 				t.Fatalf("%s denied %s", id, allowed)
 			}
 		}
-		// A writable tool is refused because the tool declares itself writable,
-		// not because the profile lists it.
-		for _, denied := range []string{"write", "apply_patch", "shell", "exec_command", "write_stdin", "custom_mutation"} {
+		// Review is allowed to run shell and exec_command because the OS sandbox
+		// enforces read-only behaviour; other read-only profiles remain read-only.
+		if id == ReviewID {
+			for _, allowed := range []string{"shell", "exec_command"} {
+				if !ProfileAllows(profile, tool.Definition{ID: allowed}) {
+					t.Fatalf("%s denied %s", id, allowed)
+				}
+			}
+			for _, denied := range []string{"write", "apply_patch", "write_stdin", "custom_mutation", "unrestricted_shell"} {
+				if ProfileAllows(profile, tool.Definition{ID: denied}) {
+					t.Fatalf("%s allowed %s", id, denied)
+				}
+			}
+			continue
+		}
+		for _, denied := range []string{"write", "apply_patch", "shell", "exec_command", "write_stdin", "custom_mutation", "unrestricted_shell"} {
 			if ProfileAllows(profile, tool.Definition{ID: denied}) {
 				t.Fatalf("%s allowed %s", id, denied)
 			}

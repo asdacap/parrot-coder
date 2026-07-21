@@ -69,6 +69,7 @@ func (r *Registry) Register(profile Profile) error {
 		return errors.New("agent: ID, prompt, and positive max turns are required")
 	}
 	profile.AllowedToolIDs = sortedUnique(profile.AllowedToolIDs)
+	profile.AllowedWritableToolIDs = sortedUnique(profile.AllowedWritableToolIDs)
 	profile.HardRules = append([]string(nil), profile.HardRules...)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -93,6 +94,7 @@ func (r *Registry) Get(id string) (Profile, error) {
 		return Profile{}, fmt.Errorf("agent: unknown profile %q", id)
 	}
 	profile.AllowedToolIDs = append([]string(nil), profile.AllowedToolIDs...)
+	profile.AllowedWritableToolIDs = append([]string(nil), profile.AllowedWritableToolIDs...)
 	profile.HardRules = append([]string(nil), profile.HardRules...)
 	return profile, nil
 }
@@ -102,6 +104,7 @@ func (r *Registry) List() []Profile {
 	result := make([]Profile, 0, len(r.profiles))
 	for _, profile := range r.profiles {
 		profile.AllowedToolIDs = append([]string(nil), profile.AllowedToolIDs...)
+		profile.AllowedWritableToolIDs = append([]string(nil), profile.AllowedWritableToolIDs...)
 		profile.HardRules = append([]string(nil), profile.HardRules...)
 		result = append(result, profile)
 	}
