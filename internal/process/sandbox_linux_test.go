@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"slices"
 	"testing"
+
+	"github.com/amirulashraf/parrot-coder/internal/security"
 )
 
 func TestLinuxSandboxCommand(t *testing.T) {
@@ -36,8 +38,9 @@ func TestLinuxSandboxCommand(t *testing.T) {
 	externalCwd := t.TempDir()
 	temporaryDirectory := t.TempDir()
 
-	implementation := linuxSandbox{workspace: root, workingDirectory: nested}
-	program, args, err := implementation.command("/bin/sh", "printf ok", externalCwd, []string{writable}, temporaryDirectory)
+	implementation := linuxSandbox{workspace: root}
+	profile := testProfile(root, temporaryDirectory, []string{writable}, nested)
+	program, args, err := implementation.command("/bin/sh", "printf ok", externalCwd, profile, temporaryDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -73,7 +76,9 @@ func TestLinuxSandboxMountsExternalWorkingDirectory(t *testing.T) {
 	t.Setenv("PATH", bin)
 	external := t.TempDir()
 
-	_, args, err := (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "pwd", external, nil, t.TempDir())
+	implementation := linuxSandbox{workspace: root}
+	profile := testProfile(root, t.TempDir(), nil, external)
+	_, args, err := implementation.command("/bin/sh", "pwd", external, profile, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -84,7 +89,8 @@ func TestLinuxSandboxMountsExternalWorkingDirectory(t *testing.T) {
 		t.Fatalf("workspace must be mounted after external cwd: %q", args)
 	}
 
-	_, args, err = (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "pwd", filepath.Dir(root), nil, t.TempDir())
+	profile2 := testProfile(root, t.TempDir(), nil, filepath.Dir(root))
+	_, args, err = implementation.command("/bin/sh", "pwd", filepath.Dir(root), profile2, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -117,7 +123,9 @@ func TestLinuxSandboxAllowsLinkedWorktreeGitMetadata(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 
-	_, args, err := (linuxSandbox{workspace: root, workingDirectory: root}).command("/bin/sh", "git commit", root, nil, t.TempDir())
+	implementation := linuxSandbox{workspace: root}
+	profile := testProfile(root, t.TempDir(), nil, root)
+	_, args, err := implementation.command("/bin/sh", "git commit", root, profile, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,16 +145,31 @@ func TestLinuxSandboxDoesNotShadowPrivateTmp(t *testing.T) {
 	}
 	t.Setenv("PATH", bin)
 	root := t.TempDir()
-	implementation := linuxSandbox{workspace: root, workingDirectory: root}
-	if _, _, err := implementation.command("/bin/sh", "true", "/tmp", nil, t.TempDir()); err == nil {
+	implementation := linuxSandbox{workspace: root}
+	if _, _, err := implementation.command("/bin/sh", "true", "/tmp", &sandboxProfile{readPaths: []string{"/"}, writePaths: nil, denyWrite: nil}, t.TempDir()); err == nil {
 		t.Fatal("host /tmp accepted as working directory")
 	}
-	_, args, err := implementation.command("/bin/sh", "true", "/", nil, t.TempDir())
+	profile := &sandboxProfile{readPaths: []string{"/"}, writePaths: nil, denyWrite: nil}
+	_, args, err := implementation.command("/bin/sh", "true", "/", profile, t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if containsSequence(args, []string{"--ro-bind", "/", "/"}) && countSequence(args, []string{"--ro-bind", "/", "/"}) != 1 {
 		t.Fatalf("host root remounted over synthetic mounts: %q", args)
+	}
+}
+
+// testProfile builds a sandboxProfile for testing the linux sandbox.
+func testProfile(workspaceRoot, tempDir string, extraWritePaths []string, cwd string) security.SecurityProfile {
+	writePaths := []string{workspaceRoot, tempDir}
+	writePaths = append(writePaths, extraWritePaths...)
+	if commonDir, ok := linkedGitCommonDirectory(workspaceRoot); ok {
+		writePaths = append(writePaths, commonDir)
+	}
+	return &sandboxProfile{
+		readPaths:  []string{"/"},
+		writePaths: writePaths,
+		denyWrite:  protectedWorkspacePaths(workspaceRoot, cwd),
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/question"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -34,7 +35,7 @@ type CallContext struct {
 	Agent      string
 	ToolCallID string
 	Output     io.Writer
-	SecurityProfile SecurityProfile
+	SecurityProfile security.SecurityProfile
 }
 
 type Plan struct {

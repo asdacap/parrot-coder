@@ -151,7 +151,7 @@ func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	if err != nil || resolvedCwd != input.ResolvedCwd {
 		return Result{}, errors.New("shell: cwd changed after planning")
 	}
-	request := process.Request{Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedCwd, Env: input.Env, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond, Output: call.Output, SessionID: call.SessionID}
+	request := process.Request{Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedCwd, Env: input.Env, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond, Output: call.Output, SessionID: call.SessionID, SecurityProfile: call.SecurityProfile}
 	var result process.Result
 	if t.unrestricted {
 		result, err = runner.RunUnrestricted(ctx, request)

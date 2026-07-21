@@ -16,6 +16,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -71,13 +72,14 @@ type ManagedOutput interface {
 }
 
 type Request struct {
-	Shell     string            `json:"shell"`
-	Command   string            `json:"command"`
-	Cwd       string            `json:"cwd,omitempty"`
-	Env       map[string]string `json:"env,omitempty"`
-	Timeout   time.Duration     `json:"timeout,omitempty"`
-	Output    io.Writer         `json:"-"`
-	SessionID string            `json:"-"`
+	Shell           string            `json:"shell"`
+	Command         string            `json:"command"`
+	Cwd             string            `json:"cwd,omitempty"`
+	Env             map[string]string `json:"env,omitempty"`
+	Timeout         time.Duration     `json:"timeout,omitempty"`
+	Output          io.Writer         `json:"-"`
+	SessionID       string            `json:"-"`
+	SecurityProfile security.SecurityProfile
 }
 
 type Result struct {
@@ -376,11 +378,11 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		}
 		defer releaseTemporaryDirectory()
 		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
-		writablePaths, writableErr := r.writableForSession(request.SessionID)
-		if writableErr != nil {
-			return fail(writableErr)
+		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved, temporaryDirectory)
+		if buildErr != nil {
+			return fail(buildErr)
 		}
-		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, writablePaths, temporaryDirectory)
+		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, profile, temporaryDirectory)
 		if err != nil {
 			return fail(fmt.Errorf("process: sandbox: %w", err))
 		}
@@ -580,6 +582,50 @@ func unsafeEnvironmentName(name string) bool {
 	default:
 		return false
 	}
+}
+
+// buildProfile constructs a concrete security.SecurityProfile for a sandboxed
+// command by combining the request's profile with session-enriched paths.
+func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd, tempDir string) (security.SecurityProfile, error) {
+	workspaceRoot := r.config.Workspace.Root()
+
+	var baseReadPaths, baseWritePaths, baseDenyWritePaths []string
+	var readOnly bool
+	if profile != nil {
+		baseReadPaths = profile.AllowReadPaths()
+		baseWritePaths = profile.AllowWritePaths()
+		baseDenyWritePaths = profile.DenyWritePaths()
+		readOnly = profile.IsReadOnly()
+	}
+
+	readPaths := baseReadPaths
+	if len(readPaths) == 0 {
+		readPaths = []string{"/"}
+	}
+
+	writePaths := make([]string, 0, len(baseWritePaths)+4)
+	writePaths = append(writePaths, baseWritePaths...)
+	if !readOnly {
+		writePaths = append(writePaths, workspaceRoot)
+	}
+	granted, err := r.writableForSession(sessionID)
+	if err != nil {
+		return nil, err
+	}
+	writePaths = append(writePaths, granted...)
+	if commonDir, ok := linkedGitCommonDirectory(workspaceRoot); ok {
+		writePaths = append(writePaths, commonDir)
+	}
+
+	denyWrite := make([]string, 0, len(baseDenyWritePaths)+4)
+	denyWrite = append(denyWrite, baseDenyWritePaths...)
+	denyWrite = append(denyWrite, protectedWorkspacePaths(workspaceRoot, cwd)...)
+
+	return &sandboxProfile{
+		readPaths:  readPaths,
+		writePaths: writePaths,
+		denyWrite:  denyWrite,
+	}, nil
 }
 
 // streamWriter fans command output out to managed storage and the live
