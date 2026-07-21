@@ -30,13 +30,36 @@ func (s linuxSandbox) command(shell, script, cwd string, profile security.Securi
 		return "", nil, errors.New("the sandbox's private /tmp cannot be used as an external working directory")
 	}
 	externalTmpCwd := within(cwd, "/tmp") && !within(cwd, s.workspace)
+
+	// Create an empty file for a writable /dev/null bind mount.
+	// bwrap's --dev mounts device nodes from the host, but when the host's
+	// root is read-only (e.g. a container) those bind mounts are also
+	// read-only.  We replace /dev/null with a writable regular file
+	// so that tools like git, go, and shells can always open it for writing.
+	nullPath := filepath.Join(temporaryDirectory, ".parrot-null")
+	if err := os.WriteFile(nullPath, nil, 0666); err != nil {
+		return "", nil, fmt.Errorf("create dev-null file: %w", err)
+	}
+
 	args := []string{
 		"--die-with-parent",
 		"--new-session",
 		"--unshare-user",
 		"--unshare-pid",
 		"--cap-drop", "ALL",
-		"--dev", "/dev",
+		"--tmpfs", "/dev",
+		"--bind", nullPath, "/dev/null",
+		"--dev-bind", "/dev/zero", "/dev/zero",
+		"--dev-bind", "/dev/random", "/dev/random",
+		"--dev-bind", "/dev/urandom", "/dev/urandom",
+		"--dev-bind", "/dev/full", "/dev/full",
+		"--dev-bind", "/dev/tty", "/dev/tty",
+		"--symlink", "/proc/self/fd", "/dev/fd",
+		"--symlink", "/proc/self/fd/0", "/dev/stdin",
+		"--symlink", "/proc/self/fd/1", "/dev/stdout",
+		"--symlink", "/proc/self/fd/2", "/dev/stderr",
+		"--dir", "/dev/shm",
+		"--dir", "/dev/pts",
 		"--proc", "/proc",
 		"--bind", temporaryDirectory, "/tmp",
 		"--setenv", "TMPDIR", "/tmp",

@@ -16,7 +16,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
-const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["use_default","require_escalated"],"description":"Per-command sandbox override. Defaults to \u0060use_default\u0060; use \u0060require_escalated\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060require_escalated\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
+const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["current_security_context","disable_sandbox"],"description":"Per-command sandbox override. Defaults to \u0060current_security_context\u0060; use \u0060disable_sandbox\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060disable_sandbox\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
 
 type ExecCommandTool struct {
 	BasePresentation
@@ -61,7 +61,7 @@ func (*ExecCommandTool) DescribeRequest(raw json.RawMessage) (string, error) {
 		return "", err
 	}
 	description := "Run command in the OS sandbox:\n" + input.Command
-	if input.SandboxPermissions == "require_escalated" {
+	if input.SandboxPermissions == "disable_sandbox" {
 		description = "Run command without the OS sandbox (full local authority):\n" + input.Command
 	}
 	if input.Workdir != "" {
@@ -91,16 +91,16 @@ func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call Call
 		return Plan{}, errors.New("exec_command: max_output_tokens must be nonnegative")
 	}
 	if input.SandboxPermissions == "" {
-		input.SandboxPermissions = "use_default"
+		input.SandboxPermissions = "current_security_context"
 	}
-	if input.SandboxPermissions != "use_default" && input.SandboxPermissions != "require_escalated" {
+	if input.SandboxPermissions != "current_security_context" && input.SandboxPermissions != "disable_sandbox" {
 		return Plan{}, errors.New("exec_command: unsupported sandbox_permissions")
 	}
-	if input.SandboxPermissions == "require_escalated" && input.Justification == "" {
-		return Plan{}, errors.New("exec_command: justification is required for escalated execution")
+	if input.SandboxPermissions == "disable_sandbox" && input.Justification == "" {
+		return Plan{}, errors.New("exec_command: justification is required for unsandboxed execution")
 	}
-	if input.SandboxPermissions != "require_escalated" && input.Justification != "" {
-		return Plan{}, errors.New("exec_command: justification requires escalated execution")
+	if input.SandboxPermissions != "disable_sandbox" && input.Justification != "" {
+		return Plan{}, errors.New("exec_command: justification requires unsandboxed execution")
 	}
 	if input.Shell == "" {
 		var err error
@@ -132,7 +132,7 @@ func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call Call
 	}
 	input.ResolvedShell, input.ResolvedWorkdir = resolvedShell, resolvedWorkdir
 	operation := "execute"
-	if input.SandboxPermissions == "require_escalated" {
+	if input.SandboxPermissions == "disable_sandbox" {
 		operation = "execute_unrestricted"
 	}
 	sum := sha256.Sum256([]byte(input.Command))
@@ -173,7 +173,7 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 		Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedWorkdir, Env: input.Env,
 		SessionID: call.SessionID, Yield: time.Duration(input.YieldTimeMS) * time.Millisecond,
 		MaxOutputTokens: input.MaxOutputTokens, TTY: input.TTY, Output: call.Output,
-		Unrestricted:    input.SandboxPermissions == "require_escalated",
+		Unrestricted:    input.SandboxPermissions == "disable_sandbox",
 		SecurityProfile: call.SecurityProfile,
 	})
 	if err != nil {
