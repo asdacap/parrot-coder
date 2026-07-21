@@ -1251,9 +1251,18 @@ func (s chatSelection) modelLabel() string {
 func (s *chatShell) modelineModelLabel(currentTokens int) string {
 	label := s.selection.modelLabel()
 	for _, item := range s.models {
-		if item.Provider == s.selection.provider && item.ID == s.selection.model && item.ContextWindow > 0 {
-			return fmt.Sprintf("%s (%s/%s)", label, compactTokenCount(currentTokens), compactTokenCount(item.ContextWindow))
+		if item.Provider == s.selection.provider && item.ID == s.selection.model {
+			if item.ContextWindow > 0 {
+				return fmt.Sprintf("%s (%s/%s)", label, compactTokenCount(currentTokens), compactTokenCount(item.ContextWindow))
+			}
+			if currentTokens > 0 {
+				return fmt.Sprintf("%s (%s/?)", label, compactTokenCount(currentTokens))
+			}
+			return label
 		}
+	}
+	if currentTokens > 0 {
+		return fmt.Sprintf("%s (%s/?)", label, compactTokenCount(currentTokens))
 	}
 	return label
 }
