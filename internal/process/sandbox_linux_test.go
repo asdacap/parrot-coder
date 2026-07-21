@@ -149,13 +149,27 @@ func TestLinuxSandboxDoesNotShadowPrivateTmp(t *testing.T) {
 	if _, _, err := implementation.command("/bin/sh", "true", "/tmp", &sandboxProfile{readPaths: []string{"/"}, writePaths: nil, denyWrite: nil}, t.TempDir()); err == nil {
 		t.Fatal("host /tmp accepted as working directory")
 	}
+	temporaryDirectory := t.TempDir()
 	profile := &sandboxProfile{readPaths: []string{"/"}, writePaths: nil, denyWrite: nil}
-	_, args, err := implementation.command("/bin/sh", "true", "/", profile, t.TempDir())
+	_, args, err := implementation.command("/bin/sh", "true", "/", profile, temporaryDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if containsSequence(args, []string{"--ro-bind", "/", "/"}) && countSequence(args, []string{"--ro-bind", "/", "/"}) != 1 {
-		t.Fatalf("host root remounted over synthetic mounts: %q", args)
+	rootMount := indexSequence(args, []string{"--ro-bind", "/", "/"})
+	if rootMount < 0 || countSequence(args, []string{"--ro-bind", "/", "/"}) != 1 {
+		t.Fatalf("host root is not mounted exactly once: %q", args)
+	}
+	// Every synthetic mount must be established after the host root, otherwise
+	// binding the root replaces it with the host's own /tmp and /dev/null.
+	for _, synthetic := range [][]string{
+		{"--tmpfs", "/dev"},
+		{"--bind", filepath.Join(temporaryDirectory, ".parrot-null"), "/dev/null"},
+		{"--proc", "/proc"},
+		{"--bind", temporaryDirectory, "/tmp"},
+	} {
+		if index := indexSequence(args, synthetic); index < rootMount {
+			t.Fatalf("host root remounted over synthetic mount %q: %q", synthetic, args)
+		}
 	}
 }
 
