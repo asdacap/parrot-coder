@@ -22,6 +22,11 @@ type Request struct {
 	// valid JSON, so the protocol package stays neutral to any one vendor's
 	// schema.
 	ProviderPreferences json.RawMessage
+	// IncludeRouterMetadata, when true, requests the provider to include
+	// router metadata (such as the upstream provider name) in each response
+	// chunk. Only routers that support this field (e.g. OpenRouter) will
+	// honor it.
+	IncludeRouterMetadata bool
 }
 
 // NormalizeProviderPreferences returns preferences as a JSON object suitable
@@ -139,6 +144,7 @@ const (
 	EventProviderError         EventType = "provider_error"
 	EventProviderRetry         EventType = "provider_retry"
 	EventToolOutputDelta       EventType = "tool_output_delta"
+	EventRouterMetadata        EventType = "router_metadata"
 )
 
 // ToolInputDelta is an incremental fragment of a function's JSON arguments.
@@ -155,10 +161,18 @@ type ProviderError struct {
 	Message string
 }
 
+// RouterMetadata describes the upstream provider that served a request
+// when the router includes it in the response (e.g. OpenRouter's
+// include_router_metadata).
+type RouterMetadata struct {
+	ProviderName string `json:"provider_name"`
+	Model        string `json:"model,omitempty"`
+}
+
 // Event is one canonical stream event. Only the payload corresponding to Type
 // is populated.
 type Event struct {
-	Type          EventType
+	Type           EventType
 	MessageID     string
 	PartID        string
 	Text          string
@@ -168,4 +182,5 @@ type Event struct {
 	FinishReason  FinishReason
 	ProviderError *ProviderError
 	ToolCallID    string
+	RouterMetadata *RouterMetadata
 }

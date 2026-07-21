@@ -340,6 +340,7 @@ func effortVariants(efforts []string, defaultEffort string) []Variant {
 
 func (p *OpenAICompatible) Stream(ctx context.Context, request protocol.Request) (Stream, error) {
 	request.ProviderPreferences = p.providerPreferences
+	request.IncludeRouterMetadata = len(p.providerPreferences) > 0
 	var body []byte
 	var err error
 	var parser streamParser

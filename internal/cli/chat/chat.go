@@ -906,6 +906,9 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				if value.Kind == "provider_retry" && value.Message != "" {
 					label = value.Message
 				}
+				if value.Kind == "router_metadata" && value.Message != "" {
+					label = value.Message
+				}
 				if options.format != "jsonl" && value.Kind != "idle" && value.Kind != "finish" && value.Kind != "usage" {
 					if options.renderer != nil {
 						subagentTracker.liveID = ""

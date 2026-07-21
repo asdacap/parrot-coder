@@ -73,18 +73,20 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 	}
 
 	body := struct {
-		Model           string          `json:"model"`
-		Messages        []any           `json:"messages"`
-		Tools           []tool          `json:"tools,omitempty"`
-		Stream          bool            `json:"stream"`
-		Options         any             `json:"stream_options"`
-		ReasoningEffort string          `json:"reasoning_effort,omitempty"`
-		Provider        json.RawMessage `json:"provider,omitempty"`
+		Model                  string          `json:"model"`
+		Messages               []any           `json:"messages"`
+		Tools                  []tool          `json:"tools,omitempty"`
+		Stream                 bool            `json:"stream"`
+		Options                any             `json:"stream_options"`
+		ReasoningEffort        string          `json:"reasoning_effort,omitempty"`
+		Provider               json.RawMessage `json:"provider,omitempty"`
+		IncludeRouterMetadata  bool            `json:"include_router_metadata,omitempty"`
 	}{Model: request.Model, Messages: messages, Tools: tools, Stream: true, Options: map[string]bool{"include_usage": true}}
 	if request.Reasoning != nil {
 		body.ReasoningEffort = request.Reasoning.Effort
 	}
 	preferences, err := protocol.NormalizeProviderPreferences(request.ProviderPreferences)
+	body.IncludeRouterMetadata = request.IncludeRouterMetadata
 	if err != nil {
 		return nil, fmt.Errorf("chatcompletions: %w", err)
 	}
@@ -198,6 +200,10 @@ func (p *Parser) consume(data []byte) error {
 			Code    any    `json:"code"`
 			Message string `json:"message"`
 		} `json:"error"`
+		Provider *struct {
+			ProviderName string `json:"provider_name"`
+			Model        string `json:"model,omitempty"`
+		} `json:"provider,omitempty"`
 	}
 	if err := json.Unmarshal(data, &chunk); err != nil {
 		return fmt.Errorf("chatcompletions: decode stream event: %w", err)
@@ -250,6 +256,12 @@ func (p *Parser) consume(data []byte) error {
 			finished := protocol.Event{Type: protocol.EventFinish, FinishReason: finishReason(*choice.FinishReason)}
 			p.finish = &finished
 		}
+	}
+	if chunk.Provider != nil && chunk.Provider.ProviderName != "" {
+		p.pending = append(p.pending, protocol.Event{
+			Type:           protocol.EventRouterMetadata,
+			RouterMetadata: &protocol.RouterMetadata{ProviderName: chunk.Provider.ProviderName, Model: chunk.Provider.Model},
+		})
 	}
 	if chunk.Usage != nil {
 		p.pending = append(p.pending, protocol.Event{Type: protocol.EventUsage, Usage: &protocol.Usage{

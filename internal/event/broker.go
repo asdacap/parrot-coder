@@ -105,6 +105,15 @@ func (b *Broker) Publish(sessionID string, item protocol.Event) {
 		eventType, payload = v1.EventSessionStatus, status
 	case protocol.EventProviderRetry:
 		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "provider_retry", Message: item.Text}
+	case protocol.EventRouterMetadata:
+		if item.RouterMetadata == nil {
+			return
+		}
+		message := "via " + item.RouterMetadata.ProviderName
+		if item.RouterMetadata.Model != "" {
+			message += " (" + item.RouterMetadata.Model + ")"
+		}
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "router_metadata", Message: message}
 	case protocol.EventToolOutputDelta:
 		eventType, payload = v1.EventToolOutputDelta, v1.ToolOutputDelta{ToolCallID: item.ToolCallID, Delta: item.Text}
 	default:
