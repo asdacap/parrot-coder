@@ -30,7 +30,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/processidentity"
-	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -621,16 +620,7 @@ func newTaskStreamTracker(presentation chatview.Presentations) taskStreamTracker
 	return taskStreamTracker{tracker: tracker, presentation: presentation}
 }
 
-// isTaskEvent reports whether an event belongs to the task tree rather than
-// to the main transcript: task lifecycle events always do, and any event
-// attributed to a task other than the session's main task does.
-func isTaskEvent(item v1.Event) bool {
-	switch item.Type {
-	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
-		return true
-	}
-	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
-}
+func isTaskEvent(item v1.Event) bool { return chatview.IsTaskEvent(item) }
 
 func (t *taskStreamTracker) Tracker() *chatview.TaskTracker {
 	return t.tracker

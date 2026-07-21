@@ -15,7 +15,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
-	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -336,8 +335,8 @@ func (t *taskStreamTracker) ensure() *chatview.TaskTracker {
 	return t.tracker
 }
 
-func (t *taskStreamTracker) addMainTaskUsage(input, output, cached int) {
-	t.ensure().AddMainTaskUsage(input, output, cached)
+func (t *taskStreamTracker) addUsage(taskID string, usage v1.Usage) {
+	t.ensure().AddUsage(taskID, usage)
 }
 
 func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
@@ -352,16 +351,8 @@ func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport
 	return result, nil
 }
 
-// isTaskEvent reports whether an event belongs to the task tree rather than
-// to the main transcript: task lifecycle events always do, and any event
-// attributed to a task other than the session's main task does.
-func isTaskEvent(item v1.Event) bool {
-	switch item.Type {
-	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
-		return true
-	}
-	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
-}
+func isTaskEvent(item v1.Event) bool { return chatview.IsTaskEvent(item) }
+
 func chatExitReason(code int) string {
 	if code == exitInterrupt {
 		return "turn_interrupted"

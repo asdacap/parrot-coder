@@ -393,33 +393,50 @@ func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
 	}
 }
 
-// The main task never reports task.progress, so the modeline's token totals can
-// only come from the session's own usage events, which report one turn each. A
-// subagent's usage adds to those totals rather than replacing them.
-func TestEnhancedModelineTokensSumSessionAndSubagentUsage(t *testing.T) {
-	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
-	usage, _ := json.Marshal(v1.SessionStatus{MessageID: "assistant", Kind: "usage",
-		Usage: &v1.Usage{InputTokens: 1200, OutputTokens: 300, CachedInputTokens: 800, TotalTokens: 1500}})
+// The modeline reports what the whole task tree spent. Every session reports
+// usage the same way — the main session under no task id, a subagent under its
+// own — and a usage event covers one turn, so the totals accumulate. A
+// subagent's task.progress repeats what it has spent and must not be counted
+// again on top of its usage events.
+func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
+	usageEvent := func(taskID string, usage v1.Usage) v1.Event {
+		data, _ := json.Marshal(v1.SessionStatus{MessageID: "assistant", Kind: "usage", Usage: &usage})
+		return v1.Event{Type: v1.EventSessionStatus, TaskID: taskID, Data: data}
+	}
 	for range 2 {
-		if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: usage}); err != nil {
+		if err := runtime.handleEvent(usageEvent("", v1.Usage{InputTokens: 1200, OutputTokens: 300, CachedInputTokens: 800, TotalTokens: 1500, InputCost: 0.25, OutputCost: 0.5})); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if runtime.mainTaskInputTokens != 2400 || runtime.mainTaskOutputTokens != 600 || runtime.mainTaskCachedTokens != 1600 {
-		t.Fatalf("session usage totals = %d/%d/%d, want 2400/600/1600",
-			runtime.mainTaskInputTokens, runtime.mainTaskOutputTokens, runtime.mainTaskCachedTokens)
+	if want := (chatview.TaskUsage{InputTokens: 2400, OutputTokens: 600, CachedTokens: 1600, Cost: 1.5}); runtime.mainTaskUsage != want {
+		t.Fatalf("session usage = %#v, want %#v", runtime.mainTaskUsage, want)
 	}
 
 	if err := runtime.handleEvent(taskStart("task-1", "task_main", "explore")); err != nil {
 		t.Fatal(err)
 	}
+	if err := runtime.handleEvent(usageEvent("task-1", v1.Usage{InputTokens: 100, OutputTokens: 50, CachedInputTokens: 25, TotalTokens: 150, InputCost: 0.125})); err != nil {
+		t.Fatal(err)
+	}
+	want := chatview.TaskUsage{InputTokens: 2500, OutputTokens: 650, CachedTokens: 1625, Cost: 1.625}
+	if runtime.mainTaskUsage != want {
+		t.Fatalf("usage with subagent = %#v, want %#v", runtime.mainTaskUsage, want)
+	}
+	if got := formatTaskTokenUsage(runtime.mainTaskUsage); got != "+2.5ki +650o (+1.6kcached)" {
+		t.Fatalf("modeline token usage = %q", got)
+	}
+
 	progress, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "running",
-		Usage: v1.Usage{InputTokens: 100, OutputTokens: 50, CachedInputTokens: 25, TotalTokens: 150}})
+		Usage: v1.Usage{InputTokens: 100, OutputTokens: 50, CachedInputTokens: 25, TotalTokens: 150}, ToolUses: 3})
 	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, progress)); err != nil {
 		t.Fatal(err)
 	}
-	if got := formatTaskTokenUsage(runtime.mainTaskInputTokens, runtime.mainTaskOutputTokens, runtime.mainTaskCachedTokens); got != "+2.5ki +650o (+1.6kcached)" {
-		t.Fatalf("modeline token usage = %q", got)
+	if runtime.mainTaskUsage != want {
+		t.Fatalf("task progress counted usage twice: %#v", runtime.mainTaskUsage)
+	}
+	if line := formatActivity(runtime.activity[0], runtime.activity[0].started); !strings.Contains(line, "+100i +50o (+25cached) · 3 tools") {
+		t.Fatalf("progress line = %q", line)
 	}
 }
 

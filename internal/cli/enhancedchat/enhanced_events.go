@@ -177,25 +177,43 @@ func (r *enhancedChatRuntime) stopStream() {
 // The tracker owns which task is a child of which; this runtime only maps the
 // resulting reports onto the live activity list and the transcript.
 // formatTaskTokenUsage returns a humanized token-usage snippet for a task.
-func formatTaskTokenUsage(input, output, cached int) string {
-	if input == 0 && output == 0 {
+func formatTaskTokenUsage(usage chatview.TaskUsage) string {
+	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
 		return "-"
 	}
-	part := fmt.Sprintf("+%si +%so", formatTokenCount(input), formatTokenCount(output))
-	if cached > 0 {
-		part += fmt.Sprintf(" (+%scached)", formatTokenCount(cached))
+	part := fmt.Sprintf("+%si +%so", formatTokenCount(usage.InputTokens), formatTokenCount(usage.OutputTokens))
+	if usage.CachedTokens > 0 {
+		part += fmt.Sprintf(" (+%scached)", formatTokenCount(usage.CachedTokens))
 	}
 	return part
 }
 
-// refreshMainTaskUsage recaches the modeline's token totals: the session's own
-// usage plus every subagent descended from the main task.
-func (r *enhancedChatRuntime) refreshMainTaskUsage() {
-	tracker := r.subagents.Tracker()
-	if tracker == nil {
+// recordUsage folds one usage event into the task tree, whichever session
+// reported it: the main session under the main task, each subagent under its
+// own. Routing every usage event through the tree keeps the modeline's tokens
+// and cost describing the same work.
+func (r *enhancedChatRuntime) recordUsage(item v1.Event) {
+	if item.Type != v1.EventSessionStatus {
 		return
 	}
-	r.mainTaskInputTokens, r.mainTaskOutputTokens, r.mainTaskCachedTokens = tracker.CumulativeUsage(managedtask.MainTaskID)
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		return
+	}
+	status := payload.(*v1.SessionStatus)
+	if status.Kind != "usage" || status.Usage == nil {
+		return
+	}
+	r.subagents.addUsage(item.TaskID, *status.Usage)
+	r.refreshMainTaskUsage()
+}
+
+// refreshMainTaskUsage recaches what the modeline reports: the session's own
+// usage plus every subagent descended from the main task.
+func (r *enhancedChatRuntime) refreshMainTaskUsage() {
+	if tracker := r.subagents.Tracker(); tracker != nil {
+		r.mainTaskUsage = tracker.CumulativeUsage(managedtask.MainTaskID)
+	}
 }
 
 func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
@@ -210,16 +228,14 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 		if decodeErr == nil {
 			progress := payload.(*v1.TaskProgress)
 			if progress.Usage.TotalTokens > 0 {
-				input, output, cached := 0, 0, 0
-				if r.subagents.Tracker() != nil {
-					input, output, cached = r.subagents.Tracker().CumulativeUsage(item.TaskID)
-				} else {
-					input = progress.Usage.InputTokens
-					output = progress.Usage.OutputTokens
-					cached = progress.Usage.CachedInputTokens
+				// The tree's total covers the agent's own subagents too; its progress
+				// report covers only itself and stands in until usage is recorded.
+				usage := r.subagents.Tracker().CumulativeUsage(item.TaskID)
+				if usage.InputTokens == 0 && usage.OutputTokens == 0 {
+					usage = chatview.TaskUsage{InputTokens: progress.Usage.InputTokens, OutputTokens: progress.Usage.OutputTokens, CachedTokens: progress.Usage.CachedInputTokens}
 				}
 				oldToken := fmt.Sprintf("· %s tokens", chatview.FormatTokenCount(progress.Usage.TotalTokens))
-				tokenPart := formatTaskTokenUsage(input, output, cached)
+				tokenPart := formatTaskTokenUsage(usage)
 				if tokenPart != "-" {
 					for i := range reports {
 						reports[i].line = strings.Replace(reports[i].line, oldToken, "· "+tokenPart, 1)
@@ -293,6 +309,7 @@ func (r *enhancedChatRuntime) insertSubagentActivity(item enhancedActivityItem) 
 }
 
 func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
+	r.recordUsage(item)
 	if isTaskEvent(item) {
 		return r.handleTaskEvent(item)
 	}

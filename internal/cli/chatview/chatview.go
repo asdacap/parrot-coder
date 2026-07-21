@@ -591,9 +591,7 @@ type taskNode struct {
 	tools    *StreamToolTracker
 	done     map[string]bool
 
-	directInputTokens   int
-	directOutputTokens  int
-	directCachedTokens  int
+	direct TaskUsage
 }
 
 // TaskTracker rebuilds the task tree from flat task events and renders task
@@ -693,44 +691,71 @@ func (t *TaskTracker) known(id string) *taskNode {
 	return t.tasks[id]
 }
 
-// AddMainTaskUsage folds one turn of the session's own provider usage into the
-// main task node. Only subagents report task.progress, so the main task's
-// direct counts would otherwise stay zero and cumulative usage would describe
-// nothing but what descendants spent. Counts accumulate because each turn
-// reports only its own usage.
-func (t *TaskTracker) AddMainTaskUsage(input, output, cached int) {
-	node := t.tasks[managedtask.MainTaskID]
+// TaskUsage is what one task spent. Cost is the runner's price for the tokens,
+// so it is reported alongside them rather than accounted separately.
+type TaskUsage struct {
+	InputTokens  int
+	OutputTokens int
+	CachedTokens int
+	Cost         float64
+}
+
+func (u *TaskUsage) add(other TaskUsage) {
+	u.InputTokens += other.InputTokens
+	u.OutputTokens += other.OutputTokens
+	u.CachedTokens += other.CachedTokens
+	u.Cost += other.Cost
+}
+
+// AddUsage folds one turn of provider usage into the task that spent it. Every
+// session on the stream reports usage the same way — the main session under the
+// main task id, each subagent under its own — so the tree is the single owner
+// of what has been spent and the main task is nothing but its root. An event
+// without a task id belongs to the main task; usage for a task the tree has
+// never seen is dropped rather than counted against the wrong one. Counts
+// accumulate because a usage event reports only its own turn.
+func (t *TaskTracker) AddUsage(taskID string, usage v1.Usage) {
+	if taskID == "" {
+		taskID = managedtask.MainTaskID
+	}
+	node := t.tasks[taskID]
 	if node == nil {
 		return
 	}
-	node.directInputTokens += input
-	node.directOutputTokens += output
-	node.directCachedTokens += cached
+	node.direct.add(TaskUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedTokens: usage.CachedInputTokens, Cost: usage.InputCost + usage.OutputCost})
 }
 
-// CumulativeUsage returns the task's own token counts plus all descendants.
-// This walks the tree once per call — safe for small task counts (<100).
-func (t *TaskTracker) CumulativeUsage(taskID string) (input, output, cached int) {
+// CumulativeUsage returns what the task and all its descendants spent. This
+// walks the tree once per call — safe for small task counts (<100).
+func (t *TaskTracker) CumulativeUsage(taskID string) TaskUsage {
 	node := t.tasks[taskID]
 	if node == nil {
-		return 0, 0, 0
+		return TaskUsage{}
 	}
 	return t.nodeCumulativeUsage(node)
 }
 
-func (t *TaskTracker) nodeCumulativeUsage(node *taskNode) (input, output, cached int) {
-	input = node.directInputTokens
-	output = node.directOutputTokens
-	cached = node.directCachedTokens
+func (t *TaskTracker) nodeCumulativeUsage(node *taskNode) TaskUsage {
+	total := node.direct
 	for _, child := range t.tasks {
 		if child.parentID == node.id {
-			ci, co, cc := t.nodeCumulativeUsage(child)
-			input += ci
-			output += co
-			cached += cc
+			total.add(t.nodeCumulativeUsage(child))
 		}
 	}
-	return
+	return total
+}
+
+// IsTaskEvent reports whether an event belongs to the task tree rather than to
+// the main transcript: task lifecycle events always do, and any event
+// attributed to a task other than the session's main task does. Every renderer
+// splits the stream with this one predicate, so the main task cannot be a task
+// to one of them and not to another.
+func IsTaskEvent(item v1.Event) bool {
+	switch item.Type {
+	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
+		return true
+	}
+	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
 }
 
 // Apply folds one flat event into the task tree and returns what to render.
@@ -940,9 +965,9 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if node.done[id] {
 			return nil, nil
 		}
-		node.directInputTokens = progress.Usage.InputTokens
-		node.directOutputTokens = progress.Usage.OutputTokens
-		node.directCachedTokens = progress.Usage.CachedInputTokens
+		// Progress reports what the agent has spent so far, but it is read here
+		// only to render the line: AddUsage is the one writer of a task's usage,
+		// and counting the same tokens through both would double them.
 		line := fmt.Sprintf("agent: %s · %s tokens · %d tools", progress.Agent, FormatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
 		terminalEvent := progress.Status != "pending" && progress.Status != "running"
 		if terminalEvent {

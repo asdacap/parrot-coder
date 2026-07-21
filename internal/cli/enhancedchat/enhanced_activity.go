@@ -448,6 +448,10 @@ func (r *enhancedChatRuntime) resetReasoning() {
 	r.reasoningParts = nil
 }
 
+// updateAssistantUsage describes the message a usage event belongs to: the
+// context it leaves behind and the tokens shown on its activity row. What was
+// spent is not accounted here — recordUsage charges it to the task tree, which
+// is the one place the main task and its subagents are added up together.
 func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.Usage) {
 	if usage == nil {
 		return
@@ -457,15 +461,6 @@ func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.U
 	// tokens, so retain that as a useful fallback.
 	if tokens := contextTokenCount(*usage); tokens > 0 {
 		r.contextTokens = tokens
-	}
-	if usage.InputCost > 0 || usage.OutputCost > 0 {
-		r.totalCost += usage.InputCost + usage.OutputCost
-	}
-	// The main task never reports task.progress, so its spend reaches the
-	// modeline only through the session's own usage events.
-	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
-		r.subagents.addMainTaskUsage(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens)
-		r.refreshMainTaskUsage()
 	}
 	if messageID == "" {
 		messageID = r.streamMessageID

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
@@ -235,12 +236,9 @@ type enhancedChatRuntime struct {
 	turnCompleteID    string
 	lastCompleteID    string
 	borderCommitted   bool
-	contextTokens      int
-	totalCost           float64
-	mainTaskInputTokens  int
-	mainTaskOutputTokens int
-	mainTaskCachedTokens int
-	subagents          taskStreamTracker
+	contextTokens     int
+	mainTaskUsage     chatview.TaskUsage
+	subagents         taskStreamTracker
 	pendingToolOutput map[string]shellOutputTail
 	completedToolIDs  map[string]bool
 
@@ -551,11 +549,11 @@ func (r *enhancedChatRuntime) render() error {
 		busy = false
 	}
 	right := r.shell.modelineModelLabel(r.contextTokens)
-	if r.mainTaskInputTokens > 0 || r.mainTaskOutputTokens > 0 {
-		right += " · " + formatTaskTokenUsage(r.mainTaskInputTokens, r.mainTaskOutputTokens, r.mainTaskCachedTokens)
+	if tokens := formatTaskTokenUsage(r.mainTaskUsage); tokens != "-" {
+		right += " · " + tokens
 	}
-	if r.totalCost > 0 {
-		right += " · " + formatCost(r.totalCost)
+	if r.mainTaskUsage.Cost > 0 {
+		right += " · " + formatCost(r.mainTaskUsage.Cost)
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
 		Stream: stream, PromptContext: r.modalContext(), StyledActivity: r.styledActivityRows(now, r.shell.renderer.Columns()), Pending: pending,
