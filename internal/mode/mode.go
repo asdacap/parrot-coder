@@ -74,32 +74,38 @@ type ChoiceAction struct {
 }
 
 type builtin struct {
-	profile      agent.Profile
-	turnComplete TurnCompleteResult
+	profile agent.Profile
 }
 
-func (m builtin) ID() string                       { return m.profile.ID }
-func (m builtin) Profile() agent.Profile           { return m.profile }
-func (m builtin) OnTurnComplete() TurnCompleteResult { return m.turnComplete }
+func (m builtin) ID() string                     { return m.profile.ID }
+func (m builtin) Profile() agent.Profile         { return m.profile }
+func (builtin) OnTurnComplete() TurnCompleteResult { return TurnCompleteResult{} }
+
+// planMode extends builtin with a turn-complete dialog that lets the user
+// approve, decline, or provide feedback on the plan.
+type planMode struct {
+	builtin
+}
+
+func (planMode) OnTurnComplete() TurnCompleteResult {
+	return TurnCompleteResult{Dialog: &TurnCompleteDialog{
+		Prompt:            "Plan complete: ",
+		Context:           []string{"Review the plan before implementation."},
+		Choices: []DialogChoice{
+			{Value: "yes", Description: "Implement the approved plan", Aliases: []string{"y"}, Action: ChoiceAction{Agent: BuildID, Prompt: "Implement the approved plan."}},
+			{Value: "no", Description: "Stop after planning", Aliases: []string{"n"}},
+		},
+		CustomChoice:      "feedback",
+		CustomDescription: "Provide feedback and revise the plan",
+		CustomPrompt:      "plan feedback: ",
+		EmptyMessage:      "enter yes, no, or feedback",
+	}}
+}
 
 func Builtins() []Mode {
 	return []Mode{
 		builtin{profile: agent.Profile{ID: BuildID, Prompt: "You are Parrot's build mode. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64, RecursionLimit: 3}},
-		builtin{
-			profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and produce an implementation plan.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true},
-			turnComplete: TurnCompleteResult{Dialog: &TurnCompleteDialog{
-				Prompt:            "Plan complete: ",
-				Context:           []string{"Review the plan before implementation."},
-				Choices: []DialogChoice{
-					{Value: "yes", Description: "Implement the approved plan", Aliases: []string{"y"}, Action: ChoiceAction{Agent: BuildID, Prompt: "Implement the approved plan."}},
-					{Value: "no", Description: "Stop after planning", Aliases: []string{"n"}},
-				},
-				CustomChoice:      "feedback",
-				CustomDescription: "Provide feedback and revise the plan",
-				CustomPrompt:      "plan feedback: ",
-				EmptyMessage:      "enter yes, no, or feedback",
-			}},
-		},
+		planMode{builtin: builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and produce an implementation plan.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true}}},
 	}
 }
 
