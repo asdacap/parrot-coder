@@ -209,8 +209,10 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 				}
 				oldToken := fmt.Sprintf("· %s tokens", chatview.FormatTokenCount(progress.Usage.TotalTokens))
 				tokenPart := formatTaskTokenUsage(input, output, cached)
-				for i := range reports {
-					reports[i].line = strings.Replace(reports[i].line, oldToken, "· "+tokenPart, 1)
+				if tokenPart != "-" {
+					for i := range reports {
+						reports[i].line = strings.Replace(reports[i].line, oldToken, "· "+tokenPart, 1)
+					}
 				}
 			}
 		}
