@@ -193,9 +193,17 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) (runErr error) {
 			return err
 		}
 		ready := len(promoted) > 0
-		if len(history) > 0 {
-			lastRole := history[len(history)-1].Role
-			ready = ready || lastRole == protocol.RoleUser || lastRole == protocol.RoleTool
+		// ReconcileContext may append a "system" message after the last user or
+		// tool message. A system message is context metadata, not a turn that
+		// waits for a response, so it must not gate the continuation: scan back
+		// over trailing system messages to find the last meaningful role.
+		for i := len(history) - 1; i >= 0 && !ready; i-- {
+			role := history[i].Role
+			if role == protocol.RoleSystem {
+				continue
+			}
+			ready = role == protocol.RoleUser || role == protocol.RoleTool
+			break
 		}
 		if !ready {
 			queued, err := r.config.Sessions.PromoteNextQueue(ctx, sessionID)
