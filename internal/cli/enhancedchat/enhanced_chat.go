@@ -219,6 +219,7 @@ type enhancedChatRuntime struct {
 	status            string
 	spinner           int
 	interruptCount    int
+	toolInput         bool
 	streamed          strings.Builder
 	reasoningText     strings.Builder
 	reasoningSummary  bool

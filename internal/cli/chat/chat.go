@@ -787,6 +787,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 	statusError := false
 	interrupted := false
 	interruptCount := 0
+	toolInput := false
 	toolTracker := streamToolTracker{tracker: chatview.StreamToolTracker{Presentation: options.presentation}}
 	subagentTracker := options.tasks
 	if subagentTracker == nil {
@@ -889,6 +890,8 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 							return streamResult{err: err}
 						}
 					}
+				} else if value.Kind == "tool_input" {
+					toolInput = true
 				} else if options.format != "jsonl" && (value.Kind != "reasoning" && value.Kind != "reasoning_summary" || options.thinking) {
 					if options.renderer != nil {
 						subagentTracker.liveID = ""
@@ -916,7 +919,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					statusError = true
 				}
 				if value.Kind == "idle" || value.Kind == "error" {
-					finished := finishStream(api, sessionID, before, streamed.String(), statusError, options)
+					finished := finishStream(api, sessionID, before, streamed.String(), statusError, toolInput, options)
 					if interrupted {
 						finished.err = nil
 					}
@@ -969,7 +972,7 @@ type messageClient interface {
 	Messages(context.Context, string) (v1.MessageList, error)
 }
 
-func finishStream(api messageClient, sessionID string, before v1.MessageList, streamed string, statusError bool, options streamOptions) streamResult {
+func finishStream(api messageClient, sessionID string, before v1.MessageList, streamed string, statusError bool, toolInput bool, options streamOptions) streamResult {
 	after, err := api.Messages(context.Background(), sessionID)
 	if err != nil {
 		return streamResult{err: err}
@@ -990,6 +993,9 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 	}
 	if final == "" {
 		final = streamed
+	}
+	if final == "" && !toolInput {
+		final = chatview.AgentEmptyResponseText
 	}
 	if options.format == "text" && !options.chat {
 		if _, err := io.WriteString(options.stdout, terminal.Sanitize(strings.TrimRight(final, "\n")+"\n")); err != nil {

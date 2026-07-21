@@ -12,6 +12,7 @@ import (
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
@@ -803,6 +804,32 @@ func TestEnhancedReasoningSummaryRendersMarkdownAndIsRetainedBeforeAnswer(t *tes
 	answer := strings.Index(got, "final answer")
 	if summary < 0 || list < summary || answer < list || strings.Contains(got, "# Verifying") || strings.Contains(got, "**") {
 		t.Fatalf("output = %q", got)
+	}
+}
+
+func TestEnhancedEmptyResponseShowsPlaceholderUnlessToolTurn(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		toolInput bool
+		wantShown bool
+	}{
+		{name: "empty response shows placeholder", wantShown: true},
+		{name: "tool turn hides placeholder", toolInput: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Status: "complete"}}}}
+			var output bytes.Buffer
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 80})
+			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, renderer: renderer}
+			runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}, streamMessageID: "assistant", toolInput: test.toolInput}
+			if err := runtime.commitCompletedAssistants("assistant"); err != nil {
+				t.Fatal(err)
+			}
+			contains := strings.Contains(output.String(), chatview.AgentEmptyResponseText)
+			if contains != test.wantShown {
+				t.Fatalf("placeholder shown=%t, want %t; output=%q", contains, test.wantShown, output.String())
+			}
+		})
 	}
 }
 
