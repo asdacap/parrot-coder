@@ -235,8 +235,11 @@ type enhancedChatRuntime struct {
 	turnCompleteID    string
 	lastCompleteID    string
 	borderCommitted   bool
-	contextTokens     int
-	subagents         taskStreamTracker
+	contextTokens      int
+	mainTaskInputTokens  int
+	mainTaskOutputTokens int
+	mainTaskCachedTokens int
+	subagents          taskStreamTracker
 	pendingToolOutput map[string]shellOutputTail
 	completedToolIDs  map[string]bool
 
@@ -546,9 +549,13 @@ func (r *enhancedChatRuntime) render() error {
 	if r.modal != nil && r.modal.kind == "permission" {
 		busy = false
 	}
+	right := r.shell.modelineModelLabel(r.contextTokens)
+	if r.mainTaskInputTokens > 0 || r.mainTaskOutputTokens > 0 {
+		right += " · " + formatTaskTokenUsage(r.mainTaskInputTokens, r.mainTaskOutputTokens, r.mainTaskCachedTokens)
+	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
 		Stream: stream, PromptContext: r.modalContext(), StyledActivity: r.styledActivityRows(now, r.shell.renderer.Columns()), Pending: pending,
-		InputLeft: r.inputModeLabel(), InputCenter: r.modelineThinking(now), InputRight: r.shell.modelineModelLabel(r.contextTokens),
+		InputLeft: r.inputModeLabel(), InputCenter: r.modelineThinking(now), InputRight: right,
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})

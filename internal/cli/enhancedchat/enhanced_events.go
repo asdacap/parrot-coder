@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -174,11 +175,52 @@ func (r *enhancedChatRuntime) stopStream() {
 // handleTaskEvent renders one flat task event through the task tree tracker.
 // The tracker owns which task is a child of which; this runtime only maps the
 // resulting reports onto the live activity list and the transcript.
+// formatTaskTokenUsage returns a humanized token-usage snippet for a task.
+func formatTaskTokenUsage(input, output, cached int) string {
+	if input == 0 && output == 0 {
+		return "-"
+	}
+	part := fmt.Sprintf("+%si +%so", formatTokenCount(input), formatTokenCount(output))
+	if cached > 0 {
+		part += fmt.Sprintf(" (+%scached)", formatTokenCount(cached))
+	}
+	return part
+}
+
 func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 	thinking := r.shell != nil && r.shell.options.thinking
 	reports, err := r.subagents.describe(item, thinking)
 	if err != nil {
 		return err
+	}
+	// For progress events, enhance the report line with token breakdown.
+	if item.Type == v1.EventTaskProgress && len(reports) > 0 {
+		payload, decodeErr := v1.DecodeEventData(item)
+		if decodeErr == nil {
+			progress := payload.(*v1.TaskProgress)
+			if progress.Usage.TotalTokens > 0 {
+				input, output, cached := 0, 0, 0
+				if r.subagents.Tracker() != nil {
+					input, output, cached = r.subagents.Tracker().CumulativeUsage(item.TaskID)
+				} else {
+					input = progress.Usage.InputTokens
+					output = progress.Usage.OutputTokens
+					cached = progress.Usage.CachedInputTokens
+				}
+				oldToken := fmt.Sprintf("· %s tokens", chatview.FormatTokenCount(progress.Usage.TotalTokens))
+				tokenPart := formatTaskTokenUsage(input, output, cached)
+				for i := range reports {
+					reports[i].line = strings.Replace(reports[i].line, oldToken, "· "+tokenPart, 1)
+				}
+			}
+		}
+	}
+	// Update cached main task cumulative tokens after any task event.
+	if r.subagents.Tracker() != nil {
+		input, output, cached := r.subagents.Tracker().CumulativeUsage("task_main")
+		r.mainTaskInputTokens = input
+		r.mainTaskOutputTokens = output
+		r.mainTaskCachedTokens = cached
 	}
 	for _, report := range reports {
 		text := report.line
