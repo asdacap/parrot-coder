@@ -181,6 +181,8 @@ type App struct {
 	monitors     *monitor.Service
 	mcp          *mcp.Manager
 	lsp          *lsp.Manager
+	providers    *agent.ProviderRegistry
+	httpClient   *http.Client
 	closeOnce    sync.Once
 	closeErr     error
 }
@@ -574,6 +576,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return v1.Compaction{Status: item.Status, AttemptID: item.AttemptID, RecordID: item.RecordID, SourceEpochID: item.SourceEpochID, TargetEpochID: item.TargetEpochID, HistoryCutoff: item.HistoryCutoff, Reason: item.Reason}, err
 	}
 	result.Backend = backend
+	result.providers = providerRegistry
+	result.httpClient = options.HTTPClient
 	composed := &compositionBackend{DomainBackend: backend}
 	apiServer := httpapi.New(composed, httpapi.Config{Logger: httpapi.LoggerFunc(func(_ context.Context, record httpapi.LogRecord) {
 		diagnostics.Event("http_request",
@@ -874,6 +878,23 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.next.ServeHTTP(w, r)
+}
+
+// ReloadProviders rebuilds the provider clients from the current configuration
+// and credentials, then atomically swaps them into the live registry. Every
+// consumer that holds the registry (runner, compaction, subagents, and the
+// model/usage listings) sees the new providers on its next resolution, so a
+// credential change takes effect without restarting the chat. A build failure
+// leaves the existing providers in place; the error is returned to the caller.
+func (a *App) ReloadProviders(ctx context.Context) error {
+	if a == nil || a.providers == nil {
+		return errors.New("app: provider registry is unavailable")
+	}
+	built, err := BuildProviders(ctx, a.Config.Config, a.Credentials, a.httpClient)
+	if err != nil {
+		return err
+	}
+	return a.providers.Replace(built)
 }
 
 // BuildProviders creates configured provider clients. Environment credentials

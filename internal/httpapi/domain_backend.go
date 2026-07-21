@@ -569,7 +569,7 @@ func (b *DomainBackend) ReplyQuestion(ctx context.Context, sessionID, requestID 
 
 func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {
 	out := v1.ModelList{Items: []v1.Model{}}
-	for _, provider := range b.Providers {
+	for _, provider := range b.providerList() {
 		if provider == nil {
 			continue
 		}
@@ -588,6 +588,17 @@ func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {
 		return out.Items[i].Provider < out.Items[j].Provider
 	})
 	return out, nil
+}
+
+// providerList reports the live providers. When the resolver is a registry, it
+// is the single source of truth and reflects a hot reload; otherwise the
+// startup snapshot in Providers is used so backends assembled without a
+// resolver keep working.
+func (b *DomainBackend) providerList() []provider.Provider {
+	if lister, ok := b.ProviderResolver.(agent.ProviderLister); ok {
+		return lister.List()
+	}
+	return b.Providers
 }
 
 func (b *DomainBackend) SubscriptionUsage(ctx context.Context) (v1.SubscriptionUsage, error) {
@@ -612,7 +623,7 @@ func (b *DomainBackend) SubscriptionUsage(ctx context.Context) (v1.SubscriptionU
 func (b *DomainBackend) usageReporter() (provider.Provider, provider.UsageReporter) {
 	var fallbackProvider provider.Provider
 	var fallbackReporter provider.UsageReporter
-	for _, item := range b.Providers {
+	for _, item := range b.providerList() {
 		if item == nil {
 			continue
 		}

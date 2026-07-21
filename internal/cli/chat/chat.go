@@ -416,7 +416,8 @@ func command(ctx context.Context, config Config) int {
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
 		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, claimRequest: claimRequest, commands: runtime.Commands,
 		build: config.Build, credentials: runtime.Credentials, handler: runtime.Handler,
-		models: models.Items, presentation: chatview.NewPresentations(toolList),
+		reloadProviders: func(ctx context.Context) error { return runtime.ReloadProviders(ctx) },
+		models:          models.Items, presentation: chatview.NewPresentations(toolList),
 		stdout: plainOut, stderr: stderr, inputTTY: terminal.IsTTY(stdin), outputTTY: terminal.IsTTY(stdout),
 		inputEcho: terminal.InputEchoed(stdin, stdout), columns: terminal.Columns(stdout),
 	}
@@ -1274,23 +1275,27 @@ type chatShell struct {
 	commands     *customcommand.Registry
 	build        BuildInfo
 	credentials  auth.Store
-	handler      http.Handler
-	server       *http.Server
-	listener     net.Listener
-	models       []v1.Model
-	presentation chatview.Presentations
-	stdout       io.Writer
-	stderr       io.Writer
-	reader       *bufio.Reader
-	decoder      *terminal.KeyDecoder
-	editor       *terminal.Editor
-	renderer     *terminal.LiveRenderer
-	enhanced     bool
-	inputTTY     bool
-	outputTTY    bool
-	inputEcho    bool
-	inputEchoed  bool
-	columns      int
+	// reloadProviders rebuilds the local backend's providers from the credential
+	// store after /auth changes a credential, so new keys take effect without a
+	// restart. It is nil when no local backend is reloadable.
+	reloadProviders func(context.Context) error
+	handler         http.Handler
+	server          *http.Server
+	listener        net.Listener
+	models          []v1.Model
+	presentation    chatview.Presentations
+	stdout          io.Writer
+	stderr          io.Writer
+	reader          *bufio.Reader
+	decoder         *terminal.KeyDecoder
+	editor          *terminal.Editor
+	renderer        *terminal.LiveRenderer
+	enhanced        bool
+	inputTTY        bool
+	outputTTY       bool
+	inputEcho       bool
+	inputEchoed     bool
+	columns         int
 
 	// tasks tracks the session's task tree across turns. A task started in one
 	// turn can still emit events in a later one, so the tracker is rebuilt only
@@ -2193,7 +2198,7 @@ func (s *chatShell) authAction(argument string) {
 			s.commitError(err.Error())
 			return
 		}
-		s.commitStatus("✓ Credential removed; restart chat to reload providers")
+		s.reloadAfterAuth("✓ Credential removed")
 	case "login":
 		if len(fields) > 3 {
 			s.commitError("usage: /auth login [PROVIDER [KEY|--no-browser]]")
@@ -2244,7 +2249,7 @@ func (s *chatShell) authAction(argument string) {
 				s.commitError(err.Error())
 				return
 			}
-			s.commitStatus("✓ API key stored; restart chat to reload providers")
+			s.reloadAfterAuth("✓ API key stored")
 			return
 		}
 		noBrowser := len(fields) == 3 && fields[2] == "--no-browser"
@@ -2274,10 +2279,34 @@ func (s *chatShell) authAction(argument string) {
 			s.commitError(err.Error())
 			return
 		}
-		s.commitStatus("✓ OpenAI OAuth credential stored; restart chat to reload providers")
+		s.reloadAfterAuth("✓ OpenAI OAuth credential stored")
 	default:
 		s.commitError("usage: /auth list|login [PROVIDER [KEY|--no-browser]]|logout PROVIDER")
 	}
+}
+
+// reloadAfterAuth announces a credential change, then rebuilds the local
+// providers so the new key takes effect without a restart. The model list is
+// refreshed from the connected server so /models and model picking reflect
+// any provider added or removed. When no reloadable local backend is available
+// (for example after /connect points at a remote server), the credential is
+// still stored and the caller is told to restart.
+func (s *chatShell) reloadAfterAuth(stored string) {
+	if s.reloadProviders == nil {
+		s.commitStatus(stored + "; restart chat to reload providers")
+		return
+	}
+	if err := s.reloadProviders(s.ctx); err != nil {
+		s.commitStatus(stored + "; reload failed: " + err.Error())
+		return
+	}
+	// The connected server (local or remote) re-reads its provider registry on
+	// each request, so a fresh model list reflects the rebuild. A failure here
+	// is non-fatal: the providers themselves are already reloaded.
+	if items, err := s.api.Models(s.ctx); err == nil {
+		s.models = items.Items
+	}
+	s.commitStatus(stored + "; providers reloaded")
 }
 
 func (s *chatShell) serveAction(argument string) {
