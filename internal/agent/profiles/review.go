@@ -12,14 +12,6 @@ func Review() Profile {
 	return Profile{
 		ID:     ReviewID,
 		Prompt: reviewPrompt,
-		// Read-only tools are available by default; delegation is withheld so the
-		// HardRule below is enforced rather than merely stated.
-		DeniedToolIDs: []string{
-			"agent_send", "agent_spawn", "monitor", "review", "task_interrupt", "task_list_active",
-		},
-		// Shell and exec_command are sandboxed by default; the OS sandbox is what
-		// enforces read-only behaviour, not the tool's own ReadOnly flag.
-		AllowedWritableToolIDs: []string{"shell", "exec_command"},
 		HardRules:              []string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."},
 		MaxTurns:               32,
 		RecursionLimit:         3,

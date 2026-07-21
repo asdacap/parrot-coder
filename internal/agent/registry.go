@@ -68,8 +68,6 @@ func (r *Registry) Register(profile Profile) error {
 	if profile.ID == "" || profile.Prompt == "" || profile.MaxTurns <= 0 {
 		return errors.New("agent: ID, prompt, and positive max turns are required")
 	}
-	profile.AllowedToolIDs = sortedUnique(profile.AllowedToolIDs)
-	profile.AllowedWritableToolIDs = sortedUnique(profile.AllowedWritableToolIDs)
 	profile.HardRules = append([]string(nil), profile.HardRules...)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -93,8 +91,6 @@ func (r *Registry) Get(id string) (Profile, error) {
 	if !ok {
 		return Profile{}, fmt.Errorf("agent: unknown profile %q", id)
 	}
-	profile.AllowedToolIDs = append([]string(nil), profile.AllowedToolIDs...)
-	profile.AllowedWritableToolIDs = append([]string(nil), profile.AllowedWritableToolIDs...)
 	profile.HardRules = append([]string(nil), profile.HardRules...)
 	return profile, nil
 }
@@ -103,24 +99,10 @@ func (r *Registry) List() []Profile {
 	r.mu.RLock()
 	result := make([]Profile, 0, len(r.profiles))
 	for _, profile := range r.profiles {
-		profile.AllowedToolIDs = append([]string(nil), profile.AllowedToolIDs...)
-		profile.AllowedWritableToolIDs = append([]string(nil), profile.AllowedWritableToolIDs...)
 		profile.HardRules = append([]string(nil), profile.HardRules...)
 		result = append(result, profile)
 	}
 	r.mu.RUnlock()
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result
-}
-
-func sortedUnique(values []string) []string {
-	result := append([]string(nil), values...)
-	sort.Strings(result)
-	out := result[:0]
-	for _, value := range result {
-		if value != "" && (len(out) == 0 || out[len(out)-1] != value) {
-			out = append(out, value)
-		}
-	}
-	return out
 }
