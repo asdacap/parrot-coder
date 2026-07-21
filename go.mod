@@ -4,6 +4,7 @@ go 1.25.0
 
 require (
 	github.com/alecthomas/chroma/v2 v2.20.0
+	github.com/bluekeyes/go-gitdiff v0.9.0
 	github.com/creack/pty v1.1.24
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/sys v0.44.0

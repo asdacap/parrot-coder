@@ -2,29 +2,13 @@ package change
 
 import (
 	"fmt"
-	"strconv"
 	"strings"
+
+	"github.com/bluekeyes/go-gitdiff/gitdiff"
 )
 
-// Header lines a unified diff may carry that say nothing about content.
-var unifiedNoisePrefixes = []string{
-	"diff --git ", "diff ", "index ", "new file mode ", "deleted file mode ",
-	"old mode ", "new mode ", "similarity index ", "dissimilarity index ",
-}
-
-// Directives this parser deliberately refuses rather than half-supports.
-var unifiedRejectedPrefixes = map[string]string{
-	"rename from":      "renames are not supported; express the change as a delete and a create",
-	"rename to":        "renames are not supported; express the change as a delete and a create",
-	"copy from":        "copies are not supported; express the change as a create",
-	"copy to":          "copies are not supported; express the change as a create",
-	"GIT binary patch": "binary patches are not supported",
-}
-
 // ParseUnifiedDiff parses unified (git) diff text into the same Patch value the
-// aider parser produces, so both formats share the whole apply path. The
-// @@ line numbers are treated as hints only: hunks are located by matching
-// their context and removed lines, exactly as aider blocks are.
+// aider parser produces, so both formats share the whole apply path.
 //
 // A source of /dev/null creates the file and a target of /dev/null deletes it.
 // Renames, copies and binary patches are rejected.
@@ -33,215 +17,211 @@ var unifiedRejectedPrefixes = map[string]string{
 // always writes a trailing newline, so a diff whose only change is the presence
 // of a final newline is a no-op.
 func ParseUnifiedDiff(text string) (Patch, error) {
-	lines, err := patchLines(text)
-	if err != nil {
+	// Reject NUL bytes.
+	if strings.ContainsRune(text, 0) {
+		return Patch{}, fmt.Errorf("%w: NUL byte", ErrInvalidPatch)
+	}
+
+	// Reject quoted paths (not supported by the workspace resolver).
+	if containsQuotedPath(text) {
+		return Patch{}, fmt.Errorf("%w: quoted paths are not supported", ErrInvalidPatch)
+	}
+
+	// Reject mismatched traditional header paths.
+	if err := checkMismatchedHeaderPaths(text); err != nil {
 		return Patch{}, err
 	}
-	var patch Patch
-	for i := 0; i < len(lines); {
-		line := lines[i]
-		trimmed := strings.TrimSpace(line)
-		// A "\ No newline" marker trails the last hunk line, so it surfaces
-		// here whenever the hunk header counts already accounted for that line.
-		if trimmed == "" || strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, `\`) || hasAnyPrefix(trimmed, unifiedNoisePrefixes) {
-			i++
-			continue
-		}
-		for prefix, reason := range unifiedRejectedPrefixes {
-			if strings.HasPrefix(trimmed, prefix) {
-				return Patch{}, fmt.Errorf("%w at line %d: %s", ErrInvalidPatch, i+1, reason)
-			}
-		}
-		if !strings.HasPrefix(line, "--- ") {
-			return Patch{}, fmt.Errorf("%w at line %d: expected a --- file header, found %q", ErrInvalidPatch, i+1, trimmed)
-		}
-		if i+1 >= len(lines) || !strings.HasPrefix(lines[i+1], "+++ ") {
-			return Patch{}, fmt.Errorf("%w at line %d: --- header is missing its +++ line", ErrInvalidPatch, i+1)
-		}
-		source, err := unifiedPath(strings.TrimPrefix(line, "--- "))
-		if err != nil {
-			return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+1, err)
-		}
-		target, err := unifiedPath(strings.TrimPrefix(lines[i+1], "+++ "))
-		if err != nil {
-			return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+2, err)
-		}
-		operation, err := unifiedOperation(source, target)
-		if err != nil {
-			return Patch{}, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, i+1, err)
-		}
-		i += 2
-		for i < len(lines) && strings.HasPrefix(lines[i], "@@") {
-			hunk, next, err := parseUnifiedHunk(lines, i)
-			if err != nil {
-				return Patch{}, err
-			}
-			if err := appendUnifiedHunk(&operation, hunk, i+1); err != nil {
-				return Patch{}, err
-			}
-			i = next
-		}
-		patch.Operations = append(patch.Operations, operation)
+
+	// Parse with go-gitdiff.
+	files, _, err := gitdiff.Parse(strings.NewReader(text))
+	if err != nil {
+		return Patch{}, fmt.Errorf("%w: %v", ErrInvalidPatch, err)
 	}
+
+	// Convert to internal Patch type.
+	var patch Patch
+	for _, file := range files {
+		op, err := convertFile(file)
+		if err != nil {
+			return Patch{}, err
+		}
+		patch.Operations = append(patch.Operations, op)
+	}
+
 	if len(patch.Operations) == 0 {
 		return Patch{}, fmt.Errorf("%w: patch has no file headers", ErrInvalidPatch)
 	}
+
 	return finalizePatch(patch)
 }
 
-func unifiedOperation(source, target string) (PatchOperation, error) {
-	switch {
-	case source == "" && target == "":
-		return PatchOperation{}, fmt.Errorf("file header names no path")
-	case source == "":
-		return PatchOperation{Kind: PatchAdd, Path: target}, validPatchPath(target)
-	case target == "":
-		return PatchOperation{Kind: PatchDelete, Path: source}, validPatchPath(source)
-	case source != target:
-		return PatchOperation{}, fmt.Errorf("source %q and target %q differ; renames are not supported", source, target)
-	default:
-		return PatchOperation{Kind: PatchUpdate, Path: source}, validPatchPath(source)
+// containsQuotedPath reports whether the text contains a "--- " or "+++ " line
+// whose path is quoted (starts with a double quote after stripping the header
+// prefix and any a/b prefix).
+func containsQuotedPath(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		for _, prefix := range []string{"--- ", "+++ "} {
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			rest := strings.TrimSpace(line[len(prefix):])
+			// Strip timestamp after tab.
+			if idx := strings.IndexByte(rest, '\t'); idx >= 0 {
+				rest = rest[:idx]
+			}
+			// Strip a/ or b/ prefix.
+			for _, ab := range []string{"a/", "b/"} {
+				rest = strings.TrimPrefix(rest, ab)
+			}
+			if strings.HasPrefix(rest, `"`) {
+				return true
+			}
+		}
 	}
+	return false
 }
 
-// appendUnifiedHunk folds one parsed hunk into the operation, enforcing that a
-// creation carries added lines only. Deletions discard their hunks: the planner
-// reads the real before-state instead of trusting the patch.
-func appendUnifiedHunk(operation *PatchOperation, hunk PatchHunk, line int) error {
-	switch operation.Kind {
-	case PatchAdd:
-		for _, entry := range hunk.Lines {
-			if entry.Kind != '+' {
-				return fmt.Errorf("%w at line %d: file creation for %q may only add lines", ErrInvalidPatch, line, operation.Path)
-			}
-			operation.Data += entry.Text + "\n"
+// checkMismatchedHeaderPaths scans traditional diff headers (--- / +++) and
+// reports an error when the source and target paths differ (which would
+// indicate a rename in a format that does not support them).
+func checkMismatchedHeaderPaths(text string) error {
+	lines := strings.Split(text, "\n")
+	for i := 0; i < len(lines); i++ {
+		// Skip git headers.
+		if strings.HasPrefix(lines[i], "diff --git ") {
+			continue
 		}
-	case PatchUpdate:
-		operation.Hunks = append(operation.Hunks, hunk)
+		if !strings.HasPrefix(lines[i], "--- ") {
+			continue
+		}
+		if i+1 >= len(lines) || !strings.HasPrefix(lines[i+1], "+++ ") {
+			continue
+		}
+		// Verify the next non-noise line starts with @@ - (confirmed
+		// traditional header rather than stray ---/+++ lines).
+		hasFragment := false
+		for j := i + 2; j < len(lines); j++ {
+			t := strings.TrimSpace(lines[j])
+			if t == "" || strings.HasPrefix(t, "\\") || strings.HasPrefix(t, "```") || strings.HasPrefix(t, "diff ") {
+				continue
+			}
+			hasFragment = strings.HasPrefix(t, "@@ -")
+			break
+		}
+		if !hasFragment {
+			continue
+		}
+
+		source := extractHeaderPath(lines[i][len("--- "):])
+		target := extractHeaderPath(lines[i+1][len("+++ "):])
+		if source == "" || target == "" {
+			continue
+		}
+		if source != target {
+			return fmt.Errorf("%w: source %q and target %q differ; renames are not supported",
+				ErrInvalidPatch, source, target)
+		}
 	}
 	return nil
 }
 
-// parseUnifiedHunk reads the header at lines[start] and its body, returning the
-// index of the first line after the hunk. The header counts bound the body; a
-// section boundary also ends it, so a patch with miscounted headers still
-// parses rather than swallowing the next file.
-func parseUnifiedHunk(lines []string, start int) (PatchHunk, int, error) {
-	oldCount, newCount, err := parseUnifiedHunkHeader(lines[start])
-	if err != nil {
-		return PatchHunk{}, 0, fmt.Errorf("%w at line %d: %v", ErrInvalidPatch, start+1, err)
-	}
-	var hunk PatchHunk
-	old, added := 0, 0
-	i := start + 1
-	for i < len(lines) && (old < oldCount || added < newCount) {
-		line := lines[i]
-		if isUnifiedBoundary(lines, i) {
-			break
-		}
-		i++
-		switch {
-		case strings.HasPrefix(line, "\\"):
-			// "\ No newline at end of file" - accepted and ignored.
-		case line == "":
-			// Trailing whitespace is routinely stripped from empty context lines.
-			hunk.Lines = append(hunk.Lines, PatchLine{Kind: ' ', Text: ""})
-			old++
-			added++
-		case line[0] == ' ':
-			hunk.Lines = append(hunk.Lines, PatchLine{Kind: ' ', Text: line[1:]})
-			old++
-			added++
-		case line[0] == '-':
-			hunk.Lines = append(hunk.Lines, PatchLine{Kind: '-', Text: line[1:]})
-			old++
-		case line[0] == '+':
-			hunk.Lines = append(hunk.Lines, PatchLine{Kind: '+', Text: line[1:]})
-			added++
-		default:
-			return PatchHunk{}, 0, fmt.Errorf("%w at line %d: hunk line %q has no ' ', '+' or '-' prefix", ErrInvalidPatch, i, line)
-		}
-	}
-	if len(hunk.Lines) == 0 {
-		return PatchHunk{}, 0, fmt.Errorf("%w at line %d: hunk has no lines", ErrInvalidPatch, start+1)
-	}
-	return hunk, i, nil
-}
-
-// isUnifiedBoundary reports whether lines[i] starts a new hunk or file section.
-func isUnifiedBoundary(lines []string, i int) bool {
-	line := lines[i]
-	if strings.HasPrefix(line, "@@ ") || strings.HasPrefix(line, "diff --git ") {
-		return true
-	}
-	return strings.HasPrefix(line, "--- ") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "+++ ")
-}
-
-func parseUnifiedHunkHeader(line string) (oldCount, newCount int, err error) {
-	rest, ok := strings.CutPrefix(line, "@@ ")
-	if !ok {
-		return 0, 0, fmt.Errorf("hunk header %q is malformed", line)
-	}
-	end := strings.Index(rest, "@@")
-	if end < 0 {
-		return 0, 0, fmt.Errorf("hunk header %q is missing its closing @@", line)
-	}
-	ranges := strings.Fields(rest[:end])
-	if len(ranges) != 2 || !strings.HasPrefix(ranges[0], "-") || !strings.HasPrefix(ranges[1], "+") {
-		return 0, 0, fmt.Errorf("hunk header %q needs a -old and a +new range", line)
-	}
-	if oldCount, err = unifiedRangeCount(ranges[0][1:]); err != nil {
-		return 0, 0, err
-	}
-	if newCount, err = unifiedRangeCount(ranges[1][1:]); err != nil {
-		return 0, 0, err
-	}
-	return oldCount, newCount, nil
-}
-
-// unifiedRangeCount returns the line count of a "start,count" range, which
-// defaults to one line when the count is omitted.
-func unifiedRangeCount(value string) (int, error) {
-	start, count, found := strings.Cut(value, ",")
-	if _, err := strconv.Atoi(start); err != nil {
-		return 0, fmt.Errorf("range %q has no start line", value)
-	}
-	if !found {
-		return 1, nil
-	}
-	parsed, err := strconv.Atoi(count)
-	if err != nil || parsed < 0 {
-		return 0, fmt.Errorf("range %q has no line count", value)
-	}
-	return parsed, nil
-}
-
-// unifiedPath strips the timestamp and the a/ or b/ prefix git adds, returning
-// an empty path for /dev/null.
-func unifiedPath(value string) (string, error) {
-	if index := strings.IndexByte(value, '\t'); index >= 0 {
-		value = value[:index]
+// extractHeaderPath extracts the file path from a unified-diff header value,
+// stripping the timestamp and the a/b prefix. Returns an empty string for
+// /dev/null.
+func extractHeaderPath(value string) string {
+	if idx := strings.IndexByte(value, '\t'); idx >= 0 {
+		value = value[:idx]
 	}
 	value = strings.TrimSpace(value)
-	if strings.HasPrefix(value, `"`) {
-		return "", fmt.Errorf("quoted path %s is not supported", value)
-	}
 	if value == "/dev/null" {
-		return "", nil
+		return ""
 	}
 	for _, prefix := range []string{"a/", "b/"} {
 		if after, ok := strings.CutPrefix(value, prefix); ok {
-			return after, nil
+			return after
 		}
 	}
-	return value, nil
+	return value
 }
 
-func hasAnyPrefix(value string, prefixes []string) bool {
-	for _, prefix := range prefixes {
-		if strings.HasPrefix(value, prefix) {
-			return true
+// cleanDiffPath strips the a/ and b/ prefixes that git's diff format may
+// include on header paths.
+func cleanDiffPath(path string) string {
+	for _, prefix := range []string{"a/", "b/"} {
+		if after, ok := strings.CutPrefix(path, prefix); ok {
+			return after
 		}
 	}
-	return false
+	return path
+}
+
+// convertFile converts a go-gitdiff File into an internal PatchOperation.
+func convertFile(file *gitdiff.File) (PatchOperation, error) {
+	var op PatchOperation
+
+	if file.IsRename {
+		return PatchOperation{}, fmt.Errorf("%w: renames are not supported; express the change as a delete and a create", ErrInvalidPatch)
+	}
+	if file.IsCopy {
+		return PatchOperation{}, fmt.Errorf("%w: copies are not supported; express the change as a create", ErrInvalidPatch)
+	}
+	if file.IsBinary {
+		return PatchOperation{}, fmt.Errorf("%w: binary patches are not supported", ErrInvalidPatch)
+	}
+
+	switch {
+	case file.IsNew:
+		op.Kind = PatchAdd
+		op.Path = cleanDiffPath(file.NewName)
+		if err := validPatchPath(op.Path); err != nil {
+			return PatchOperation{}, fmt.Errorf("%w: %v", ErrInvalidPatch, err)
+		}
+		for _, frag := range file.TextFragments {
+			for _, line := range frag.Lines {
+				if line.Op != gitdiff.OpAdd {
+					return PatchOperation{}, fmt.Errorf("%w: file creation for %q may only add lines", ErrInvalidPatch, op.Path)
+				}
+				op.Data += strings.TrimSuffix(line.Line, "\n") + "\n"
+			}
+		}
+
+	case file.IsDelete:
+		op.Kind = PatchDelete
+		op.Path = cleanDiffPath(file.OldName)
+		if err := validPatchPath(op.Path); err != nil {
+			return PatchOperation{}, fmt.Errorf("%w: %v", ErrInvalidPatch, err)
+		}
+
+	default:
+		op.Kind = PatchUpdate
+		op.Path = cleanDiffPath(file.NewName)
+		if op.Path == "" {
+			op.Path = cleanDiffPath(file.OldName)
+		}
+		if err := validPatchPath(op.Path); err != nil {
+			return PatchOperation{}, fmt.Errorf("%w: %v", ErrInvalidPatch, err)
+		}
+		for _, frag := range file.TextFragments {
+			var hunk PatchHunk
+			for _, line := range frag.Lines {
+				var kind byte
+				switch line.Op {
+				case gitdiff.OpContext:
+					kind = ' '
+				case gitdiff.OpDelete:
+					kind = '-'
+				case gitdiff.OpAdd:
+					kind = '+'
+				default:
+					continue
+				}
+				hunk.Lines = append(hunk.Lines, PatchLine{Kind: kind, Text: strings.TrimSuffix(line.Line, "\n")})
+			}
+			if len(hunk.Lines) > 0 {
+				op.Hunks = append(op.Hunks, hunk)
+			}
+		}
+	}
+
+	return op, nil
 }
