@@ -21,7 +21,6 @@ type GlobConfig struct {
 }
 type GlobTool struct {
 	BasePresentation
-	ReadOnlyTool
 	Config GlobConfig
 }
 
@@ -91,9 +90,7 @@ func (t *GlobTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	return NewPlan(t.ID(), raw, []permission.Request{req}, nil, globPlan{input, root, rx})
 }
 func (t *GlobTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
-	}
+
 	p := plan.Data.(globPlan)
 	revalidated, err := call.Workspace.ResolveRead(".")
 	if err != nil || revalidated != p.Root {

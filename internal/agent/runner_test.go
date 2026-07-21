@@ -163,7 +163,6 @@ func (*callThenBlockingStream) Close() error { return nil }
 
 type fakeTool struct {
 	tool.BasePresentation
-	tool.WritableTool
 	id      string
 	execute func(context.Context) (tool.Result, error)
 }
@@ -178,8 +177,8 @@ func (t *fakeTool) Plan(_ context.Context, raw json.RawMessage, _ tool.CallConte
 	return tool.NewPlan(t.id, raw, nil, nil, nil)
 }
 func (t *fakeTool) Execute(ctx context.Context, _ tool.Plan, call tool.CallContext) (tool.Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return tool.Result{}, err
+	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
+		return tool.Result{}, errors.New("tool is not permitted by the current security profile")
 	}
 	if t.execute == nil {
 		return tool.Result{Text: "ok", ModelText: "ok"}, nil

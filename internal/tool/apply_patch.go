@@ -11,7 +11,6 @@ import (
 
 type ApplyPatchTool struct {
 	BasePresentation
-	WritableTool
 	Changes *change.Service
 }
 
@@ -86,8 +85,8 @@ func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call Cal
 }
 
 func (t *ApplyPatchTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
+	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
+		return Result{}, errors.New("apply_patch is not permitted by the current security profile")
 	}
 	return executeMutation(ctx, t.Changes, plan, call)
 }

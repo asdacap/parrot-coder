@@ -15,7 +15,6 @@ import (
 
 type WritePermissionTool struct {
 	BasePresentation
-	WritableTool
 	Runner *process.Runner
 }
 
@@ -107,8 +106,8 @@ func (t *WritePermissionTool) Plan(_ context.Context, raw json.RawMessage, call 
 }
 
 func (t *WritePermissionTool) Execute(_ context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
+	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
+		return Result{}, errors.New("request_write_permission is not permitted by the current security profile")
 	}
 	runner := t.Runner
 	if runner == nil {

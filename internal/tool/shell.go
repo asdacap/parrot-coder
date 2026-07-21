@@ -18,7 +18,6 @@ import (
 
 type ShellTool struct {
 	BasePresentation
-	WritableTool
 	Runner       *process.Runner
 	unrestricted bool
 }
@@ -133,9 +132,6 @@ func (t *ShellTool) Plan(ctx context.Context, raw json.RawMessage, call CallCont
 }
 
 func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
-	}
 	runner := t.Runner
 	if runner == nil {
 		runner = call.Processes

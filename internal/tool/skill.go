@@ -11,7 +11,6 @@ import (
 
 type SkillTool struct {
 	BasePresentation
-	ReadOnlyTool
 	Registry *skill.Registry
 }
 

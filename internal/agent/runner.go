@@ -217,7 +217,7 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) (runErr error) {
 		}
 
 		snapshot := r.config.ToolSnapshot()
-		definitions := toolDefinitions(snapshot, profile)
+		definitions := toolDefinitions(snapshot)
 		turn++
 		instructions := runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
 		if turn >= profile.MaxTurns {
@@ -345,10 +345,9 @@ func (r *Runner) PrepareContinuation(ctx context.Context, sessionID string) (boo
 	if err != nil {
 		return false, err
 	}
-	// Both goal-reading and goal-updating tools must be available for
-	// continuation. A read-only profile cannot update goals, so it also
+	// A read-only profile cannot update goals, so it also
 	// cannot participate in goal continuation.
-	if !profile.AllowsTool("get_goal", true) || !profile.AllowsTool("update_goal", false) {
+	if profile.IsReadOnly() {
 		return false, nil
 	}
 	remaining := "unlimited"
@@ -801,7 +800,7 @@ func (r *Runner) finishAssistantOnCleanup(sessionID, messageID string, final ses
 	return r.config.Sessions.FinishAssistant(ctx, sessionID, messageID, final)
 }
 
-func toolDefinitions(snapshot tool.Snapshot, _ Profile) []protocol.ToolDefinition {
+func toolDefinitions(snapshot tool.Snapshot) []protocol.ToolDefinition {
 	definitions := snapshot.Definitions()
 	result := make([]protocol.ToolDefinition, 0, len(definitions))
 	for _, definition := range definitions {

@@ -32,7 +32,6 @@ type LSPToolConfig struct {
 
 type LSPTool struct {
 	BasePresentation
-	ReadOnlyTool
 	kind   string
 	config LSPToolConfig
 }
@@ -119,9 +118,7 @@ func (t *LSPTool) Plan(_ context.Context, raw json.RawMessage, call CallContext)
 	return NewPlan(t.ID(), raw, nil, nil, planned)
 }
 func (t *LSPTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
-	}
+
 	planned, ok := plan.Data.(lspPlan)
 	if !ok {
 		return Result{}, errors.New("lsp: incompatible plan")

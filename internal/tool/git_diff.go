@@ -15,7 +15,6 @@ const maxGitDiffBytes = 4 << 20
 // it to inspect changes without receiving the general shell tool.
 type GitDiffTool struct {
 	BasePresentation
-	ReadOnlyTool
 }
 
 func NewGitDiffTool() Tool        { return &GitDiffTool{} }
@@ -68,9 +67,6 @@ func (t *GitDiffTool) Plan(_ context.Context, raw json.RawMessage, call CallCont
 }
 
 func (t *GitDiffTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
-	}
 	input, ok := plan.Data.(gitDiffInput)
 	if !ok || call.Workspace == nil {
 		return Result{}, errors.New("git_diff: incompatible plan or missing workspace")

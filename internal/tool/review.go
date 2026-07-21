@@ -17,7 +17,6 @@ const reviewAgentID = "review"
 // child session.
 type ReviewTool struct {
 	BasePresentation
-	ReadOnlyTool
 	Manager    *subagent.Manager
 	Agents     AgentLookup
 	CancelWait time.Duration
@@ -74,9 +73,7 @@ func (t *ReviewTool) Plan(_ context.Context, raw json.RawMessage, call CallConte
 }
 
 func (t *ReviewTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
-	}
+
 	input, ok := plan.Data.(reviewInput)
 	if !ok {
 		return Result{}, errors.New("review: incompatible plan")

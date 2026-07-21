@@ -1,5 +1,10 @@
+# Parrot Coder
 
-- This is parrot-coder. Its basically a coding agent designed to be visually easy to use in a CLI environment.
+- This is parrot-coder. Its basically a coding agent designed to be not too much.
+
+# Environment
+
+- Use nix flake please
 
 # Coding guideline
 

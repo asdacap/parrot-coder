@@ -15,7 +15,6 @@ import (
 
 type FormatTool struct {
 	BasePresentation
-	WritableTool
 	Formatters *formatter.Registry
 	Changes    *change.Service
 }
@@ -92,8 +91,8 @@ func (t *FormatTool) Plan(ctx context.Context, raw json.RawMessage, call CallCon
 	return NewPlan(t.ID(), raw, []permission.Request{request}, review, mutationPlan{changePlan})
 }
 func (t *FormatTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
+	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
+		return Result{}, errors.New("format is not permitted by the current security profile")
 	}
 	if noop, ok := plan.Data.(formatNoop); ok {
 		path, err := call.Workspace.ResolveRead(noop.Path)

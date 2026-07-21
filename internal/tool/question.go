@@ -10,7 +10,6 @@ import (
 
 type QuestionTool struct {
 	BasePresentation
-	ReadOnlyTool
 	Broker *question.Broker
 }
 
@@ -45,9 +44,7 @@ func (t *QuestionTool) Plan(_ context.Context, raw json.RawMessage, call CallCon
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 func (t *QuestionTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
-	}
+
 	broker := t.Broker
 	if broker == nil {
 		broker = call.Questions
