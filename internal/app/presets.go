@@ -54,11 +54,112 @@ var providerPresets = map[string]providerPreset{
 	// no vendor prefix (e.g. "glm-5.2", "kimi-k3"), so model selection splits
 	// "opencode-go/<model-id>" cleanly on the first slash. The endpoint has
 	// no balance route, so parrot usage reports nothing for it.
+	//
+	// The Models map supplies metadata (context window, max tokens, reasoning
+	// variants) that the endpoint's model list does not expose. Each entry
+	// describes a model the endpoint serves; unknown IDs are silently dropped
+	// from the final catalog. Metadata is sourced from OpenRouter, which is
+	// the upstream routing layer for OpenCode Go.
 	"opencode-go": {
 		Protocol:      "chat-completions",
 		BaseURL:       "https://opencode.ai/zen/go/v1",
 		APIKeyEnv:     "OPENCODE_GO_API_KEY",
 		HeaderTimeout: 10 * time.Second,
+		Models: map[string]config.Model{
+			"minimax-m3": {
+				Name: "MiniMax M3", Context: 1048576, MaxTokens: 512000, Tools: true,
+			},
+			"minimax-m2.7": {
+				Name: "MiniMax M2.7", Context: 204800, MaxTokens: 131072, Tools: true,
+			},
+			"minimax-m2.5": {
+				Name: "MiniMax M2.5", Context: 204800, MaxTokens: 196608, Tools: true,
+			},
+			"kimi-k3": {
+				Name: "Kimi K3", Context: 1048576, Tools: true, Reasoning: true,
+				Variants: map[string]config.Variant{
+					"max":  {ReasoningEffort: "max"},
+					"high": {ReasoningEffort: "high"},
+					"low":  {ReasoningEffort: "low"},
+				},
+			},
+			"kimi-k2.7-code": {
+				Name: "Kimi K2.7 Code", Context: 262144, MaxTokens: 262144, Tools: true,
+			},
+			"kimi-k2.6": {
+				Name: "Kimi K2.6", Context: 262144, MaxTokens: 262144, Tools: true,
+			},
+			"kimi-k2.5": {
+				Name: "Kimi K2.5", Context: 262144, MaxTokens: 262144, Tools: true,
+			},
+			"glm-5.2": {
+				Name: "GLM 5.2", Context: 1048576, MaxTokens: 131072, Tools: true, Reasoning: true,
+				Variants: map[string]config.Variant{
+					"xhigh": {ReasoningEffort: "xhigh"},
+					"high":  {ReasoningEffort: "high"},
+				},
+			},
+			"glm-5.1": {
+				Name: "GLM 5.1", Context: 202752, MaxTokens: 128000, Tools: true,
+			},
+			"glm-5": {
+				Name: "GLM 5", Context: 204800, MaxTokens: 131072, Tools: true,
+			},
+			"deepseek-v4-pro": {
+				Name: "DeepSeek V4 Pro", Context: 1048576, MaxTokens: 384000, Tools: true, Reasoning: true,
+				Variants: map[string]config.Variant{
+					"xhigh": {ReasoningEffort: "xhigh"},
+					"high":  {ReasoningEffort: "high"},
+				},
+			},
+			"deepseek-v4-flash": {
+				Name: "DeepSeek V4 Flash", Context: 1048576, Tools: true, Reasoning: true,
+				Variants: map[string]config.Variant{
+					"xhigh": {ReasoningEffort: "xhigh"},
+					"high":  {ReasoningEffort: "high"},
+				},
+			},
+			"qwen3.7-max": {
+				Name: "Qwen3.7 Max", Context: 1000000, MaxTokens: 65536, Tools: true,
+			},
+			"qwen3.7-plus": {
+				Name: "Qwen3.7 Plus", Context: 1000000, MaxTokens: 65536, Tools: true,
+			},
+			"qwen3.6-plus": {
+				Name: "Qwen3.6 Plus", Context: 1000000, MaxTokens: 65536, Tools: true,
+			},
+			"qwen3.5-plus": {
+				Name: "Qwen3.5 Plus", Context: 1000000, MaxTokens: 65536, Tools: true,
+			},
+			"mimo-v2.5-pro": {
+				Name: "MiMo V2.5 Pro", Context: 1048576, MaxTokens: 131072, Tools: true,
+			},
+			"mimo-v2.5": {
+				Name: "MiMo V2.5", Context: 1048576, MaxTokens: 131072, Tools: true,
+			},
+			"mimo-v2-pro": {
+				Name: "MiMo V2 Pro", Tools: true,
+			},
+			"mimo-v2-omni": {
+				Name: "MiMo V2 Omni", Tools: true,
+			},
+			"hy3-preview": {
+				Name: "Hy3 Preview", Context: 262144, Tools: true, Reasoning: true,
+				Variants: map[string]config.Variant{
+					"high": {ReasoningEffort: "high"},
+					"low":  {ReasoningEffort: "low"},
+					"none": {ReasoningEffort: "none"},
+				},
+			},
+			"grok-4.5": {
+				Name: "Grok 4.5", Context: 500000, Tools: true, Reasoning: true,
+				Variants: map[string]config.Variant{
+					"high":   {ReasoningEffort: "high"},
+					"medium": {ReasoningEffort: "medium"},
+					"low":    {ReasoningEffort: "low"},
+				},
+			},
+		},
 	},
 	// kimi-code is the Kimi For Coding subscription. Its endpoint serves the
 	// plan rather than an account balance, so it reports no usage, and it
