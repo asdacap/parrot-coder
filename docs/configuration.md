@@ -131,12 +131,16 @@ does not list, and supply the metadata a model list cannot express — `context`
 `max_tokens`, and `variants`. A declared model is always selectable; a built-in
 preset's model metadata only describes models the endpoint actually serves, so a
 stale built-in entry disappears rather than advertising a model that is gone.
+A declared model's `variants` take precedence over any the catalog exposes.
 
 Without a `context`, a model has no input budget, so Parrot cannot compact
 proactively — the session compacts only after the provider reports an overflow.
 Without `variants`, a model exposes no reasoning efforts to `/effort`. Declare
 both for any model where they matter; startup warns which models lack a context
-window.
+window. Providers that extend the model list with reasoning-effort metadata —
+OpenRouter's `reasoning.supported_efforts` or Kimi's `think_efforts.valid_efforts` —
+populate `/effort` automatically from the catalog, so no declaration is needed
+for those models.
 
 Catalog fetches are best-effort and run concurrently. If one fails — the
 endpoint has no `/models` route, is unreachable, or rejects the key — that

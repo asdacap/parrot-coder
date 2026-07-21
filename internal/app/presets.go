@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/config"
+	"github.com/amirulashraf/parrot-coder/internal/provider"
 )
 
 // providerPreset supplies built-in defaults for a well-known provider ID so a
@@ -16,6 +17,7 @@ type providerPreset struct {
 	APIKeyEnv     string
 	HeaderTimeout time.Duration
 	Models        map[string]config.Model
+	Decoder       provider.ModelListDecoder
 }
 
 // providerPresets are built-in, not configuration, so a project-scope file
@@ -35,6 +37,7 @@ var providerPresets = map[string]providerPreset{
 		BaseURL:       "https://openrouter.ai/api/v1",
 		APIKeyEnv:     "OPENROUTER_API_KEY",
 		HeaderTimeout: 10 * time.Second,
+		Decoder:       provider.DecodeOpenRouterModels,
 	},
 	// opencode-go is the OpenCode Go low-cost subscription for open coding
 	// models. It speaks the chat-completions protocol and serves a curated,
@@ -56,6 +59,7 @@ var providerPresets = map[string]providerPreset{
 		Protocol:  "chat-completions",
 		BaseURL:   "https://api.kimi.com/coding/v1",
 		APIKeyEnv: "KIMI_API_KEY",
+		Decoder:   provider.DecodeKimiModels,
 		Models: map[string]config.Model{
 			"kimi-for-coding": {Name: "Kimi For Coding", Context: 262144, Tools: true, Reasoning: true},
 		},
@@ -129,4 +133,10 @@ func presetOnlyProviderIDs(configured map[string]config.Provider) []string {
 	}
 	sort.Strings(ids)
 	return ids
+}
+
+// presetDecoder returns the model list decoder a preset selects, or nil to
+// select the default standard decoder.
+func presetDecoder(id string) provider.ModelListDecoder {
+	return providerPresets[id].Decoder
 }

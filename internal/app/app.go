@@ -967,7 +967,7 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 			ID: id, BaseURL: item.BaseURL, Protocol: provider.CompatibleProtocol(item.Protocol), APIKey: auth.Secret(key),
 			Headers: item.Headers, AllowInsecureLocalhost: item.AllowInsecureLocalhost, HTTPClient: httpClient,
 			Models: convertModels(item.Models), ModelDefaults: convertModels(presetModelDefaults(id)),
-			HeaderTimeout: headerTimeout,
+			ModelListDecoder: presetDecoder(id), HeaderTimeout: headerTimeout,
 		}
 		var compatible provider.Provider
 		var createErr error

@@ -43,6 +43,62 @@ func NewKimi(options OpenAICompatibleOptions) (*Kimi, error) {
 	}, nil
 }
 
+// DecodeKimiModels parses a Kimi (Moonshot) model list. The Kimi endpoint
+// extends the OpenAI format with display_name, supports_reasoning, and a
+// think_efforts object (support, valid_efforts, default_effort). When a model
+// supports thinking efforts, each level becomes a variant so /effort works
+// without configuration.
+func DecodeKimiModels(data []byte) ([]Model, error) {
+	var wire struct {
+		Data []struct {
+			ID                string `json:"id"`
+			DisplayName       string `json:"display_name"`
+			ContextLength     int    `json:"context_length"`
+			SupportsReasoning bool   `json:"supports_reasoning"`
+			ThinkEfforts *struct {
+				Support       bool     `json:"support"`
+				ValidEfforts  []string `json:"valid_efforts,omitempty"`
+				DefaultEffort string   `json:"default_effort,omitempty"`
+			} `json:"think_efforts,omitempty"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return nil, fmt.Errorf("provider: decode models response: %w", err)
+	}
+	seen := make(map[string]struct{}, len(wire.Data))
+	models := make([]Model, 0, len(wire.Data))
+	for _, item := range wire.Data {
+		if item.ID == "" {
+			continue
+		}
+		if _, duplicate := seen[item.ID]; duplicate {
+			continue
+		}
+		seen[item.ID] = struct{}{}
+		name := item.DisplayName
+		if name == "" {
+			name = item.ID
+		}
+		var variants []Variant
+		if item.ThinkEfforts != nil && item.ThinkEfforts.Support {
+			variants = effortVariants(item.ThinkEfforts.ValidEfforts, item.ThinkEfforts.DefaultEffort)
+		}
+		models = append(models, Model{
+			ID: item.ID, Name: name,
+			ContextWindow: item.ContextLength,
+			Capabilities: Capabilities{
+				Tools: true, Output: []string{"text"},
+				Reasoning: item.SupportsReasoning || len(variants) > 0,
+				Variants:  variants,
+			},
+		})
+	}
+	if len(models) == 0 {
+		return nil, errors.New("provider: models response contains no usable models")
+	}
+	return models, nil
+}
+
 // Usage reports the balance remaining on the Moonshot account. Moonshot exposes
 // a balance rather than rate-limit windows, so both usage windows are nil and
 // only Credits is populated. Decoding tolerates extra fields.
