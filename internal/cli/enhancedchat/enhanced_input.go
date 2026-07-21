@@ -130,7 +130,7 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 
 func safeBusySlash(name string) bool {
 	switch name {
-	case "/help", "/version", "/chat", "/models", "/usage", "/modes", "/agents", "/sessions", "/goal", "/status", "/thinking", "/exit":
+	case "/help", "/version", "/chat", "/models", "/usage", "/modes", "/agents", "/sessions", "/goal", "/status", "/thinking", "/exit", "/continue":
 		return true
 	default:
 		return false
