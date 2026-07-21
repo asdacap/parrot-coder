@@ -390,12 +390,14 @@ func TestPlanTurnCompletePolicy(t *testing.T) {
 		wantUpdates                                        int
 	}{
 		{name: "approve", answer: " YES ", wantPrompt: "Implement the approved plan.", wantMode: mode.BuildID, wantUpdates: 1},
+		{name: "approve alias y", answer: "y", wantPrompt: "Implement the approved plan.", wantMode: mode.BuildID, wantUpdates: 1},
 		{name: "decline", answer: "no", wantMode: mode.PlanID},
+		{name: "decline alias n", answer: "n", wantMode: mode.PlanID},
 		{name: "feedback", answer: " revise error handling ", wantPrompt: "revise error handling", wantMode: mode.PlanID},
 		{name: "empty", answer: "  ", wantValidation: "enter yes, no, or feedback", wantMode: mode.PlanID},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			api := &agentModeAPI{modes: v1.ModeList{Items: []v1.Mode{{ID: mode.BuildID}, {ID: mode.PlanID}}}}
+			api := &agentModeAPI{modes: testModeList(t)}
 			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: mode.PlanID}, selection: chatSelection{agent: mode.PlanID}}
 			dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.PlanID})
 			if dialog == nil || dialog.Handle == nil || len(dialog.Context) != 1 || len(dialog.Choices) != 3 || dialog.CustomChoice != "feedback" || dialog.CustomPrompt != "plan feedback: " {
@@ -417,10 +419,35 @@ func TestPlanTurnCompletePolicy(t *testing.T) {
 		})
 	}
 
-	shell := &chatShell{}
+	shell := &chatShell{ctx: context.Background(), api: &agentModeAPI{modes: testModeList(t)}}
 	if dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.BuildID}); dialog != nil {
 		t.Fatalf("build completion dialog = %#v", dialog)
 	}
+}
+
+// testModeList builds a v1.ModeList from the built-in mode registry, carrying
+// each mode's declared turn-complete behavior as the backend would.
+func testModeList(t *testing.T) v1.ModeList {
+	t.Helper()
+	registry, err := mode.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := registry.List()
+	out := v1.ModeList{Items: make([]v1.Mode, len(items))}
+	for i, item := range items {
+		profile := item.Profile()
+		entry := v1.Mode{ID: item.ID(), ReadOnly: profile.ReadOnly, MaxTurns: profile.MaxTurns}
+		if result := item.OnTurnComplete(); result != (mode.TurnCompleteResult{}) {
+			raw, err := json.Marshal(result)
+			if err != nil {
+				t.Fatal(err)
+			}
+			entry.TurnComplete = raw
+		}
+		out.Items[i] = entry
+	}
+	return out
 }
 
 func (a catalogOnlyAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }

@@ -19,19 +19,87 @@ const (
 type Mode interface {
 	ID() string
 	Profile() agent.Profile
+	// OnTurnComplete declares what the runtime should do after a turn in this
+	// mode completes. The zero value means "do nothing." A mode may present a
+	// Dialog for the user to choose, or directly transition without a dialog.
+	// The mode owns this behavior; callers must not branch on the mode's ID.
+	OnTurnComplete() TurnCompleteResult
+}
+
+// TurnCompleteResult is what a mode wants the runtime to do after a turn
+// completes. The zero value means "do nothing."
+type TurnCompleteResult struct {
+	// Dialog presents choices to the user. When nil, the runtime performs
+	// the result's Agent and Prompt fields directly.
+	Dialog *TurnCompleteDialog
+	// Agent switches the session to this mode. Empty means stay.
+	Agent string
+	// Prompt is injected as the next user message. Empty means no prompt.
+	Prompt string
+}
+
+// TurnCompleteDialog describes a choice prompt shown after a turn completes.
+// Each choice carries its own action; the runtime performs the selected
+// choice's action.
+type TurnCompleteDialog struct {
+	Prompt            string
+	Context           []string
+	Choices           []DialogChoice
+	CustomChoice      string
+	CustomDescription string
+	CustomPrompt      string
+	// EmptyMessage is the validation error shown when the user submits an
+	// empty response.
+	EmptyMessage string
+}
+
+// DialogChoice is one selectable option in a turn-complete dialog.
+type DialogChoice struct {
+	Value       string
+	Description string
+	// Aliases are additional accepted values (case-insensitive) for typed
+	// input, e.g. "y" for "yes".
+	Aliases []string
+	// Action describes what the runtime does when this choice is selected.
+	// An empty action stops the run.
+	Action ChoiceAction
+}
+
+// ChoiceAction describes what the runtime does when a dialog choice is
+// selected: switch to Agent (if non-empty), inject Prompt (if non-empty).
+// An empty action stops the run.
+type ChoiceAction struct {
+	Agent  string
+	Prompt string
 }
 
 type builtin struct {
-	profile agent.Profile
+	profile      agent.Profile
+	turnComplete TurnCompleteResult
 }
 
-func (m builtin) ID() string             { return m.profile.ID }
-func (m builtin) Profile() agent.Profile { return m.profile }
+func (m builtin) ID() string                       { return m.profile.ID }
+func (m builtin) Profile() agent.Profile           { return m.profile }
+func (m builtin) OnTurnComplete() TurnCompleteResult { return m.turnComplete }
 
 func Builtins() []Mode {
 	return []Mode{
 		builtin{profile: agent.Profile{ID: BuildID, Prompt: "You are Parrot's build mode. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64, RecursionLimit: 3}},
-		builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and produce an implementation plan.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true}},
+		builtin{
+			profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and produce an implementation plan.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true},
+			turnComplete: TurnCompleteResult{Dialog: &TurnCompleteDialog{
+				Prompt:            "Plan complete: ",
+				Context:           []string{"Review the plan before implementation."},
+				Choices: []DialogChoice{
+					{Value: "yes", Description: "Implement the approved plan", Aliases: []string{"y"}, Action: ChoiceAction{Agent: BuildID, Prompt: "Implement the approved plan."}},
+					{Value: "no", Description: "Stop after planning", Aliases: []string{"n"}},
+				},
+				CustomChoice:      "feedback",
+				CustomDescription: "Provide feedback and revise the plan",
+				CustomPrompt:      "plan feedback: ",
+				EmptyMessage:      "enter yes, no, or feedback",
+			}},
+		},
 	}
 }
 
