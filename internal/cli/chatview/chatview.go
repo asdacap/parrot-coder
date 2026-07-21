@@ -358,7 +358,7 @@ func ToolActivityLabel(name string, input map[string]any) string {
 	}
 
 	switch name {
-	case "read", "edit", "format":
+	case "read", "edit":
 		add(firstString(input, "path", "file", "filePath"))
 	case "glob":
 		quoted(firstString(input, "pattern"))
