@@ -50,6 +50,7 @@ type Backend interface {
 	ListQuestions(context.Context, string) (v1.QuestionList, error)
 	ReplyQuestion(context.Context, string, string, v1.QuestionReply) error
 	ListModels(context.Context) (v1.ModelList, error)
+	GetModelInfo(context.Context, string, string) (v1.Model, error)
 	SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error)
 	ListAgents(context.Context) (v1.AgentList, error)
 }

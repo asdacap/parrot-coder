@@ -189,6 +189,13 @@ func (c *Client) Models(ctx context.Context) (v1.ModelList, error) {
 	return out, err
 }
 
+func (c *Client) ModelInfo(ctx context.Context, provider string, model string) (v1.Model, error) {
+	var out v1.Model
+	path := "/api/v1/models/" + url.PathEscape(provider) + "/" + url.PathEscape(model)
+	err := c.do(ctx, http.MethodGet, path, nil, http.StatusOK, &out)
+	return out, err
+}
+
 func (c *Client) SubscriptionUsage(ctx context.Context) (v1.SubscriptionUsage, error) {
 	var out v1.SubscriptionUsage
 	err := c.do(ctx, http.MethodGet, "/api/v1/usage", nil, http.StatusOK, &out)

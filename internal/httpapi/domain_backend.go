@@ -602,6 +602,25 @@ func (b *DomainBackend) ListModels(context.Context) (v1.ModelList, error) {
 	return out, nil
 }
 
+func (b *DomainBackend) GetModelInfo(_ context.Context, providerID string, modelID string) (v1.Model, error) {
+	for _, provider := range b.providerList() {
+		if provider == nil || provider.ID() != providerID {
+			continue
+		}
+		for _, model := range provider.Models() {
+			if model.ID != modelID {
+				continue
+			}
+			variants := make([]v1.ModelVariant, len(model.Capabilities.Variants))
+			for i, variant := range model.Capabilities.Variants {
+				variants[i] = v1.ModelVariant{Name: variant.Name, ReasoningEffort: variant.ReasoningEffort}
+			}
+			return v1.Model{Provider: provider.ID(), ID: model.ID, Name: model.Name, ContextWindow: model.ContextWindow, MaxOutputTokens: model.MaxOutputTokens, Tools: model.Capabilities.Tools, Reasoning: model.Capabilities.Reasoning, Output: append([]string(nil), model.Capabilities.Output...), Variants: variants}, nil
+		}
+	}
+	return v1.Model{}, ErrNotFound
+}
+
 // providerList reports the live providers. When the resolver is a registry, it
 // is the single source of truth and reflects a hot reload; otherwise the
 // startup snapshot in Providers is used so backends assembled without a

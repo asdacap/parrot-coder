@@ -118,6 +118,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/sessions/{id}/questions", s.questions)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/questions/{request}/reply", s.questionReply)
 	s.mux.HandleFunc("/api/v1/models", s.models)
+	s.mux.HandleFunc("/api/v1/models/{provider}/{model}", s.modelInfo)
 	s.mux.HandleFunc("/api/v1/usage", s.subscriptionUsage)
 	s.mux.HandleFunc("/api/v1/agents", s.agents)
 	s.mux.HandleFunc("/api/v1/modes", s.modes)
@@ -375,6 +376,16 @@ func (s *Server) models(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item, err := s.backend.ListModels(r.Context())
+	s.respond(w, r, http.StatusOK, item, err)
+}
+
+func (s *Server) modelInfo(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	provider := r.PathValue("provider")
+	model := r.PathValue("model")
+	item, err := s.backend.GetModelInfo(r.Context(), provider, model)
 	s.respond(w, r, http.StatusOK, item, err)
 }
 

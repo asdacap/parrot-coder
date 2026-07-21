@@ -96,6 +96,9 @@ func (b *stubBackend) ReplyQuestion(context.Context, string, string, v1.Question
 func (b *stubBackend) ListModels(context.Context) (v1.ModelList, error) {
 	return v1.ModelList{Items: []v1.Model{}}, b.backendErr
 }
+func (b *stubBackend) GetModelInfo(_ context.Context, _ string, _ string) (v1.Model, error) {
+	return v1.Model{}, b.backendErr
+}
 func (b *stubBackend) SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error) {
 	return v1.SubscriptionUsage{Provider: "chatgpt"}, b.backendErr
 }
