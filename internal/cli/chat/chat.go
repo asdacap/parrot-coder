@@ -424,6 +424,7 @@ func command(ctx context.Context, config Config) int {
 		inputEcho: terminal.InputEchoed(stdin, stdout), columns: terminal.Columns(stdout),
 	}
 	defer shell.close()
+	shell.refreshModelInfo()
 	if inputFile, ok := stdin.(*os.File); ok && terminal.IsTTY(inputFile) && terminal.IsTTY(stdout) && os.Getenv("TERM") != "dumb" {
 		raw, rawErr := config.EnableRawMode(inputFile)
 		if rawErr != nil {
@@ -1261,7 +1262,6 @@ func (s *chatShell) modelineModelLabel(currentTokens int) string {
 	return label
 }
 
-
 func compactTokenCount(value int) string {
 	switch {
 	case value >= 1_000_000:
@@ -1279,15 +1279,28 @@ func compactTokenCount(value int) string {
 	}
 }
 
+// refreshModelInfo reloads the cached catalog entry the modeline reads its
+// context window from. Every path that changes the selection must call it,
+// otherwise the modeline reports the window of a previously applied model or,
+// at startup, none at all. Re-fetching is skipped while the cache already
+// describes the selection, so callers may invoke it freely.
 func (s *chatShell) refreshModelInfo() {
 	if s.selection.provider == "" || s.selection.model == "" {
+		s.modelInfo = v1.Model{}
 		return
 	}
-	if info, err := s.api.ModelInfo(s.ctx, s.selection.provider, s.selection.model); err == nil {
-		s.modelInfo = info
+	if s.modelInfo.Provider == s.selection.provider && s.modelInfo.ID == s.selection.model {
+		return
 	}
+	info, err := s.api.ModelInfo(s.ctx, s.selection.provider, s.selection.model)
+	if err != nil {
+		// A server that cannot describe the model leaves the window unknown
+		// rather than keeping the previous model's, and the next call retries.
+		s.modelInfo = v1.Model{}
+		return
+	}
+	s.modelInfo = info
 }
-
 
 type chatShell struct {
 	ctx          context.Context
@@ -1362,6 +1375,7 @@ func (s *chatShell) enhancedConfig() enhancedchat.Config {
 		SetCurrent: func(item v1.Session) {
 			s.current = item
 			s.selection = selectionFromSession(item, s.selection.agent)
+			s.refreshModelInfo()
 		},
 		Agent: func() string { return s.selection.agent },
 		// selection is a struct value, so a bound method value would capture a
@@ -1901,6 +1915,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		}
 		s.current = item
 		s.selection = selectionFromSession(item, s.selection.agent)
+		s.refreshModelInfo()
 		s.commitStatus("✓ Session selected: " + item.ID)
 		if command == "/resume" {
 			result := streamTurn(s.ctx, s.api, item.ID, "", s.streamOptions(true))
@@ -1986,6 +2001,7 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		s.current = v1.Session{}
 		s.claimRequest = v1.ClaimSessionRequest{}
 		s.selection = chatSelection{agent: agent}
+		s.refreshModelInfo()
 		s.models = models.Items
 		s.presentation = chatview.NewPresentations(remoteTools)
 		s.commitStatus("✓ Connected: " + argument)

@@ -430,6 +430,13 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			_ = r.finishOnCleanup(sessionID, assistant.ID, parts, protocol.FinishError, nextErr.Error(), status)
 			return nil, "", nextErr
 		}
+		// Usage must be priced before it is published: the live event is the only
+		// carrier of cost to clients, so pricing a copy after the fact leaves every
+		// subscriber with a zero cost.
+		if item.Type == protocol.EventUsage && item.Usage != nil {
+			item.Usage.InputCost = float64(item.Usage.InputTokens) * model.InputPrice
+			item.Usage.OutputCost = float64(item.Usage.OutputTokens) * model.OutputPrice
+		}
 		if r.config.Live != nil {
 			item.MessageID = assistant.ID
 			r.config.Live.Publish(sessionID, item)
@@ -453,8 +460,6 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 		case protocol.EventUsage:
 			if item.Usage != nil {
 				usage = *item.Usage
-				usage.InputCost = float64(usage.InputTokens) * model.InputPrice
-				usage.OutputCost = float64(usage.OutputTokens) * model.OutputPrice
 			}
 		case protocol.EventFinish:
 			finish = item.FinishReason

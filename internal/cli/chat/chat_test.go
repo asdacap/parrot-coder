@@ -451,6 +451,85 @@ func testModeList(t *testing.T) v1.ModeList {
 	return out
 }
 
+type modelInfoAPI struct {
+	apiClient
+	info  v1.Model
+	err   error
+	calls int
+}
+
+func (a *modelInfoAPI) ModelInfo(_ context.Context, provider, model string) (v1.Model, error) {
+	a.calls++
+	if a.err != nil {
+		return v1.Model{}, a.err
+	}
+	info := a.info
+	info.Provider, info.ID = provider, model
+	return info, nil
+}
+
+// The modeline reads its context window out of the cached model info, so
+// refreshModelInfo has to load it for whatever selection is current — not only
+// for a model applied through /model — and must never leave a previous model's
+// window behind. A repeat refresh of an unchanged selection is served from the
+// cache so callers can invoke it wherever the selection may have changed.
+func TestRefreshModelInfoDrivesModelineWindow(t *testing.T) {
+	tests := []struct {
+		name      string
+		selection chatSelection
+		info      v1.Model
+		err       error
+		want      string
+		wantCalls int
+	}{
+		{"known window", chatSelection{provider: "local", model: "test"}, v1.Model{ContextWindow: 128000}, nil, "local/test (1.2k/128k)", 1},
+		{"unknown window", chatSelection{provider: "local", model: "test"}, v1.Model{}, nil, "local/test (1.2k/?)", 1},
+		{"lookup failed", chatSelection{provider: "local", model: "test"}, v1.Model{ContextWindow: 128000}, errors.New("no such model"), "local/test (1.2k/?)", 2},
+		{"no model selected", chatSelection{}, v1.Model{ContextWindow: 128000}, nil, "no model (1.2k/?)", 0},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			api := &modelInfoAPI{info: test.info, err: test.err}
+			shell := &chatShell{ctx: context.Background(), api: api, selection: test.selection}
+			shell.refreshModelInfo()
+			shell.refreshModelInfo()
+			if got := shell.modelineModelLabel(1200); got != test.want {
+				t.Fatalf("modelineModelLabel() = %q, want %q", got, test.want)
+			}
+			// A failed lookup caches nothing, so the second refresh retries it.
+			if api.calls != test.wantCalls {
+				t.Fatalf("ModelInfo calls = %d, want %d", api.calls, test.wantCalls)
+			}
+		})
+	}
+}
+
+// Switching to a model the server cannot describe must drop the previous
+// model's window rather than report it against the new selection.
+func TestRefreshModelInfoClearsStaleWindow(t *testing.T) {
+	api := &modelInfoAPI{info: v1.Model{ContextWindow: 128000}}
+	shell := &chatShell{ctx: context.Background(), api: api, selection: chatSelection{provider: "local", model: "test"}}
+	shell.refreshModelInfo()
+	api.err = errors.New("no such model")
+	shell.selection = chatSelection{provider: "remote", model: "other"}
+	shell.refreshModelInfo()
+	if got := shell.modelineModelLabel(1200); got != "remote/other (1.2k/?)" {
+		t.Fatalf("modelineModelLabel() = %q", got)
+	}
+}
+
+// Switching sessions from the enhanced UI replaces the selection, so the
+// modeline must report the new session's model window rather than the one the
+// shell started on.
+func TestEnhancedSetCurrentRefreshesModelineWindow(t *testing.T) {
+	api := &modelInfoAPI{info: v1.Model{ContextWindow: 200000}}
+	shell := &chatShell{ctx: context.Background(), api: api, selection: chatSelection{provider: "local", model: "test"}}
+	shell.enhancedConfig().SetCurrent(v1.Session{ID: "session", Provider: "remote", Model: "other"})
+	if got := shell.modelineModelLabel(1200); got != "remote/other (1.2k/200k)" {
+		t.Fatalf("modelineModelLabel() = %q", got)
+	}
+}
+
 func (a catalogOnlyAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
 func (a catalogOnlyAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, error) { return v1.Model{}, nil }
 

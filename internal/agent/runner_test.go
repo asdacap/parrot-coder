@@ -23,14 +23,16 @@ import (
 )
 
 type fakeProvider struct {
-	mu       sync.Mutex
-	requests []protocol.Request
-	stream   func(int, context.Context, protocol.Request) (provider.Stream, error)
+	mu          sync.Mutex
+	requests    []protocol.Request
+	stream      func(int, context.Context, protocol.Request) (provider.Stream, error)
+	inputPrice  float64
+	outputPrice float64
 }
 
 func (*fakeProvider) ID() string { return "fake" }
-func (*fakeProvider) Models() []provider.Model {
-	return []provider.Model{{ID: "model", Capabilities: provider.Capabilities{Tools: true}}}
+func (p *fakeProvider) Models() []provider.Model {
+	return []provider.Model{{ID: "model", InputPrice: p.inputPrice, OutputPrice: p.outputPrice, Capabilities: provider.Capabilities{Tools: true}}}
 }
 func (p *fakeProvider) Stream(ctx context.Context, request protocol.Request) (provider.Stream, error) {
 	p.mu.Lock()
@@ -61,6 +63,53 @@ func (s *sliceStream) Next(context.Context) (protocol.Event, error) {
 func (*sliceStream) Close() error { return nil }
 
 func events(items ...protocol.Event) provider.Stream { return &sliceStream{events: items} }
+
+// recordingPublisher captures everything the runner puts on the live stream.
+type recordingPublisher struct {
+	mu     sync.Mutex
+	events []protocol.Event
+}
+
+func (p *recordingPublisher) Publish(_ string, item protocol.Event) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if item.Usage != nil {
+		copied := *item.Usage
+		item.Usage = &copied
+	}
+	p.events = append(p.events, item)
+}
+
+// The live usage event is the only carrier of cost to clients, so it must be
+// priced before publication rather than afterwards on a copy the runner keeps.
+func TestRunnerPublishesPricedUsage(t *testing.T) {
+	fake := &fakeProvider{inputPrice: 0.001, outputPrice: 0.002, stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "done"},
+			protocol.Event{Type: protocol.EventUsage, Usage: &protocol.Usage{InputTokens: 100, OutputTokens: 50, TotalTokens: 150}},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	live := &recordingPublisher{}
+	h := newRunnerHarness(t, fake, nil)
+	h.runner.config.Live = live
+	h.admit(t, "user", "work", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	var published *protocol.Usage
+	for _, item := range live.events {
+		if item.Type == protocol.EventUsage {
+			published = item.Usage
+		}
+	}
+	if published == nil {
+		t.Fatal("no usage event published")
+	}
+	if published.InputCost != 0.1 || published.OutputCost != 0.1 {
+		t.Fatalf("published usage costs = %v/%v, want 0.1/0.1", published.InputCost, published.OutputCost)
+	}
+}
 
 func TestReasoningSummaryAccumulatorPreservesPartOrder(t *testing.T) {
 	var summary reasoningSummaryAccumulator
