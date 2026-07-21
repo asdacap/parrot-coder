@@ -36,6 +36,7 @@ type BuiltinServices struct {
 	Formatters *formatter.Registry
 	Subagents  *subagent.Manager
 	Agents     AgentLookup
+	ConfigDir  string // Parrot config directory for writing global parrot.yaml
 }
 
 // RegisterBuiltins registers the complete built-in tool set. LSP, formatter,
@@ -70,6 +71,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewSkillTool(services.Skills),
 		NewWebFetchTool(services.WebFetch),
 		NewGitDiffTool(),
+		NewSetConfigTool(services.ConfigDir),
 	}
 	items = append(items, NewTaskTools(services.Tasks)...)
 	if services.LSP.Client != nil {

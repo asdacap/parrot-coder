@@ -484,6 +484,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages}, Formatters: formatterRegistry,
 		Subagents: subagents, Agents: agentLookup,
+		ConfigDir: paths.Config,
 	}); err != nil {
 		return nil, fmt.Errorf("app: register built-in tools: %w", err)
 	}
