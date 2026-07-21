@@ -1315,6 +1315,10 @@ type chatShell struct {
 	// when the session changes, never between turns of one session.
 	tasks        *taskStreamTracker
 	tasksSession string
+
+	// lastPrompt stores the last submitted prompt so /continue can resend it
+	// after an error or when the user wants to retry.
+	lastPrompt string
 }
 
 // taskTracker returns the task tree tracker for the current session, starting
@@ -1575,6 +1579,7 @@ func (s *chatShell) run(first string) int {
 			s.commitError(err.Error())
 			return finish(s.ctx, exitError, "chat_output_failed", err)
 		}
+		s.lastPrompt = line
 		result := streamTurn(s.ctx, s.api, s.current.ID, line, s.streamOptions(false))
 		draft = ""
 		if result.err != nil {
@@ -1720,6 +1725,7 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/resume", Description: "resume an interrupted session"},
 	{Value: "/new", Description: "start a new session"},
 	{Value: "/clear", Description: "start a fresh session"},
+	{Value: "/continue", Description: "retry the last prompt after an error"},
 	{Value: "/compact", Description: "compact the current conversation"},
 	{Value: "/connect", Description: "connect to an API server"},
 	{Value: "/thinking", Description: "toggle reasoning status"},
@@ -1894,6 +1900,26 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		s.authAction(argument)
 	case "/serve":
 		s.serveAction(argument)
+	case "/continue":
+		if s.lastPrompt == "" {
+			s.commitError("no previous prompt to continue")
+			break
+		}
+		if s.current.ID == "" {
+			s.commitError("no active session")
+			break
+		}
+		if err := s.commitUser(s.lastPrompt); err != nil {
+			s.commitError(err.Error())
+			break
+		}
+		result := streamTurn(s.ctx, s.api, s.current.ID, s.lastPrompt, s.streamOptions(false))
+		if result.err != nil {
+			if errors.Is(result.err, errSecondInterrupt) || errors.Is(result.err, context.Canceled) {
+				return true, finish(s.ctx, exitInterrupt, "turn_interrupted", result.err)
+			}
+			s.commitError(result.err.Error())
+		}
 	case "/new", "/clear":
 		if s.selection.modelName() == "" {
 			s.commitError("select a model before starting a new session")
@@ -2790,7 +2816,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/compact", "/connect", "/thinking", "/goal", "/status", "/exit":
+	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/continue", "/compact", "/connect", "/thinking", "/goal", "/status", "/exit":
 		return true
 	default:
 		return false
