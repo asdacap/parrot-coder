@@ -18,6 +18,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/creack/pty"
 )
 
@@ -44,6 +45,7 @@ type PersistentRequest struct {
 	TTY             bool
 	Output          io.Writer
 	Unrestricted    bool
+	SecurityProfile security.SecurityProfile
 }
 
 type PersistentWriteRequest struct {
@@ -200,11 +202,11 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 			}
 		}()
 		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
-		writablePaths, writableErr := r.writableForSession(request.SessionID)
-		if writableErr != nil {
-			return PersistentResult{}, writableErr
+		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved, temporaryDirectory)
+		if buildErr != nil {
+			return PersistentResult{}, buildErr
 		}
-		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, writablePaths, temporaryDirectory)
+		program, arguments, err = r.sandbox.command(resolvedShell, request.Command, resolved, profile, temporaryDirectory)
 		if err != nil {
 			return PersistentResult{}, fmt.Errorf("process: sandbox: %w", err)
 		}

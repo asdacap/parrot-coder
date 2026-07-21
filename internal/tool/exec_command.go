@@ -173,7 +173,8 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 		Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedWorkdir, Env: input.Env,
 		SessionID: call.SessionID, Yield: time.Duration(input.YieldTimeMS) * time.Millisecond,
 		MaxOutputTokens: input.MaxOutputTokens, TTY: input.TTY, Output: call.Output,
-		Unrestricted: input.SandboxPermissions == "require_escalated",
+		Unrestricted:    input.SandboxPermissions == "require_escalated",
+		SecurityProfile: call.SecurityProfile,
 	})
 	if err != nil {
 		return Result{}, err

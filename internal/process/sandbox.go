@@ -5,20 +5,36 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/amirulashraf/parrot-coder/internal/security"
 )
 
 type sandbox interface {
-	command(shell, script, cwd string, writablePaths []string, temporaryDirectory string) (string, []string, error)
+	command(shell, script, cwd string, profile security.SecurityProfile, temporaryDirectory string) (string, []string, error)
 	temporaryDirectory(string) string
 }
 
 type unsupportedSandbox struct{ platform string }
 
-func (s unsupportedSandbox) command(_, _, _ string, _ []string, _ string) (string, []string, error) {
+func (s unsupportedSandbox) command(_, _, _ string, _ security.SecurityProfile, _ string) (string, []string, error) {
 	return "", nil, errors.New("no sandbox backend is available for " + s.platform)
 }
 
 func (unsupportedSandbox) temporaryDirectory(path string) string { return path }
+
+// sandboxProfile is a concrete security.SecurityProfile that combines a base
+// profile with session-enriched paths. It is constructed by the Runner before
+// being passed to the sandbox backend.
+type sandboxProfile struct {
+	readPaths  []string
+	writePaths []string
+	denyWrite  []string
+}
+
+func (p *sandboxProfile) IsReadOnly() bool          { return false }
+func (p *sandboxProfile) AllowReadPaths() []string  { return p.readPaths }
+func (p *sandboxProfile) AllowWritePaths() []string { return p.writePaths }
+func (p *sandboxProfile) DenyWritePaths() []string  { return p.denyWrite }
 
 func protectedWorkspacePaths(root, cwd string) []string {
 	relative, err := filepath.Rel(root, cwd)

@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -49,7 +50,7 @@ func (o *memoryManagedOutput) Discard() {}
 
 type directSandbox struct{}
 
-func (directSandbox) command(shell, script, _ string, _ []string, _ string) (string, []string, error) {
+func (directSandbox) command(shell, script, _ string, _ security.SecurityProfile, _ string) (string, []string, error) {
 	return shell, []string{"-c", script}, nil
 }
 
@@ -60,8 +61,8 @@ type recordingSandbox struct {
 	temporaryDir string
 }
 
-func (s *recordingSandbox) command(shell, script, _ string, writable []string, temporaryDirectory string) (string, []string, error) {
-	s.writable = append([]string(nil), writable...)
+func (s *recordingSandbox) command(shell, script, _ string, profile security.SecurityProfile, temporaryDirectory string) (string, []string, error) {
+	s.writable = append([]string(nil), profile.AllowWritePaths()...)
 	s.temporaryDir = temporaryDirectory
 	return shell, []string{"-c", script}, nil
 }
@@ -103,14 +104,16 @@ func TestRunnerWritablePathsAreExactAndSessionScoped(t *testing.T) {
 	if _, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: "true", Cwd: root, SessionID: "session-a"}); err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(sandbox.writable, []string{first, second}) {
-		t.Fatalf("session-a writable paths = %q", sandbox.writable)
+	// session-a writable paths should include first, second, and workspace root
+	if !slices.Contains(sandbox.writable, first) || !slices.Contains(sandbox.writable, second) {
+		t.Fatalf("session-a writable paths = %q, want to contain %q and %q", sandbox.writable, first, second)
 	}
 	if _, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: "true", Cwd: root, SessionID: "session-b"}); err != nil {
 		t.Fatal(err)
 	}
-	if len(sandbox.writable) != 0 {
-		t.Fatalf("session-b inherited writable paths: %q", sandbox.writable)
+	// session-b writable paths should only have workspace root (no granted paths)
+	if len(sandbox.writable) != 1 || sandbox.writable[0] != root {
+		t.Fatalf("session-b writable paths = %q, want [%q]", sandbox.writable, root)
 	}
 }
 

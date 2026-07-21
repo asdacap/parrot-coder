@@ -9,24 +9,23 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type linuxSandbox struct {
-	workspace        string
-	workingDirectory string
+	workspace string
 }
 
-func platformSandbox(ws *workspace.Workspace, workingDirectory string) sandbox {
-	return linuxSandbox{workspace: ws.Root(), workingDirectory: workingDirectory}
+func platformSandbox(ws *workspace.Workspace, _ string) sandbox {
+	return linuxSandbox{workspace: ws.Root()}
 }
 
-func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string, temporaryDirectory string) (string, []string, error) {
+func (s linuxSandbox) command(shell, script, cwd string, profile security.SecurityProfile, temporaryDirectory string) (string, []string, error) {
 	bwrap, err := executableOutsideWorkspace("bwrap", s.workspace)
 	if err != nil {
 		return "", nil, errors.New("bubblewrap is required; install bwrap and ensure unprivileged user namespaces are enabled")
 	}
-	commonDirectory, linkedWorktree := linkedGitCommonDirectory(s.workspace)
 	if cwd == "/tmp" {
 		return "", nil, errors.New("the sandbox's private /tmp cannot be used as an external working directory")
 	}
@@ -37,7 +36,6 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string,
 		"--unshare-user",
 		"--unshare-pid",
 		"--cap-drop", "ALL",
-		"--ro-bind", "/", "/",
 		"--dev", "/dev",
 		"--proc", "/proc",
 		"--bind", temporaryDirectory, "/tmp",
@@ -49,14 +47,13 @@ func (s linuxSandbox) command(shell, script, cwd string, writablePaths []string,
 	if maskedBySandbox(cwd) {
 		args = append(args, "--ro-bind", cwd, cwd)
 	}
-	args = append(args, "--bind", s.workspace, s.workspace)
-	for _, path := range writablePaths {
+	for _, path := range profile.AllowReadPaths() {
+		args = append(args, "--ro-bind", path, path)
+	}
+	for _, path := range profile.AllowWritePaths() {
 		args = append(args, "--bind", path, path)
 	}
-	if linkedWorktree {
-		args = append(args, "--bind", commonDirectory, commonDirectory)
-	}
-	for _, path := range protectedWorkspacePaths(s.workspace, s.workingDirectory) {
+	for _, path := range profile.DenyWritePaths() {
 		args = append(args, "--ro-bind", path, path)
 	}
 	args = append(args, "--chdir", cwd, "--", shell, "-c", script)
