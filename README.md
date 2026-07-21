@@ -172,6 +172,29 @@ providers:
 
 OpenRouter has no usage route, so `parrot usage` reports nothing for it.
 
+### OpenCode Go
+
+OpenCode Go is a built-in provider preset for the OpenCode Go low-cost
+subscription, which serves a curated, frequently changing set of open coding
+models (GLM, Kimi, Qwen, DeepSeek, MiniMax, MiMo, Grok) through the
+OpenAI-compatible chat-completions protocol. No `providers` entry is needed:
+
+```sh
+printf '%s' "$OPENCODE_GO_API_KEY" | parrot auth login opencode-go --api-key-stdin
+# Or simply export OPENCODE_GO_API_KEY before starting Parrot.
+
+parrot models
+parrot chat --model opencode-go/glm-5.2
+```
+
+`parrot models` lists whatever OpenCode Go serves from `/v1/models` at startup.
+Model IDs carry no vendor prefix (for example `glm-5.2`, `kimi-k3`,
+`deepseek-v4-flash`), so model selection splits `opencode-go/<model-id>`
+cleanly on the first slash. Correct or extend any catalog metadata with a
+`providers.opencode-go.models` entry.
+
+OpenCode Go has no usage route, so `parrot usage` reports nothing for it.
+
 ### Compatible Endpoint
 
 Create `~/.config/parrot/parrot.yaml`. Configuration stores the name of an

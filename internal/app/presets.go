@@ -36,6 +36,19 @@ var providerPresets = map[string]providerPreset{
 		APIKeyEnv:     "OPENROUTER_API_KEY",
 		HeaderTimeout: 10 * time.Second,
 	},
+	// opencode-go is the OpenCode Go low-cost subscription for open coding
+	// models. It speaks the chat-completions protocol and serves a curated,
+	// frequently changing catalog from /v1/models, so the preset carries no
+	// model metadata: the fetched catalog is authoritative. Model IDs carry
+	// no vendor prefix (e.g. "glm-5.2", "kimi-k3"), so model selection splits
+	// "opencode-go/<model-id>" cleanly on the first slash. The endpoint has
+	// no balance route, so parrot usage reports nothing for it.
+	"opencode-go": {
+		Protocol:      "chat-completions",
+		BaseURL:       "https://opencode.ai/zen/go/v1",
+		APIKeyEnv:     "OPENCODE_GO_API_KEY",
+		HeaderTimeout: 10 * time.Second,
+	},
 	// kimi-code is the Kimi For Coding subscription. Its endpoint serves the
 	// plan rather than an account balance, so it reports no usage, and it
 	// serves a single plan-named model rather than the platform model IDs.

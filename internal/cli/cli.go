@@ -320,6 +320,8 @@ func subscriptionProviderName(id string) string {
 		return "ChatGPT"
 	case "openrouter":
 		return "OpenRouter"
+	case "opencode-go":
+		return "OpenCode Go"
 	case "kimi-code":
 		return "Kimi For Coding"
 	case "kimi-api":

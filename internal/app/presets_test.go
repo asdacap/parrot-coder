@@ -90,6 +90,13 @@ func TestApplyProviderPresetFillsOnlyEmptyFields(t *testing.T) {
 			wantTimeoutMS: func() *int { value := 10000; return &value }(),
 		},
 		{
+			name: "opencode-go fills chat-completions endpoint and env from preset", id: "opencode-go",
+			wantBaseURL:   "https://opencode.ai/zen/go/v1",
+			wantProtocol:  "chat-completions",
+			wantAPIKeyEnv: "OPENCODE_GO_API_KEY",
+			wantTimeoutMS: func() *int { value := 10000; return &value }(),
+		},
+		{
 			name: "unknown providers are untouched", id: "whatever",
 			item:        config.Provider{BaseURL: "https://example.com/v1"},
 			wantBaseURL: "https://example.com/v1",
@@ -164,6 +171,13 @@ func TestBuildProvidersUsesPresetsForUnconfiguredProviders(t *testing.T) {
 	}
 	if findProvider(built, "openrouter") == nil {
 		t.Fatal("openrouter was not built from a stored credential alone")
+	}
+	built, err = BuildProviders(ctx, cfg, storeWithKeys(t, "opencode-go"), offlineClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findProvider(built, "opencode-go") == nil {
+		t.Fatal("opencode-go was not built from a stored credential alone")
 	}
 }
 

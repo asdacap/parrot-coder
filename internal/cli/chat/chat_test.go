@@ -1118,7 +1118,7 @@ func TestAuthProviderCandidatesIncludeBuiltinsAndStoredCredentials(t *testing.T)
 	for _, item := range shell.authProviderCandidates() {
 		described[item.Value] = item.Description
 	}
-	for _, want := range []string{"chatgpt", "kimi-code", "kimi-api", "openai", "openrouter", "custom", "local"} {
+	for _, want := range []string{"chatgpt", "kimi-code", "kimi-api", "openai", "openrouter", "opencode-go", "custom", "local"} {
 		if _, ok := described[want]; !ok {
 			t.Fatalf("candidates %v missing %q", described, want)
 		}

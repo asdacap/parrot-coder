@@ -106,6 +106,7 @@ enough to use them and no `providers` entry is required:
 | `kimi-code` | API key: `KIMI_API_KEY` or `parrot auth login kimi-code --api-key-stdin` | `https://api.kimi.com/coding/v1`, `chat-completions`, Kimi K2 metadata |
 | `kimi-api` | API key: `MOONSHOT_API_KEY` or `parrot auth login kimi-api --api-key-stdin` | `https://api.moonshot.ai/v1`, `chat-completions`, Kimi K2 metadata |
 | `openrouter` | API key: `OPENROUTER_API_KEY` or `parrot auth login openrouter --api-key-stdin` | `https://openrouter.ai/api/v1`, `chat-completions`, 10-second `header_timeout_ms`; model catalog comes from `/models` |
+| `opencode-go` | API key: `OPENCODE_GO_API_KEY` or `parrot auth login opencode-go --api-key-stdin` | `https://opencode.ai/zen/go/v1`, `chat-completions`, 10-second `header_timeout_ms`; model catalog comes from `/models` |
 | `openai` | API key: your `api_key_env` or credential store entry | 10-second `header_timeout_ms` only; `base_url` is still required |
 
 The two Kimi providers are different products and take different keys.
