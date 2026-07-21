@@ -22,6 +22,10 @@ const (
 	maxShellOutputBytes = 16 << 10
 )
 
+// AgentEmptyResponseText is shown when an assistant completes without
+// emitting any text and did not issue a tool request.
+const AgentEmptyResponseText = "(agent responded with empty string)"
+
 var SpinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 type ShellOutputTail struct {

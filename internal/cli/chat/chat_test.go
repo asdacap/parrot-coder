@@ -433,7 +433,7 @@ func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	}
 	before := output.Len()
 	api := staticMessageClient{items: v1.MessageList{Items: []v1.Message{{ID: "answer", Role: "assistant", Content: "complete answer"}}}}
-	result := finishStream(api, "session", v1.MessageList{}, "partial", false, streamOptions{format: "text", chat: true, renderer: renderer})
+	result := finishStream(api, "session", v1.MessageList{}, "partial", false, false, streamOptions{format: "text", chat: true, renderer: renderer})
 	if result.err != nil {
 		t.Fatal(result.err)
 	}
@@ -446,13 +446,39 @@ func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	}
 }
 
+func TestPlainFinishShowsEmptyResponseUnlessToolTurn(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		toolInput bool
+		wantShown bool
+	}{
+		{name: "empty response shows placeholder", wantShown: true},
+		{name: "tool turn hides placeholder", toolInput: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			api := staticMessageClient{items: v1.MessageList{Items: []v1.Message{{ID: "answer", Role: "assistant", Status: "complete"}}}}
+			result := finishStream(api, "session", v1.MessageList{}, "", false, test.toolInput, streamOptions{
+				format: "text", chat: true, stdout: &output, stderr: io.Discard,
+			})
+			if result.err != nil {
+				t.Fatal(result.err)
+			}
+			contains := strings.Contains(output.String(), chatview.AgentEmptyResponseText)
+			if contains != test.wantShown {
+				t.Fatalf("placeholder shown=%t, want %t; output=%q", contains, test.wantShown, output.String())
+			}
+		})
+	}
+}
+
 func TestPlainFinishRendersAssistantMarkdown(t *testing.T) {
 	t.Skip("pre-existing failure on clean tree: rendered output has an unexpected leading newline (probable bug in plain Markdown rendering)")
 	var output bytes.Buffer
 	api := staticMessageClient{items: v1.MessageList{Items: []v1.Message{{
 		ID: "answer", Role: "assistant", Content: "# Heading\n```go\npackage main\n```",
 	}}}}
-	result := finishStream(api, "session", v1.MessageList{}, "", false, streamOptions{
+	result := finishStream(api, "session", v1.MessageList{}, "", false, false, streamOptions{
 		format: "text", chat: true, stdout: &output, stderr: io.Discard,
 	})
 	if result.err != nil {

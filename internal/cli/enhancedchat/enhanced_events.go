@@ -8,6 +8,7 @@ import (
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -273,6 +274,8 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			}
 			r.streamed.WriteString(delta.Delta)
 			r.status = ""
+		} else if delta.Kind == "tool_input" {
+			r.toolInput = true
 		} else if delta.Kind == "reasoning_summary" {
 			// Once answer text has started, complete rows may already be permanent
 			// scrollback. A delayed summary can no longer be placed before them, so
@@ -505,7 +508,12 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		if err := r.finishAssistantActivity(item.ID, item.Content == ""); err != nil {
 			return err
 		}
-		if item.Content != "" {
+		content := item.Content
+		if content == "" && item.Error == "" && item.ID == r.streamMessageID && !r.toolInput {
+			content = chatview.AgentEmptyResponseText
+		}
+		if content != "" {
+			item.Content = content
 			if err := r.commitAssistantContent(item); err != nil {
 				return err
 			}
@@ -523,6 +531,7 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 	if currentStreamSettled && (messageID == "" || messageID == r.streamMessageID) {
 		r.streamed.Reset()
 		r.resetReasoning()
+		r.toolInput = false
 		r.streamMessageID = ""
 	}
 	if err := r.flushCompletedTools(); err != nil {
@@ -574,6 +583,7 @@ func (r *enhancedChatRuntime) beginAssistantMessage(messageID string) (bool, err
 	}
 	r.streamed.Reset()
 	r.resetReasoning()
+	r.toolInput = false
 	r.streamMessageID = messageID
 	return true, nil
 }
