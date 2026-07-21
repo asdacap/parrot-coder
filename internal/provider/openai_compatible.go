@@ -27,6 +27,13 @@ const (
 	ProtocolChatCompletions CompatibleProtocol = "chat-completions"
 )
 
+// ModelListDecoder parses a raw model list response into provider models.
+// The decoded models describe only what the catalog reports; declared and
+// preset metadata is overlaid separately by the merge step. A nil decoder
+// falls back to DecodeStandardModels, which understands the plain OpenAI
+// /v1/models format.
+type ModelListDecoder func(data []byte) ([]Model, error)
+
 // OpenAICompatibleOptions configures an API-key authenticated compatible API.
 type OpenAICompatibleOptions struct {
 	ID                     string
@@ -43,8 +50,13 @@ type OpenAICompatibleOptions struct {
 	// declaring them: a default whose ID the endpoint does not serve is dropped
 	// once a catalog is fetched, and only survives as an offline fallback.
 	ModelDefaults []Model
-	HTTPClient    *http.Client
-	HeaderTimeout time.Duration
+	// ModelListDecoder parses the endpoint's model list response. A nil value
+	// selects DecodeStandardModels. Provider-specific decoders (such as
+	// DecodeOpenRouterModels or DecodeKimiModels) parse vendor extensions a
+	// standard list cannot express.
+	ModelListDecoder ModelListDecoder
+	HTTPClient       *http.Client
+	HeaderTimeout    time.Duration
 }
 
 // OpenAICompatible is an explicitly configured compatible provider.
@@ -57,6 +69,7 @@ type OpenAICompatible struct {
 	headers        http.Header
 	declared       []Model
 	defaults       []Model
+	decoder        ModelListDecoder
 	modelsMu       sync.RWMutex
 	models         []Model
 	client         *http.Client
@@ -97,9 +110,13 @@ func NewOpenAICompatible(options OpenAICompatibleOptions) (*OpenAICompatible, er
 		return nil, err
 	}
 	declared, defaults := cloneModels(options.Models), cloneModels(options.ModelDefaults)
+	decoder := options.ModelListDecoder
+	if decoder == nil {
+		decoder = DecodeStandardModels
+	}
 	return &OpenAICompatible{
 		id: options.ID, endpoint: endpoint, modelsEndpoint: modelsEndpoint, protocol: options.Protocol, apiKey: options.APIKey,
-		headers: headers, declared: declared, defaults: defaults,
+		headers: headers, declared: declared, defaults: defaults, decoder: decoder,
 		client: secureClient(options.HTTPClient, endpoint, false),
 		stream: secureClient(options.HTTPClient, endpoint, true),
 		// Until a catalog is fetched the defaults stand in for one, so an
@@ -149,7 +166,7 @@ func (p *OpenAICompatible) RefreshModels(ctx context.Context) error {
 	if len(data) > maxModelCatalogBytes {
 		return errors.New("provider: models response exceeds byte limit")
 	}
-	fetched, err := decodeCompatibleModels(data)
+	fetched, err := p.decoder(data)
 	if err != nil {
 		return err
 	}
@@ -159,32 +176,23 @@ func (p *OpenAICompatible) RefreshModels(ctx context.Context) error {
 	return nil
 }
 
-// compatibleModel is one entry of an OpenAI-format model list. Only the ID is
-// standard; the remaining fields are vendor extensions used when present.
-type compatibleModel struct {
-	ID              string `json:"id"`
-	Name            string `json:"name"`
-	ContextWindow   int    `json:"context_window"`
-	ContextLength   int    `json:"context_length"`
-	MaxOutputTokens int    `json:"max_output_tokens"`
-}
-
-func (m compatibleModel) contextWindow() int {
-	if m.ContextWindow > 0 {
-		return m.ContextWindow
-	}
-	return m.ContextLength
-}
-
-func decodeCompatibleModels(data []byte) ([]compatibleModel, error) {
+// DecodeStandardModels parses a standard OpenAI-format model list. Only the ID
+// is standard; the remaining fields are vendor extensions used when present.
+func DecodeStandardModels(data []byte) ([]Model, error) {
 	var wire struct {
-		Data []compatibleModel `json:"data"`
+		Data []struct {
+			ID              string `json:"id"`
+			Name            string `json:"name"`
+			ContextWindow   int    `json:"context_window"`
+			ContextLength   int    `json:"context_length"`
+			MaxOutputTokens int    `json:"max_output_tokens"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(data, &wire); err != nil {
 		return nil, fmt.Errorf("provider: decode models response: %w", err)
 	}
 	seen := make(map[string]struct{}, len(wire.Data))
-	models := make([]compatibleModel, 0, len(wire.Data))
+	models := make([]Model, 0, len(wire.Data))
 	for _, item := range wire.Data {
 		if item.ID == "" {
 			continue
@@ -193,7 +201,20 @@ func decodeCompatibleModels(data []byte) ([]compatibleModel, error) {
 			continue
 		}
 		seen[item.ID] = struct{}{}
-		models = append(models, item)
+		contextWindow := item.ContextWindow
+		if contextWindow == 0 {
+			contextWindow = item.ContextLength
+		}
+		name := item.Name
+		if name == "" {
+			name = item.ID
+		}
+		models = append(models, Model{
+			ID: item.ID, Name: name,
+			ContextWindow:   contextWindow,
+			MaxOutputTokens: item.MaxOutputTokens,
+			Capabilities:    Capabilities{Tools: true, Output: []string{"text"}},
+		})
 	}
 	if len(models) == 0 {
 		return nil, errors.New("provider: models response contains no usable models")
@@ -204,13 +225,15 @@ func decodeCompatibleModels(data []byte) ([]compatibleModel, error) {
 // mergeModels builds the catalog from what the endpoint serves, describing each
 // entry with the best metadata available: a declared model first, then a
 // built-in default, since a context window, output limit, or reasoning variant
-// cannot be discovered from an OpenAI-format model list.
+// may be absent from a standard model list. Each decoder already fills what its
+// catalog reports, so a fetched entry stands as-is when nothing else describes
+// it; declared or preset metadata wins, with the catalog filling only the gaps.
 //
 // Declared models are always included, because the user asserted they exist.
 // Defaults are only descriptions: one whose ID the endpoint does not serve is
 // dropped, so built-in guesses cannot invent models. A nil fetched list means no
 // catalog has been loaded yet, and the defaults stand in for one.
-func mergeModels(fetched []compatibleModel, declared, defaults []Model) []Model {
+func mergeModels(fetched []Model, declared, defaults []Model) []Model {
 	describe := make(map[string]Model, len(declared)+len(defaults))
 	for _, item := range defaults {
 		describe[item.ID] = item
@@ -219,9 +242,9 @@ func mergeModels(fetched []compatibleModel, declared, defaults []Model) []Model 
 		describe[item.ID] = item
 	}
 	if fetched == nil {
-		fetched = make([]compatibleModel, 0, len(describe))
+		fetched = make([]Model, 0, len(describe))
 		for id := range describe {
-			fetched = append(fetched, compatibleModel{ID: id})
+			fetched = append(fetched, Model{ID: id})
 		}
 	}
 	result := make([]Model, 0, len(fetched)+len(declared))
@@ -233,21 +256,27 @@ func mergeModels(fetched []compatibleModel, declared, defaults []Model) []Model 
 		listed[item.ID] = struct{}{}
 		model, described := describe[item.ID]
 		if !described {
-			// Tools, reasoning, and output are reported but never gate a
-			// request, so assuming the common case costs nothing when wrong.
-			model = Model{ID: item.ID, Capabilities: Capabilities{Tools: true, Output: []string{"text"}}}
+			// The decoder already produced a complete model from the catalog;
+			// nothing else describes it, so it stands as-is.
+			model = item
+		} else {
+			// Known metadata wins; the catalog only fills gaps the declaration
+			// or preset left open.
+			if model.Name == "" {
+				model.Name = item.Name
+			}
+			if model.ContextWindow == 0 {
+				model.ContextWindow = item.ContextWindow
+			}
+			if model.MaxOutputTokens == 0 {
+				model.MaxOutputTokens = item.MaxOutputTokens
+			}
+			if len(model.Capabilities.Variants) == 0 {
+				model.Capabilities.Variants = item.Capabilities.Variants
+			}
 		}
 		if model.Name == "" {
-			model.Name = item.Name
-		}
-		if model.Name == "" {
-			model.Name = item.ID
-		}
-		if model.ContextWindow == 0 {
-			model.ContextWindow = item.contextWindow()
-		}
-		if model.MaxOutputTokens == 0 {
-			model.MaxOutputTokens = item.MaxOutputTokens
+			model.Name = model.ID
 		}
 		model.Capabilities.Reasoning = model.Capabilities.Reasoning || len(model.Capabilities.Variants) > 0
 		result = append(result, model)
@@ -259,6 +288,40 @@ func mergeModels(fetched []compatibleModel, declared, defaults []Model) []Model 
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return cloneModels(result)
+}
+
+// orderedEfforts returns the supported reasoning efforts with the default
+// effort first, so the first variant is the fallback a fresh selection lands
+// on. An empty default leaves the order untouched.
+func orderedEfforts(efforts []string, defaultEffort string) []string {
+	if len(efforts) == 0 {
+		return nil
+	}
+	result := append([]string(nil), efforts...)
+	if defaultEffort == "" {
+		return result
+	}
+	for i, effort := range result {
+		if effort == defaultEffort {
+			if i == 0 {
+				return result
+			}
+			result[0], result[i] = result[i], result[0]
+			return result
+		}
+	}
+	return result
+}
+
+// effortVariants builds reasoning variants from a list of effort levels,
+// ordered with the default first.
+func effortVariants(efforts []string, defaultEffort string) []Variant {
+	ordered := orderedEfforts(efforts, defaultEffort)
+	variants := make([]Variant, 0, len(ordered))
+	for _, effort := range ordered {
+		variants = append(variants, Variant{Name: effort, ReasoningEffort: effort})
+	}
+	return variants
 }
 
 func (p *OpenAICompatible) Stream(ctx context.Context, request protocol.Request) (Stream, error) {

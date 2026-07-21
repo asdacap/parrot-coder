@@ -738,7 +738,7 @@ func TestOpenAICompatibleRefreshModelsMergesServedCatalog(t *testing.T) {
 		t.Fatalf("ids = %v, want %v", ids, want)
 	}
 	// Known metadata wins: the endpoint cannot report a real window, and
-	// variants never appear in a model list at all.
+	// declared variants take precedence over any a catalog might expose.
 	if got := byID["known"]; got.Name != "Known" || got.ContextWindow != 262144 || got.MaxOutputTokens != 32768 ||
 		len(got.Capabilities.Variants) != 1 || !got.Capabilities.Reasoning {
 		t.Fatalf("known = %#v", got)
@@ -754,6 +754,147 @@ func TestOpenAICompatibleRefreshModelsMergesServedCatalog(t *testing.T) {
 	}
 	if got := byID["declared-only"]; got.ContextWindow != 1000 {
 		t.Fatalf("declared model was dropped: %#v", got)
+	}
+}
+
+func TestOpenAICompatibleRefreshModelsParsesReasoningEfforts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_, _ = io.WriteString(response, `{"data":[
+			{"id":"reasoning-model","name":"Reasoning Model","context_length":200000,
+			 "reasoning":{"mandatory":false,"default_enabled":true,
+			              "supported_efforts":["max","high","low"],"default_effort":"high"},
+			 "top_provider":{"max_completion_tokens":32768}},
+			{"id":"no-efforts","name":"Plain Model",
+			 "reasoning":{"mandatory":false,"default_enabled":true,"supports_max_tokens":true}},
+			{"id":"effortless","name":"Effortless Model",
+			 "top_provider":{"max_completion_tokens":8192}}
+		]}`)
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolChatCompletions,
+		APIKey: "key", AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+		ModelListDecoder: DecodeOpenRouterModels,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := value.RefreshModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	models := value.Models()
+	byID := make(map[string]Model, len(models))
+	for _, item := range models {
+		byID[item.ID] = item
+	}
+	// The default effort is first so a fresh selection lands on it, and each
+	// effort becomes a variant whose name and reasoning effort match.
+	reasoning := byID["reasoning-model"]
+	if len(reasoning.Capabilities.Variants) != 3 ||
+		reasoning.Capabilities.Variants[0].Name != "high" ||
+		reasoning.Capabilities.Variants[0].ReasoningEffort != "high" ||
+		reasoning.Capabilities.Variants[1].Name != "max" ||
+		reasoning.Capabilities.Variants[2].Name != "low" {
+		t.Fatalf("reasoning-model variants = %#v", reasoning.Capabilities.Variants)
+	}
+	if !reasoning.Capabilities.Reasoning {
+		t.Fatalf("reasoning-model should report reasoning capability: %#v", reasoning)
+	}
+	if reasoning.MaxOutputTokens != 32768 {
+		t.Fatalf("reasoning-model max tokens from top_provider = %d, want 32768", reasoning.MaxOutputTokens)
+	}
+	// A reasoning object without supported_efforts exposes no variants.
+	if got := byID["no-efforts"]; len(got.Capabilities.Variants) != 0 || got.Capabilities.Reasoning {
+		t.Fatalf("no-efforts = %#v", got)
+	}
+	// A model with only top_provider (no reasoning) gets the output limit but
+	// no variants, and is not flagged as reasoning.
+	if got := byID["effortless"]; got.MaxOutputTokens != 8192 || len(got.Capabilities.Variants) != 0 || got.Capabilities.Reasoning {
+		t.Fatalf("effortless = %#v", got)
+	}
+}
+
+func TestOpenAICompatibleRefreshModelsParsesKimiThinkEfforts(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		_, _ = io.WriteString(response, `{"data":[
+			{"id":"kimi-for-coding","display_name":"K2.7 Coding","context_length":262144,
+			 "supports_reasoning":true,"supports_thinking_type":"only"},
+			{"id":"k3","display_name":"K3","context_length":1048576,
+			 "supports_reasoning":true,"supports_thinking_type":"only",
+			 "think_efforts":{"support":true,"valid_efforts":["low","high","max"],"default_effort":"high"}}
+		]}`)
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolChatCompletions,
+		APIKey: "key", AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+		ModelListDecoder: DecodeKimiModels,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := value.RefreshModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	models := value.Models()
+	byID := make(map[string]Model, len(models))
+	for _, item := range models {
+		byID[item.ID] = item
+	}
+	// kimi-for-coding has no think_efforts, so it reports reasoning but no
+	// variants; its display_name and context come from the catalog.
+	plain := byID["kimi-for-coding"]
+	if plain.Name != "K2.7 Coding" || plain.ContextWindow != 262144 ||
+		!plain.Capabilities.Reasoning || len(plain.Capabilities.Variants) != 0 {
+		t.Fatalf("kimi-for-coding = %#v", plain)
+	}
+	// k3 has think_efforts: default high first, then low and max in catalog
+	// order.
+	k3 := byID["k3"]
+	if k3.Name != "K3" || k3.ContextWindow != 1048576 || !k3.Capabilities.Reasoning {
+		t.Fatalf("k3 = %#v", k3)
+	}
+	if len(k3.Capabilities.Variants) != 3 ||
+		k3.Capabilities.Variants[0].Name != "high" ||
+		k3.Capabilities.Variants[0].ReasoningEffort != "high" ||
+		k3.Capabilities.Variants[1].Name != "low" ||
+		k3.Capabilities.Variants[2].Name != "max" {
+		t.Fatalf("k3 variants = %#v", k3.Capabilities.Variants)
+	}
+}
+
+func TestOpenAICompatibleRefreshModelsCatalogEffortsYieldToDeclaredVariants(t *testing.T) {
+	declared := []Model{{
+		ID: "reasoning-model", Name: "Declared Reasoning", ContextWindow: 100000,
+		Capabilities: Capabilities{Variants: []Variant{{Name: "turbo", ReasoningEffort: "turbo"}}},
+	}}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(response, `{"data":[
+			{"id":"reasoning-model",
+			 "reasoning":{"supported_efforts":["max","high","low"],"default_effort":"max"}}
+		]}`)
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolChatCompletions,
+		APIKey: "key", AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+		Models: declared, ModelListDecoder: DecodeOpenRouterModels,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := value.RefreshModels(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	got := value.Models()[0]
+	// Declared variants win; the catalog's efforts do not appear.
+	if len(got.Capabilities.Variants) != 1 ||
+		got.Capabilities.Variants[0].Name != "turbo" ||
+		got.Capabilities.Variants[0].ReasoningEffort != "turbo" {
+		t.Fatalf("declared variants should win over catalog efforts: %#v", got.Capabilities.Variants)
+	}
+	if got.Name != "Declared Reasoning" || got.ContextWindow != 100000 {
+		t.Fatalf("declared metadata was lost: %#v", got)
 	}
 }
 
