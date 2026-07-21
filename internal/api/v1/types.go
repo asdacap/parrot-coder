@@ -305,9 +305,14 @@ type AgentList struct {
 }
 
 type Mode struct {
-	ID       string `json:"id"`
-	ReadOnly bool   `json:"read_only"`
-	MaxTurns int    `json:"max_turns"`
+	ID       string          `json:"id"`
+	ReadOnly bool            `json:"read_only"`
+	MaxTurns int             `json:"max_turns"`
+	// TurnComplete is the JSON-serialized mode.TurnCompleteResult that
+	// declares the mode's turn-complete behavior. nil/empty means no special
+	// action. It is opaque to the wire layer; the producer and consumer both
+	// bind it to mode.TurnCompleteResult.
+	TurnComplete json.RawMessage `json:"turn_complete,omitempty"`
 }
 
 type ModeList struct {

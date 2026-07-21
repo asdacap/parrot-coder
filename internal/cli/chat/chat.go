@@ -1364,34 +1364,90 @@ func (s *chatShell) enhancedConfig() enhancedchat.Config {
 }
 
 func (s *chatShell) onTurnComplete(completed enhancedchat.TurnComplete) *enhancedchat.TurnCompleteDialog {
-	if completed.Mode != mode.PlanID {
+	spec, ok := s.turnCompleteSpec(completed.Mode)
+	if !ok {
 		return nil
 	}
+	if spec.Dialog == nil {
+		// A mode may transition directly without a dialog.
+		if spec.Agent != "" {
+			_ = s.applyAgent(spec.Agent, false)
+		}
+		return nil
+	}
+	dialog := spec.Dialog
+	choices := make([]terminal.Candidate, 0, len(dialog.Choices)+1)
+	for _, choice := range dialog.Choices {
+		choices = append(choices, terminal.Candidate{Value: choice.Value, Description: choice.Description})
+	}
+	if dialog.CustomChoice != "" {
+		description := dialog.CustomDescription
+		if description == "" {
+			description = "Provide feedback and revise"
+		}
+		choices = append(choices, terminal.Candidate{Value: dialog.CustomChoice, Description: description})
+	}
 	return &enhancedchat.TurnCompleteDialog{
-		Prompt: "Plan complete: ", Context: []string{"Review the plan before implementation."},
-		Choices: []terminal.Candidate{
-			{Value: "yes", Description: "Implement the approved plan"},
-			{Value: "no", Description: "Stop after planning"},
-			{Value: "feedback", Description: "Provide feedback and revise the plan"},
-		},
-		CustomChoice: "feedback", CustomPrompt: "plan feedback: ",
+		Prompt: dialog.Prompt, Context: dialog.Context,
+		Choices: choices, CustomChoice: dialog.CustomChoice, CustomPrompt: dialog.CustomPrompt,
 		Handle: func(value string) (enhancedchat.TurnCompleteResult, error) {
-			answer := strings.TrimSpace(value)
-			switch strings.ToLower(answer) {
-			case "yes", "y":
-				if err := s.applyAgent(mode.BuildID, false); err != nil {
-					return enhancedchat.TurnCompleteResult{}, err
+			answer := strings.ToLower(strings.TrimSpace(value))
+			for _, choice := range dialog.Choices {
+				if answer != choice.Value && !containsString(choice.Aliases, answer) {
+					continue
 				}
-				return enhancedchat.TurnCompleteResult{Prompt: "Implement the approved plan."}, nil
-			case "no", "n":
-				return enhancedchat.TurnCompleteResult{}, nil
-			case "":
-				return enhancedchat.TurnCompleteResult{ValidationError: "enter yes, no, or feedback"}, nil
-			default:
-				return enhancedchat.TurnCompleteResult{Prompt: answer}, nil
+				if choice.Action.Agent != "" {
+					if err := s.applyAgent(choice.Action.Agent, false); err != nil {
+						return enhancedchat.TurnCompleteResult{}, err
+					}
+				}
+				return enhancedchat.TurnCompleteResult{Prompt: choice.Action.Prompt}, nil
 			}
+			if strings.TrimSpace(value) == "" {
+				return enhancedchat.TurnCompleteResult{ValidationError: dialog.EmptyMessage}, nil
+			}
+			return enhancedchat.TurnCompleteResult{Prompt: strings.TrimSpace(value)}, nil
 		},
 	}
+}
+
+// turnCompleteSpec resolves the current mode's declared turn-complete behavior
+// from the mode list the server reports. It returns ok=false when the mode is
+// unknown or declares no turn-complete behavior.
+func (s *chatShell) turnCompleteSpec(modeID string) (mode.TurnCompleteResult, bool) {
+	if modeID == "" {
+		return mode.TurnCompleteResult{}, false
+	}
+	lister, ok := s.api.(interface {
+		Modes(context.Context) (v1.ModeList, error)
+	})
+	if !ok {
+		return mode.TurnCompleteResult{}, false
+	}
+	items, err := lister.Modes(s.ctx)
+	if err != nil {
+		return mode.TurnCompleteResult{}, false
+	}
+	for _, item := range items.Items {
+		if item.ID != modeID || len(item.TurnComplete) == 0 {
+			continue
+		}
+		var spec mode.TurnCompleteResult
+		if err := json.Unmarshal(item.TurnComplete, &spec); err != nil {
+			return mode.TurnCompleteResult{}, false
+		}
+		return spec, true
+	}
+	return mode.TurnCompleteResult{}, false
+}
+
+func containsString(list []string, value string) bool {
+	for _, item := range list {
+		if item == value {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *chatShell) enhancedRenderError(err error) int {
