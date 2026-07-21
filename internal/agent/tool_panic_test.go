@@ -14,7 +14,6 @@ import (
 // unexpected defect at runtime (for example a bad apply_patch edge case).
 type panicTool struct {
 	tool.BasePresentation
-	tool.WritableTool
 	inExecute bool
 }
 

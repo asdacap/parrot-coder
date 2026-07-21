@@ -14,7 +14,6 @@ import (
 
 type WebFetchTool struct {
 	BasePresentation
-	WritableTool
 	Service *webfetch.Service
 }
 

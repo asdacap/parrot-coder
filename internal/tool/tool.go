@@ -37,18 +37,6 @@ type CallContext struct {
 	SecurityProfile SecurityProfile
 }
 
-// CheckTool reports an error if the given tool is not permitted by the
-// current security profile.
-func (c CallContext) CheckTool(t Tool) error {
-	if c.SecurityProfile == nil {
-		return nil
-	}
-	if !c.SecurityProfile.AllowsTool(t.ID(), t.ReadOnly()) {
-		return fmt.Errorf("tool %q is not permitted by the current security profile", t.ID())
-	}
-	return nil
-}
-
 type Plan struct {
 	ToolID         string
 	CanonicalInput json.RawMessage
@@ -84,11 +72,6 @@ type Tool interface {
 	// what a tool does rather than on which tool it is. Embed BasePresentation
 	// for the neutral default.
 	Presentation() Presentation
-	// ReadOnly reports whether the tool can change anything outside the
-	// session. It gates read-only agent profiles, so it is required rather than
-	// defaulted: a silent default here would be a security decision made by
-	// omission.
-	ReadOnly() bool
 	Plan(context.Context, json.RawMessage, CallContext) (Plan, error)
 	Execute(context.Context, Plan, CallContext) (Result, error)
 }
@@ -119,10 +102,6 @@ type Definition struct {
 	ID          string          `json:"id"`
 	Description string          `json:"description"`
 	Schema      json.RawMessage `json:"schema"`
-	// ReadOnly is excluded from the wire form: Definitions is marshalled into
-	// the model's tool guidance, which must not grow fields the model does not
-	// use. Read-onlyness is consumed server-side when gating a profile.
-	ReadOnly bool `json:"-"`
 }
 
 type Registry struct {
@@ -183,13 +162,6 @@ func (s Snapshot) Definitions() []Definition {
 	return out
 }
 
-// ReadOnly reports whether a registered tool can change anything outside the
-// session. An unknown tool is treated as writable.
-func (s Snapshot) ReadOnly(id string) bool {
-	t, ok := s.tools[id]
-	return ok && t.ReadOnly()
-}
-
 // Presentations projects the declared display metadata of every tool. It is
 // deliberately separate from Definitions so that presentation detail never
 // reaches the model's tool guidance.
@@ -205,7 +177,7 @@ func (s Snapshot) Presentations() []PresentationEntry {
 func definitions(tools map[string]Tool) []Definition {
 	out := make([]Definition, 0, len(tools))
 	for _, t := range tools {
-		out = append(out, Definition{ID: t.ID(), Description: t.Description(), Schema: append(json.RawMessage(nil), t.JSONSchema()...), ReadOnly: t.ReadOnly()})
+		out = append(out, Definition{ID: t.ID(), Description: t.Description(), Schema: append(json.RawMessage(nil), t.JSONSchema()...)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

@@ -22,7 +22,6 @@ type ReadConfig struct {
 }
 type ReadTool struct {
 	BasePresentation
-	ReadOnlyTool
 	Config ReadConfig
 }
 
@@ -98,9 +97,7 @@ func (t *ReadTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 }
 
 func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
-	}
+
 	p := plan.Data.(readPlan)
 	revalidated, err := call.Workspace.ResolveReadOnly(p.Input.Path)
 	if err != nil || revalidated != p.Path {

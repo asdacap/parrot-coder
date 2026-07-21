@@ -14,7 +14,6 @@ import (
 
 type EditTool struct {
 	BasePresentation
-	WritableTool
 	Changes *change.Service
 }
 
@@ -73,8 +72,8 @@ func (t *EditTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 }
 
 func (t *EditTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
+	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
+		return Result{}, errors.New("edit is not permitted by the current security profile")
 	}
 	result, err := executeMutation(ctx, t.Changes, plan, call)
 	if err != nil {

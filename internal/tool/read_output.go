@@ -10,7 +10,6 @@ import (
 
 type ReadOutputTool struct {
 	BasePresentation
-	ReadOnlyTool
 	MaxBytes int64
 }
 
@@ -63,9 +62,7 @@ func (t *ReadOutputTool) Plan(ctx context.Context, raw json.RawMessage, call Cal
 	return NewPlan(t.ID(), raw, []permission.Request{req}, nil, input)
 }
 func (t *ReadOutputTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if err := call.CheckTool(t); err != nil {
-		return Result{}, err
-	}
+
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}

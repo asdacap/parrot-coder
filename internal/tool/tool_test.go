@@ -23,7 +23,6 @@ import (
 
 type testTool struct {
 	BasePresentation
-	WritableTool
 	id     string
 	stale  bool
 	result *Result
@@ -284,7 +283,6 @@ func TestJSONToolsKeepModelCopyParseable(t *testing.T) {
 
 type outputTestTool struct {
 	BasePresentation
-	WritableTool
 }
 
 func (outputTestTool) ID() string          { return "output_test" }
