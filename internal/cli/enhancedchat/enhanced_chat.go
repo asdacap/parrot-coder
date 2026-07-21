@@ -236,6 +236,7 @@ type enhancedChatRuntime struct {
 	lastCompleteID    string
 	borderCommitted   bool
 	contextTokens      int
+	totalCost           float64
 	mainTaskInputTokens  int
 	mainTaskOutputTokens int
 	mainTaskCachedTokens int
@@ -552,6 +553,9 @@ func (r *enhancedChatRuntime) render() error {
 	right := r.shell.modelineModelLabel(r.contextTokens)
 	if r.mainTaskInputTokens > 0 || r.mainTaskOutputTokens > 0 {
 		right += " · " + formatTaskTokenUsage(r.mainTaskInputTokens, r.mainTaskOutputTokens, r.mainTaskCachedTokens)
+	}
+	if r.totalCost > 0 {
+		right += " · " + formatCost(r.totalCost)
 	}
 	return r.shell.renderer.Frame(terminal.LiveFrame{
 		Stream: stream, PromptContext: r.modalContext(), StyledActivity: r.styledActivityRows(now, r.shell.renderer.Columns()), Pending: pending,

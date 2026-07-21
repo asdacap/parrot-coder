@@ -94,7 +94,7 @@ func (b *Broker) Publish(sessionID string, item protocol.Event) {
 		if item.Usage == nil {
 			return
 		}
-		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "usage", Usage: &v1.Usage{InputTokens: item.Usage.InputTokens, OutputTokens: item.Usage.OutputTokens, TotalTokens: item.Usage.TotalTokens, ReasoningTokens: item.Usage.ReasoningTokens, CachedInputTokens: item.Usage.CachedInputTokens}}
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "usage", Usage: &v1.Usage{InputTokens: item.Usage.InputTokens, OutputTokens: item.Usage.OutputTokens, TotalTokens: item.Usage.TotalTokens, ReasoningTokens: item.Usage.ReasoningTokens, CachedInputTokens: item.Usage.CachedInputTokens, InputCost: item.Usage.InputCost, OutputCost: item.Usage.OutputCost}}
 	case protocol.EventFinish:
 		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "finish", FinishReason: string(item.FinishReason)}
 	case protocol.EventProviderError:
