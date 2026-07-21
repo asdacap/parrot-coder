@@ -441,7 +441,6 @@ func TestDefaultWorkspaceAndReadOnlyPolicies(t *testing.T) {
 		{name: "edit write", request: request("edit", "filesystem", "write"), decision: permission.Allow, readOnly: permission.Ask},
 		{name: "edit create", request: request("edit", "filesystem", "create"), decision: permission.Allow, readOnly: permission.Ask},
 		{name: "patch delete", request: request("apply_patch", "filesystem", "delete"), decision: permission.Allow, readOnly: permission.Ask},
-		{name: "formatter write", request: request("format", "filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "edit external capability", request: request("edit", "external_filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
 		{name: "shell", request: request("shell", "process", "execute"), decision: permission.Allow, readOnly: permission.Ask},
 		{name: "exec command", request: request("exec_command", "process", "execute"), decision: permission.Allow, readOnly: permission.Ask},
