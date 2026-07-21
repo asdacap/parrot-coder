@@ -45,6 +45,45 @@ func TestEncodeRequest(t *testing.T) {
 	}
 }
 
+func TestEncodeRequestProviderPreferences(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		preferences json.RawMessage
+		wantField   bool
+	}{
+		{name: "nil omits provider", preferences: nil, wantField: false},
+		{name: "object emits provider", preferences: json.RawMessage(`{"only":["azure"]}`), wantField: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := EncodeRequest(protocol.Request{
+				Model:               "model",
+				Messages:            []protocol.Message{{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "hi"}}}},
+				ProviderPreferences: tc.preferences,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(encoded, &body); err != nil {
+				t.Fatal(err)
+			}
+			_, present := body["provider"]
+			if present != tc.wantField {
+				t.Fatalf("provider present = %v, want %v: %s", present, tc.wantField, encoded)
+			}
+			if tc.wantField {
+				provider := body["provider"].(map[string]any)
+				if only, _ := provider["only"].([]any); len(only) != 1 || only[0] != "azure" {
+					t.Fatalf("provider = %#v", provider)
+				}
+			}
+		})
+	}
+	if _, err := EncodeRequest(protocol.Request{ProviderPreferences: json.RawMessage(`"nope"`)}); err == nil || !strings.Contains(err.Error(), "JSON object") {
+		t.Fatalf("non-object preferences error = %v", err)
+	}
+}
+
 func TestParserInterleavedFunctionsTextReasoningUsageAndCompletion(t *testing.T) {
 	fixture := streamFixture(
 		`{"type":"response.reasoning_summary_text.delta","item_id":"reasoning_item","summary_index":0,"delta":"thinking"}`,

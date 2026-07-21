@@ -38,6 +38,10 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Added
 
+- The `openrouter` provider now accepts `provider_preferences` in `parrot.yaml`,
+  forwarded verbatim as the top-level `provider` object of each request body to
+  steer OpenRouter routing, fallback, sorting, and data-collection behavior.
+  The field is OpenRouter-only; other providers never receive it.
 - Startup output now lists every loaded `AGENTS.md` file, or explicitly reports
   when none were loaded.
 - Initial local-first Go CLI with append-only interactive chat and

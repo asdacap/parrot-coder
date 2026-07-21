@@ -209,3 +209,38 @@ func TestPresetModelDefaultsDescribeWithoutDeclaring(t *testing.T) {
 		t.Fatal("a provider without a preset reported model defaults")
 	}
 }
+
+func TestPresetSupportsProviderPreferences(t *testing.T) {
+	if !presetSupportsProviderPreferences("openrouter") {
+		t.Fatal("openrouter preset should support provider preferences")
+	}
+	for _, id := range PresetProviderIDs() {
+		if id == "openrouter" {
+			continue
+		}
+		if presetSupportsProviderPreferences(id) {
+			t.Errorf("preset %q should not support provider preferences", id)
+		}
+	}
+	if presetSupportsProviderPreferences("not-a-preset") {
+		t.Fatal("an unknown provider should not support provider preferences")
+	}
+}
+
+func TestBuildProvidersAcceptsProviderPreferences(t *testing.T) {
+	ctx := context.Background()
+	cfg := config.Config{Providers: map[string]config.Provider{
+		"openrouter": {ProviderPreferences: []byte(`{"order":["anthropic"]}`)},
+		"kimi-code":  {ProviderPreferences: []byte(`{"order":["anthropic"]}`)},
+	}}
+	built, err := BuildProviders(ctx, cfg, storeWithKeys(t, "openrouter", "kimi-code"), offlineClient())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if findProvider(built, "openrouter") == nil {
+		t.Fatal("openrouter was not built")
+	}
+	if findProvider(built, "kimi-code") == nil {
+		t.Fatal("kimi-code was not built")
+	}
+}

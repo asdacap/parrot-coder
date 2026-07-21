@@ -18,6 +18,11 @@ type providerPreset struct {
 	HeaderTimeout time.Duration
 	Models        map[string]config.Model
 	Decoder       provider.ModelListDecoder
+	// SupportsProviderPreferences marks providers that read a top-level
+	// "provider" object from the request body to steer routing, such as the
+	// OpenRouter aggregation API. Only these providers receive configured
+	// provider preferences; other providers never see the field.
+	SupportsProviderPreferences bool
 }
 
 // providerPresets are built-in, not configuration, so a project-scope file
@@ -38,6 +43,9 @@ var providerPresets = map[string]providerPreset{
 		APIKeyEnv:     "OPENROUTER_API_KEY",
 		HeaderTimeout: 10 * time.Second,
 		Decoder:       provider.DecodeOpenRouterModels,
+		// OpenRouter routes across many backing providers and accepts a
+		// "provider" object to influence that routing.
+		SupportsProviderPreferences: true,
 	},
 	// opencode-go is the OpenCode Go low-cost subscription for open coding
 	// models. It speaks the chat-completions protocol and serves a curated,
@@ -139,4 +147,12 @@ func presetOnlyProviderIDs(configured map[string]config.Provider) []string {
 // select the default standard decoder.
 func presetDecoder(id string) provider.ModelListDecoder {
 	return providerPresets[id].Decoder
+}
+
+// presetSupportsProviderPreferences reports whether a preset's provider reads
+// the top-level "provider" request-body object. Only such providers receive
+// configured provider preferences, so the field is never sent to a provider
+// that does not understand it.
+func presetSupportsProviderPreferences(id string) bool {
+	return providerPresets[id].SupportsProviderPreferences
 }

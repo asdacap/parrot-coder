@@ -81,10 +81,16 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 		Stream       bool              `json:"stream"`
 		Store        bool              `json:"store"`
 		Reasoning    *reasoningOptions `json:"reasoning,omitempty"`
+		Provider     json.RawMessage   `json:"provider,omitempty"`
 	}{Model: request.Model, Instructions: request.Instructions, Input: input, Tools: tools, Stream: true, Store: false}
 	if request.Reasoning != nil && (request.Reasoning.Effort != "" || request.Reasoning.Summary != "") {
 		body.Reasoning = &reasoningOptions{Effort: request.Reasoning.Effort, Summary: request.Reasoning.Summary}
 	}
+	preferences, err := protocol.NormalizeProviderPreferences(request.ProviderPreferences)
+	if err != nil {
+		return nil, fmt.Errorf("responses: %w", err)
+	}
+	body.Provider = preferences
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("responses: encode request: %w", err)
