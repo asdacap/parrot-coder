@@ -687,6 +687,45 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 	}
 }
 
+func TestRunnerRetriesMessageOnlyOverflowExactlyOnce(t *testing.T) {
+	// Kimi/Moonshot reports a context overflow with a generic
+	// "invalid_request_error" type and the reason only in the message text.
+	fake := &fakeProvider{stream: func(index int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			return nil, &provider.HTTPError{StatusCode: 400, Type: "invalid_request_error", Message: "Invalid request: Your request exceeded model token limit: 262144 (requested: 265424)"}
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	compactor := &fakeCompactor{compact: func(request compaction.Request) (compaction.Result, error) {
+		if request.Force {
+			return compaction.Result{Status: "complete", RecordID: "cmpr_retry"}, nil
+		}
+		return compaction.Result{Status: "skipped"}, nil
+	}}
+	h.runner.config.Compactor = compactor
+	h.admit(t, "user", "overflow", session.DeliverySteer)
+	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.Requests()) != 2 || len(compactor.requests) != 2 || !compactor.requests[1].Force {
+		t.Fatalf("provider=%d compactor=%#v", len(fake.Requests()), compactor.requests)
+	}
+	events, err := h.repository.List(context.Background(), h.sessionID, -1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	retries := 0
+	for _, item := range events {
+		if item.Type == "session.compaction.retry" {
+			retries++
+		}
+	}
+	if retries != 1 {
+		t.Fatalf("retry events = %d", retries)
+	}
+}
+
 func TestRunnerDoesNotRetryUnknownProviderError(t *testing.T) {
 	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		return events(protocol.Event{Type: protocol.EventProviderError, ProviderError: &protocol.ProviderError{Code: "mystery", Message: "unknown"}}), nil

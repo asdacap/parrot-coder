@@ -461,7 +461,7 @@ func (r *Runner) providerTurn(ctx context.Context, sessionID string, client prov
 			// not be retained without corresponding tool results.
 			parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), nil)
 			finishErr := r.finishAssistantOnCleanup(sessionID, assistant.ID, session.AssistantFinal{Parts: parts, Usage: usage, FinishReason: protocol.FinishError, Error: message, Status: "error"})
-			overflow := item.ProviderError != nil && canonicalOverflow(item.ProviderError.Type, item.ProviderError.Code)
+			overflow := item.ProviderError != nil && (canonicalOverflow(item.ProviderError.Type, item.ProviderError.Code) || overflowMessage(item.ProviderError.Message))
 			responseErr := &provider.ResponseError{Type: kind, Code: code, Message: message}
 			return nil, protocol.FinishError, &providerTurnFailure{err: errors.Join(responseErr, finishErr), code: code, overflow: overflow, retrySafe: finishErr == nil && text.Len() == 0 && reasoning.Len() == 0 && reasoningSummary.Len() == 0 && len(calls) == 0}
 		}
@@ -497,13 +497,31 @@ func contextOverflowError(err error) (string, bool) {
 	if !errors.As(err, &httpErr) || httpErr.StatusCode != 400 && httpErr.StatusCode != 413 {
 		return "", false
 	}
-	return httpErr.Code, canonicalOverflow(httpErr.Type, httpErr.Code)
+	return httpErr.Code, canonicalOverflow(httpErr.Type, httpErr.Code) || overflowMessage(httpErr.Message)
 }
 
 func canonicalOverflow(kind, code string) bool {
 	for _, value := range []string{strings.ToLower(kind), strings.ToLower(code)} {
 		switch value {
 		case "context_length_exceeded", "context_window_exceeded", "prompt_too_long", "input_too_long", "max_context_length_exceeded":
+			return true
+		}
+	}
+	return false
+}
+
+// overflowMessage recognizes providers that report a context overflow only in
+// the human-readable error message rather than a canonical type or code (for
+// example Kimi: "Your request exceeded model token limit"). Phrases are kept
+// specific to input size so unrelated invalid-request errors do not trigger a
+// wasted compaction and retry.
+func overflowMessage(message string) bool {
+	lower := strings.ToLower(message)
+	for _, phrase := range []string{
+		"exceeded model token limit", "token limit", "context length", "context window",
+		"maximum context", "prompt is too long", "too many tokens", "reduce the length of the messages",
+	} {
+		if strings.Contains(lower, phrase) {
 			return true
 		}
 	}
