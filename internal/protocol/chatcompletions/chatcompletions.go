@@ -73,16 +73,22 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 	}
 
 	body := struct {
-		Model           string `json:"model"`
-		Messages        []any  `json:"messages"`
-		Tools           []tool `json:"tools,omitempty"`
-		Stream          bool   `json:"stream"`
-		Options         any    `json:"stream_options"`
-		ReasoningEffort string `json:"reasoning_effort,omitempty"`
+		Model           string          `json:"model"`
+		Messages        []any           `json:"messages"`
+		Tools           []tool          `json:"tools,omitempty"`
+		Stream          bool            `json:"stream"`
+		Options         any             `json:"stream_options"`
+		ReasoningEffort string          `json:"reasoning_effort,omitempty"`
+		Provider        json.RawMessage `json:"provider,omitempty"`
 	}{Model: request.Model, Messages: messages, Tools: tools, Stream: true, Options: map[string]bool{"include_usage": true}}
 	if request.Reasoning != nil {
 		body.ReasoningEffort = request.Reasoning.Effort
 	}
+	preferences, err := protocol.NormalizeProviderPreferences(request.ProviderPreferences)
+	if err != nil {
+		return nil, fmt.Errorf("chatcompletions: %w", err)
+	}
+	body.Provider = preferences
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		return nil, fmt.Errorf("chatcompletions: encode request: %w", err)

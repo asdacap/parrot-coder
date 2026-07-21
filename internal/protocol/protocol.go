@@ -2,7 +2,11 @@
 // the runtime and its provider wire adapters.
 package protocol
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+)
 
 // Request is one provider turn.
 type Request struct {
@@ -11,6 +15,32 @@ type Request struct {
 	Messages     []Message
 	Tools        []ToolDefinition
 	Reasoning    *ReasoningOptions
+	// ProviderPreferences carries provider-specific request body extensions
+	// as opaque JSON. OpenAI-compatible routers (such as OpenRouter) read it
+	// as the top-level "provider" object to influence routing, fallback, and
+	// data-collection behavior. Encoders pass it through verbatim when it is
+	// valid JSON, so the protocol package stays neutral to any one vendor's
+	// schema.
+	ProviderPreferences json.RawMessage
+}
+
+// NormalizeProviderPreferences returns preferences as a JSON object suitable
+// for a request body, or nil when unset. A non-object JSON value is rejected
+// because the "provider" field OpenAI-compatible routers expect is always an
+// object. Wire adapters call this to validate and forward the opaque blob
+// without coupling the protocol package to any one vendor's schema.
+func NormalizeProviderPreferences(preferences json.RawMessage) (json.RawMessage, error) {
+	if len(preferences) == 0 {
+		return nil, nil
+	}
+	if !json.Valid(preferences) {
+		return nil, fmt.Errorf("provider preferences are not valid JSON")
+	}
+	trimmed := bytes.TrimSpace(preferences)
+	if len(trimmed) == 0 || trimmed[0] != '{' {
+		return nil, fmt.Errorf("provider preferences must be a JSON object")
+	}
+	return preferences, nil
 }
 
 // ReasoningOptions controls optional provider reasoning behavior.

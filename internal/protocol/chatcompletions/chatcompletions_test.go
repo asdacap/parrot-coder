@@ -52,6 +52,45 @@ func TestEncodeRequest(t *testing.T) {
 	}
 }
 
+func TestEncodeRequestProviderPreferences(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		preferences json.RawMessage
+		wantField   bool
+	}{
+		{name: "nil omits provider", preferences: nil, wantField: false},
+		{name: "object emits provider", preferences: json.RawMessage(`{"order":["anthropic"],"allow_fallbacks":false}`), wantField: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			encoded, err := EncodeRequest(protocol.Request{
+				Model:               "model",
+				Messages:            []protocol.Message{{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "hi"}}}},
+				ProviderPreferences: tc.preferences,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var body map[string]any
+			if err := json.Unmarshal(encoded, &body); err != nil {
+				t.Fatal(err)
+			}
+			_, present := body["provider"]
+			if present != tc.wantField {
+				t.Fatalf("provider present = %v, want %v: %s", present, tc.wantField, encoded)
+			}
+			if tc.wantField {
+				provider := body["provider"].(map[string]any)
+				if provider["allow_fallbacks"] != false {
+					t.Fatalf("provider = %#v", provider)
+				}
+			}
+		})
+	}
+	if _, err := EncodeRequest(protocol.Request{ProviderPreferences: json.RawMessage(`["nope"]`)}); err == nil || !strings.Contains(err.Error(), "JSON object") {
+		t.Fatalf("non-object preferences error = %v", err)
+	}
+}
+
 func TestParserInterleavedToolCallsReasoningUsageAndFinish(t *testing.T) {
 	fixture := strings.Join([]string{
 		`data: {"choices":[{"delta":{"reasoning_content":"think "}}]}`,

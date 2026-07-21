@@ -969,6 +969,13 @@ func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Sto
 			Models: convertModels(item.Models), ModelDefaults: convertModels(presetModelDefaults(id)),
 			ModelListDecoder: presetDecoder(id), HeaderTimeout: headerTimeout,
 		}
+		// Provider preferences are an OpenRouter-style routing control: only
+		// providers whose preset declares support receive the configured
+		// object, so the field is never sent to a provider that does not
+		// understand it.
+		if presetSupportsProviderPreferences(id) {
+			options.ProviderPreferences = item.ProviderPreferences
+		}
 		var compatible provider.Provider
 		var createErr error
 		if id == "kimi-api" {

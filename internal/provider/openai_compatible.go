@@ -57,24 +57,31 @@ type OpenAICompatibleOptions struct {
 	ModelListDecoder ModelListDecoder
 	HTTPClient       *http.Client
 	HeaderTimeout    time.Duration
+	// ProviderPreferences is forwarded as the top-level "provider" object of
+	// each request body. OpenAI-compatible routers such as OpenRouter use it
+	// to steer routing and fallback behavior. It is opaque JSON validated as
+	// an object at request time, so the provider stays neutral to any one
+	// vendor's schema.
+	ProviderPreferences json.RawMessage
 }
 
 // OpenAICompatible is an explicitly configured compatible provider.
 type OpenAICompatible struct {
-	id             string
-	endpoint       *url.URL
-	modelsEndpoint *url.URL
-	protocol       CompatibleProtocol
-	apiKey         auth.Secret
-	headers        http.Header
-	declared       []Model
-	defaults       []Model
-	decoder        ModelListDecoder
-	modelsMu       sync.RWMutex
-	models         []Model
-	client         *http.Client
-	stream         *http.Client
-	headerTimeout  time.Duration
+	id                  string
+	endpoint            *url.URL
+	modelsEndpoint      *url.URL
+	protocol            CompatibleProtocol
+	apiKey              auth.Secret
+	headers             http.Header
+	declared            []Model
+	defaults            []Model
+	decoder             ModelListDecoder
+	modelsMu            sync.RWMutex
+	models              []Model
+	client              *http.Client
+	stream              *http.Client
+	headerTimeout       time.Duration
+	providerPreferences json.RawMessage
 }
 
 // NewOpenAICompatible validates options before retaining any credentials.
@@ -121,8 +128,9 @@ func NewOpenAICompatible(options OpenAICompatibleOptions) (*OpenAICompatible, er
 		stream: secureClient(options.HTTPClient, endpoint, true),
 		// Until a catalog is fetched the defaults stand in for one, so an
 		// offline start still has models to select.
-		models:        mergeModels(nil, declared, defaults),
-		headerTimeout: options.HeaderTimeout,
+		models:              mergeModels(nil, declared, defaults),
+		headerTimeout:       options.HeaderTimeout,
+		providerPreferences: append(json.RawMessage(nil), options.ProviderPreferences...),
 	}, nil
 }
 
@@ -325,6 +333,7 @@ func effortVariants(efforts []string, defaultEffort string) []Variant {
 }
 
 func (p *OpenAICompatible) Stream(ctx context.Context, request protocol.Request) (Stream, error) {
+	request.ProviderPreferences = p.providerPreferences
 	var body []byte
 	var err error
 	var parser streamParser

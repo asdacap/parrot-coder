@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -341,9 +342,46 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 		"Formatting mode: 'stdin' or 'file'.",
 		"Web fetch restrictions.",
 		"Allow fetching from private addresses; increases SSRF risk.",
+		"OpenRouter-style provider routing preferences, forwarded as the",
 	} {
 		if !strings.Contains(output, comment) {
 			t.Errorf("generated YAML missing comment: %q", comment)
 		}
+	}
+}
+
+func TestLoadParsesProviderPreferences(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(project, FileName), `providers:
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    provider_preferences:
+      order:
+        - anthropic
+      allow_fallbacks: false
+`)
+	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := result.Config.Providers["openrouter"]
+	if len(provider.ProviderPreferences) == 0 {
+		t.Fatalf("provider preferences not parsed: %#v", provider)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(provider.ProviderPreferences, &decoded); err != nil {
+		t.Fatalf("preferences are not valid JSON: %v", err)
+	}
+	if decoded["allow_fallbacks"] != false {
+		t.Fatalf("allow_fallbacks = %#v", decoded["allow_fallbacks"])
+	}
+	order, _ := decoded["order"].([]any)
+	if len(order) != 1 || order[0] != "anthropic" {
+		t.Fatalf("order = %#v", order)
 	}
 }

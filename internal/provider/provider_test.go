@@ -937,3 +937,80 @@ func TestOpenAICompatibleRefreshModelsKeepsCatalogOnFailure(t *testing.T) {
 		})
 	}
 }
+
+func TestOpenAICompatibleStreamSendsProviderPreferences(t *testing.T) {
+	var seenBody string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		seenBody = string(body)
+		response.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(response, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "openrouter", BaseURL: server.URL, Protocol: ProtocolChatCompletions,
+		APIKey: "key", AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+		ProviderPreferences: json.RawMessage(`{"order":["anthropic"],"allow_fallbacks":false}`),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := value.Stream(context.Background(), protocol.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		if _, nextErr := stream.Next(context.Background()); nextErr != nil {
+			break
+		}
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(seenBody), &body); err != nil {
+		t.Fatal(err)
+	}
+	provider, ok := body["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("provider object missing from request body: %s", seenBody)
+	}
+	if provider["allow_fallbacks"] != false {
+		t.Fatalf("provider = %#v", provider)
+	}
+}
+
+func TestOpenAICompatibleStreamOmitsProviderPreferencesWhenUnset(t *testing.T) {
+	var seenBody string
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		body, _ := io.ReadAll(request.Body)
+		seenBody = string(body)
+		response.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(response, "data: {\"choices\":[{\"delta\":{\"content\":\"hi\"},\"finish_reason\":null}]}\n\n"+
+			"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer server.Close()
+	value, err := NewOpenAICompatible(OpenAICompatibleOptions{
+		ID: "local", BaseURL: server.URL, Protocol: ProtocolChatCompletions,
+		APIKey: "key", AllowInsecureLocalhost: true, HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stream, err := value.Stream(context.Background(), protocol.Request{Model: "m"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stream.Close()
+	for {
+		if _, nextErr := stream.Next(context.Background()); nextErr != nil {
+			break
+		}
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(seenBody), &body); err != nil {
+		t.Fatal(err)
+	}
+	if _, present := body["provider"]; present {
+		t.Fatalf("provider field sent when unset: %s", seenBody)
+	}
+}

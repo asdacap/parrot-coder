@@ -73,7 +73,14 @@ type Provider struct {
 	Headers                map[string]string `json:"headers,omitempty"`
 	AllowInsecureLocalhost bool              `json:"allow_insecure_localhost,omitempty"`
 	HeaderTimeoutMS        *int              `json:"header_timeout_ms,omitempty"`
-	Models                 map[string]Model  `json:"models,omitempty"`
+	// ProviderPreferences is an opaque JSON object forwarded as the
+	// top-level "provider" field of each request body. OpenAI-compatible
+	// routers such as OpenRouter use it to steer routing, fallback, and
+	// data-collection behavior (e.g. order, allow_fallbacks, only, ignore,
+	// sort). The blob is validated as a JSON object at request time, so any
+	// vendor's schema is accepted without coupling config to it.
+	ProviderPreferences json.RawMessage  `json:"provider_preferences,omitempty"`
+	Models              map[string]Model `json:"models,omitempty"`
 }
 
 // Model contains provider-specific model metadata needed for selection.
@@ -389,6 +396,18 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 #     allow_insecure_localhost: false
 #     # Milliseconds to wait for response headers; zero disables.
 #     header_timeout_ms: 10000
+#     # OpenRouter-style provider routing preferences, forwarded as the
+#     # top-level "provider" object of each request body. Only the openrouter
+#     # provider reads this; it is ignored by other providers. See
+#     # https://openrouter.ai/docs/api-reference/parameters for the schema.
+#     provider_preferences:
+#       # Provider slugs to try in order, e.g. ["anthropic", "openai"].
+#       order:
+#         - anthropic
+#       # Whether to allow backup providers when the primary is unavailable.
+#       allow_fallbacks: false
+#       # Sort providers by price, throughput, or latency.
+#       sort: price
 #     # Model metadata not available from the endpoint catalog.
 #     models:
 #       model:
