@@ -40,11 +40,6 @@ func TestUnifiedDiffPlanning(t *testing.T) {
 			want:  map[string]string{"file": "one\nTWO\nthree\nfour\n"},
 		},
 		{
-			name:  "miscounted header still parses",
-			input: "--- a/file\n+++ b/file\n@@ -1,99 +1,99 @@\n one\n-two\n+TWO\n",
-			want:  map[string]string{"file": "one\nTWO\nthree\nfour\n"},
-		},
-		{
 			name:  "no newline marker is tolerated",
 			input: "--- a/file\n+++ b/file\n@@ -4 +4 @@\n-four\n+FOUR\n\\ No newline at end of file\n",
 			want:  map[string]string{"file": "one\ntwo\nthree\nFOUR\n"},
@@ -99,23 +94,24 @@ func TestUnifiedDiffPlanning(t *testing.T) {
 
 func TestUnifiedDiffRejections(t *testing.T) {
 	malformed := map[string]string{
-		"no file headers":       "just prose\n",
-		"missing target header": "--- a/file\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"rename":                "diff --git a/file b/moved\nrename from file\nrename to moved\n",
-		"copy":                  "diff --git a/file b/copied\ncopy from file\ncopy to copied\n",
-		"binary patch":          "diff --git a/file b/file\nGIT binary patch\n",
-		"mismatched paths":      "--- a/file\n+++ b/other\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"unprefixed hunk line":  "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n one\nrogue\n",
-		"malformed hunk header": "--- a/file\n+++ b/file\n@@ nonsense @@\n-one\n+ONE\n",
-		"hunk without lines":    "--- a/file\n+++ b/file\n@@ -0,0 +0,0 @@\n",
-		"escaping path":         "--- a/../escape\n+++ b/../escape\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"absolute path":         "--- /etc/passwd\n+++ /etc/passwd\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"quoted path":           "--- \"a/sp ace\"\n+++ \"b/sp ace\"\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"empty creation":        "--- /dev/null\n+++ b/added\n",
-		"creation with context": "--- /dev/null\n+++ b/added\n@@ -1,2 +1,2 @@\n one\n+alpha\n",
-		"duplicate file":        "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one\n+ONE\n--- a/file\n+++ b/file\n@@ -2 +2 @@\n-two\n+TWO\n",
-		"nested paths":          "--- /dev/null\n+++ b/dir\n@@ -0,0 +1 @@\n+x\n--- /dev/null\n+++ b/dir/file\n@@ -0,0 +1 @@\n+y\n",
-		"NUL byte":              "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one\n+O\x00E\n",
+		"no file headers":             "just prose\n",
+		"missing target header":       "--- a/file\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"rename":                      "diff --git a/file b/moved\nrename from file\nrename to moved\n",
+		"copy":                        "diff --git a/file b/copied\ncopy from file\ncopy to copied\n",
+		"binary patch":                "diff --git a/file b/file\nGIT binary patch\n",
+		"mismatched paths":            "--- a/file\n+++ b/other\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"unprefixed hunk line":        "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n one\nrogue\n",
+		"malformed hunk header":       "--- a/file\n+++ b/file\n@@ nonsense @@\n-one\n+ONE\n",
+		"miscounted hunk header":      "--- a/file\n+++ b/file\n@@ -1,99 +1,99 @@\n one\n-two\n+TWO\n",
+		"hunk without lines":          "--- a/file\n+++ b/file\n@@ -0,0 +0,0 @@\n",
+		"escaping path":               "--- a/../escape\n+++ b/../escape\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"absolute path":               "--- /etc/passwd\n+++ /etc/passwd\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"quoted path":                 "--- \"a/sp ace\"\n+++ \"b/sp ace\"\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"empty creation":              "--- /dev/null\n+++ b/added\n",
+		"creation with context":       "--- /dev/null\n+++ b/added\n@@ -1,2 +1,2 @@\n one\n+alpha\n",
+		"duplicate file":              "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one\n+ONE\n--- a/file\n+++ b/file\n@@ -2 +2 @@\n-two\n+TWO\n",
+		"nested paths":                "--- /dev/null\n+++ b/dir\n@@ -0,0 +1 @@\n+x\n--- /dev/null\n+++ b/dir/file\n@@ -0,0 +1 @@\n+y\n",
+		"NUL byte":                    "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one\n+O\x00E\n",
 	}
 	for name, input := range malformed {
 		if _, err := ParseUnifiedDiff(input); !errors.Is(err, ErrInvalidPatch) {
