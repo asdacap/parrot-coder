@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	FileName       = "parrot.yaml"
-	maxConfigBytes = 4 << 20
+	FileName            = "parrot.yaml"
+	PredefinedFileName  = "predefined_config.yaml"
+	maxConfigBytes      = 4 << 20
 )
 
 // Config is the typed configuration consumed by later application phases.
@@ -260,6 +261,11 @@ func Load(options Options) (Result, error) {
 	if typed.Formatters == nil {
 		typed.Formatters = make(map[string]Formatter)
 	}
+	if options.ConfigDir != "" {
+		if err := WritePredefinedConfig(filepath.Join(options.ConfigDir, PredefinedFileName)); err != nil {
+			return Result{}, fmt.Errorf("write predefined config: %w", err)
+		}
+	}
 	return Result{Config: typed, Sources: sources, Provenance: provenance}, nil
 }
 
@@ -372,6 +378,141 @@ func markProvenance(value any, path, source string, provenance map[string]string
 // defaultConfigYAML is a commented starter template. Example values are
 // commented out so the file is safe to parse; only web_fetch carries the
 // safe default value so the document root remains a valid YAML object.
+// predefinedConfigYAML is an always-overwritten, fully uncommented reference YAML
+// file that documents every default configuration field. The agent reads this
+// file programmatically to determine default values instead of relying on
+// hardcoded defaults elsewhere. The file is regenerated at every startup.
+const predefinedConfigYAML = `# Predefined configuration reference.
+# This file is regenerated at every startup and documents all configurable
+# fields with their default values. The agent reads this file to determine
+# default configuration values.
+
+# Default model selected as provider/model.
+model: ""
+
+# OpenAI-compatible providers and their model catalogs.
+# providers:
+#   provider:
+#     # Provider adapter type: 'compatible' or 'openai-compatible'.
+#     type: openai-compatible
+#     # API protocol: 'responses' or 'chat-completions'.
+#     protocol: responses
+#     # Provider base URL, e.g. https://api.example.test/v1.
+#     base_url: https://api.example.test/v1
+#     # Environment variable holding the API key.
+#     api_key_env: PROVIDER_API_KEY
+#     # Extra headers to send. Do not store secrets here.
+#     headers:
+#       X-Tenant: non-secret-value
+#     # Allow plain HTTP for localhost endpoints.
+#     allow_insecure_localhost: false
+#     # Milliseconds to wait for response headers; zero disables.
+#     header_timeout_ms: 10000
+#     # OpenRouter-style provider routing preferences.
+#     provider_preferences:
+#       order:
+#         - anthropic
+#       allow_fallbacks: false
+#       sort: price
+#     # Model metadata not available from the endpoint catalog.
+#     models:
+#       model:
+#         # Display name for the model.
+#         name: Display Name
+#         # Context window in tokens.
+#         context: 128000
+#         # Maximum output tokens.
+#         max_tokens: 16384
+#         # Whether the model supports tool calls.
+#         tools: true
+#         # Whether the model supports reasoning tokens.
+#         reasoning: false
+#         # Supported output modalities, e.g. text.
+#         output:
+#           - text
+#         # Named provider request options.
+#         variants:
+#           high:
+#             # Reasoning effort passed to the provider, e.g. low/medium/high.
+#             reasoning_effort: high
+
+# Model Context Protocol servers to start.
+# mcp:
+#   server-name:
+#     # Transport: 'stdio' or 'http'.
+#     transport: stdio
+#     # Absolute path to the server executable for stdio.
+#     command: /absolute/path/to/server
+#     # Arguments for the server command.
+#     args:
+#       - --stdio
+#     # Environment variables for the server process.
+#     env:
+#       NAME: value
+#     # Working directory for the server process.
+#     cwd: /absolute/working/directory
+#     # Endpoint URL for http transport.
+#     url: https://mcp.example.test/rpc
+#     # Extra headers for http requests. Do not store secrets here.
+#     headers:
+#       X-Tenant: non-secret-value
+#     # Whether the server is started.
+#     enabled: false
+#     # Allow plain HTTP for localhost endpoints.
+#     allow_insecure_localhost: false
+#     # Milliseconds to wait for the server to start; zero uses default.
+#     startup_timeout_ms: 15000
+#     # Milliseconds to wait for a call; zero uses default.
+#     call_timeout_ms: 30000
+
+# Language servers for the workspace.
+# lsp:
+#   go:
+#     # Absolute path to the language server executable.
+#     command: /absolute/path/to/gopls
+#     # Arguments for the language server.
+#     args:
+#       - serve
+#     # Environment variables for the language server.
+#     env:
+#       GOTOOLCHAIN: local
+#     # File extensions associated with this server.
+#     extensions:
+#       - .go
+#     # Maps file extensions to language IDs.
+#     languages:
+#       .go: go
+#     # Milliseconds to wait for responses; zero uses default.
+#     timeout_ms: 15000
+
+# Code formatters run by formatting tools.
+# formatters:
+#   gofmt:
+#     # File extensions this formatter handles.
+#     extensions:
+#       - .go
+#     # Argv command to run; first element must be an absolute executable path.
+#     command:
+#       - /absolute/path/to/gofmt
+#     # Formatting mode: 'stdin' or 'file'.
+#     mode: stdin
+
+# Web fetch restrictions.
+web_fetch:
+  # Allow fetching from private addresses; increases SSRF risk.
+  allow_private: false
+`
+
+// WritePredefinedConfig writes the predefined configuration reference YAML to
+// the specified path. The file is always overwritten; it documents every default
+// configuration field for the agent to read programmatically.
+func WritePredefinedConfig(path string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(predefinedConfigYAML), 0o600)
+}
+
 const defaultConfigYAML = `# Parrot Coder configuration file.
 # Uncomment and edit the sections below to configure Parrot.
 
