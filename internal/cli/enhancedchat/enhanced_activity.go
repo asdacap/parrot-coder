@@ -211,6 +211,16 @@ func formatTokenCount(tokens int) string {
 	return fmt.Sprintf("%.1fk", float64(tokens)/1000)
 }
 
+// formatCost returns a human-friendly USD cost string. Sub-cent amounts show
+// four decimal places so very cheap turns remain informative; larger amounts
+// show two decimal places.
+func formatCost(cost float64) string {
+	if cost < 0.01 {
+		return fmt.Sprintf("$%.4f", cost)
+	}
+	return fmt.Sprintf("$%.2f", cost)
+}
+
 func activityTitle(status string, elapsed time.Duration) string {
 	switch status {
 	case "thinking":
@@ -447,6 +457,9 @@ func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.U
 	// tokens, so retain that as a useful fallback.
 	if tokens := contextTokenCount(*usage); tokens > 0 {
 		r.contextTokens = tokens
+	}
+	if usage.InputCost > 0 || usage.OutputCost > 0 {
+		r.totalCost += usage.InputCost + usage.OutputCost
 	}
 	if messageID == "" {
 		messageID = r.streamMessageID

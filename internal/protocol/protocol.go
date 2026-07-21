@@ -100,13 +100,16 @@ type ToolCall struct {
 	Input json.RawMessage
 }
 
-// Usage reports token accounting when supplied by the provider.
+// Usage reports token accounting when supplied by the provider. InputCost and
+// OutputCost are set by the runner from the model's per-token prices.
 type Usage struct {
 	InputTokens       int
 	OutputTokens      int
 	TotalTokens       int
 	ReasoningTokens   int
 	CachedInputTokens int
+	InputCost         float64
+	OutputCost        float64
 }
 
 // FinishReason is the provider-neutral reason a turn ended.

@@ -55,11 +55,13 @@ type MessagePartDelta struct {
 }
 
 type Usage struct {
-	InputTokens       int `json:"input_tokens"`
-	OutputTokens      int `json:"output_tokens"`
-	TotalTokens       int `json:"total_tokens"`
-	ReasoningTokens   int `json:"reasoning_tokens"`
-	CachedInputTokens int `json:"cached_input_tokens"`
+	InputTokens       int     `json:"input_tokens"`
+	OutputTokens      int     `json:"output_tokens"`
+	TotalTokens       int     `json:"total_tokens"`
+	ReasoningTokens   int     `json:"reasoning_tokens"`
+	CachedInputTokens int     `json:"cached_input_tokens"`
+	InputCost         float64 `json:"input_cost,omitempty"`
+	OutputCost        float64 `json:"output_cost,omitempty"`
 }
 
 type TaskProgress struct {
