@@ -23,7 +23,7 @@
           pname = "parrot";
           version = "0.0.0-dev";
           src = ./.;
-          vendorHash = "sha256-DXBl4x4D3VYiekBeMb7em/RgWgPMzFl4Idz6hAidzHE=";
+          vendorHash = "sha256-4OjD8PsfkAaTg1sIXa1KZ/eLMLKCJTRfuOLdIHEPI1c=";
           subPackages = ["cmd/parrot"];
           nativeBuildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [pkgs.makeWrapper];
           postInstall = pkgs.lib.optionalString pkgs.stdenv.isLinux ''
