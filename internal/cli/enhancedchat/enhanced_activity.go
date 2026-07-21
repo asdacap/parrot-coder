@@ -461,6 +461,12 @@ func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.U
 	if usage.InputCost > 0 || usage.OutputCost > 0 {
 		r.totalCost += usage.InputCost + usage.OutputCost
 	}
+	// The main task never reports task.progress, so its spend reaches the
+	// modeline only through the session's own usage events.
+	if usage.InputTokens > 0 || usage.OutputTokens > 0 {
+		r.subagents.addMainTaskUsage(usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens)
+		r.refreshMainTaskUsage()
+	}
 	if messageID == "" {
 		messageID = r.streamMessageID
 	}

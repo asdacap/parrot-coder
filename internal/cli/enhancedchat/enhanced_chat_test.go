@@ -393,6 +393,36 @@ func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
 	}
 }
 
+// The main task never reports task.progress, so the modeline's token totals can
+// only come from the session's own usage events, which report one turn each. A
+// subagent's usage adds to those totals rather than replacing them.
+func TestEnhancedModelineTokensSumSessionAndSubagentUsage(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	usage, _ := json.Marshal(v1.SessionStatus{MessageID: "assistant", Kind: "usage",
+		Usage: &v1.Usage{InputTokens: 1200, OutputTokens: 300, CachedInputTokens: 800, TotalTokens: 1500}})
+	for range 2 {
+		if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: usage}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if runtime.mainTaskInputTokens != 2400 || runtime.mainTaskOutputTokens != 600 || runtime.mainTaskCachedTokens != 1600 {
+		t.Fatalf("session usage totals = %d/%d/%d, want 2400/600/1600",
+			runtime.mainTaskInputTokens, runtime.mainTaskOutputTokens, runtime.mainTaskCachedTokens)
+	}
+
+	if err := runtime.handleEvent(taskStart("task-1", "task_main", "explore")); err != nil {
+		t.Fatal(err)
+	}
+	progress, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "running",
+		Usage: v1.Usage{InputTokens: 100, OutputTokens: 50, CachedInputTokens: 25, TotalTokens: 150}})
+	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, progress)); err != nil {
+		t.Fatal(err)
+	}
+	if got := formatTaskTokenUsage(runtime.mainTaskInputTokens, runtime.mainTaskOutputTokens, runtime.mainTaskCachedTokens); got != "+2.5ki +650o (+1.6kcached)" {
+		t.Fatalf("modeline token usage = %q", got)
+	}
+}
+
 // taskStart builds the flat task.start event introducing one task into the
 // UI's task tree. Every other event for the task carries only its task_id.
 func taskStart(taskID, parentTaskID, agent string) v1.Event {

@@ -326,12 +326,22 @@ func (t *taskStreamTracker) Tracker() *chatview.TaskTracker {
 	return t.tracker
 }
 
-func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
+// ensure builds the tracker on first use. The main task's usage is recorded
+// before any task event may have arrived, so creation cannot wait for describe.
+func (t *taskStreamTracker) ensure() *chatview.TaskTracker {
 	if t.tracker == nil {
 		t.tracker = chatview.NewTaskTracker()
 		t.tracker.Presentation = t.presentation
 	}
-	reports, err := t.tracker.Apply(item, thinking)
+	return t.tracker
+}
+
+func (t *taskStreamTracker) addMainTaskUsage(input, output, cached int) {
+	t.ensure().AddMainTaskUsage(input, output, cached)
+}
+
+func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
+	reports, err := t.ensure().Apply(item, thinking)
 	if err != nil {
 		return nil, err
 	}

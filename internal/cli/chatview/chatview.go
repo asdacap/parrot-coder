@@ -693,6 +693,21 @@ func (t *TaskTracker) known(id string) *taskNode {
 	return t.tasks[id]
 }
 
+// AddMainTaskUsage folds one turn of the session's own provider usage into the
+// main task node. Only subagents report task.progress, so the main task's
+// direct counts would otherwise stay zero and cumulative usage would describe
+// nothing but what descendants spent. Counts accumulate because each turn
+// reports only its own usage.
+func (t *TaskTracker) AddMainTaskUsage(input, output, cached int) {
+	node := t.tasks[managedtask.MainTaskID]
+	if node == nil {
+		return
+	}
+	node.directInputTokens += input
+	node.directOutputTokens += output
+	node.directCachedTokens += cached
+}
+
 // CumulativeUsage returns the task's own token counts plus all descendants.
 // This walks the tree once per call — safe for small task counts (<100).
 func (t *TaskTracker) CumulativeUsage(taskID string) (input, output, cached int) {

@@ -10,6 +10,7 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -187,6 +188,16 @@ func formatTaskTokenUsage(input, output, cached int) string {
 	return part
 }
 
+// refreshMainTaskUsage recaches the modeline's token totals: the session's own
+// usage plus every subagent descended from the main task.
+func (r *enhancedChatRuntime) refreshMainTaskUsage() {
+	tracker := r.subagents.Tracker()
+	if tracker == nil {
+		return
+	}
+	r.mainTaskInputTokens, r.mainTaskOutputTokens, r.mainTaskCachedTokens = tracker.CumulativeUsage(managedtask.MainTaskID)
+}
+
 func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 	thinking := r.shell != nil && r.shell.options.thinking
 	reports, err := r.subagents.describe(item, thinking)
@@ -218,12 +229,7 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 		}
 	}
 	// Update cached main task cumulative tokens after any task event.
-	if r.subagents.Tracker() != nil {
-		input, output, cached := r.subagents.Tracker().CumulativeUsage("task_main")
-		r.mainTaskInputTokens = input
-		r.mainTaskOutputTokens = output
-		r.mainTaskCachedTokens = cached
-	}
+	r.refreshMainTaskUsage()
 	for _, report := range reports {
 		text := report.line
 		if report.block != "" {
