@@ -365,6 +365,7 @@ func (r *recordingSessionCreator) CreateSession(_ context.Context, request v1.Cr
 }
 
 func (a *effortSwitchAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
+func (a *effortSwitchAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, error) { return v1.Model{}, nil }
 
 func (a *effortSwitchAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
 	a.updates = append(a.updates, request)
@@ -451,6 +452,7 @@ func testModeList(t *testing.T) v1.ModeList {
 }
 
 func (a catalogOnlyAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
+func (a catalogOnlyAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, error) { return v1.Model{}, nil }
 
 func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	var output bytes.Buffer

@@ -479,6 +479,7 @@ type apiClient interface {
 	Questions(context.Context, string) (v1.QuestionList, error)
 	ReplyQuestion(context.Context, string, string, v1.QuestionReply) error
 	Models(context.Context) (v1.ModelList, error)
+	ModelInfo(context.Context, string, string) (v1.Model, error)
 	SubscriptionUsage(context.Context) (v1.SubscriptionUsage, error)
 	Agents(context.Context) (v1.AgentList, error)
 	Tools(context.Context) (v1.ToolList, error)
@@ -1250,22 +1251,16 @@ func (s chatSelection) modelLabel() string {
 
 func (s *chatShell) modelineModelLabel(currentTokens int) string {
 	label := s.selection.modelLabel()
-	for _, item := range s.models {
-		if item.Provider == s.selection.provider && item.ID == s.selection.model {
-			if item.ContextWindow > 0 {
-				return fmt.Sprintf("%s (%s/%s)", label, compactTokenCount(currentTokens), compactTokenCount(item.ContextWindow))
-			}
-			if currentTokens > 0 {
-				return fmt.Sprintf("%s (%s/?)", label, compactTokenCount(currentTokens))
-			}
-			return label
-		}
+	window := s.modelInfo.ContextWindow
+	if window > 0 {
+		return fmt.Sprintf("%s (%s/%s)", label, compactTokenCount(currentTokens), compactTokenCount(window))
 	}
 	if currentTokens > 0 {
 		return fmt.Sprintf("%s (%s/?)", label, compactTokenCount(currentTokens))
 	}
 	return label
 }
+
 
 func compactTokenCount(value int) string {
 	switch {
@@ -1283,6 +1278,16 @@ func compactTokenCount(value int) string {
 		return fmt.Sprintf("%d", value)
 	}
 }
+
+func (s *chatShell) refreshModelInfo() {
+	if s.selection.provider == "" || s.selection.model == "" {
+		return
+	}
+	if info, err := s.api.ModelInfo(s.ctx, s.selection.provider, s.selection.model); err == nil {
+		s.modelInfo = info
+	}
+}
+
 
 type chatShell struct {
 	ctx          context.Context
@@ -1305,6 +1310,7 @@ type chatShell struct {
 	server          *http.Server
 	listener        net.Listener
 	models          []v1.Model
+	modelInfo       v1.Model
 	presentation    chatview.Presentations
 	stdout          io.Writer
 	stderr          io.Writer
@@ -2509,6 +2515,7 @@ func (s *chatShell) applyModel(value string) error {
 		}
 	}
 	s.commitStatus("✓ Model selected: " + value)
+	s.refreshModelInfo()
 	return nil
 }
 
