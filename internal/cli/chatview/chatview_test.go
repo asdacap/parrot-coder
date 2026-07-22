@@ -71,7 +71,7 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || !strings.Contains(reports[0].Line, "[explore] response: orphan work") {
+	if len(reports) != 1 || !strings.Contains(reports[0].Line, "[explore] ○ response: orphan work") {
 		t.Fatalf("orphan content reports = %#v", reports)
 	}
 
@@ -89,7 +89,7 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || reports[0].Line != "    ○ [review] response: nested" {
+	if len(reports) != 1 || reports[0].Line != "    [review] ○ response: nested" {
 		t.Fatalf("nested content report = %#v", reports)
 	}
 
@@ -107,7 +107,16 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || !reports[0].Terminal || reports[0].Line != "    ✗ [review] failed: boom" {
+	if len(reports) != 1 || !reports[0].Terminal || reports[0].Line != "    [review] ✗ failed: boom" {
+		t.Fatalf("finished report = %#v", reports)
+	}
+
+	// Successful tasks surface a terminal completion line under their own prefix.
+	reports, err = tracker.Apply(taskLifecycleEvent(v1.EventTaskFinished, v1.TaskEvent{TaskID: "task-child", Kind: "agent", Status: "succeeded"}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || !reports[0].Terminal || reports[0].Line != "    [review] ✓ completed" {
 		t.Fatalf("finished report = %#v", reports)
 	}
 }

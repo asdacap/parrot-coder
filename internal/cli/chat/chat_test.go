@@ -799,7 +799,7 @@ func TestStreamTaskEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", "session.assistant.complete", complete)); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); got != "    ○ [review] response: review result\n    [review] more detail\n" {
+	if got := output.String(); got != "    [review] ○ response: review result\n    [review] more detail\n" {
 		t.Fatalf("task output = %q", got)
 	}
 }
@@ -896,7 +896,7 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 2 || !reports[0].terminal || reports[0].skip || reports[0].line != "  ✓ [review] Reasoning: Checking the change" || !reports[1].terminal || !reports[1].skip {
+	if len(reports) != 2 || !reports[0].terminal || reports[0].skip || reports[0].line != "  [review] ✓ Reasoning: Checking the change" || !reports[1].terminal || !reports[1].skip {
 		t.Fatalf("completion reports = %#v", reports)
 	}
 }
@@ -923,9 +923,9 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 				t.Fatalf("tool input reports = %#v, want none", reports)
 			}
 		case "reasoning_summary":
-			want := "  ⠋ [explore] Thought: Inspecting the UI"
+			want := "  [explore] ⠋ Thought: Inspecting the UI"
 			if delta.Done {
-				want = "  ✓ [explore] Thought: Inspecting the UI"
+				want = "  [explore] ✓ Thought: Inspecting the UI"
 			}
 			if len(reports) != 1 || reports[0].line != want || reports[0].terminal != delta.Done {
 				t.Fatalf("reasoning summary reports = %#v, want line %q terminal %t", reports, want, delta.Done)
@@ -959,14 +959,14 @@ func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || reports[0].line != "  ○ [explore] Queued shell · exit 1" {
+	if len(reports) != 1 || reports[0].line != "  [explore] ○ Queued shell · exit 1" {
 		t.Fatalf("pending tool report = %#v", reports)
 	}
 	reports, err = tracker.describe(taskContent("task-explore", "session.tool.failure", json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || reports[0].line != "  ✗ [explore] shell · exit 1: exit status 1" || reports[0].block != "    request:\n      command: exit 1" {
+	if len(reports) != 1 || reports[0].line != "  [explore] ✗ shell · exit 1: exit status 1" || reports[0].block != "    request:\n      command: exit 1" {
 		t.Fatalf("tool report = %#v", reports)
 	}
 }

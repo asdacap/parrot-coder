@@ -644,7 +644,7 @@ func prefixTaskActivity(prefix, text string) string {
 	for _, icon := range icons {
 		if rest, ok := strings.CutPrefix(lines[0], icon+" "); ok {
 			indent := prefix[:len(prefix)-len(strings.TrimLeft(prefix, " "))]
-			lines[0] = indent + icon + " " + strings.TrimSpace(prefix) + " " + rest
+			lines[0] = indent + strings.TrimSpace(prefix) + " " + icon + " " + rest
 			for i := 1; i < len(lines); i++ {
 				lines[i] = prefix + lines[i]
 			}
@@ -1065,7 +1065,8 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 			return nil, nil
 		}
 		if event.Status == "" || event.Status == "succeeded" {
-			return []TaskReport{{ID: node.id + ":lifecycle", Terminal: true, Skip: true, Style: terminal.TextStyleMuted}}, nil
+			line := "✓ completed"
+			return []TaskReport{{ID: node.id + ":lifecycle", Line: prefixTaskActivity(t.prefix(node), line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
 		}
 		line := "✗ " + event.Status
 		if event.Error != "" {
