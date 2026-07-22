@@ -32,6 +32,7 @@ type Config struct {
 	MaxProcesses           int
 	MaxSessionProcesses    int
 	OnPersistentEvent      func(PersistentEvent)
+	SandboxRules           []security.Rule
 	sandbox                sandbox
 }
 
@@ -625,6 +626,7 @@ func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd, 
 		readPaths:  readPaths,
 		writePaths: writePaths,
 		denyWrite:  denyWrite,
+		rules:      r.config.SandboxRules,
 	}, nil
 }
 

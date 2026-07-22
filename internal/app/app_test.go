@@ -483,6 +483,8 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 		"mcp.server.command",
 		"lsp.go.command",
 		"web_fetch.allow_private",
+		"sandbox_rules.0.path",
+		"sandbox_rules.0.rule",
 	} {
 		loaded := config.Result{
 			Sources:    []config.Source{{Path: projectFile, Kind: config.SourceProject}},

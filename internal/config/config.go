@@ -15,19 +15,27 @@ import (
 )
 
 const (
-	FileName            = "parrot.yaml"
-	PredefinedFileName  = "predefined_config.yaml"
-	maxConfigBytes      = 4 << 20
+	FileName           = "parrot.yaml"
+	PredefinedFileName = "predefined_config.yaml"
+	maxConfigBytes     = 4 << 20
 )
 
 // Config is the typed configuration consumed by later application phases.
 type Config struct {
-	DefaultModel string               `json:"model,omitempty"`
-	Providers    map[string]Provider  `json:"providers,omitempty"`
-	MCP          map[string]MCP       `json:"mcp,omitempty"`
-	LSP          map[string]LSP       `json:"lsp,omitempty"`
-	WebFetch     WebFetch             `json:"web_fetch,omitempty"`
+	DefaultModel  string              `json:"model,omitempty"`
+	Providers     map[string]Provider `json:"providers,omitempty"`
+	MCP           map[string]MCP      `json:"mcp,omitempty"`
+	LSP           map[string]LSP      `json:"lsp,omitempty"`
+	WebFetch      WebFetch            `json:"web_fetch,omitempty"`
 	ToolBlacklist []string            `json:"tool_blacklist,omitempty"`
+	SandboxRules  []SandboxRule       `json:"sandbox_rules,omitempty"`
+}
+
+// SandboxRule is one ordered filesystem rule applied to the sandbox. Rule
+// is one of: allow_write, deny_read, allow_read, deny_write.
+type SandboxRule struct {
+	Path string `json:"path"`
+	Rule string `json:"rule"`
 }
 
 type MCP struct {
@@ -480,6 +488,16 @@ model: ""
 #     # Milliseconds to wait for responses; zero uses default.
 #     timeout_ms: 15000
 
+# Ordered sandbox rules applied after base workspace mounts. Each rule
+# has a path and an action: allow_write, deny_read, allow_read, or
+# deny_write. Later rules override earlier ones. Requires global
+# configuration.
+# sandbox_rules:
+#   - path: /absolute/path/to/dir
+#     rule: allow_write
+#   - path: /another/path
+#     rule: deny_read
+
 # Web fetch restrictions.
 web_fetch:
   # Allow fetching from private addresses; increases SSRF risk.
@@ -606,6 +624,16 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 #       .go: go
 #     # Milliseconds to wait for responses; zero uses default.
 #     timeout_ms: 15000
+
+# Ordered sandbox rules applied after base workspace mounts. Each rule
+# has a path and an action: allow_write, deny_read, allow_read, or
+# deny_write. Later rules override earlier ones. Requires global
+# configuration.
+# sandbox_rules:
+#   - path: /absolute/path/to/dir
+#     rule: allow_write
+#   - path: /another/path
+#     rule: deny_read
 
 # Web fetch restrictions.
 web_fetch:

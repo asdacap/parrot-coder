@@ -49,12 +49,28 @@ func (s darwinSandbox) command(shell, script, cwd string, profile security.Secur
 		name := fmt.Sprintf("PROTECTED_%d", i)
 		sbProfile += fmt.Sprintf("(deny file-write* (subpath (param %q)))\n", name)
 	}
+	for i, rule := range profile.Rules() {
+		name := fmt.Sprintf("RULE_%d", i)
+		switch rule.Action {
+		case security.ActionAllowRead:
+			sbProfile += fmt.Sprintf("(allow file-read* (subpath (param %q)))\n", name)
+		case security.ActionAllowWrite:
+			sbProfile += fmt.Sprintf("(allow file-write* (subpath (param %q)))\n", name)
+		case security.ActionDenyRead:
+			sbProfile += fmt.Sprintf("(deny file-read* (subpath (param %q)))\n", name)
+		case security.ActionDenyWrite:
+			sbProfile += fmt.Sprintf("(deny file-write* (subpath (param %q)))\n", name)
+		}
+	}
 	args := []string{"-p", sbProfile, "-D", "TEMPORARY_DIRECTORY=" + temporaryDirectory}
 	for i, path := range profile.AllowWritePaths() {
 		args = append(args, "-D", fmt.Sprintf("WRITABLE_%d=%s", i, path))
 	}
 	for i, path := range profile.DenyWritePaths() {
 		args = append(args, "-D", fmt.Sprintf("PROTECTED_%d=%s", i, path))
+	}
+	for i, rule := range profile.Rules() {
+		args = append(args, "-D", fmt.Sprintf("RULE_%d=%s", i, rule.Path))
 	}
 	args = append(args, shell, "-c", script)
 	return seatbeltExecutable, args, nil

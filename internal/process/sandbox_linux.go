@@ -85,6 +85,18 @@ func (s linuxSandbox) command(shell, script, cwd string, profile security.Securi
 	for _, path := range profile.DenyWritePaths() {
 		args = append(args, "--ro-bind", path, path)
 	}
+	for _, rule := range profile.Rules() {
+		switch rule.Action {
+		case security.ActionAllowRead:
+			args = append(args, "--ro-bind", rule.Path, rule.Path)
+		case security.ActionAllowWrite:
+			args = append(args, "--bind", rule.Path, rule.Path)
+		case security.ActionDenyWrite:
+			args = append(args, "--ro-bind", rule.Path, rule.Path)
+		case security.ActionDenyRead:
+			args = append(args, "--tmpfs", rule.Path)
+		}
+	}
 	args = append(args, "--chdir", cwd, "--", shell, "-c", script)
 	return bwrap, args, nil
 }

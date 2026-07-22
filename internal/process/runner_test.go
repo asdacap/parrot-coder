@@ -742,3 +742,53 @@ func (s *recordingStore) Create(context.Context) (ManagedOutput, error) {
 }
 
 func (s *recordingStore) Read(string, int64, int64) ([]byte, error) { return nil, nil }
+
+type recordingRulesSandbox struct {
+	rules []security.Rule
+}
+
+func (s *recordingRulesSandbox) command(_ string, _ string, _ string, profile security.SecurityProfile, _ string) (string, []string, error) {
+	s.rules = append([]security.Rule(nil), profile.Rules()...)
+	return "/bin/sh", []string{"-c", "true"}, nil
+}
+
+func (*recordingRulesSandbox) temporaryDirectory(path string) string { return path }
+
+func TestBuildProfileIncludesSandboxRules(t *testing.T) {
+	root := t.TempDir()
+	ws, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	configRules := []security.Rule{
+		{Path: "/opt/cache", Action: security.ActionAllowWrite},
+		{Path: "/secret", Action: security.ActionDenyRead},
+	}
+	sandbox := &recordingRulesSandbox{}
+	runner, err := NewRunner(Config{
+		Workspace:    ws,
+		OutputStore:  &memoryOutputStore{},
+		SandboxRules: configRules,
+		sandbox:      sandbox,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = runner.Run(context.Background(), Request{
+		Shell:     "/bin/sh",
+		Command:   "true",
+		SessionID: "test",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sandbox.rules) != 2 {
+		t.Fatalf("rules = %#v, want 2 rules", sandbox.rules)
+	}
+	if sandbox.rules[0].Path != "/opt/cache" || sandbox.rules[0].Action != security.ActionAllowWrite {
+		t.Fatalf("rule[0] = %#v", sandbox.rules[0])
+	}
+	if sandbox.rules[1].Path != "/secret" || sandbox.rules[1].Action != security.ActionDenyRead {
+		t.Fatalf("rule[1] = %#v", sandbox.rules[1])
+	}
+}

@@ -87,6 +87,11 @@ formatters:
     command:
       - /absolute/path/to/gofmt
     mode: stdin # stdin or file
+sandbox_rules:
+  - path: /absolute/path/to/dir
+    rule: allow_write # allow_write, deny_read, allow_read, or deny_write
+  - path: /another/path
+    rule: deny_read
 web_fetch:
   allow_private: false
 ```
@@ -221,6 +226,18 @@ DNS answers are validated and pinned for the request, and every redirect target
 is independently checked. Enabling this option permits access to private
 services and materially increases SSRF impact.
 `allow_private` can be enabled only in global configuration.
+
+### Sandbox Rules
+
+`sandbox_rules` is an ordered list of filesystem rules applied to the sandbox
+after the base workspace mounts. Each rule is an object with `path` and `rule`
+fields. `rule` is one of `allow_write`, `deny_read`, `allow_read`, or
+`deny_write`. Rules are applied in order, so later rules override earlier
+ones. This matches the mount semantics of the platform sandbox: a later
+`deny_write` on a path already mounted writable remounts it read-only.
+
+`sandbox_rules` requires global configuration; project-scope files cannot
+grant filesystem capabilities.
 
 ## Credential Rules
 

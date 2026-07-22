@@ -209,3 +209,63 @@ func countSequence(values, sequence []string) int {
 	}
 	return count
 }
+
+func TestLinuxSandboxAppliesOrderedRules(t *testing.T) {
+	bin := t.TempDir()
+	bwrap := filepath.Join(bin, "bwrap")
+	if err := os.WriteFile(bwrap, []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin)
+	root := t.TempDir()
+	temporaryDirectory := t.TempDir()
+	externalCwd := t.TempDir()
+
+	implementation := linuxSandbox{workspace: root}
+	profile := &sandboxProfile{
+		readPaths:  []string{"/"},
+		writePaths: []string{root, temporaryDirectory},
+		denyWrite:  nil,
+		rules: []security.Rule{
+			{Path: "/opt/data", Action: security.ActionAllowWrite},
+			{Path: "/secret", Action: security.ActionDenyRead},
+			{Path: "/readonly", Action: security.ActionAllowRead},
+			{Path: "/var/log", Action: security.ActionDenyWrite},
+		},
+	}
+	_, args, err := implementation.command("/bin/sh", "true", externalCwd, profile, temporaryDirectory)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Rules must appear after the base write-path and deny-write mounts.
+	denyWriteEnd := indexSequence(args, []string{"--ro-bind", root, root})
+	if denyWriteEnd < 0 {
+		denyWriteEnd = indexSequence(args, []string{"--bind", root, root})
+	}
+	ruleStart := indexSequence(args, []string{"--bind", "/opt/data", "/opt/data"})
+	if ruleStart < 0 || ruleStart < denyWriteEnd {
+		t.Fatalf("allow_write rule not applied after base mounts: %q", args)
+	}
+	if !containsSequence(args, []string{"--bind", "/opt/data", "/opt/data"}) {
+		t.Fatalf("allow_write rule missing --bind: %q", args)
+	}
+	if !containsSequence(args, []string{"--tmpfs", "/secret"}) {
+		t.Fatalf("deny_read rule missing --tmpfs: %q", args)
+	}
+	if !containsSequence(args, []string{"--ro-bind", "/readonly", "/readonly"}) {
+		t.Fatalf("allow_read rule missing --ro-bind: %q", args)
+	}
+	if !containsSequence(args, []string{"--ro-bind", "/var/log", "/var/log"}) {
+		t.Fatalf("deny_write rule missing --ro-bind: %q", args)
+	}
+
+	// Rules must be applied in order.
+	allowWriteIdx := indexSequence(args, []string{"--bind", "/opt/data", "/opt/data"})
+	denyReadIdx := indexSequence(args, []string{"--tmpfs", "/secret"})
+	allowReadIdx := indexSequence(args, []string{"--ro-bind", "/readonly", "/readonly"})
+	denyWriteIdx := indexSequence(args, []string{"--ro-bind", "/var/log", "/var/log"})
+	if !(allowWriteIdx < denyReadIdx && denyReadIdx < allowReadIdx && allowReadIdx < denyWriteIdx) {
+		t.Fatalf("rules not in order: %q", args)
+	}
+}

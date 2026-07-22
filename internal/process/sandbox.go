@@ -29,12 +29,14 @@ type sandboxProfile struct {
 	readPaths  []string
 	writePaths []string
 	denyWrite  []string
+	rules      []security.Rule
 }
 
 func (p *sandboxProfile) IsReadOnly() bool          { return false }
 func (p *sandboxProfile) AllowReadPaths() []string  { return p.readPaths }
 func (p *sandboxProfile) AllowWritePaths() []string { return p.writePaths }
 func (p *sandboxProfile) DenyWritePaths() []string  { return p.denyWrite }
+func (p *sandboxProfile) Rules() []security.Rule    { return p.rules }
 
 func protectedWorkspacePaths(root, cwd string) []string {
 	relative, err := filepath.Rel(root, cwd)
