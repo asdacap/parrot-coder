@@ -33,7 +33,7 @@ the workspace and Git metadata are writable except for existing Parrot metadata
  along the startup configuration path, and network access is allowed. Linked
  worktree common Git directories outside the workspace are also writable. Shell
 execution fails when the sandbox is unavailable. The separate
-`unrestricted_shell` tool requires permission under the default policy and runs
+`unrestricted_shell` tool requires permission and runs
 without the sandbox, with the invoking user's local authority. Configured local
 formatter, LSP, and MCP executables are likewise trusted services with that
 authority. Another same-user process, a

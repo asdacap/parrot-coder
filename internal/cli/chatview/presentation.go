@@ -230,12 +230,9 @@ func legacyPermissionChoices(toolID string) []v1.PermissionChoice {
 		}
 	}
 	return []v1.PermissionChoice{
-		{Value: "yes", Decision: "allow", Label: "yes", Description: "Allow this request once"},
+		{Value: "yes", Decision: "allow", Label: "yes", Description: "Allow this request"},
 		{Value: "no", Decision: "deny", Label: "no", Description: "Deny this request"},
-		{Value: "allow all for session", Decision: "allow", Scope: "session", Label: "allow all for session", Description: "Allow matching requests for this session"},
-		{Value: "allow all for workspace", Decision: "allow", Scope: "workspace", Label: "allow all for workspace", Description: "Allow matching requests for this workspace"},
-		{Value: "allow all for process", Decision: "allow", Scope: "process", Label: "allow all for process", Description: "Allow matching requests until Parrot exits"},
-		{Value: "enable yolo", Decision: "allow", Scope: "yolo", Label: "enable yolo", Description: "Disable all permission checks for this session"},
+		{Value: "reject with reason", Decision: "deny", Label: "reject with reason", Description: "Deny and provide feedback to the agent", RequiresReason: true},
 	}
 }
 
@@ -245,7 +242,7 @@ func PermissionReplyForChoice(item v1.Permission, value, reason string) (v1.Perm
 		if choice.Value != value {
 			continue
 		}
-		reply := v1.PermissionReply{Decision: choice.Decision, Scope: choice.Scope}
+		reply := v1.PermissionReply{Decision: choice.Decision}
 		if choice.RequiresReason {
 			reply.Reason = reason
 		}

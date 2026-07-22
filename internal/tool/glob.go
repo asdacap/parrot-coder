@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -83,11 +82,7 @@ func (t *GlobTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err != nil {
 		return Plan{}, err
 	}
-	req, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: "filesystem", Identifier: root, Operation: "search"}}, nil)
-	if err != nil {
-		return Plan{}, err
-	}
-	return NewPlan(t.ID(), raw, []permission.Request{req}, nil, globPlan{input, root, rx})
+	return NewPlan(t.ID(), raw, nil, nil, globPlan{input, root, rx})
 }
 func (t *GlobTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 

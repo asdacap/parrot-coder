@@ -24,10 +24,9 @@ func NewWritePermissionTool(runner *process.Runner) *WritePermissionTool {
 
 func (*WritePermissionTool) ID() string { return "request_write_permission" }
 
-// PermissionChoices omits every scoped allow. This tool already grants a
-// session-scoped write capability, so approving it for a broader scope would
-// let one approval authorize future requests for other paths, escalating the
-// sandbox escape hatch rather than widening a single operation.
+// PermissionChoices names the answers after what this tool hands out: granting
+// it adds a write path to the sandbox for the rest of the session, which is a
+// capability rather than a one-off operation.
 func (*WritePermissionTool) PermissionChoices() []permission.Choice {
 	return []permission.Choice{
 		{Value: "grant", Decision: "allow", Label: "grant", Description: "Allow sandboxed writes to this path for the current session"},
@@ -98,7 +97,7 @@ func (t *WritePermissionTool) Plan(_ context.Context, raw json.RawMessage, call 
 		kind = "directory"
 	}
 	review, _ := json.Marshal(map[string]string{"path": input.ResolvedPath, "kind": kind, "scope": "session"})
-	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: "external_filesystem", Identifier: input.ResolvedPath, Operation: "write", Attributes: map[string]string{"kind": kind, "scope": "session"}}}, review)
+	request, err := permission.NewRequest(t.ID(), review)
 	if err != nil {
 		return Plan{}, err
 	}

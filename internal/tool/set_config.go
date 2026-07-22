@@ -31,8 +31,8 @@ func NewSetConfigTool(configDir string) *SetConfigTool {
 
 func (*SetConfigTool) ID() string { return "set_config" }
 
-// PermissionChoices omits every scoped allow because modifying persistent
-// configuration should never be auto-approved for a session or workspace.
+// PermissionChoices names the answers after the configuration change being
+// approved.
 func (*SetConfigTool) PermissionChoices() []permission.Choice {
 	return []permission.Choice{
 		{Value: "set", Decision: "allow", Label: "set", Description: "Allow this config change once"},
@@ -100,9 +100,7 @@ func (t *SetConfigTool) Plan(_ context.Context, raw json.RawMessage, _ CallConte
 
 	configPath := filepath.Join(t.ConfigDir, config.FileName)
 	review, _ := json.Marshal(map[string]string{"key": input.Key, "value": input.Value, "operation": input.Operation, "path": configPath})
-	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{
-		{Kind: "configuration", Identifier: input.Key, Operation: input.Operation, Attributes: map[string]string{"path": configPath}},
-	}, review)
+	request, err := permission.NewRequest(t.ID(), review)
 	if err != nil {
 		return Plan{}, err
 	}

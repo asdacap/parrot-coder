@@ -2,8 +2,6 @@ package tool
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,25 +129,23 @@ func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call Call
 		return Plan{}, fmt.Errorf("exec_command: resolve workdir: %w", err)
 	}
 	input.ResolvedShell, input.ResolvedWorkdir = resolvedShell, resolvedWorkdir
-	operation := "execute"
-	if input.SandboxPermissions == "disable_sandbox" {
-		operation = "execute_unrestricted"
-	}
-	sum := sha256.Sum256([]byte(input.Command))
-	resource := permission.Resource{Kind: "process", Identifier: resolvedShell, Operation: operation, Attributes: map[string]string{
-		"cwd": resolvedWorkdir, "command_sha256": hex.EncodeToString(sum[:]),
-	}}
 	review, _ := json.Marshal(map[string]any{
 		"warning": input.SandboxPermissions, "shell": resolvedShell, "command": input.Command,
 		"cwd": resolvedWorkdir, "tty": input.TTY, "yield_time_ms": input.YieldTimeMS,
 		"max_output_tokens": input.MaxOutputTokens, "justification": input.Justification,
 		"environment_names": sortedEnvironmentNames(input.Env),
 	})
-	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{resource}, review)
-	if err != nil {
-		return Plan{}, err
+	// Only an unsandboxed command needs approval: it escapes the sandbox which
+	// otherwise confines the command.
+	var requests []permission.Request
+	if input.SandboxPermissions == "disable_sandbox" {
+		request, err := permission.NewRequest(t.ID(), review)
+		if err != nil {
+			return Plan{}, err
+		}
+		requests = []permission.Request{request}
 	}
-	return NewPlan(t.ID(), raw, []permission.Request{request}, review, input)
+	return NewPlan(t.ID(), raw, requests, review, input)
 }
 
 func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {

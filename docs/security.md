@@ -43,39 +43,34 @@ login, device login, refresh, text generation, and tool-call canaries.
 
 ## Permissions
 
-Permissions are `allow`, `ask`, or `deny` decisions over a canonical operation.
-An approval is bound to an operation hash containing tool input, resolved
-resources, and review data. Changed arguments, paths, commands, or file hashes
-invalidate the approval.
+The operating-system sandbox is the enforcement boundary. Work it confines —
+canonical reads and searches, bounded `web_fetch` GET/HEAD requests, reviewed
+`edit`/`apply_patch` mutations, MCP tool calls, and sandboxed `shell` and
+`exec_command` execution — runs without a prompt.
 
-Canonical reads and searches, including explicit absolute paths outside the
-workspace, bounded `web_fetch` GET/HEAD requests, and
-reviewed `edit`/`apply_patch` mutations inside the current workspace, and
-sandboxed `shell` execution are allowed by the default workspace policy. An
-explicit permission mode overrides the web fetch, mutation, and shell defaults.
-Workspace containment, SSRF protections, and preimage revalidation still apply.
+A prompt is raised only for operations the sandbox cannot contain:
+
+- `unrestricted_shell` and `exec_command` with `sandbox_permissions:
+  "disable_sandbox"`, which execute with the invoking user's local authority;
+- `request_write_permission`, which adds a write path to the sandbox;
+- `set_config`, which mutates persistent configuration.
+
+Permissions are `allow` or `deny` decisions. Nothing is remembered: each reply
+settles exactly the request which raised it, so an identical later call prompts
+again. There are no scoped grants and no YOLO mode. In non-interactive mode a
+request that would prompt is denied.
 
 Permission dialogs show only the tool's human-readable description, flattened
-to one line. They do not show policy metadata, resource records, canonical
-input, or structured review JSON. Those values remain part of the verified
-operation hash.
-
-Hard denies cannot be overridden by remembered grants. A reply may allow once
-or explicitly remember an in-memory process, session, or workspace grant; grants
-are not persisted across process restarts. Questions and security permissions
-use separate APIs and presentation.
+to one line. They do not show resource records, canonical input, or structured
+review JSON.
 
 The `request_write_permission` tool uses a specialized Grant/Reject dialog.
 Granting it adds the exact existing file or directory to the sandbox's writable
 paths for shell calls in that session only. Reject with reason denies the tool
 call and returns the supplied text to the agent as its tool error. These grants
 are held in memory, are not shared with other sessions, and disappear when
-Parrot restarts.
-
-The explicit `enable yolo` reply disables all subsequent permission policy
-checks, including hard denies, for that session. It also allows permission
-requests already pending for the session. YOLO mode is held only in memory and
-ends when the session runtime or Parrot process exits.
+Parrot restarts. Questions and security permissions use separate APIs and
+presentation.
 
 ## Processes
 
@@ -92,8 +87,8 @@ session-private writable `TMPDIR`. Both backends retain host network access.
 Parrot fails shell execution when the platform sandbox is unavailable;
 permission approval does not bypass that tool's sandbox.
 
-The separate `unrestricted_shell` tool remains at `ask` under the default
-workspace policy. Once approved, it executes directly with the invoking user's
+The separate `unrestricted_shell` tool always requires approval. Once approved,
+it executes directly with the invoking user's
 local filesystem and process authority. It retains process timeouts, bounded
 output, cancellation, and deliberate environment construction, but it has no
 operating-system sandbox or workspace-bound working-directory restriction.
@@ -118,8 +113,10 @@ agent shell sandbox. Command parsing is never represented as a security boundary
 
 ## Changes and Recovery
 
-Edits and patches are planned before permission. The approved operation includes
-the exact diff and preimage hashes. Multi-file changes are staged and runtime
+Edits and patches are planned before they are applied, and the plan records the
+exact diff and preimage hashes. Paths and preimage hashes are revalidated
+immediately before mutation, so a file changed after planning fails as stale
+rather than being overwritten. Multi-file changes are staged and runtime
 failures trigger reverse rollback. Filesystem state is not transactionally
 atomic across a process or machine crash.
 

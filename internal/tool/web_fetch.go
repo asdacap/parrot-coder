@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
 	"net/http"
 	"net/url"
@@ -62,11 +61,7 @@ func (t *WebFetchTool) Plan(_ context.Context, raw json.RawMessage, _ CallContex
 		return Plan{}, err
 	}
 	review, _ := json.Marshal(webfetch.PermissionReview{URL: normalized.URL, Method: normalized.Method})
-	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: "network", Identifier: normalized.URL, Operation: normalized.Method}}, review)
-	if err != nil {
-		return Plan{}, err
-	}
-	return NewPlan(t.ID(), raw, []permission.Request{request}, review, webFetchPlan{Input: input, Normalized: normalized})
+	return NewPlan(t.ID(), raw, nil, review, webFetchPlan{Input: input, Normalized: normalized})
 }
 func (t *WebFetchTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	planned, ok := plan.Data.(webFetchPlan)

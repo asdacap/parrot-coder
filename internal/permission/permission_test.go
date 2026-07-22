@@ -10,7 +10,7 @@ import (
 
 func request(t *testing.T) Request {
 	t.Helper()
-	r, err := NewRequest("read", json.RawMessage(`{"b":2,"a":1}`), []Resource{{Kind: "file", Identifier: "/x", Operation: "read"}}, nil)
+	r, err := NewRequest("read", json.RawMessage(`{"path":"/x"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -18,36 +18,32 @@ func request(t *testing.T) Request {
 	return r
 }
 
-func TestCanonicalHashAndTamper(t *testing.T) {
-	a := request(t)
-	b, _ := NewRequest("read", json.RawMessage(`{ "a": 1, "b": 2 }`), a.Resources, nil)
-	if a.OperationHash != b.OperationHash {
-		t.Fatal("equivalent JSON produced different hashes")
-	}
-	a.CanonicalInput = json.RawMessage(`{"a":3}`)
-	if a.Verify() == nil {
-		t.Fatal("tampered request verified")
-	}
-	a = request(t)
-	a.Description = "different request description"
-	if a.Verify() == nil {
-		t.Fatal("tampered request description verified")
+func TestNewRequestRequiresToolID(t *testing.T) {
+	if _, err := NewRequest("", nil); err == nil {
+		t.Fatal("empty tool ID accepted")
 	}
 }
 
+// waitForPending blocks until the broker holds want pending requests.
+func waitForPending(t *testing.T, b *Broker, want int) []Pending {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for len(b.Pending()) != want && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	items := b.Pending()
+	if len(items) != want {
+		t.Fatalf("pending = %d, want %d", len(items), want)
+	}
+	return items
+}
+
 func TestBrokerCancellationAndSingleUse(t *testing.T) {
-	b := NewBroker(Policy{Default: Ask}, false, nil)
+	b := NewBroker(false, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := b.Authorize(ctx, request(t)); done <- err }()
-	deadline := time.Now().Add(time.Second)
-	for len(b.Pending()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	p := b.Pending()
-	if len(p) != 1 {
-		t.Fatal("request did not become pending")
-	}
+	p := waitForPending(t, b, 1)
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("got %v", err)
@@ -57,47 +53,49 @@ func TestBrokerCancellationAndSingleUse(t *testing.T) {
 	}
 }
 
-func TestHardDenyDominatesRememberedGrant(t *testing.T) {
-	hard := false
-	policy := Policy{Default: Ask, Rules: []Rule{{Match: func(Request) bool { return hard }, Decision: Deny, HardDeny: true}}}
-	b := NewBroker(policy, false, nil)
-	r := request(t)
-	done := make(chan Decision, 1)
-	go func() { d, _ := b.Authorize(context.Background(), r); done <- d }()
-	for len(b.Pending()) == 0 {
-		time.Sleep(time.Millisecond)
-	}
-	if err := b.ReplySession(b.Pending()[0].ID); err != nil {
-		t.Fatal(err)
-	}
-	if d := <-done; d != Allow {
-		t.Fatal(d)
-	}
-	hard = true
-	if d, err := b.Authorize(context.Background(), r); err != nil || d != Deny {
+func TestNoninteractiveDenies(t *testing.T) {
+	b := NewBroker(true, nil)
+	if d, err := b.Authorize(context.Background(), request(t)); err != nil || d != Deny {
 		t.Fatalf("%v %v", d, err)
+	}
+	if pending := b.Pending(); len(pending) != 0 {
+		t.Fatalf("pending = %d, want 0", len(pending))
 	}
 }
 
-func TestNoninteractiveAskDenies(t *testing.T) {
-	b := NewBroker(Policy{Default: Ask}, true, nil)
-	if d, err := b.Authorize(context.Background(), request(t)); err != nil || d != Deny {
-		t.Fatalf("%v %v", d, err)
+// Each reply settles exactly the request which raised it: nothing is
+// remembered, so an identical second request prompts again.
+func TestRepliesAreNotRemembered(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		reply func(*Broker, string) error
+		want  Decision
+	}{
+		{name: "allow", reply: (*Broker).ReplyOnce, want: Allow},
+		{name: "deny", reply: (*Broker).Reject, want: Deny},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			b := NewBroker(false, nil)
+			for round := range 2 {
+				done := make(chan Decision, 1)
+				go func() { d, _ := b.Authorize(context.Background(), request(t)); done <- d }()
+				items := waitForPending(t, b, 1)
+				if err := test.reply(b, items[0].ID); err != nil {
+					t.Fatal(err)
+				}
+				if d := <-done; d != test.want {
+					t.Fatalf("round %d decision = %q, want %q", round, d, test.want)
+				}
+			}
+		})
 	}
 }
 
 func TestRejectWithReasonReturnsToolError(t *testing.T) {
-	b := NewBroker(Policy{Default: Ask}, false, nil)
+	b := NewBroker(false, nil)
 	done := make(chan error, 1)
 	go func() { _, err := b.Authorize(context.Background(), request(t)); done <- err }()
-	deadline := time.Now().Add(time.Second)
-	for len(b.Pending()) == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	items := b.Pending()
-	if len(items) != 1 {
-		t.Fatalf("pending = %d, want 1", len(items))
-	}
+	items := waitForPending(t, b, 1)
 	if err := b.RejectWithReason(items[0].ID, "use the project cache instead"); err != nil {
 		t.Fatal(err)
 	}
@@ -106,42 +104,19 @@ func TestRejectWithReasonReturnsToolError(t *testing.T) {
 	}
 }
 
-func TestEnableYoloAllowsSessionAndSettlesPending(t *testing.T) {
-	b := NewBroker(Policy{Default: Ask}, false, nil)
-	first := request(t)
-	second := request(t)
-	second.CanonicalInput = json.RawMessage(`{"a":1,"b":3}`)
-	second.OperationHash, _ = Hash(second)
-	results := make(chan Decision, 2)
-	go func() { decision, _ := b.Authorize(context.Background(), first); results <- decision }()
-	go func() { decision, _ := b.Authorize(context.Background(), second); results <- decision }()
-	deadline := time.Now().Add(time.Second)
-	for len(b.Pending()) != 2 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
+func TestReplyRejectsUnknownIDAndInvalidDecision(t *testing.T) {
+	b := NewBroker(false, nil)
+	if err := b.ReplyOnce("missing"); err == nil {
+		t.Fatal("unknown request ID accepted")
 	}
-	items := b.Pending()
-	if len(items) != 2 {
-		t.Fatalf("pending = %d, want 2", len(items))
+	done := make(chan Decision, 1)
+	go func() { d, _ := b.Authorize(context.Background(), request(t)); done <- d }()
+	items := waitForPending(t, b, 1)
+	if err := b.reply(items[0].ID, Reply{Decision: "maybe"}); err == nil {
+		t.Fatal("invalid decision accepted")
 	}
-	if err := b.EnableYolo(items[0].ID); err != nil {
+	if err := b.Reject(items[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	for range 2 {
-		if decision := <-results; decision != Allow {
-			t.Fatalf("pending decision = %q", decision)
-		}
-	}
-	if pending := b.Pending(); len(pending) != 0 {
-		t.Fatalf("pending after YOLO = %d", len(pending))
-	}
-
-	b.policy.Rules = []Rule{{Match: func(Request) bool { return true }, Decision: Deny, HardDeny: true}}
-	if decision, err := b.Authorize(context.Background(), request(t)); err != nil || decision != Allow {
-		t.Fatalf("YOLO session decision = %q, err = %v", decision, err)
-	}
-	other := request(t)
-	other.SessionID = "other"
-	if decision, err := b.Authorize(context.Background(), other); err != nil || decision != Deny {
-		t.Fatalf("other session decision = %q, err = %v", decision, err)
-	}
+	<-done
 }

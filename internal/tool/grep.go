@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"io"
 	"os"
 	"path/filepath"
@@ -106,15 +105,7 @@ func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err != nil {
 		return Plan{}, err
 	}
-	kind := "external_filesystem"
-	if call.Workspace.Contains(root) {
-		kind = "filesystem"
-	}
-	req, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: kind, Identifier: root, Operation: "search"}}, nil)
-	if err != nil {
-		return Plan{}, err
-	}
-	return NewPlan(t.ID(), raw, []permission.Request{req}, nil, grepPlan{input, root, rx})
+	return NewPlan(t.ID(), raw, nil, nil, grepPlan{input, root, rx})
 }
 func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 

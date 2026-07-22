@@ -6,6 +6,21 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Changed
 
+- Removed the permission policy engine and the canonical-operation model. The
+  OS sandbox is now the only enforcement boundary, and the permission broker
+  prompts only for operations it cannot contain: `unrestricted_shell`,
+  `exec_command` with `disable_sandbox`, `request_write_permission`, and
+  `set_config`. Reads, searches, bounded web fetches, `edit`/`apply_patch`,
+  sandboxed shell execution, and **MCP tool calls** now run without a prompt;
+  MCP servers are local processes outside the sandbox, so this widens what runs
+  unattended.
+- Removed `run --permission deny|ask`. Non-interactive runs still deny anything
+  that would prompt.
+- Removed remembered permission grants and YOLO mode. Every reply settles only
+  the request which raised it, so approvals are no longer bound to an operation
+  hash. Breaking `v1` API change: `Permission` drops `resources`,
+  `operation_hash`, and `reason`; `PermissionChoice` and `PermissionReply` drop
+  `scope`.
 - Breaking tool contract: `edit` now replaces the entire file content guarded by
   `expected_sha256` instead of exact-text substitution; the `old` and
   `replace_all` parameters are removed. File `read` results end with a
@@ -18,15 +33,10 @@ All notable changes to Parrot Coder will be documented in this file.
   plain-text fallback for large, unknown-language, no-color, and non-TTY code.
 - User and assistant messages now use distinct foreground and background colors
   instead of leading rules in interactive chat.
-- Reviewed `edit` and `apply_patch` operations inside the current workspace are
-  allowed by default; `run --permission deny|ask` remains available as an
-  explicit override.
-- Sandboxed shell commands are now allowed without a permission prompt by the
-  default workspace policy; `run --permission deny|ask` remains available as an
-  explicit override.
-- Added an `unrestricted_shell` tool that requires permission under the default
-  policy and executes with the invoking user's local authority without the OS
-  sandbox.
+- Reviewed `edit` and `apply_patch` operations inside the current workspace and
+  sandboxed shell commands run without a permission prompt.
+- Added an `unrestricted_shell` tool that requires permission and executes with
+  the invoking user's local authority without the OS sandbox.
 - Sandboxed shell commands may write Git metadata, including the external
   common Git directory used by a linked worktree, so Git commits work from
   worktree-based workspaces.

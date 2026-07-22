@@ -109,17 +109,14 @@ func (r *enhancedChatRuntime) detectModal() {
 
 func permissionChoices() []terminal.Candidate {
 	return []terminal.Candidate{
-		{Value: "yes", Description: "Allow this request once"},
+		{Value: "yes", Description: "Allow this request"},
 		{Value: "no", Description: "Deny this request"},
-		{Value: "allow all for session", Description: "Allow matching requests for this session"},
-		{Value: "allow all for workspace", Description: "Allow matching requests for this workspace"},
-		{Value: "allow all for process", Description: "Allow matching requests until Parrot exits"},
-		{Value: "enable yolo", Description: "Disable all permission checks for this session"},
+		{Value: "reject with reason", Description: "Deny and provide feedback to the agent"},
 	}
 }
 
 // permissionChoicesFor renders the answers the requesting tool declared, so a
-// tool which refuses a broader scope simply does not offer one.
+// tool which labels its own answers simply does not offer the standard ones.
 func permissionChoicesFor(item v1.Permission) []terminal.Candidate {
 	declared := chatview.PermissionChoiceLabels(item)
 	candidates := make([]terminal.Candidate, 0, len(declared))
@@ -133,16 +130,8 @@ func permissionReplyFromAnswer(value string) v1.PermissionReply {
 	answer := strings.ToLower(strings.TrimSpace(value))
 	reply := v1.PermissionReply{Decision: "deny"}
 	switch answer {
-	case "y", "yes", "once":
+	case "y", "yes", "once", "grant":
 		reply.Decision = "allow"
-	case "session", "allow all for session":
-		reply.Decision, reply.Scope = "allow", "session"
-	case "workspace", "allow all for workspace":
-		reply.Decision, reply.Scope = "allow", "workspace"
-	case "process", "allow all for process":
-		reply.Decision, reply.Scope = "allow", "process"
-	case "yolo", "enable yolo":
-		reply.Decision, reply.Scope = "allow", "yolo"
 	}
 	return reply
 }
@@ -188,14 +177,6 @@ func (r *enhancedChatRuntime) handlePermissionModalKey(key terminal.Key) (bool, 
 			return true, r.answerModal("yes")
 		case "n":
 			return true, r.answerModal("no")
-		case "s":
-			return true, r.answerModal("allow all for session")
-		case "w":
-			return true, r.answerModal("allow all for workspace")
-		case "p":
-			return true, r.answerModal("allow all for process")
-		case "o":
-			return true, r.answerModal("enable yolo")
 		}
 	}
 	return false, nil

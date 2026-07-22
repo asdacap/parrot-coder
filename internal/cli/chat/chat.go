@@ -28,7 +28,6 @@ import (
 	configpkg "github.com/amirulashraf/parrot-coder/internal/config"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
@@ -251,16 +250,15 @@ func promptCommand(ctx context.Context, config PromptConfig) int {
 	fs := newFlagSet("run", config.Stderr)
 	args := normalizeLeadingPrompt(config.Args)
 	var options codingFlags
-	var format, permissionMode string
+	var format string
 	var interactive bool
 	addCodingFlags(fs, &options)
 	fs.StringVar(&format, "format", "text", "output format: text or jsonl")
-	fs.StringVar(&permissionMode, "permission", "", "override tool permission policy: deny or ask")
 	fs.BoolVar(&interactive, "interactive-prompts", false, "answer prompts from the controlling terminal")
 	if err := fs.Parse(args); err != nil {
 		return finish(ctx, flagCode(err), flagReason(err), nil)
 	}
-	if options.continued && options.session != "" || fs.NArg() > 1 || format != "text" && format != "jsonl" || permissionMode != "" && permissionMode != "deny" && permissionMode != "ask" {
+	if options.continued && options.session != "" || fs.NArg() > 1 || format != "text" && format != "jsonl" {
 		fmt.Fprintln(config.Stderr, "invalid run flags; see parrot run --help")
 		return finish(ctx, exitUsage, "invalid_run_arguments", nil)
 	}
@@ -283,7 +281,7 @@ func promptCommand(ctx context.Context, config PromptConfig) int {
 		tty = file
 		defer tty.Close()
 	}
-	runtime, err := config.Open(ctx, app.Options{Version: config.Build.Version, Model: options.model, Agent: options.agent, Permission: permission.Decision(permissionMode), NonInteractive: !interactive})
+	runtime, err := config.Open(ctx, app.Options{Version: config.Build.Version, Model: options.model, Agent: options.agent, NonInteractive: !interactive})
 	if err != nil {
 		fmt.Fprintln(config.Stderr, err)
 		return finish(ctx, exitError, appOpenReason(err), err)
@@ -1087,13 +1085,6 @@ func settlePrompts(ctx context.Context, api apiClient, sessionID string, input i
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
 		}
-		// Enabling YOLO settles every permission already pending for this
-		// session. The remaining entries came from the now-stale list snapshot;
-		// replying to them would fail with permission-not-found and make the
-		// successful YOLO choice appear to have failed.
-		if reply.Scope == "yolo" {
-			break
-		}
 	}
 	for _, request := range questions.Items {
 		answers := make([]v1.Answer, 0, len(request.Questions))
@@ -1177,9 +1168,6 @@ func settleStreamPrompts(ctx context.Context, api apiClient, sessionID string, o
 		}
 		if err := api.ReplyPermission(ctx, sessionID, item.ID, reply); err != nil {
 			return err
-		}
-		if reply.Scope == "yolo" {
-			break
 		}
 	}
 	for _, request := range questions.Items {
@@ -2963,7 +2951,7 @@ func requiresPermissionReason(item v1.Permission, value string) bool {
 func permissionDefaultReply(item v1.Permission) v1.PermissionReply {
 	for _, choice := range chatview.PermissionChoiceLabels(item) {
 		if choice.Decision == "deny" && !choice.RequiresReason {
-			return v1.PermissionReply{Decision: choice.Decision, Scope: choice.Scope}
+			return v1.PermissionReply{Decision: choice.Decision}
 		}
 	}
 	return v1.PermissionReply{Decision: "deny"}
@@ -3005,16 +2993,8 @@ func permissionReplyFromAnswer(value string) v1.PermissionReply {
 	answer := strings.ToLower(strings.TrimSpace(value))
 	reply := v1.PermissionReply{Decision: "deny"}
 	switch answer {
-	case "y", "yes", "once":
+	case "y", "yes", "once", "grant":
 		reply.Decision = "allow"
-	case "session", "allow all for session":
-		reply.Decision, reply.Scope = "allow", "session"
-	case "workspace", "allow all for workspace":
-		reply.Decision, reply.Scope = "allow", "workspace"
-	case "process", "allow all for process":
-		reply.Decision, reply.Scope = "allow", "process"
-	case "yolo", "enable yolo":
-		reply.Decision, reply.Scope = "allow", "yolo"
 	}
 	return reply
 }

@@ -22,7 +22,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/appdirs"
 	"github.com/amirulashraf/parrot-coder/internal/auth"
 	chatpkg "github.com/amirulashraf/parrot-coder/internal/cli/chat"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -239,7 +238,7 @@ func (a *App) modelsCommand(ctx context.Context, args []string, stdout, stderr i
 	if fs.NArg() != 0 || *format != "lines" && *format != "json" {
 		return usageError(ctx, stderr, "invalid_models_arguments", "models accepts --format lines|json")
 	}
-	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)
@@ -268,7 +267,7 @@ func (a *App) usageCommand(ctx context.Context, args []string, stdout, stderr io
 	if fs.NArg() != 0 || *format != "lines" && *format != "json" {
 		return usageError(ctx, stderr, "invalid_usage_arguments", "usage accepts --format lines|json")
 	}
-	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)
@@ -355,7 +354,7 @@ func (a *App) agentsCommand(ctx context.Context, args []string, stdout, stderr i
 	if fs.NArg() != 0 {
 		return usageError(ctx, stderr, "invalid_agents_arguments", "agents takes no arguments")
 	}
-	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)
@@ -380,7 +379,7 @@ func (a *App) modesCommand(ctx context.Context, args []string, stdout, stderr io
 	if fs.NArg() != 0 {
 		return usageError(ctx, stderr, "invalid_modes_arguments", "modes takes no arguments")
 	}
-	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)
@@ -402,7 +401,7 @@ func (a *App) sessionCommand(ctx context.Context, args []string, stdout, stderr 
 		fmt.Fprint(stdout, "Usage: parrot session list|show <id>|compact <id>|delete <id>\n")
 		return exitOK
 	}
-	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, Permission: permission.Deny, AllowNoModel: true})
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, NonInteractive: true, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)
@@ -601,7 +600,7 @@ func (a *App) serveCommand(ctx context.Context, args []string, stdout, stderr io
 		fmt.Fprintln(stderr, "refusing unauthenticated non-loopback binding")
 		return exitWithReason(ctx, exitUsage, "non_loopback_binding_refused", nil)
 	}
-	runtime, err := a.open(ctx, app.Options{Version: a.build.Version, Permission: permission.Ask})
+	runtime, err := a.open(ctx, app.Options{Version: a.build.Version})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return exitWithReason(ctx, exitError, appOpenReason(err), err)

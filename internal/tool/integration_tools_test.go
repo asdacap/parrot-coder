@@ -58,7 +58,7 @@ func (f *fakeMCPCaller) CallTool(_ context.Context, _ string, arguments json.Raw
 	return f.result, f.err
 }
 
-func TestMCPToolPermissionArgumentsAndApplicationError(t *testing.T) {
+func TestMCPToolArgumentsAndApplicationError(t *testing.T) {
 	caller := &fakeMCPCaller{result: mcp.ToolResult{Content: []mcp.Content{{Type: "text", Text: "ok"}}, StructuredContent: json.RawMessage(`{"value":1}`)}}
 	item, err := NewMCPTool(caller, mcp.ToolDefinition{Name: "mcp_fixture_echo", Server: "fixture", Tool: "echo", Description: "Echo", InputSchema: json.RawMessage(`{"type":"object","properties":{"value":{"type":"string","description":"value"},"labels":{"type":"object","additionalProperties":{"type":"string"}}},"required":["value"]}`)})
 	if err != nil {
@@ -73,11 +73,9 @@ func TestMCPToolPermissionArgumentsAndApplicationError(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(caller.arguments) != `{"value":"ok"}` || result.Text != "ok" || authorizer.request.Resources[0].Kind != "mcp" || authorizer.request.Resources[0].Attributes["arguments_sha256"] == "" {
-		t.Fatalf("call/result/request = %s / %#v / %#v", caller.arguments, result, authorizer.request)
-	}
-	if authorizer.request.Description != "Call MCP tool fixture/echo" || strings.Contains(authorizer.request.Description, `{"value"`) {
-		t.Fatalf("MCP permission description = %q", authorizer.request.Description)
+	// MCP calls are not sandbox-escaping, so they are never authorized.
+	if string(caller.arguments) != `{"value":"ok"}` || result.Text != "ok" || authorizer.calls != 0 {
+		t.Fatalf("call/result/authorizations = %s / %#v / %d", caller.arguments, result, authorizer.calls)
 	}
 	caller.err = &mcp.ApplicationError{Server: "fixture", Tool: "echo", Result: mcp.ToolResult{IsError: true}}
 	registry = NewRegistry()
@@ -89,7 +87,7 @@ func TestMCPToolPermissionArgumentsAndApplicationError(t *testing.T) {
 	}
 }
 
-func TestWebFetchToolPermissionAndRevalidation(t *testing.T) {
+func TestWebFetchToolFetchAndRevalidation(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
 		_, _ = io.WriteString(w, "fetched")
@@ -103,9 +101,10 @@ func TestWebFetchToolPermissionAndRevalidation(t *testing.T) {
 	if err != nil || result.Text != "fetched" {
 		t.Fatalf("result = %#v, %v", result, err)
 	}
-	resource := authorizer.request.Resources[0]
-	if resource.Kind != "network" || resource.Operation != http.MethodGet || strings.Contains(resource.Identifier, "#") {
-		t.Fatalf("resource = %#v", resource)
+	// GET/HEAD are the only methods normalizeFetch accepts, so a bounded fetch
+	// is confined and never authorized.
+	if authorizer.calls != 0 {
+		t.Fatalf("authorizations = %d, want 0", authorizer.calls)
 	}
 	planned, err := item.Plan(context.Background(), json.RawMessage(`{"url":"`+server.URL+`"}`), CallContext{})
 	if err != nil {

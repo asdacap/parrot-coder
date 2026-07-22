@@ -90,13 +90,21 @@ func TestSetConfigTool_Plan_RejectsEmptyConfigDir(t *testing.T) {
 	}
 }
 
-func TestSetConfigTool_PermissionChoices_HaveNoScopedAllow(t *testing.T) {
-	tool := NewSetConfigTool("/tmp")
-	choices := tool.PermissionChoices()
+func TestSetConfigTool_PermissionChoices_OfferAllowAndDeny(t *testing.T) {
+	choices := NewSetConfigTool("/tmp").PermissionChoices()
+	var allow, deny int
 	for _, c := range choices {
-		if c.Decision == "allow" && c.Scope != "" {
-			t.Fatalf("permission choice %q has scoped allow (scope=%q)", c.Label, c.Scope)
+		switch c.Decision {
+		case "allow":
+			allow++
+		case "deny":
+			deny++
+		default:
+			t.Fatalf("permission choice %q has decision %q", c.Label, c.Decision)
 		}
+	}
+	if allow != 1 || deny != 2 {
+		t.Fatalf("choices = %#v", choices)
 	}
 }
 

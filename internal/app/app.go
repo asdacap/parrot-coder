@@ -147,7 +147,6 @@ type Options struct {
 	Model          string
 	Agent          string
 	Mode           string
-	Permission     permission.Decision
 	NonInteractive bool
 	AllowNoModel   bool
 	HTTPClient     *http.Client
@@ -373,14 +372,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		questionHandler = questionPrompter{}
 	}
 	questions := question.NewBroker(questionHandler)
-	policy := tool.DefaultWorkspacePolicy()
-	if options.Permission != "" {
-		// An explicit permission mode overrides the default workspace mutation
-		// grant as well as the fallback for process and network operations.
-		policy.Rules = policy.Rules[:1]
-		policy.Default = options.Permission
-	}
-	permissions := permission.NewBroker(policy, options.NonInteractive, nil)
+	permissions := permission.NewBroker(options.NonInteractive, nil)
 	mcpConfigs, err := buildMCPConfigs(loaded.Config.MCP)
 	if err != nil {
 		return nil, err

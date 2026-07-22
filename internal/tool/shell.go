@@ -2,8 +2,6 @@ package tool
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -113,22 +111,24 @@ func (t *ShellTool) Plan(ctx context.Context, raw json.RawMessage, call CallCont
 		return Plan{}, fmt.Errorf("shell: resolve cwd: %w", err)
 	}
 	input.Cwd = resolved
-	sum := sha256.Sum256([]byte(input.Command))
-	resource := permission.Resource{Kind: "process", Identifier: resolvedShell, Operation: "execute", Attributes: map[string]string{
-		"cwd": resolved, "command_sha256": hex.EncodeToString(sum[:]),
-	}}
 	environmentNames := sortedEnvironmentNames(input.Env)
 	warning := "This permits arbitrary process execution inside the OS sandbox."
 	if t.unrestricted {
 		warning = "This permits arbitrary process execution without the OS sandbox, using the invoking user's local authority."
 	}
 	review, _ := json.Marshal(map[string]any{"warning": warning, "shell": resolvedShell, "command": input.Command, "cwd": resolved, "environment_names": environmentNames, "timeout_ms": input.TimeoutMS})
-	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{resource}, review)
-	if err != nil {
-		return Plan{}, err
+	// Only the unrestricted variant needs approval: it escapes the sandbox which
+	// otherwise confines the command.
+	var requests []permission.Request
+	if t.unrestricted {
+		request, err := permission.NewRequest(t.ID(), review)
+		if err != nil {
+			return Plan{}, err
+		}
+		requests = []permission.Request{request}
 	}
 	input.ResolvedShell, input.ResolvedCwd = resolvedShell, resolved
-	return NewPlan(t.ID(), raw, []permission.Request{request}, review, input)
+	return NewPlan(t.ID(), raw, requests, review, input)
 }
 
 func (t *ShellTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {

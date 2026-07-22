@@ -1406,7 +1406,7 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 }
 
 func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
-	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "shell", Reason: "test"}}}}
+	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "shell"}}}}
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 	state, err := editor.Start("keep draft")
 	if err != nil {
@@ -1431,13 +1431,12 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 	}
 }
 
-func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.T) {
+func TestEnhancedPermissionModalSelectionStopsSpinnerAndReplies(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
-		ID: "permission", ToolID: "shell", Reason: "default policy",
+		ID: "permission", ToolID: "shell",
 		Description:    "Run shell command:\nrm -rf build",
 		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build"}`),
 		Review:         json.RawMessage(`{"review_secret":"not for the dialog"}`),
-		Resources:      []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
 	}}}}
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 	state, err := editor.Start("draft")
@@ -1470,8 +1469,8 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
 	if !strings.Contains(frame, "Run shell command: rm -rf build") ||
-		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "allow all for workspace") ||
-		!strings.Contains(frame, "enable yolo") {
+		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "yes") ||
+		!strings.Contains(frame, "no") || !strings.Contains(frame, "reject with reason") {
 		t.Fatalf("permission choices missing from frame: %q", frame)
 	}
 	if contextIndex, selectorIndex := strings.Index(frame, "Run shell command: rm -rf build"), strings.Index(frame, "permission decision:"); contextIndex < 0 || selectorIndex <= contextIndex {
@@ -1484,17 +1483,15 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 		t.Fatalf("permission review JSON leaked into frame: %q", frame)
 	}
 
-	for i := 0; i < 3; i++ {
-		done, err := runtime.handlePermissionModalKey(terminal.Key{Kind: terminal.KeyDown})
-		if err != nil || done {
-			t.Fatalf("down = done %t err %v", done, err)
-		}
+	// Move from the initially selected "yes" to "no".
+	if done, err := runtime.handlePermissionModalKey(terminal.Key{Kind: terminal.KeyDown}); err != nil || done {
+		t.Fatalf("down = done %t err %v", done, err)
 	}
 	done, err := runtime.handlePermissionModalKey(terminal.Key{Kind: terminal.KeyEnter})
 	if err != nil || !done {
 		t.Fatalf("enter = done %t err %v", done, err)
 	}
-	if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "allow" || api.permissionReplies[0].Scope != "workspace" {
+	if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "deny" {
 		t.Fatalf("reply = %#v", api.permissionReplies)
 	}
 	if state.Value() != "draft" {
@@ -1502,7 +1499,7 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndRepliesScope(t *testing.
 	}
 }
 
-func TestEnhancedPermissionAnswerAllowsProcessScope(t *testing.T) {
+func TestEnhancedPermissionAnswerAllows(t *testing.T) {
 	api := &enhancedQueueAPI{}
 	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
 	if err != nil {
@@ -1512,10 +1509,10 @@ func TestEnhancedPermissionAnswerAllowsProcessScope(t *testing.T) {
 		shell: &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}},
 		state: state, modal: &enhancedModal{kind: "permission", permission: &v1.Permission{ID: "permission"}},
 	}
-	if err := runtime.answerModal("allow all for process"); err != nil {
+	if err := runtime.answerModal("yes"); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "allow" || api.permissionReplies[0].Scope != "process" {
+	if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "allow" {
 		t.Fatalf("reply = %#v", api.permissionReplies)
 	}
 }
@@ -1879,7 +1876,7 @@ func TestWritePermissionModalUsesSpecializedChoicesAndReplies(t *testing.T) {
 	if err := runtime.answerModal("grant"); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.permissionReplies) != 2 || api.permissionReplies[1].Decision != "allow" || api.permissionReplies[1].Scope != "" {
+	if len(api.permissionReplies) != 2 || api.permissionReplies[1].Decision != "allow" {
 		t.Fatalf("grant reply = %#v", api.permissionReplies)
 	}
 }

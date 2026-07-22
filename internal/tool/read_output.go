@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 )
 
 type ReadOutputTool struct {
@@ -55,11 +54,7 @@ func (t *ReadOutputTool) Plan(ctx context.Context, raw json.RawMessage, call Cal
 	if input.Limit > t.MaxBytes {
 		return Plan{}, errors.New("output read limit exceeded")
 	}
-	req, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: "managed_output", Identifier: input.ID, Operation: "read"}}, nil)
-	if err != nil {
-		return Plan{}, err
-	}
-	return NewPlan(t.ID(), raw, []permission.Request{req}, nil, input)
+	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 func (t *ReadOutputTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 

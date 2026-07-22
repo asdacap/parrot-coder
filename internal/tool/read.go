@@ -8,7 +8,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"io"
 	"os"
 	"sort"
@@ -85,15 +84,7 @@ func (t *ReadTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err != nil {
 		return Plan{}, err
 	}
-	kind := "external_filesystem"
-	if call.Workspace.Contains(path) {
-		kind = "filesystem"
-	}
-	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: kind, Identifier: path, Operation: "read"}}, nil)
-	if err != nil {
-		return Plan{}, err
-	}
-	return NewPlan(t.ID(), raw, []permission.Request{request}, nil, readPlan{input, path})
+	return NewPlan(t.ID(), raw, nil, nil, readPlan{input, path})
 }
 
 func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {

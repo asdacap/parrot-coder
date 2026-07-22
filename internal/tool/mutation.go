@@ -5,11 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/amirulashraf/parrot-coder/internal/change"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 )
 
 func mutationToolPlan(toolID string, raw json.RawMessage, planned change.Plan) (Plan, error) {
-	resources := make([]permission.Resource, len(planned.Mutations))
 	files := make([]map[string]any, len(planned.Mutations))
 	for i, mutation := range planned.Mutations {
 		operation := "write"
@@ -18,21 +16,13 @@ func mutationToolPlan(toolID string, raw json.RawMessage, planned change.Plan) (
 		} else if !mutation.After.Exists {
 			operation = "delete"
 		}
-		resources[i] = permission.Resource{Kind: "filesystem", Identifier: mutation.Path, Operation: operation, Attributes: map[string]string{
-			"before_sha256": mutation.Before.SHA256,
-			"after_sha256":  mutation.After.SHA256,
-		}}
 		files[i] = map[string]any{"path": mutation.Path, "operation": operation, "before_sha256": mutation.Before.SHA256, "after_sha256": mutation.After.SHA256}
 	}
 	review, err := json.Marshal(map[string]any{"diff": planned.Diff, "files": files})
 	if err != nil {
 		return Plan{}, err
 	}
-	request, err := permission.NewRequest(toolID, raw, resources, review)
-	if err != nil {
-		return Plan{}, err
-	}
-	return NewPlan(toolID, raw, []permission.Request{request}, review, mutationPlan{planned})
+	return NewPlan(toolID, raw, nil, review, mutationPlan{planned})
 }
 
 func executeMutation(ctx context.Context, changes *change.Service, plan Plan, call CallContext) (Result, error) {

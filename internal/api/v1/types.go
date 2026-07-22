@@ -175,31 +175,20 @@ type Compaction struct {
 	Reason        string `json:"reason,omitempty"`
 }
 
-type PermissionResource struct {
-	Kind       string            `json:"kind"`
-	Identifier string            `json:"identifier"`
-	Operation  string            `json:"operation"`
-	Attributes map[string]string `json:"attributes,omitempty"`
-}
-
 type Permission struct {
-	ID             string               `json:"id"`
-	ToolID         string               `json:"tool_id"`
-	Description    string               `json:"description"`
-	CanonicalInput json.RawMessage      `json:"canonical_input"`
-	Resources      []PermissionResource `json:"resources"`
-	Review         json.RawMessage      `json:"review,omitempty"`
+	ID             string          `json:"id"`
+	ToolID         string          `json:"tool_id"`
+	Description    string          `json:"description"`
+	CanonicalInput json.RawMessage `json:"canonical_input"`
+	Review         json.RawMessage `json:"review,omitempty"`
 	// Choices are the answers the requesting tool offers. A client must reply
 	// with one of them; the server rejects anything else.
-	Choices       []PermissionChoice `json:"choices,omitempty"`
-	OperationHash string             `json:"operation_hash"`
-	Reason        string             `json:"reason"`
+	Choices []PermissionChoice `json:"choices,omitempty"`
 }
 
 type PermissionChoice struct {
 	Value          string `json:"value"`
 	Decision       string `json:"decision"`
-	Scope          string `json:"scope,omitempty"`
 	Label          string `json:"label"`
 	Description    string `json:"description,omitempty"`
 	RequiresReason bool   `json:"requires_reason,omitempty"`
@@ -211,7 +200,6 @@ type PermissionList struct {
 
 type PermissionReply struct {
 	Decision string `json:"decision"`
-	Scope    string `json:"scope,omitempty"`
 	Reason   string `json:"reason,omitempty"`
 }
 

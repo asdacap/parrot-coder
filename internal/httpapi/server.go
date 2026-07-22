@@ -340,9 +340,8 @@ func (s *Server) permissionReply(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &request) {
 		return
 	}
-	validScope := request.Scope == "" || request.Scope == "process" || request.Scope == "session" || request.Scope == "workspace" || request.Scope == "yolo"
-	if request.Decision != "allow" && request.Decision != "deny" || request.Decision == "deny" && request.Scope != "" || !validScope {
-		s.writeProblem(w, r, invalidProblem(requestID(r), "decision must be allow or deny, and denied replies cannot have a scope."))
+	if request.Decision != "allow" && request.Decision != "deny" {
+		s.writeProblem(w, r, invalidProblem(requestID(r), "decision must be allow or deny."))
 		return
 	}
 	s.respondEmpty(w, r, s.backend.ReplyPermission(r.Context(), r.PathValue("id"), r.PathValue("request"), request))

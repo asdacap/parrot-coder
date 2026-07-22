@@ -433,18 +433,14 @@ func (b *DomainBackend) ListPermissions(ctx context.Context, id string) (v1.Perm
 		if item.Request.SessionID != id {
 			continue
 		}
-		resources := make([]v1.PermissionResource, len(item.Request.Resources))
-		for i, resource := range item.Request.Resources {
-			resources[i] = v1.PermissionResource{Kind: resource.Kind, Identifier: resource.Identifier, Operation: resource.Operation, Attributes: resource.Attributes}
-		}
 		choices := make([]v1.PermissionChoice, len(item.Request.Choices))
 		for i, choice := range item.Request.Choices {
 			choices[i] = v1.PermissionChoice{
-				Value: choice.Value, Decision: choice.Decision, Scope: choice.Scope,
+				Value: choice.Value, Decision: choice.Decision,
 				Label: choice.Label, Description: choice.Description, RequiresReason: choice.RequiresReason,
 			}
 		}
-		out.Items = append(out.Items, v1.Permission{ID: item.ID, ToolID: item.Request.ToolID, Description: item.Request.Description, CanonicalInput: item.Request.CanonicalInput, Resources: resources, Review: item.Request.Review, Choices: choices, OperationHash: item.Request.OperationHash, Reason: item.Reason})
+		out.Items = append(out.Items, v1.Permission{ID: item.ID, ToolID: item.Request.ToolID, Description: item.Request.Description, CanonicalInput: item.Request.CanonicalInput, Review: item.Request.Review, Choices: choices})
 	}
 	return out, nil
 }
@@ -467,18 +463,14 @@ func (b *DomainBackend) ReplyPermission(ctx context.Context, sessionID, requestI
 	if len(reply.Reason) > 4096 {
 		return ErrInvalid
 	}
-	// The reply must be one of the answers the requesting tool offered. A tool
-	// which grants a lasting capability offers no scoped allow, so this is what
-	// stops one approval from authorizing later requests. Choices are read from
-	// the pending request held by the broker, never from the client.
+	// The reply must be one of the answers the requesting tool offered. Choices
+	// are read from the pending request held by the broker, never from the
+	// client.
 	if len(permissionItem.Choices) > 0 && !replyMatchesChoices(permissionItem.Choices, reply) {
 		return ErrInvalid
 	}
 	switch reply.Decision {
 	case "deny":
-		if reply.Scope != "" {
-			return ErrInvalid
-		}
 		if reply.Reason != "" {
 			err = b.Permissions.RejectWithReason(requestID, reply.Reason)
 		} else {
@@ -488,20 +480,7 @@ func (b *DomainBackend) ReplyPermission(ctx context.Context, sessionID, requestI
 		if reply.Reason != "" {
 			return ErrInvalid
 		}
-		switch reply.Scope {
-		case "":
-			err = b.Permissions.ReplyOnce(requestID)
-		case "process":
-			err = b.Permissions.ReplyProcess(requestID)
-		case "session":
-			err = b.Permissions.ReplySession(requestID)
-		case "workspace":
-			err = b.Permissions.ReplyWorkspace(requestID)
-		case "yolo":
-			err = b.Permissions.EnableYolo(requestID)
-		default:
-			return ErrInvalid
-		}
+		err = b.Permissions.ReplyOnce(requestID)
 	default:
 		return ErrInvalid
 	}
@@ -753,12 +732,11 @@ func toolPresentationDTO(presentation tool.Presentation) v1.ToolPresentation {
 }
 
 // replyMatchesChoices reports whether a reply is one of the answers the
-// requesting tool offered. A tool which grants a lasting capability offers no
-// scoped allow, which is what stops one approval from authorizing later
-// requests. A reason is accepted only for a choice which asks for one.
+// requesting tool offered. A reason is accepted only for a choice which asks
+// for one.
 func replyMatchesChoices(choices []v1.PermissionChoice, reply v1.PermissionReply) bool {
 	for _, choice := range choices {
-		if choice.Decision != reply.Decision || choice.Scope != reply.Scope {
+		if choice.Decision != reply.Decision {
 			continue
 		}
 		if reply.Reason != "" && !choice.RequiresReason {

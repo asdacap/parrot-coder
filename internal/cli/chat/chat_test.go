@@ -1021,11 +1021,9 @@ func TestToolActivityLabelSanitizesAndTruncatesDetails(t *testing.T) {
 func TestPermissionContextUsesOnlySingleLineToolDescription(t *testing.T) {
 	lines := permissionContextLines(v1.Permission{
 		ToolID:         "shell",
-		Reason:         "default policy",
 		Description:    "Run shell command:\r\nprintf 'a  b'\nWorking directory: /tmp",
 		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"do not render this canonical JSON","env":{"SECRET":"hidden"}}`),
 		Review:         json.RawMessage(`{"review_secret":"do not render this review JSON","diff":"--- a/file.go\n+++ b/file.go\n-old\n+new\n"}`),
-		Resources:      []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}},
 	})
 	want := []string{"Run shell command: printf 'a  b' Working directory: /tmp"}
 	if got := strings.Join(lines, "\n"); got != strings.Join(want, "\n") {
@@ -1037,7 +1035,7 @@ func TestPermissionContextUsesOnlySingleLineToolDescription(t *testing.T) {
 }
 
 func TestPermissionContextOmitsEmptyDescription(t *testing.T) {
-	if got := permissionContextLines(v1.Permission{ToolID: "shell", Reason: "default policy", Resources: []v1.PermissionResource{{Kind: "process", Operation: "execute", Identifier: "/bin/bash"}}}); len(got) != 0 {
+	if got := permissionContextLines(v1.Permission{ToolID: "shell"}); len(got) != 0 {
 		t.Fatalf("permission context = %#v, want none", got)
 	}
 }
@@ -1045,7 +1043,6 @@ func TestPermissionContextOmitsEmptyDescription(t *testing.T) {
 func TestPermissionContextIgnoresMalformedReview(t *testing.T) {
 	got := strings.Join(permissionContextLines(v1.Permission{
 		ToolID:      "edit",
-		Reason:      "default policy",
 		Description: "Edit workspace file \"main.go\"",
 		Review:      json.RawMessage(`REVIEW_SECRET: [unterminated`),
 	}), "\n")
@@ -1054,32 +1051,25 @@ func TestPermissionContextIgnoresMalformedReview(t *testing.T) {
 	}
 }
 
-func TestPermissionReplyEnableYolo(t *testing.T) {
-	reply := permissionReplyFromAnswer("enable yolo")
-	if reply.Decision != "allow" || reply.Scope != "yolo" {
-		t.Fatalf("reply = %#v", reply)
-	}
-}
-
-func TestSettlePromptsStopsReplyingAfterEnableYolo(t *testing.T) {
+func TestSettlePromptsSettlesEveryPendingRequest(t *testing.T) {
 	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{
-		{ID: "first", ToolID: "shell", Reason: "test"},
-		{ID: "second", ToolID: "edit", Reason: "test"},
+		{ID: "first", ToolID: "shell"},
+		{ID: "second", ToolID: "edit"},
 	}}}
-	if err := settlePrompts(context.Background(), api, "session", strings.NewReader("enable yolo\n"), io.Discard); err != nil {
+	if err := settlePrompts(context.Background(), api, "session", strings.NewReader("yes\nno\n"), io.Discard); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.permissionReplies) != 1 {
-		t.Fatalf("replies = %#v, want only the YOLO reply", api.permissionReplies)
+	if len(api.permissionReplies) != 2 {
+		t.Fatalf("replies = %#v, want one per pending request", api.permissionReplies)
 	}
-	if reply := api.permissionReplies[0]; reply.Decision != "allow" || reply.Scope != "yolo" {
-		t.Fatalf("reply = %#v", reply)
+	if api.permissionReplies[0].Decision != "allow" || api.permissionReplies[1].Decision != "deny" {
+		t.Fatalf("replies = %#v", api.permissionReplies)
 	}
 }
 
 func TestSettlePromptsDoesNotRenderAuthorizationJSON(t *testing.T) {
 	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
-		ID: "permission", ToolID: "shell", Reason: "test", Description: "Run shell command:\nprintf ok",
+		ID: "permission", ToolID: "shell", Description: "Run shell command:\nprintf ok",
 		CanonicalInput: json.RawMessage(`{"command":"CANONICAL_SECRET"}`), Review: json.RawMessage(`{"secret":"REVIEW_SECRET"}`),
 	}}}}
 	var output bytes.Buffer
@@ -1095,13 +1085,13 @@ func TestSettlePromptsDoesNotRenderAuthorizationJSON(t *testing.T) {
 	}
 }
 
-func TestSettleStreamPromptsStopsReplyingAfterEnableYolo(t *testing.T) {
+func TestSettleStreamPromptsSettlesEveryPendingRequest(t *testing.T) {
 	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{
-		{ID: "first", ToolID: "shell", Reason: "test"},
-		{ID: "second", ToolID: "edit", Reason: "test"},
+		{ID: "first", ToolID: "shell"},
+		{ID: "second", ToolID: "edit"},
 	}}}
-	// Move from the initially selected "yes" choice to "enable yolo".
-	decoder := terminal.NewKeyDecoder(strings.NewReader("\t\t\t\t\t\r"))
+	// Accept the initially selected "yes" choice for each pending request.
+	decoder := terminal.NewKeyDecoder(strings.NewReader("\r\r"))
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
 	err := settleStreamPrompts(context.Background(), api, "session", streamOptions{
@@ -1110,11 +1100,13 @@ func TestSettleStreamPromptsStopsReplyingAfterEnableYolo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(api.permissionReplies) != 1 {
-		t.Fatalf("replies = %#v, want only the YOLO reply", api.permissionReplies)
+	if len(api.permissionReplies) != 2 {
+		t.Fatalf("replies = %#v, want one per pending request", api.permissionReplies)
 	}
-	if reply := api.permissionReplies[0]; reply.Decision != "allow" || reply.Scope != "yolo" {
-		t.Fatalf("reply = %#v", reply)
+	for i, reply := range api.permissionReplies {
+		if reply.Decision != "allow" {
+			t.Fatalf("reply %d = %#v", i, reply)
+		}
 	}
 }
 
@@ -1130,7 +1122,7 @@ func TestEnhancedPermissionEscapeDeniesAndInterruptPropagates(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
-				ID: "permission", ToolID: "shell", Reason: "test", Description: "Run shell command:\nprintf ok",
+				ID: "permission", ToolID: "shell", Description: "Run shell command:\nprintf ok",
 				CanonicalInput: json.RawMessage(`{"command":"CANONICAL_SECRET"}`), Review: json.RawMessage(`{"secret":"REVIEW_SECRET"}`),
 			}}}}
 			decoder := terminal.NewKeyDecoder(bytes.NewBufferString(test.input))

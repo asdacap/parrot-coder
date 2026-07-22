@@ -41,7 +41,6 @@ type CallContext struct {
 type Plan struct {
 	ToolID         string
 	CanonicalInput json.RawMessage
-	OperationHash  string
 	Permissions    []permission.Request
 	Review         json.RawMessage
 	Data           any
@@ -78,25 +77,11 @@ type Tool interface {
 }
 
 func NewPlan(toolID string, input json.RawMessage, requests []permission.Request, review json.RawMessage, data any) (Plan, error) {
-	canonical, err := permission.CanonicalJSON(input)
+	canonical, err := CanonicalJSON(input)
 	if err != nil {
 		return Plan{}, err
 	}
-	p := Plan{ToolID: toolID, CanonicalInput: canonical, Permissions: requests, Review: review, Data: data}
-	p.OperationHash, err = planHash(p)
-	return p, err
-}
-
-func planHash(p Plan) (string, error) {
-	resources := make([]permission.Resource, 0, len(p.Permissions))
-	for _, request := range p.Permissions {
-		resources = append(resources, permission.Resource{Kind: "permission", Identifier: request.OperationHash, Operation: "authorize"})
-	}
-	r, err := permission.NewRequest(p.ToolID, p.CanonicalInput, resources, p.Review)
-	if err != nil {
-		return "", err
-	}
-	return r.OperationHash, nil
+	return Plan{ToolID: toolID, CanonicalInput: canonical, Permissions: requests, Review: review, Data: data}, nil
 }
 
 type Definition struct {
@@ -264,10 +249,6 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	if p.ToolID != id {
 		return Result{}, errors.New("plan tool ID mismatch")
 	}
-	hash, err := planHash(p)
-	if err != nil || hash != p.OperationHash {
-		return Result{}, errors.New("stale plan operation hash")
-	}
 	if len(p.Permissions) > 0 {
 		description, err := t.DescribeRequest(p.CanonicalInput)
 		if err != nil {
@@ -278,25 +259,12 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 			return Result{}, errors.New("tool request description is required for permission")
 		}
 		for i := range p.Permissions {
-			if err := p.Permissions[i].Verify(); err != nil {
-				return Result{}, err
-			}
 			p.Permissions[i].Description = description
 			p.Permissions[i].Choices = ChoicesFor(t)
-			p.Permissions[i].OperationHash, err = permission.Hash(p.Permissions[i])
-			if err != nil {
-				return Result{}, err
-			}
-		}
-		p.OperationHash, err = planHash(p)
-		if err != nil {
-			return Result{}, err
+			p.Permissions[i].CanonicalInput = p.CanonicalInput
 		}
 	}
 	for _, request := range p.Permissions {
-		if err := request.Verify(); err != nil {
-			return Result{}, err
-		}
 		request.SessionID = call.SessionID
 		if call.Workspace != nil {
 			request.Workspace = call.Workspace.Root()
@@ -422,7 +390,7 @@ func parseSchema(raw []byte) (schema, error) {
 	if err := d.Decode(&struct{}{}); err != io.EOF {
 		return s, errors.New("trailing schema data")
 	}
-	if _, err := permission.CanonicalJSON(raw); err != nil {
+	if _, err := CanonicalJSON(raw); err != nil {
 		return s, err
 	}
 	if s.Type == "" {

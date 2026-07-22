@@ -66,11 +66,10 @@ toolchains, build systems, package managers, and developer tools such as `go`,
 `python3`, `java`, `docker`, and `kubectl`. Available optional utilities are
 listed in agent context without warnings for tools that are absent.
 
-Agent shell commands are allowed without a permission prompt by the default
-workspace policy and are OS-sandboxed. An explicit permission mode can override
-this default. The separate `unrestricted_shell` tool always requires permission
-under the default policy and runs with the invoking user's local authority,
-without an OS sandbox. Linux requires Bubblewrap and
+Agent shell commands are OS-sandboxed and run without a permission prompt: the
+sandbox is the boundary, so confined work is not asked about. The separate
+`unrestricted_shell` tool always requires permission and runs with the invoking
+user's local authority, without an OS sandbox. Linux requires Bubblewrap and
 unprivileged user namespaces; the Nix package and development shell include
 Bubblewrap. macOS uses the system Seatbelt executable. The host filesystem is
 read-only, the workspace and its Git metadata are writable except for existing
@@ -246,7 +245,7 @@ parrot chat [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
             [--mode ID] [--thinking]
 parrot run [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
            [--mode ID] [--thinking] [--format text|jsonl]
-           [--permission deny|ask] [--interactive-prompts]
+           [--interactive-prompts]
 parrot models [--format lines|json]
 parrot usage [--format lines|json]
 parrot modes
@@ -266,11 +265,11 @@ parrot help
 
 Prompt text may be supplied as one argument, piped on stdin, or both. Piped
 stdin is always prompt data. Reviewed `edit` and `apply_patch` operations inside
-the current workspace, bounded web fetches, and sandboxed shell commands are
-allowed by default. Use `run --permission deny` to deny these operations or
-`run --permission ask --interactive-prompts` to prompt;
+the current workspace, bounded web fetches, MCP calls, and sandboxed shell
+commands run without a prompt; only `unrestricted_shell`, `exec_command` with
+`disable_sandbox`, `set_config`, and `request_write_permission` ask.
 `--interactive-prompts` explicitly opens `/dev/tty` for permission and question
-replies. `serve` refuses non-loopback addresses because the HTTP API has no
+replies; without it a prompt is denied. `serve` refuses non-loopback addresses because the HTTP API has no
 authentication layer.
 
 On a real terminal, chat uses a bounded inline editor without an alternate

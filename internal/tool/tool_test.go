@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/change"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
@@ -24,7 +25,6 @@ import (
 type testTool struct {
 	BasePresentation
 	id     string
-	stale  bool
 	result *Result
 }
 
@@ -35,11 +35,7 @@ func (testTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}`)
 }
 func (t testTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
-	p, err := NewPlan(t.id, raw, nil, nil, nil)
-	if t.stale {
-		p.OperationHash = "stale"
-	}
-	return p, err
+	return NewPlan(t.id, raw, nil, nil, nil)
 }
 func (t testTool) Execute(_ context.Context, _ Plan, _ CallContext) (Result, error) {
 	if t.result != nil {
@@ -81,12 +77,6 @@ func TestExecutorSchemaAndStalePlan(t *testing.T) {
 		if _, err := e.Execute(context.Background(), "test", json.RawMessage(raw), CallContext{}); err == nil {
 			t.Errorf("invalid input accepted: %s", raw)
 		}
-	}
-	r := NewRegistry()
-	_ = r.Register(testTool{id: "test", stale: true})
-	e := Executor{Snapshot: r.Materialize()}
-	if _, err := e.Execute(context.Background(), "test", json.RawMessage(`{"value":"x"}`), CallContext{}); err == nil || !strings.Contains(err.Error(), "stale") {
-		t.Fatalf("got %v", err)
 	}
 }
 
@@ -472,48 +462,52 @@ func toolHarness(t *testing.T) (*workspace.Workspace, Executor, CallContext) {
 			t.Fatal(err)
 		}
 	}
-	broker := permission.NewBroker(DefaultReadOnlyPolicy(), true, nil)
+	broker := permission.NewBroker(true, nil)
 	call := CallContext{Workspace: w}
 	return w, Executor{Snapshot: r.Materialize(), Permissions: broker, MaxOutputBytes: 4096}, call
 }
 
-func TestDefaultWorkspaceAndReadOnlyPolicies(t *testing.T) {
-	request := func(toolID, kind, operation string) permission.Request {
-		return permission.Request{ToolID: toolID, Resources: []permission.Resource{{Kind: kind, Identifier: "/workspace/file", Operation: operation}}}
+// Approval is reserved for operations the sandbox cannot contain. Every other
+// tool plans no permission request at all, so it is never prompted.
+func TestOnlySandboxEscapingToolsRequestApproval(t *testing.T) {
+	_, ws, changes := workspaceToolHarness(t)
+	call := CallContext{Workspace: ws, Changes: changes, SessionID: "s"}
+	content := []byte("hello\n")
+	if err := os.WriteFile(filepath.Join(ws.Root(), "a.txt"), content, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	tests := []struct {
-		name     string
-		request  permission.Request
-		decision permission.Decision
-		readOnly permission.Decision
+	grantable := t.TempDir()
+
+	for _, test := range []struct {
+		name  string
+		tool  Tool
+		input string
+		want  int
 	}{
-		{name: "read", request: request("read", "filesystem", "read"), decision: permission.Allow, readOnly: permission.Allow},
-		{name: "external read", request: request("read", "external_filesystem", "read"), decision: permission.Allow, readOnly: permission.Allow},
-		{name: "external search", request: request("grep", "external_filesystem", "search"), decision: permission.Allow, readOnly: permission.Allow},
-		{name: "web fetch get", request: request("web_fetch", "network", "GET"), decision: permission.Allow, readOnly: permission.Allow},
-		{name: "web fetch head", request: request("web_fetch", "network", "HEAD"), decision: permission.Allow, readOnly: permission.Allow},
-		{name: "other network tool", request: request("other", "network", "GET"), decision: permission.Ask, readOnly: permission.Ask},
-		{name: "web fetch unsupported operation", request: request("web_fetch", "network", "POST"), decision: permission.Ask, readOnly: permission.Ask},
-		{name: "edit write", request: request("edit", "filesystem", "write"), decision: permission.Allow, readOnly: permission.Ask},
-		{name: "edit create", request: request("edit", "filesystem", "create"), decision: permission.Allow, readOnly: permission.Ask},
-		{name: "patch delete", request: request("apply_patch", "filesystem", "delete"), decision: permission.Allow, readOnly: permission.Ask},
-		{name: "edit external capability", request: request("edit", "external_filesystem", "write"), decision: permission.Ask, readOnly: permission.Ask},
-		{name: "shell", request: request("shell", "process", "execute"), decision: permission.Allow, readOnly: permission.Ask},
-		{name: "exec command", request: request("exec_command", "process", "execute"), decision: permission.Allow, readOnly: permission.Ask},
-		{name: "exec command unrestricted", request: request("exec_command", "process", "execute_unrestricted"), decision: permission.Ask, readOnly: permission.Ask},
-		{name: "other process tool", request: request("other", "process", "execute"), decision: permission.Ask, readOnly: permission.Ask},
-		{name: "shell non-process resource", request: request("shell", "filesystem", "execute"), decision: permission.Ask, readOnly: permission.Ask},
-		{name: "shell unsupported operation", request: request("shell", "process", "inspect"), decision: permission.Ask, readOnly: permission.Ask},
-	}
-	workspacePolicy := DefaultWorkspacePolicy()
-	readOnlyPolicy := DefaultReadOnlyPolicy()
-	for _, test := range tests {
+		{name: "read", tool: NewReadTool(ReadConfig{}), input: `{"path":"a.txt"}`},
+		{name: "grep", tool: NewGrepTool(GrepConfig{}), input: `{"pattern":"hello"}`},
+		{name: "glob", tool: NewGlobTool(GlobConfig{}), input: `{"pattern":"*.txt"}`},
+		{name: "edit", tool: NewEditTool(changes), input: `{"path":"a.txt","expected_sha256":"` + change.SHA256(content) + `","new":"world"}`},
+		{name: "shell", tool: NewShellTool(nil), input: `{"shell":"/bin/sh","command":"true"}`},
+		{name: "exec_command sandboxed", tool: NewExecCommandTool(nil), input: `{"cmd":"true","shell":"/bin/sh"}`},
+
+		{name: "unrestricted_shell", tool: NewUnrestrictedShellTool(nil), input: `{"shell":"/bin/sh","command":"true"}`, want: 1},
+		{name: "exec_command unsandboxed", tool: NewExecCommandTool(nil), input: `{"cmd":"true","shell":"/bin/sh","sandbox_permissions":"disable_sandbox","justification":"needs the host"}`, want: 1},
+		{name: "set_config", tool: NewSetConfigTool(t.TempDir()), input: `{"key":"model","value":"openai/gpt-4","operation":"set"}`, want: 1},
+		{name: "request_write_permission", tool: NewWritePermissionTool(nil), input: `{"path":"` + grantable + `"}`, want: 1},
+	} {
 		t.Run(test.name, func(t *testing.T) {
-			if got, _, _ := workspacePolicy.Evaluate(test.request); got != test.decision {
-				t.Fatalf("workspace decision = %q, want %q", got, test.decision)
+			planned, err := test.tool.Plan(context.Background(), json.RawMessage(test.input), call)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if got, _, _ := readOnlyPolicy.Evaluate(test.request); got != test.readOnly {
-				t.Fatalf("read-only decision = %q, want %q", got, test.readOnly)
+			if len(planned.Permissions) != test.want {
+				t.Fatalf("permission requests = %d, want %d", len(planned.Permissions), test.want)
+			}
+			for _, request := range planned.Permissions {
+				if request.ToolID != test.tool.ID() {
+					t.Fatalf("request tool ID = %q, want %q", request.ToolID, test.tool.ID())
+				}
 			}
 		})
 	}
@@ -571,8 +565,9 @@ func TestReadAndGrepExplicitExternalPaths(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if readPlan.Permissions[0].Resources[0].Kind != "external_filesystem" || grepPlan.Permissions[0].Resources[0].Kind != "external_filesystem" {
-		t.Fatalf("external resources mislabeled: read = %q, grep = %q", readPlan.Permissions[0].Resources[0].Kind, grepPlan.Permissions[0].Resources[0].Kind)
+	// An explicit external path is still a bounded read, so it is not prompted.
+	if len(readPlan.Permissions) != 0 || len(grepPlan.Permissions) != 0 {
+		t.Fatalf("external read requested approval: read = %d, grep = %d", len(readPlan.Permissions), len(grepPlan.Permissions))
 	}
 
 	read, err := executor.Execute(context.Background(), "read", json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)), call)

@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
-	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"strings"
 )
 
@@ -50,18 +49,14 @@ func (t *MCPTool) DescribeRequest(json.RawMessage) (string, error) {
 }
 func (t *MCPTool) JSONSchema() json.RawMessage { return append(json.RawMessage(nil), t.schema...) }
 func (t *MCPTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
-	canonical, err := permission.CanonicalJSON(raw)
+	canonical, err := CanonicalJSON(raw)
 	if err != nil {
 		return Plan{}, err
 	}
 	digest := sha256.Sum256(canonical)
 	hash := hex.EncodeToString(digest[:])
 	review, _ := json.Marshal(map[string]any{"server": t.definition.Server, "tool": t.definition.Tool, "arguments_sha256": hash})
-	request, err := permission.NewRequest(t.ID(), raw, []permission.Resource{{Kind: "mcp", Identifier: t.definition.Server + "/" + t.definition.Tool, Operation: "call", Attributes: map[string]string{"arguments_sha256": hash}}}, review)
-	if err != nil {
-		return Plan{}, err
-	}
-	return NewPlan(t.ID(), raw, []permission.Request{request}, review, mcpPlan{arguments: canonical, hash: hash})
+	return NewPlan(t.ID(), raw, nil, review, mcpPlan{arguments: canonical, hash: hash})
 }
 func (t *MCPTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	planned, ok := plan.Data.(mcpPlan)

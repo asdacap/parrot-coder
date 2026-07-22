@@ -21,12 +21,14 @@ import (
 type recordingAuthorizer struct {
 	mu      sync.Mutex
 	request permission.Request
+	calls   int
 	before  func()
 }
 
 func (a *recordingAuthorizer) Authorize(_ context.Context, request permission.Request) (permission.Decision, error) {
 	a.mu.Lock()
 	a.request = request
+	a.calls++
 	before := a.before
 	a.mu.Unlock()
 	if before != nil {
@@ -45,7 +47,7 @@ func workspaceToolHarness(t *testing.T) (context.Context, *workspace.Workspace, 
 	return ctx, ws, change.NewService(change.Config{})
 }
 
-func TestEditPermissionReviewHashAndCommitIntegration(t *testing.T) {
+func TestEditReviewHashAndCommitIntegration(t *testing.T) {
 	ctx, ws, changes := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), "file")
 	before := []byte("before\n")
@@ -58,8 +60,10 @@ func TestEditPermissionReviewHashAndCommitIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(planned.Permissions) != 1 || planned.Permissions[0].Verify() != nil || planned.OperationHash == "" {
-		t.Fatalf("invalid permission-bound plan: %#v", planned)
+	// A workspace edit is confined by the sandbox, so it is never prompted; the
+	// review still records the exact diff and preimage hash.
+	if len(planned.Permissions) != 0 {
+		t.Fatalf("edit requested approval: %#v", planned.Permissions)
 	}
 	if !strings.Contains(string(planned.Review), `"diff"`) || !strings.Contains(string(planned.Review), change.SHA256(before)) {
 		t.Fatalf("review lacks exact diff/hash: %s", planned.Review)
@@ -75,17 +79,14 @@ func TestEditPermissionReviewHashAndCommitIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Metadata["files"] != 1 || authorizer.request.OperationHash == "" {
-		t.Fatalf("result/request = %#v / %#v", result, authorizer.request)
+	if result.Metadata["files"] != 1 || authorizer.calls != 0 {
+		t.Fatalf("result/authorizations = %#v / %d", result, authorizer.calls)
 	}
 	if !strings.HasSuffix(result.Text, "sha256: "+change.SHA256([]byte("after"))+"\n") {
 		t.Fatalf("edit result lacks after sha256: %q", result.Text)
 	}
-	if authorizer.request.Description != `Edit workspace file "file"` {
-		t.Fatalf("permission description = %q", authorizer.request.Description)
-	}
-	if authorizer.request.Verify() != nil {
-		t.Fatal("permission description was not bound to the operation hash")
+	if described, err := edit.DescribeRequest(planned.CanonicalInput); err != nil || described != `Edit workspace file "file"` {
+		t.Fatalf("describe = %q, %v", described, err)
 	}
 	if !strings.Contains(result.Text, "--- a/file") || !strings.Contains(result.Text, "+++ b/file") ||
 		!strings.Contains(result.Text, "-before") || !strings.Contains(result.Text, "+after") {
@@ -97,7 +98,7 @@ func TestEditPermissionReviewHashAndCommitIntegration(t *testing.T) {
 	}
 }
 
-func TestEditRevalidatesAfterPermission(t *testing.T) {
+func TestEditRevalidatesBeforeMutating(t *testing.T) {
 	ctx, ws, changes := workspaceToolHarness(t)
 	path := filepath.Join(ws.Root(), "file")
 	before := []byte("before")
@@ -105,15 +106,19 @@ func TestEditRevalidatesAfterPermission(t *testing.T) {
 		t.Fatal(err)
 	}
 	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","new":"after"}`)
-	registry := NewRegistry()
-	_ = registry.Register(NewEditTool(changes))
-	authorizer := &recordingAuthorizer{before: func() { _ = os.WriteFile(path, []byte("changed while asking"), 0o600) }}
-	executor := Executor{Snapshot: registry.Materialize(), Permissions: authorizer}
-	if _, err := executor.Execute(ctx, "edit", raw, CallContext{Workspace: ws}); !errors.Is(err, change.ErrStale) {
+	edit := NewEditTool(changes)
+	planned, err := edit.Plan(ctx, raw, CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("changed after planning"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := edit.Execute(ctx, planned, CallContext{Workspace: ws}); !errors.Is(err, change.ErrStale) {
 		t.Fatalf("stale execution error = %v", err)
 	}
 	data, _ := os.ReadFile(path)
-	if string(data) != "changed while asking" {
+	if string(data) != "changed after planning" {
 		t.Fatalf("stale execution overwrote file: %q", data)
 	}
 }
@@ -216,7 +221,7 @@ func TestWritePermissionRejectsWorkspacePath(t *testing.T) {
 	}
 }
 
-func TestUnrestrictedShellRequiresDefaultPermission(t *testing.T) {
+func TestUnrestrictedShellRequiresPermission(t *testing.T) {
 	_, ws, _ := workspaceToolHarness(t)
 	planned, err := NewUnrestrictedShellTool(nil).Plan(context.Background(), json.RawMessage(`{"shell":"/bin/sh","command":"true"}`), CallContext{Workspace: ws})
 	if err != nil {
@@ -225,13 +230,9 @@ func TestUnrestrictedShellRequiresDefaultPermission(t *testing.T) {
 	if len(planned.Permissions) != 1 || planned.Permissions[0].ToolID != "unrestricted_shell" {
 		t.Fatalf("permission = %#v", planned.Permissions)
 	}
-	decision, _, _ := DefaultWorkspacePolicy().Evaluate(planned.Permissions[0])
-	if decision != permission.Ask {
-		t.Fatalf("decision = %q", decision)
-	}
 }
 
-func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T) {
+func TestShellReviewOmitsEnvironmentValues(t *testing.T) {
 	_, ws, _ := workspaceToolHarness(t)
 	raw := json.RawMessage(`{"shell":"/bin/sh","command":"printf ok","env":{"API_TOKEN":"top-secret"}}`)
 	tool := NewShellTool(nil)
@@ -243,8 +244,9 @@ func TestShellReviewBindsCanonicalResourcesWithoutEnvironmentValues(t *testing.T
 	if strings.Contains(review, "top-secret") || !strings.Contains(review, "API_TOKEN") || !strings.Contains(review, "inside the OS sandbox") {
 		t.Fatalf("unsafe or incomplete review: %s", review)
 	}
-	if len(planned.Permissions) != 1 || planned.Permissions[0].ToolID != tool.ID() || planned.Permissions[0].Resources[0].Identifier == "" || planned.Permissions[0].Resources[0].Attributes["command_sha256"] == "" {
-		t.Fatalf("shell resources = %#v", planned.Permissions)
+	// The sandboxed variant is confined, so it plans no approval.
+	if len(planned.Permissions) != 0 {
+		t.Fatalf("sandboxed shell requested approval: %#v", planned.Permissions)
 	}
 	description, err := tool.DescribeRequest(raw)
 	if err != nil {
@@ -310,7 +312,7 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(planned.Permissions) != 1 {
+	if len(planned.Permissions) != 0 {
 		t.Fatalf("plan = %#v", planned)
 	}
 }
@@ -326,7 +328,7 @@ func TestApplyPatchFormatParameter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(planned.Permissions) != 1 || !strings.Contains(planned.Permissions[0].Resources[0].Identifier, "created") {
+	if len(planned.Permissions) != 0 || !strings.Contains(string(planned.Review), "created") {
 		t.Fatalf("plan = %#v", planned)
 	}
 	if described, err := tool.DescribeRequest(unified); err != nil || !strings.Contains(described, "unified diff") {
