@@ -6,6 +6,7 @@ import (
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -202,14 +203,7 @@ func formatActivityUsage(item enhancedActivityItem) string {
 	return " · " + strings.Join(parts, " · ")
 }
 
-// formatTokenCount keeps small counts exact and abbreviates larger counts to
-// the nearest hundred tokens (one decimal place in thousands).
-func formatTokenCount(tokens int) string {
-	if tokens < 1000 {
-		return fmt.Sprintf("%d", tokens)
-	}
-	return fmt.Sprintf("%.1fk", float64(tokens)/1000)
-}
+func formatTokenCount(tokens int) string { return chatview.FormatTokenCount(tokens) }
 
 // formatCost returns a human-friendly USD cost string. Sub-cent amounts show
 // four decimal places so very cheap turns remain informative; larger amounts

@@ -608,6 +608,9 @@ func TestFormatTokenCountByHundreds(t *testing.T) {
 		{tokens: 300100, want: "300.1k"},
 		{tokens: 377845, want: "377.8k"},
 		{tokens: 690776, want: "690.8k"},
+		{tokens: 999900, want: "999.9k"},
+		{tokens: 1000000, want: "1.0M"},
+		{tokens: 11646500, want: "11.6M"},
 	}
 	for _, test := range tests {
 		if got := formatTokenCount(test.tokens); got != test.want {

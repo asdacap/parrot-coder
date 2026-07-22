@@ -105,11 +105,17 @@ func stripPairedMarkdownMarker(value, marker string) string {
 	}
 }
 
+// FormatTokenCount keeps small counts exact and abbreviates larger counts with
+// one decimal place, scaling from thousands (k) to millions (M) so large totals
+// stay readable instead of growing to unwieldy thousands like 11646.5k.
 func FormatTokenCount(tokens int) string {
 	if tokens < 1000 {
 		return fmt.Sprintf("%d", tokens)
 	}
-	return fmt.Sprintf("%.1fk", float64(tokens)/1000)
+	if tokens < 1000000 {
+		return fmt.Sprintf("%.1fk", float64(tokens)/1000)
+	}
+	return fmt.Sprintf("%.1fM", float64(tokens)/1000000)
 }
 
 func TruncateToolBlock(block string, maxLines int) string {
