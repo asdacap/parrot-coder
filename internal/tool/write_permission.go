@@ -37,6 +37,9 @@ func (*WritePermissionTool) PermissionChoices() []permission.Choice {
 func (*WritePermissionTool) Description() string {
 	return "Request session-scoped permission for sandboxed shell commands to write to an existing file or directory."
 }
+func (*WritePermissionTool) SystemPromptGuidance() string {
+	return `request_write_permission grants session-scoped write access to an existing file or directory for sandboxed shell commands. After a successful grant, exec_command and other sandboxed tools can write to that path. This is necessary because the sandbox presents paths without write permission as read-only filesystems, even when the underlying filesystem is writable.`
+}
 func (*WritePermissionTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Existing file or directory to make writable for sandboxed shell commands in the current session"}},"required":["path"],"additionalProperties":false}`)
 }

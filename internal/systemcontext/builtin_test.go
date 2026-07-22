@@ -230,3 +230,44 @@ func TestBuiltinsIncludeSubagentsSource(t *testing.T) {
 		t.Fatalf("subagent observation = %#v", observation)
 	}
 }
+
+func TestBuiltinsIncludeToolSystemGuidanceWhenNonEmpty(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name     string
+		guidance string
+		wantKey  bool
+	}{
+		{name: "non-empty guidance registers source", guidance: "exec_command runs sandboxed", wantKey: true},
+		{name: "empty guidance omits source", guidance: "", wantKey: false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			sources, err := Builtins(BuiltinOptions{
+				ProjectRoot:        root,
+				WorkingDirectory:   root,
+				ToolSystemGuidance: test.guidance,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			registry, err := NewRegistry(sources...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			snapshot, err := registry.Observe(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation, ok := snapshot["runtime:tool-system-guidance"]
+			if test.wantKey {
+				if !ok || observation.Baseline != test.guidance {
+					t.Fatalf("tool-system-guidance = %#v, want %q", observation, test.guidance)
+				}
+			} else {
+				if ok {
+					t.Fatalf("tool-system-guidance should be absent, got %#v", observation)
+				}
+			}
+		})
+	}
+}

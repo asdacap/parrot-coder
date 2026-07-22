@@ -101,6 +101,10 @@ type BasePresentation struct{}
 // Presentation implements Tool for tools with nothing to declare.
 func (BasePresentation) Presentation() Presentation { return Presentation{} }
 
+// SystemPromptGuidance implements Tool for tools that have no extra system
+// prompt explanation. Tools override this to inject runtime-behavior guidance.
+func (BasePresentation) SystemPromptGuidance() string { return "" }
+
 // PresentationEntry pairs a tool ID with its declared presentation. It is a
 // projection parallel to Definition rather than a field of it.
 type PresentationEntry struct {

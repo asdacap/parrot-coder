@@ -72,6 +72,11 @@ type Tool interface {
 	// what a tool does rather than on which tool it is. Embed BasePresentation
 	// for the neutral default.
 	Presentation() Presentation
+	// SystemPromptGuidance returns extra text injected into the system prompt
+	// to explain this tool's runtime behavior beyond its schema. Return "" to
+	// opt out; only non-empty guidance is included. Embed BasePresentation for
+	// the neutral default.
+	SystemPromptGuidance() string
 	Plan(context.Context, json.RawMessage, CallContext) (Plan, error)
 	Execute(context.Context, Plan, CallContext) (Result, error)
 }
@@ -177,6 +182,20 @@ func (s Snapshot) Presentations() []PresentationEntry {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
+}
+
+// SystemPromptGuidance collects the non-empty guidance text declared by every
+// tool. Entries are sorted so the output is deterministic. It returns "" when
+// no tool declares guidance, so the system context source is omitted entirely.
+func (s Snapshot) SystemPromptGuidance() string {
+	var entries []string
+	for _, t := range s.tools {
+		if g := t.SystemPromptGuidance(); g != "" {
+			entries = append(entries, g)
+		}
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, "\n\n")
 }
 
 func definitions(tools map[string]Tool) []Definition {

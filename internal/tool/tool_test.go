@@ -621,3 +621,73 @@ func TestGrepDefaultLimits(t *testing.T) {
 		t.Fatalf("MaxVisited = %d, want 1000000", grep.Config.MaxVisited)
 	}
 }
+
+type guidanceTestTool struct {
+	testTool
+	guidance string
+}
+
+func (t guidanceTestTool) SystemPromptGuidance() string { return t.guidance }
+
+func TestSnapshotSystemPromptGuidanceCollectsNonEmpty(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		tools    []Tool
+		want     string
+	}{
+		{
+			name:  "only silent tools return empty",
+			tools: []Tool{testTool{id: "a"}, testTool{id: "b"}},
+			want:  "",
+		},
+		{
+			name:  "single tool with guidance",
+			tools: []Tool{testTool{id: "a"}, guidanceTestTool{testTool: testTool{id: "b"}, guidance: "b explains itself"}},
+			want:  "b explains itself",
+		},
+		{
+			name: "multiple tools sorted by guidance text",
+			tools: []Tool{
+				guidanceTestTool{testTool: testTool{id: "z"}, guidance: "zebra guidance"},
+				guidanceTestTool{testTool: testTool{id: "a"}, guidance: "alpha guidance"},
+			},
+			want: "alpha guidance\n\nzebra guidance",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			r := NewRegistry()
+			for _, item := range test.tools {
+				if err := r.Register(item); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if got := r.Materialize().SystemPromptGuidance(); got != test.want {
+				t.Fatalf("SystemPromptGuidance() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestExecCommandSystemPromptGuidanceExplainsSandbox(t *testing.T) {
+	guidance := (&ExecCommandTool{}).SystemPromptGuidance()
+	if guidance == "" {
+		t.Fatal("exec_command guidance should not be empty")
+	}
+	for _, fragment := range []string{"sandbox", "read-only", "request_write_permission"} {
+		if !strings.Contains(guidance, fragment) {
+			t.Errorf("guidance missing %q: %s", fragment, guidance)
+		}
+	}
+}
+
+func TestWritePermissionSystemPromptGuidanceExplainsSandbox(t *testing.T) {
+	guidance := (&WritePermissionTool{}).SystemPromptGuidance()
+	if guidance == "" {
+		t.Fatal("request_write_permission guidance should not be empty")
+	}
+	for _, fragment := range []string{"sandbox", "read-only"} {
+		if !strings.Contains(guidance, fragment) {
+			t.Errorf("guidance missing %q: %s", fragment, guidance)
+		}
+	}
+}
