@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -133,5 +134,25 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	}
 	if result.Text != `{"task_id":"proc_test","session_id":"session","kind":"shell","status":"canceled","started_at":"2026-07-19T01:02:03Z"}` {
 		t.Fatalf("interrupt = %s", result.Text)
+	}
+
+	for name, description := range map[string]string{
+		"task_interrupt":   interrupt.Description(),
+		"task_list_active": list.Description(),
+		"wait_task":        (&WaitTaskTool{}).Description(),
+	} {
+		contract := strings.ToLower(description)
+		if !strings.Contains(contract, "process") || !strings.Contains(contract, "session") {
+			t.Errorf("%s description = %q", name, description)
+		}
+	}
+	for name, schema := range map[string]string{
+		"task_interrupt": string(interrupt.JSONSchema()),
+		"wait_task":      string((&WaitTaskTool{}).JSONSchema()),
+	} {
+		contract := strings.ToLower(schema)
+		if !strings.Contains(contract, "process") || !strings.Contains(contract, "session") {
+			t.Errorf("%s schema = %s", name, schema)
+		}
 	}
 }

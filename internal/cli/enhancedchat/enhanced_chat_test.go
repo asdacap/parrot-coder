@@ -30,7 +30,7 @@ func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error)   { return a.
 
 func TestSubtaskPromptUsesSpawnAndMonitor(t *testing.T) {
 	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explorer", Model: "local/model", Subtask: true})
-	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". agent_spawn returns a task_id. Call wait_task(task_id), then relay its output.\n\nInspect this"
+	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". agent_spawn returns a session_id. Call wait_task with that session_id as task_id, then relay its output.\n\nInspect this"
 	if prompt != want {
 		t.Fatalf("subtask prompt = %q, want %q", prompt, want)
 	}
@@ -625,13 +625,13 @@ func TestEnhancedMonitorLabelUsesFriendlyTaskName(t *testing.T) {
 	}
 }
 
-func TestTaskActivityLabelsUseTaskID(t *testing.T) {
+func TestTaskActivityLabelsUseTargetID(t *testing.T) {
 	for _, test := range []struct {
 		name  string
 		input map[string]any
 		want  string
 	}{
-		{name: "agent_send", input: map[string]any{"task_id": "task_agent", "message": "continue"}, want: "agent_send · task_agent · continue"},
+		{name: "agent_send", input: map[string]any{"session_id": "session_agent", "message": "continue"}, want: "agent_send · session_agent · continue"},
 		{name: "monitor", input: map[string]any{"task_id": "task_agent"}, want: "monitor · task_agent"},
 		{name: "wait_task", input: map[string]any{"task_id": "task_agent"}, want: "wait_task · task_agent"},
 		{name: "task_interrupt", input: map[string]any{"task_id": "task_agent"}, want: "task_interrupt · task_agent"},

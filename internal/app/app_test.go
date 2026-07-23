@@ -695,7 +695,7 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 
 func TestAgentToolsUseIsolatedChildSessionAndReturnOutput(t *testing.T) {
 	var parentContinuations atomic.Int32
-	agentIDPattern := regexp.MustCompile(`task_[0-9a-f]+`)
+	childSessionIDPattern := regexp.MustCompile(`ses_[0-7][0-9A-HJKMNP-TV-Z]{25}`)
 	releaseChild := make(chan struct{})
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
@@ -708,12 +708,12 @@ func TestAgentToolsUseIsolatedChildSessionAndReturnOutput(t *testing.T) {
 		case bytes.Contains(body, []byte("Task monitor notification")) && bytes.Contains(body, []byte("child output")):
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent received child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		case bytes.Contains(body, []byte("function_call_output")) && parentContinuations.Add(1) == 1:
-			agentID := string(agentIDPattern.Find(body))
-			if agentID == "" {
-				t.Errorf("spawn output omitted task ID: %s", body)
+			childSessionID := string(childSessionIDPattern.Find(body))
+			if childSessionID == "" {
+				t.Errorf("spawn output omitted child session ID: %s", body)
 				return
 			}
-			arguments := fmt.Sprintf(`{"task_id":%q}`, agentID)
+			arguments := fmt.Sprintf(`{"task_id":%q}`, childSessionID)
 			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_monitor\",\"type\":\"function_call\",\"call_id\":\"call_monitor\",\"name\":\"monitor\",\"arguments\":%q}}\n\n", arguments)
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 			close(releaseChild)
@@ -1020,20 +1020,20 @@ func TestReportSubagentEventConvertsUsageAndToolCalls(t *testing.T) {
 
 type testSessionHierarchy map[string]agent.ChildSession
 
-func (h testSessionHierarchy) ChildRelation(sessionID string) (string, string, bool) {
+func (h testSessionHierarchy) ChildRelation(sessionID string) (string, bool) {
 	relation, ok := h[sessionID]
-	return relation.ParentSessionID, relation.TaskID, ok
+	return relation.ParentSessionID, ok
 }
 
 func TestBrokerFlattensTaskAttribution(t *testing.T) {
-	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent", TaskID: "outer-task"}})
+	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent"}})
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
 
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "working"})
 	live.PublishEvent(v1.Event{Type: v1.EventMessagePartDelta, SessionID: "child", Data: delta})
 	direct := <-parentEvents
-	if direct.Type != v1.EventMessagePartDelta || direct.SessionID != "parent" || direct.TaskID != "outer-task" || direct.Sequence != nil {
+	if direct.Type != v1.EventMessagePartDelta || direct.SessionID != "parent" || direct.TaskID != "child" || direct.Sequence != nil {
 		t.Fatalf("direct projection = %#v", direct)
 	}
 
@@ -1049,15 +1049,15 @@ func TestPublishSubagentLifecycleEmitsFlatTaskEvents(t *testing.T) {
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
 
-	publishSubagentLifecycle(live, subagent.LifecycleEvent{Kind: subagent.LifecycleStart, Task: subagent.Task{ID: "task_1", SessionID: "child", ParentSession: "parent", Agent: "explore"}})
+	publishSubagentLifecycle(live, subagent.LifecycleEvent{Kind: subagent.LifecycleStart, Task: subagent.Task{SessionID: "child", ParentSession: "parent", Agent: "explore"}})
 	started := decodeTaskEvent(t, <-parentEvents)
-	if started.TaskID != "task_1" || started.SessionID != "child" || started.ParentSessionID != "parent" || started.Kind != "agent" || started.Agent != "explore" {
+	if started.TaskID != "child" || started.SessionID != "child" || started.ParentSessionID != "parent" || started.Kind != "agent" || started.Agent != "explore" {
 		t.Fatalf("start = %#v", started)
 	}
 
-	publishSubagentLifecycle(live, subagent.LifecycleEvent{Kind: subagent.LifecycleFinished, Task: subagent.Task{ID: "task_1", SessionID: "child", ParentSession: "parent", Agent: "explore", Status: subagent.StatusFailed, Error: "boom"}})
+	publishSubagentLifecycle(live, subagent.LifecycleEvent{Kind: subagent.LifecycleFinished, Task: subagent.Task{SessionID: "child", ParentSession: "parent", Agent: "explore", Status: subagent.StatusFailed, Error: "boom"}})
 	finished := decodeTaskEvent(t, <-parentEvents)
-	if finished.TaskID != "task_1" || finished.SessionID != "child" || finished.Status != "failed" || finished.Error != "boom" {
+	if finished.TaskID != "child" || finished.SessionID != "child" || finished.Status != "failed" || finished.Error != "boom" {
 		t.Fatalf("finished = %#v", finished)
 	}
 }
@@ -1076,7 +1076,7 @@ func decodeTaskEvent(t *testing.T, item v1.Event) *v1.TaskEvent {
 }
 
 func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
-	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent", TaskID: "task-explore"}})
+	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent"}})
 	parentEvents, unsubscribeParent := live.Subscribe("parent", 2)
 	defer unsubscribeParent()
 	var progress []subagent.Progress
@@ -1088,7 +1088,7 @@ func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
 	usage, _ := json.Marshal(v1.SessionStatus{MessageID: "child-message", Kind: "usage", Usage: &v1.Usage{TotalTokens: 42}})
 	live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "child", Data: usage})
 	item := <-parentEvents
-	if item.Type != v1.EventSessionStatus || item.SessionID != "parent" || item.TaskID != "task-explore" {
+	if item.Type != v1.EventSessionStatus || item.SessionID != "parent" || item.TaskID != "child" {
 		t.Fatalf("projection = %#v", item)
 	}
 	if len(progress) != 1 || progress[0].Usage.TotalTokens != 42 {

@@ -241,17 +241,13 @@ func (s *agentSession) completed(err error) {
 	}
 }
 
-var (
-	ErrAgentSessionActive = errors.New("agent: session is active")
-	ErrChildTaskMismatch  = errors.New("agent: child belongs to another task")
-)
+var ErrAgentSessionActive = errors.New("agent: session is active")
 
 // ChildSession is the canonical relationship between a child agent session and
-// the task in its direct parent session which created it.
+// its direct parent session.
 type ChildSession struct {
 	SessionID       string
 	ParentSessionID string
-	TaskID          string
 }
 
 // ChildCreatedObserver receives child relationships after they have been
@@ -271,19 +267,28 @@ type AgentSessionRepository struct {
 	children       map[string]ChildSession
 }
 
-func NewAgentSessionRepository(config AgentSessionConfig, observers ...LifecycleObserver) (*AgentSessionRepository, error) {
+func NewAgentSessionRepository(ctx context.Context, config AgentSessionConfig, observers ...LifecycleObserver) (*AgentSessionRepository, error) {
 	if err := validateAgentSessionConfig(&config); err != nil {
 		return nil, err
 	}
-	return &AgentSessionRepository{
+	items, err := config.Sessions.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("agent: list sessions: %w", err)
+	}
+	repository := &AgentSessionRepository{
 		config: config, observers: observers,
 		sessions: make(map[string]*agentSession), children: make(map[string]ChildSession),
-	}, nil
+	}
+	for _, item := range items {
+		if item.ParentSessionID != "" {
+			repository.children[item.ID] = ChildSession{SessionID: item.ID, ParentSessionID: item.ParentSessionID}
+		}
+	}
+	return repository, nil
 }
 
 type ChildSessionRequest struct {
 	ParentSessionID  string
-	TaskID           string
 	ProjectID        string
 	Name             string
 	Agent            string
@@ -332,7 +337,7 @@ func (r *AgentSessionRepository) CreateChild(ctx context.Context, request ChildS
 	if err != nil {
 		return nil, err
 	}
-	relation := ChildSession{SessionID: child.ID, ParentSessionID: parent.ID, TaskID: request.TaskID}
+	relation := ChildSession{SessionID: child.ID, ParentSessionID: parent.ID}
 	r.mu.Lock()
 	if r.children == nil {
 		r.children = make(map[string]ChildSession)
@@ -349,24 +354,32 @@ func (r *AgentSessionRepository) CreateChild(ctx context.Context, request ChildS
 	return runtime, nil
 }
 
-// AddChildCreatedObserver registers an observer for subsequently created child
-// sessions. Notifications are synchronous and occur outside the repository
-// lock, after the relationship can be queried.
+// AddChildCreatedObserver registers an observer and replays the current child
+// snapshot. Notifications are synchronous and occur outside the repository
+// lock, after each relationship can be queried.
 func (r *AgentSessionRepository) AddChildCreatedObserver(observer ChildCreatedObserver) {
 	if observer == nil {
 		return
 	}
 	r.mu.Lock()
 	r.childObservers = append(r.childObservers, observer)
+	children := make([]ChildSession, 0, len(r.children))
+	for _, relation := range r.children {
+		children = append(children, relation)
+	}
 	r.mu.Unlock()
+	sort.Slice(children, func(i, j int) bool { return children[i].SessionID < children[j].SessionID })
+	for _, relation := range children {
+		observer.ChildCreated(relation)
+	}
 }
 
-// ChildRelation returns the direct parent and creating task for sessionID.
-func (r *AgentSessionRepository) ChildRelation(sessionID string) (parentSessionID, taskID string, ok bool) {
+// ChildRelation returns the direct parent for sessionID.
+func (r *AgentSessionRepository) ChildRelation(sessionID string) (parentSessionID string, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	relation, ok := r.children[sessionID]
-	return relation.ParentSessionID, relation.TaskID, ok
+	return relation.ParentSessionID, ok
 }
 
 // ChildSessions returns a stable snapshot of a parent's direct children.
@@ -394,19 +407,26 @@ func (r *AgentSessionRepository) HasChildSessions(parentSessionID string) bool {
 	return false
 }
 
-// ForgetChild removes a relationship only when taskID still owns it. This
-// prevents cleanup for an obsolete task from removing a newer relationship.
-func (r *AgentSessionRepository) ForgetChild(sessionID, taskID string) error {
+// ForgetChild removes the relationship for sessionID.
+func (r *AgentSessionRepository) ForgetChild(sessionID string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	relation, ok := r.children[sessionID]
-	if !ok {
-		return nil
-	}
-	if relation.TaskID != taskID {
-		return ErrChildTaskMismatch
-	}
 	delete(r.children, sessionID)
+	r.mu.Unlock()
+	return nil
+}
+
+// DiscardChild removes a child runtime, relationship, and durable session when
+// task admission fails immediately after creation. The runtime hierarchy is
+// retained if durable deletion fails, so a persisted child never becomes
+// unreachable from its parent.
+func (r *AgentSessionRepository) DiscardChild(ctx context.Context, sessionID string) error {
+	if err := r.config.Sessions.Delete(ctx, sessionID); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	delete(r.sessions, sessionID)
+	delete(r.children, sessionID)
+	r.mu.Unlock()
 	return nil
 }
 

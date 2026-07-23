@@ -11,18 +11,15 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 )
 
-type fakeHierarchy map[string]struct {
-	parent string
-	taskID string
-}
+type fakeHierarchy map[string]string
 
-func (f fakeHierarchy) ChildRelation(sessionID string) (string, string, bool) {
-	relation, ok := f[sessionID]
-	return relation.parent, relation.taskID, ok
+func (f fakeHierarchy) ChildRelation(sessionID string) (string, bool) {
+	parent, ok := f[sessionID]
+	return parent, ok
 }
 
 func TestBrokerAttributesOrdinaryAndChildSessions(t *testing.T) {
-	hierarchy := fakeHierarchy{"child": {parent: "parent", taskID: "task_child"}}
+	hierarchy := fakeHierarchy{"child": "parent"}
 	broker := event.NewBroker(nil, nil, hierarchy)
 	broker.SetTaskIDFor(func(string) string { return "main" })
 	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
@@ -32,7 +29,7 @@ func TestBrokerAttributesOrdinaryAndChildSessions(t *testing.T) {
 		want      string
 	}{
 		{sessionID: "ordinary", want: "main"},
-		{sessionID: "child", want: "task_child"},
+		{sessionID: "child", want: "child"},
 	} {
 		events, closeSubscription := broker.Subscribe(test.sessionID, 1)
 		broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: test.sessionID, Data: data})
@@ -45,8 +42,8 @@ func TestBrokerAttributesOrdinaryAndChildSessions(t *testing.T) {
 
 func TestBrokerProjectsDescendantsToEveryAncestor(t *testing.T) {
 	hierarchy := fakeHierarchy{
-		"child":      {parent: "parent", taskID: "task_child"},
-		"grandchild": {parent: "child", taskID: "task_grandchild"},
+		"child":      "parent",
+		"grandchild": "child",
 	}
 	broker := event.NewBroker(nil, nil, hierarchy)
 	parent, closeParent := broker.Subscribe("parent", 2)
@@ -57,7 +54,7 @@ func TestBrokerProjectsDescendantsToEveryAncestor(t *testing.T) {
 
 	broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "grandchild", Data: data})
 	for name, item := range map[string]v1.Event{"parent": <-parent, "child": <-child} {
-		if item.SessionID != name || item.TaskID != "task_grandchild" || item.Sequence != nil || item.CreatedAt != nil {
+		if item.SessionID != name || item.TaskID != "grandchild" || item.Sequence != nil || item.CreatedAt != nil {
 			t.Fatalf("%s projection = %#v", name, item)
 		}
 	}
@@ -70,7 +67,7 @@ func TestBrokerProjectsDescendantsToEveryAncestor(t *testing.T) {
 
 func TestBrokerObserveSessionProjectsDurableEvents(t *testing.T) {
 	_, repository, childSessionID := newRepository(t)
-	hierarchy := fakeHierarchy{childSessionID: {parent: "parent", taskID: "task_child"}}
+	hierarchy := fakeHierarchy{childSessionID: "parent"}
 	broker := event.NewBroker(repository, nil, hierarchy)
 	parent, closeParent := broker.Subscribe("parent", 1)
 	defer closeParent()
@@ -84,7 +81,7 @@ func TestBrokerObserveSessionProjectsDurableEvents(t *testing.T) {
 	}
 	select {
 	case item := <-parent:
-		if item.ID == "" || item.SessionID != "parent" || item.TaskID != "task_child" || item.Type != v1.EventSessionStatus || string(item.Data) != string(data) {
+		if item.ID == "" || item.SessionID != "parent" || item.TaskID != childSessionID || item.Type != v1.EventSessionStatus || string(item.Data) != string(data) {
 			t.Fatalf("durable projection = %#v", item)
 		}
 	case <-time.After(time.Second):

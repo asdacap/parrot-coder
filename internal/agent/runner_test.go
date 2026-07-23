@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
@@ -340,7 +342,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	}
 	snapshot := toolRegistry.Materialize()
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
-	agentSessions, err := NewAgentSessionRepository(AgentSessionConfig{
+	agentSessions, err := NewAgentSessionRepository(ctx, AgentSessionConfig{
 		Sessions:           sessions,
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
 		Agents:             agents,
@@ -406,8 +408,8 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	var observed ChildSession
 	h.agentSessions.AddChildCreatedObserver(childCreatedObserverFunc(func(child ChildSession) {
 		observed = child
-		if relationParent, taskID, ok := h.agentSessions.ChildRelation(child.SessionID); !ok || relationParent != child.ParentSessionID || taskID != child.TaskID {
-			t.Fatalf("relationship unavailable to observer: %q, %q, %v", relationParent, taskID, ok)
+		if relationParent, ok := h.agentSessions.ChildRelation(child.SessionID); !ok || relationParent != child.ParentSessionID {
+			t.Fatalf("relationship unavailable to observer: %q, %v", relationParent, ok)
 		}
 		if _, ok := h.agentSessions.Lookup(child.SessionID); !ok {
 			t.Fatal("runtime unavailable to observer")
@@ -415,7 +417,6 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	}))
 	child, err := h.agentSessions.CreateChild(context.Background(), ChildSessionRequest{
 		ParentSessionID:  parent.ID,
-		TaskID:           "task-inspect",
 		ProjectID:        parent.ProjectID,
 		Name:             "inspect",
 		Agent:            BuildID,
@@ -435,13 +436,123 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	if bound, ok := h.agentSessions.Lookup(selected.ID); !ok || bound != child {
 		t.Fatal("created child was not bound in the repository")
 	}
-	wantRelation := ChildSession{SessionID: selected.ID, ParentSessionID: parent.ID, TaskID: "task-inspect"}
+	wantRelation := ChildSession{SessionID: selected.ID, ParentSessionID: parent.ID}
 	if observed != wantRelation {
 		t.Fatalf("observed child = %#v, want %#v", observed, wantRelation)
 	}
 	children := h.agentSessions.ChildSessions(parent.ID)
 	if len(children) != 1 || children[0] != wantRelation {
 		t.Fatalf("ChildSessions = %#v, want %#v", children, []ChildSession{wantRelation})
+	}
+}
+
+func TestAgentSessionRepositoryDiscardsPreparedChild(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	parent, err := h.sessions.Get(context.Background(), h.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := h.agentSessions.CreateChild(context.Background(), ChildSessionRequest{
+		ParentSessionID:  parent.ID,
+		ProjectID:        parent.ProjectID,
+		Name:             "discard",
+		Agent:            BuildID,
+		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childID := child.ID()
+	if err := h.agentSessions.DiscardChild(context.Background(), childID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.sessions.Get(context.Background(), childID); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("durable child lookup error = %v, want session not found", err)
+	}
+	if _, ok := h.agentSessions.Lookup(childID); ok {
+		t.Fatal("discarded child retained its runtime")
+	}
+	if _, ok := h.agentSessions.ChildRelation(childID); ok {
+		t.Fatal("discarded child retained its hierarchy relation")
+	}
+}
+
+func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
+	ctx := context.Background()
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	parent, err := h.sessions.Get(ctx, h.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	selection := session.Selection{Agent: BuildID, Provider: "fake", Model: "model"}
+	createChild := func(parentID, title string) session.Session {
+		t.Helper()
+		child, err := h.sessions.CreateSelected(ctx, session.CreateParams{
+			ParentSessionID: parentID,
+			ProjectID:       parent.ProjectID,
+			ProjectRoot:     parent.ProjectRoot,
+			Title:           title,
+		}, selection)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return child
+	}
+	childB := createChild(parent.ID, "child b")
+	childA := createChild(parent.ID, "child a")
+	nested := createChild(childA.ID, "nested")
+
+	restarted, err := NewAgentSessionRepository(ctx, h.agentSessions.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, relation := range []ChildSession{
+		{SessionID: childA.ID, ParentSessionID: parent.ID},
+		{SessionID: childB.ID, ParentSessionID: parent.ID},
+		{SessionID: nested.ID, ParentSessionID: childA.ID},
+	} {
+		if got, ok := restarted.ChildRelation(relation.SessionID); !ok || got != relation.ParentSessionID {
+			t.Errorf("ChildRelation(%q) = %q, %v; want %q, true", relation.SessionID, got, ok, relation.ParentSessionID)
+		}
+	}
+	wantChildren := []ChildSession{
+		{SessionID: childA.ID, ParentSessionID: parent.ID},
+		{SessionID: childB.ID, ParentSessionID: parent.ID},
+	}
+	sort.Slice(wantChildren, func(i, j int) bool { return wantChildren[i].SessionID < wantChildren[j].SessionID })
+	if got := restarted.ChildSessions(parent.ID); !reflect.DeepEqual(got, wantChildren) {
+		t.Fatalf("ChildSessions(%q) = %#v, want %#v", parent.ID, got, wantChildren)
+	}
+	if !restarted.HasChildSessions(parent.ID) || !restarted.HasChildSessions(childA.ID) || restarted.HasChildSessions(nested.ID) {
+		t.Fatalf("HasChildSessions = parent:%t child:%t nested:%t", restarted.HasChildSessions(parent.ID), restarted.HasChildSessions(childA.ID), restarted.HasChildSessions(nested.ID))
+	}
+
+	live := event.NewBroker(h.repository, nil)
+	live.SetSessionHierarchy(restarted)
+	parentEvents, unsubscribe := live.Subscribe(parent.ID, 1)
+	defer unsubscribe()
+	var replayed []ChildSession
+	restarted.AddChildCreatedObserver(childCreatedObserverFunc(func(child ChildSession) {
+		replayed = append(replayed, child)
+		live.ObserveSession(child.SessionID)
+	}))
+	wantReplayed := append(append([]ChildSession(nil), wantChildren...), ChildSession{SessionID: nested.ID, ParentSessionID: childA.ID})
+	sort.Slice(wantReplayed, func(i, j int) bool { return wantReplayed[i].SessionID < wantReplayed[j].SessionID })
+	if !reflect.DeepEqual(replayed, wantReplayed) {
+		t.Fatalf("restored observer replay = %#v, want %#v", replayed, wantReplayed)
+	}
+
+	data := json.RawMessage(`{"kind":"running"}`)
+	if _, err := h.repository.Append(ctx, nested.ID, []event.NewEvent{{Type: v1.EventSessionStatus, Data: data}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case item := <-parentEvents:
+		if item.Type != v1.EventSessionStatus || item.SessionID != parent.ID || item.TaskID != nested.ID || string(item.Data) != string(data) {
+			t.Fatalf("restored durable projection = %#v", item)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("restored child durable event was not projected to its ancestor")
 	}
 }
 

@@ -58,39 +58,33 @@ func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
 
 func TestAgentSessionRepositoryChildHierarchy(t *testing.T) {
 	repository := &AgentSessionRepository{children: map[string]ChildSession{
-		"child-b": {SessionID: "child-b", ParentSessionID: "parent", TaskID: "task-b"},
-		"nested":  {SessionID: "nested", ParentSessionID: "child-a", TaskID: "task-nested"},
-		"child-a": {SessionID: "child-a", ParentSessionID: "parent", TaskID: "task-a"},
+		"child-b": {SessionID: "child-b", ParentSessionID: "parent"},
+		"nested":  {SessionID: "nested", ParentSessionID: "child-a"},
+		"child-a": {SessionID: "child-a", ParentSessionID: "parent"},
 	}}
 
-	parent, task, ok := repository.ChildRelation("child-a")
-	if !ok || parent != "parent" || task != "task-a" {
-		t.Fatalf("ChildRelation = %q, %q, %v", parent, task, ok)
+	parent, ok := repository.ChildRelation("child-a")
+	if !ok || parent != "parent" {
+		t.Fatalf("ChildRelation = %q, %v", parent, ok)
 	}
-	if _, _, ok := repository.ChildRelation("missing"); ok {
+	if _, ok := repository.ChildRelation("missing"); ok {
 		t.Fatal("missing child relation was found")
 	}
 	children := repository.ChildSessions("parent")
 	want := []ChildSession{
-		{SessionID: "child-a", ParentSessionID: "parent", TaskID: "task-a"},
-		{SessionID: "child-b", ParentSessionID: "parent", TaskID: "task-b"},
+		{SessionID: "child-a", ParentSessionID: "parent"},
+		{SessionID: "child-b", ParentSessionID: "parent"},
 	}
 	if !slices.Equal(children, want) {
 		t.Fatalf("ChildSessions = %#v, want %#v", children, want)
 	}
-	if err := repository.ForgetChild("child-a", "other-task"); !errors.Is(err, ErrChildTaskMismatch) {
-		t.Fatalf("ForgetChild wrong task = %v", err)
-	}
-	if _, _, ok := repository.ChildRelation("child-a"); !ok {
-		t.Fatal("wrong task forgot child relation")
-	}
-	if err := repository.ForgetChild("child-a", "task-a"); err != nil {
+	if err := repository.ForgetChild("child-a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := repository.ForgetChild("missing", "task"); err != nil {
-		t.Fatalf("ForgetChild missing = %v", err)
+	if err := repository.ForgetChild("missing"); err != nil {
+		t.Fatal(err)
 	}
-	if _, _, ok := repository.ChildRelation("child-a"); ok {
+	if _, ok := repository.ChildRelation("child-a"); ok {
 		t.Fatal("child relation was not forgotten")
 	}
 }

@@ -43,6 +43,11 @@ func TestMonitorToolPlansAndStartsBackgroundMonitor(t *testing.T) {
 	if described, err := item.DescribeRequest(raw); err != nil || described != "Monitor task proc_test" {
 		t.Fatalf("description = %q, %v", described, err)
 	}
+	description := strings.ToLower(item.Description())
+	schema := strings.ToLower(string(item.JSONSchema()))
+	if !strings.Contains(description, "process") || !strings.Contains(description, "session") || !strings.Contains(schema, "process") || !strings.Contains(schema, "session") {
+		t.Fatalf("tool contract = %q, %s", item.Description(), item.JSONSchema())
+	}
 }
 
 func TestMonitorToolRejectsInvalidRequests(t *testing.T) {

@@ -307,13 +307,13 @@ optional. Names contain only ASCII letters, digits, `_`, or `-`.
 ## Built-in subagents
 
 Parrot includes the reusable child-agent profiles `explorer`, `worker`, and
-`review`. Start them with `agent_spawn`, which returns a `task_id`; wait for a
-task with `wait_task`, request a background notification with `monitor`, or
-discover active tasks with `task_list_active`, send follow-up input with
-`agent_send`, and stop an active turn with
-`task_interrupt`. Task-targeting tools accept that `task_id`. Use `explorer` for
-specific, well-scoped codebase questions; it is runtime-enforced read-only. Use
-`worker` for implementation
+`review`. Start them with `agent_spawn`, which returns the child `session_id`.
+That child session ID is also the agent task's canonical ID. `agent_send`
+accepts it as `session_id`. The generic `task_id` accepted by `wait_task`,
+`monitor`, and `task_interrupt` is a process ID for a shell task or a child
+session ID for an agent task. `task_list_active` discovers active tasks using
+those same identities. Use `explorer` for specific, well-scoped codebase
+questions; it is runtime-enforced read-only. Use `worker` for implementation
 and production work; it can modify files and run commands within the authorized
 workspace. `explore` is accepted as an alias of `explorer`.
 

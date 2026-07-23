@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -21,14 +22,14 @@ func newReusableAgentExecutor() *reusableAgentExecutor {
 	return &reusableAgentExecutor{runs: make(chan subagent.Execution, 4), releases: make(map[string]chan string), sends: make(chan string, 4)}
 }
 
-func (e *reusableAgentExecutor) Prepare(_ context.Context, execution subagent.Execution) (string, error) {
-	return "session-" + execution.TaskID, nil
+func (e *reusableAgentExecutor) Prepare(context.Context, subagent.Preparation) (string, error) {
+	return "session-child", nil
 }
 
 func (e *reusableAgentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
 	release := make(chan string, 1)
 	e.mu.Lock()
-	e.releases[execution.TaskID] = release
+	e.releases[execution.SessionID] = release
 	e.mu.Unlock()
 	e.runs <- execution
 	select {
@@ -79,28 +80,29 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	}
 
 	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer"}`)
-	id, ok := spawned.Metadata["task_id"].(string)
-	if !ok || id == "" || spawned.Metadata["status"] != subagent.StatusRunning {
+	sessionID, ok := spawned.Metadata["session_id"].(string)
+	if !ok || sessionID == "" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != subagent.StatusRunning {
 		t.Fatalf("spawned = %#v", spawned)
 	}
 	first := <-executor.runs
-	if first.Request.Prompt != "inspect" || first.Turn != 1 {
-		t.Fatalf("first execution = %#v", first)
+	if first.Request.Prompt != "inspect" || first.Turn != 1 || sessionID != first.SessionID {
+		t.Fatalf("first execution = %#v, session ID = %q", first, sessionID)
 	}
-	sent := execute(agentSendID, `{"task_id":"`+id+`","message":"focus"}`)
-	if sent.Metadata["message_id"] != "message-1" || <-executor.sends != "session-"+id+":focus" {
+	id := first.SessionID
+	sent := execute(agentSendID, `{"session_id":"`+sessionID+`","message":"focus"}`)
+	if sent.Metadata["message_id"] != "message-1" || sent.Metadata["session_id"] != sessionID || <-executor.sends != sessionID+":focus" {
 		t.Fatalf("sent = %#v", sent)
 	}
 	executor.release(id, "first output")
 	if _, err := manager.Await(context.Background(), "root", id); err != nil {
 		t.Fatal(err)
 	}
-	followed := execute(agentSendID, `{"task_id":"`+id+`","message":"continue"}`)
+	followed := execute(agentSendID, `{"session_id":"`+sessionID+`","message":"continue"}`)
 	if followed.Metadata["turn"] != 2 || followed.Metadata["status"] != subagent.StatusRunning {
 		t.Fatalf("followed = %#v", followed)
 	}
 	second := <-executor.runs
-	if second.SessionID != "session-"+id || second.Request.Prompt != "continue" || second.Turn != 2 {
+	if second.SessionID != sessionID || second.Request.Prompt != "continue" || second.Turn != 2 {
 		t.Fatalf("second execution = %#v", second)
 	}
 	interrupted, err := manager.Interrupt(context.Background(), "root", id)
@@ -111,5 +113,17 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	defer cancel()
 	if err := manager.Shutdown(shutdownCtx); err != nil {
 		t.Fatal(err)
+	}
+
+	send := tools[agentSendID]
+	if _, err := send.Plan(context.Background(), json.RawMessage(`{"task_id":"`+id+`","message":"legacy"}`), call); err == nil {
+		t.Fatal("agent_send accepted task_id")
+	}
+	presentation := send.Presentation()
+	if len(presentation.Label.Fields) != 2 || presentation.Label.Fields[0].Names[0] != "session_id" || !presentation.Label.Fields[0].TaskName {
+		t.Fatalf("agent_send presentation = %#v", presentation)
+	}
+	if schema := string(send.JSONSchema()); !strings.Contains(schema, `"session_id"`) || strings.Contains(schema, `"task_id"`) {
+		t.Fatalf("agent_send schema = %s", schema)
 	}
 }

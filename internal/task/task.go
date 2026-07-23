@@ -17,8 +17,8 @@ const (
 	KindShell Kind = "shell"
 )
 
-// MainTaskID identifies the main task every session starts with. It is unique
-// within one session's event stream; subtasks receive generated identifiers.
+// MainTaskID identifies the main task every session starts with. Agent tasks
+// use their child session ID, while shell tasks use their process ID.
 const MainTaskID = "task_main"
 
 // Lifecycle statuses emitted as flat task events on a session's event stream.
@@ -56,6 +56,12 @@ type Task interface {
 	Snapshot() Snapshot
 	Wait(context.Context) (Completion, error)
 	Interrupt(context.Context) (Snapshot, error)
+}
+
+// ObserverFactory captures the current process or turn for stable waiting.
+// Tasks which do not implement it are already stable for their lifetime.
+type ObserverFactory interface {
+	Observe() Task
 }
 
 var (
@@ -117,6 +123,9 @@ func (m *Manager) Get(callerSession, id string) (Task, error) {
 	if !ok || !item.visible(callerSession) {
 		return nil, ErrNotFound
 	}
+	if observer, ok := item.task.(ObserverFactory); ok {
+		return observer.Observe(), nil
+	}
 	return item.task, nil
 }
 
@@ -139,6 +148,33 @@ func (m *Manager) ListActive(callerSession string) []Snapshot {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
 	return result
+}
+
+// Interrupt stops a caller-visible task and returns its latest snapshot.
+func (m *Manager) Interrupt(ctx context.Context, callerSession, id string) (Snapshot, error) {
+	item, err := m.Get(callerSession, id)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return item.Interrupt(ctx)
+}
+
+// Wait observes a caller-visible task without affecting its execution. If the
+// wait context expires, the latest snapshot is returned with the context error.
+func (m *Manager) Wait(ctx context.Context, callerSession, id string) (Result, error) {
+	item, err := m.Get(callerSession, id)
+	if err != nil {
+		return Result{}, err
+	}
+	completion, err := item.Wait(ctx)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			snapshot := item.Snapshot()
+			return Result{ID: snapshot.ID, Kind: snapshot.Kind, Status: snapshot.Status}, err
+		}
+		return Result{}, err
+	}
+	return Result{ID: completion.Task.ID, Kind: completion.Task.Kind, Status: completion.Task.Status, ExitCode: completion.ExitCode, Output: completion.Output, Error: completion.Error}, nil
 }
 
 // Result describes the state observed by a task wait. Output is populated for

@@ -11,7 +11,7 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/session"
-	"github.com/amirulashraf/parrot-coder/internal/subagent"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -70,7 +70,8 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: discardOutputStore{}})
+	tasks := managedtask.NewManager()
+	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: discardOutputStore{}, Tasks: tasks})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -79,7 +80,7 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 2)}
 	waker := &recordingWaker{woken: make(chan string, 2)}
 	lifecycle := &recordingLifecycle{events: make(chan v1.Event, 4)}
-	service := NewService(runner, subagent.NewManager(nil, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4}), admitter, lifecycle)
+	service := NewService(runner, tasks, admitter, lifecycle)
 	service.SetWaker(waker)
 	defer service.Close(context.Background())
 
@@ -95,7 +96,7 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	if err != nil || timed.ProcessID == nil {
 		t.Fatalf("timed process start = %#v, %v", timed, err)
 	}
-	if err := service.Start(Request{SessionID: "other", TaskID: *exited.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "unknown process") {
+	if err := service.Start(Request{SessionID: "other", TaskID: *exited.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("cross-session start error = %v", err)
 	}
 	if err := service.Start(Request{SessionID: "session", CallerTask: "task_main", ToolCallID: "call_exit", TaskID: *exited.ProcessID, Timeout: 0}); err != nil {
@@ -178,18 +179,18 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	}
 }
 
-func TestServiceWaitYieldsThenReturnsShellCompletionWithoutConsumingOutput(t *testing.T) {
+func TestTaskManagerWaitYieldsThenReturnsShellCompletionWithoutConsumingOutput(t *testing.T) {
 	workspaceRoot, err := workspace.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
 	store := &retainedOutputStore{}
-	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: store})
+	tasks := managedtask.NewManager()
+	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: store, Tasks: tasks})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runner.Close()
-	service := NewService(runner, nil, nil, nil)
 	running, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
 		Shell: "/bin/sh", Command: "sleep .3; printf retained; sleep .05; exit 4", SessionID: "session", Yield: process.MinYieldTime, Unrestricted: true,
 	})
@@ -199,11 +200,11 @@ func TestServiceWaitYieldsThenReturnsShellCompletionWithoutConsumingOutput(t *te
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
 	defer cancel()
-	result, err := service.Wait(ctx, "session", *running.ProcessID)
+	result, err := tasks.Wait(ctx, "session", *running.ProcessID)
 	if !errors.Is(err, context.DeadlineExceeded) || result.Status != "running" {
 		t.Fatalf("yield = %#v, %v", result, err)
 	}
-	result, err = service.Wait(context.Background(), "session", *running.ProcessID)
+	result, err = tasks.Wait(context.Background(), "session", *running.ProcessID)
 	if err != nil || result.Status != "failed" || result.ExitCode == nil || *result.ExitCode != 4 {
 		t.Fatalf("completion = %#v, %v", result, err)
 	}
@@ -213,7 +214,7 @@ func TestServiceWaitYieldsThenReturnsShellCompletionWithoutConsumingOutput(t *te
 	if err != nil || drained.Output != "retained" {
 		t.Fatalf("drained output = %#v, %v", drained, err)
 	}
-	if _, err := service.Wait(context.Background(), "other", *running.ProcessID); err == nil {
+	if _, err := tasks.Wait(context.Background(), "other", *running.ProcessID); err == nil {
 		t.Fatal("cross-session wait succeeded")
 	}
 }
@@ -223,13 +224,14 @@ func TestServiceRequiresWakerAndStopsNotificationsOnClose(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: discardOutputStore{}})
+	tasks := managedtask.NewManager()
+	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: discardOutputStore{}, Tasks: tasks})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer runner.Close()
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 1)}
-	service := NewService(runner, subagent.NewManager(nil, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4}), admitter, nil)
+	service := NewService(runner, tasks, admitter, nil)
 	running, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
 		Shell: "/bin/sh", Command: "sleep 5", SessionID: "session", Yield: process.MinYieldTime, Unrestricted: true,
 	})
