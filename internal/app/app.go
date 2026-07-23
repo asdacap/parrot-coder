@@ -145,6 +145,7 @@ type Options struct {
 	Paths          appdirs.Overrides
 	Version        string
 	Model          string
+	Variant        string
 	Agent          string
 	Mode           string
 	NonInteractive bool
@@ -327,29 +328,39 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	repository := event.NewRepository(sessionStore)
 	live := event.NewBroker()
 	sessions := session.NewService(sessionStore, repository)
-	if providerID == "" && options.AllowNoModel {
-		selected, selectionErr := sessions.LatestSelection(ctx, info.ID)
-		switch {
-		case selectionErr == nil:
-			if _, restoredModel, resolveErr := providerRegistry.Resolve(selected.Provider, selected.Model); resolveErr == nil && (selected.Variant == "" || modelHasVariant(restoredModel, selected.Variant)) {
-				providerID, modelID = selected.Provider, selected.Model
-				defaultSelection = session.Selection{Agent: agentID, Provider: providerID, Model: modelID, Variant: selected.Variant}
-				result.DefaultSelection = v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID, Variant: selected.Variant}
-			}
-		case !errors.Is(selectionErr, session.ErrNotFound):
-			return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
-		}
-	} else if providerID != "" {
-		// Model is configured; restore the variant from the latest session
-		// when the configured model matches.
-		selected, selectionErr := sessions.LatestSelection(ctx, info.ID)
-		if selectionErr == nil && selected.Provider == providerID && selected.Model == modelID && selected.Variant != "" {
-			if _, restoredModel, resolveErr := providerRegistry.Resolve(providerID, modelID); resolveErr == nil && modelHasVariant(restoredModel, selected.Variant) {
-				defaultSelection.Variant = selected.Variant
-				result.DefaultSelection.Variant = selected.Variant
-			}
+	configuredVariant := loaded.Config.DefaultVariant
+	if options.Variant != "" {
+		configuredVariant = options.Variant
+	}
+	selected, selectionErr := sessions.LatestSelection(ctx, info.ID)
+	if selectionErr != nil && !errors.Is(selectionErr, session.ErrNotFound) {
+		return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
+	}
+	if providerID == "" && selectionErr == nil {
+		if _, restoredModel, resolveErr := providerRegistry.Resolve(selected.Provider, selected.Model); resolveErr == nil && (configuredVariant != "" || selected.Variant == "" || modelHasVariant(restoredModel, selected.Variant)) {
+			providerID, modelID = selected.Provider, selected.Model
 		}
 	}
+	if configuredVariant != "" && providerID == "" {
+		return nil, fmt.Errorf("app: default variant %q requires a model", configuredVariant)
+	}
+	variant := configuredVariant
+	if variant == "" && selectionErr == nil && selected.Provider == providerID && selected.Model == modelID && selected.Variant != "" {
+		if _, restoredModel, resolveErr := providerRegistry.Resolve(providerID, modelID); resolveErr == nil && modelHasVariant(restoredModel, selected.Variant) {
+			variant = selected.Variant
+		}
+	}
+	if variant != "" {
+		_, selectedModel, resolveErr := providerRegistry.Resolve(providerID, modelID)
+		if resolveErr != nil {
+			return nil, fmt.Errorf("app: default model: %w", resolveErr)
+		}
+		if !modelHasVariant(selectedModel, variant) {
+			return nil, fmt.Errorf("app: variant %q is not available for model %s/%s", variant, providerID, modelID)
+		}
+	}
+	defaultSelection = session.Selection{Agent: agentID, Provider: providerID, Model: modelID, Variant: variant}
+	result.DefaultSelection = v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID, Variant: variant}
 	todos := session.NewTodoService(sessionStore, repository)
 	goals := session.NewGoalService(sessionStore, repository)
 	ws, err := workspace.New(info.Root)

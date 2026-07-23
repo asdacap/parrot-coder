@@ -25,8 +25,8 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
 	"github.com/amirulashraf/parrot-coder/internal/client"
-	configpkg "github.com/amirulashraf/parrot-coder/internal/config"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
+	configpkg "github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
@@ -281,7 +281,7 @@ func promptCommand(ctx context.Context, config PromptConfig) int {
 		tty = file
 		defer tty.Close()
 	}
-	runtime, err := config.Open(ctx, app.Options{Version: config.Build.Version, Model: options.model, Agent: options.agent, NonInteractive: !interactive})
+	runtime, err := config.Open(ctx, app.Options{Version: config.Build.Version, Model: options.model, Variant: options.variant, Agent: options.agent, NonInteractive: !interactive})
 	if err != nil {
 		fmt.Fprintln(config.Stderr, err)
 		return finish(ctx, exitError, appOpenReason(err), err)
@@ -343,7 +343,7 @@ func command(ctx context.Context, config Config) int {
 		fmt.Fprintln(stderr, "invalid chat flags; see parrot chat --help")
 		return finish(ctx, exitUsage, "invalid_chat_arguments", nil)
 	}
-	runtime, err := config.Open(ctx, app.Options{Version: config.Build.Version, Model: options.model, Agent: options.agent, AllowNoModel: true})
+	runtime, err := config.Open(ctx, app.Options{Version: config.Build.Version, Model: options.model, Variant: options.variant, Agent: options.agent, AllowNoModel: true})
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return finish(ctx, exitError, appOpenReason(err), err)
@@ -385,10 +385,7 @@ func command(ctx context.Context, config Config) int {
 	}
 	claimRequest := v1.ClaimSessionRequest{WorkingDirectory: runtime.WorkingDirectory, HostKey: identity.HostKey, PID: identity.PID, ProjectID: runtime.Project.ID}
 	if current.ID == "" && selection.modelName() != "" {
-		claimRequest.Agent, claimRequest.Model = selection.agent, selection.modelName()
-		if selection.variant != "" {
-			claimRequest.Variant = &selection.variant
-		}
+		claimRequest.Agent, claimRequest.Model, claimRequest.Variant = selection.agent, selection.modelName(), &selection.variant
 		claimed, claimErr := runtime.Client.ClaimSession(ctx, claimRequest)
 		if claimErr != nil {
 			fmt.Fprintln(stderr, claimErr)
@@ -1609,11 +1606,7 @@ func (s *chatShell) createSession(title string, forceNew bool) (v1.Session, erro
 			line = line[:80]
 		}
 		request.Title, request.Agent, request.Model, request.ForceNew = line, s.selection.agent, s.selection.modelName(), forceNew
-		if s.selection.variant != "" {
-			request.Variant = &s.selection.variant
-		} else {
-			request.Variant = nil
-		}
+		request.Variant = &s.selection.variant
 		claimed, err := claimer.ClaimSession(s.ctx, request)
 		return claimed.Session, err
 	}
@@ -1708,10 +1701,7 @@ func createChatSession(ctx context.Context, api sessionCreator, projectID, title
 	if len(line) > 80 {
 		line = line[:80]
 	}
-	request := v1.CreateSessionRequest{ProjectID: projectID, Title: line, Agent: selection.agent, Model: selection.modelName()}
-	if selection.variant != "" {
-		request.Variant = &selection.variant
-	}
+	request := v1.CreateSessionRequest{ProjectID: projectID, Title: line, Agent: selection.agent, Model: selection.modelName(), Variant: &selection.variant}
 	return api.CreateSession(ctx, request)
 }
 
@@ -2532,10 +2522,8 @@ func (s *chatShell) applyModel(value string) error {
 	}
 	s.selection.provider, s.selection.model, s.selection.variant = provider, model, variant
 	s.current.Provider, s.current.Model, s.current.Variant = provider, model, variant
-	if s.configDir != "" {
-		if err := configpkg.UpdateDefaultModel(filepath.Join(s.configDir, configpkg.FileName), value); err != nil {
-			return err
-		}
+	if err := s.persistSelection(); err != nil {
+		return err
 	}
 	s.commitStatus("✓ Model selected: " + value)
 	s.refreshModelInfo()
@@ -2619,8 +2607,18 @@ func (s *chatShell) selectEffort(value string) error {
 	}
 	s.selection.variant = value
 	s.current.Variant = value
+	if err := s.persistSelection(); err != nil {
+		return err
+	}
 	s.commitStatus("✓ Model effort selected: " + value)
 	return nil
+}
+
+func (s *chatShell) persistSelection() error {
+	if s.configDir == "" {
+		return nil
+	}
+	return configpkg.UpdateDefaultSelection(filepath.Join(s.configDir, configpkg.FileName), s.selection.modelName(), s.selection.variant)
 }
 
 func (s *chatShell) selectAgent(argument string) error {

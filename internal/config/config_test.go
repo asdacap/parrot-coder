@@ -83,6 +83,7 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 	projectFile := filepath.Join(project, FileName)
 	nestedFile := filepath.Join(nested, ".parrot", FileName)
 	writeFile(t, global, `model: openai/small
+variant: low
 providers:
   openai:
     type: openai-compatible
@@ -102,6 +103,7 @@ providers:
           - text
 `)
 	writeFile(t, projectFile, `model: openai/large
+variant: high
 providers:
   openai:
     models:
@@ -122,8 +124,8 @@ tool_blacklist:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Config.DefaultModel != "openai/large" {
-		t.Fatalf("DefaultModel = %q", result.Config.DefaultModel)
+	if result.Config.DefaultModel != "openai/large" || result.Config.DefaultVariant != "high" {
+		t.Fatalf("default selection = %q/%q", result.Config.DefaultModel, result.Config.DefaultVariant)
 	}
 	provider := result.Config.Providers["openai"]
 	if provider.BaseURL != "https://api.example/v1" || provider.APIKeyEnv != "OPENAI_API_KEY" {
@@ -140,6 +142,9 @@ tool_blacklist:
 	}
 	if got := result.Provenance["model"]; got != projectFile {
 		t.Fatalf("model provenance = %q", got)
+	}
+	if got := result.Provenance["variant"]; got != projectFile {
+		t.Fatalf("variant provenance = %q", got)
 	}
 	if got := result.Provenance["providers.openai.models.large.max_tokens"]; got != nestedFile {
 		t.Fatalf("max_tokens provenance = %q", got)
@@ -328,6 +333,46 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 		if !strings.Contains(output, comment) {
 			t.Errorf("generated YAML missing comment: %q", comment)
 		}
+	}
+}
+
+func TestUpdateDefaultSelectionPreservesConfigAndClearsVariant(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "missing", FileName)
+	if err := UpdateDefaultSelection(path, "local/code", "high"); err != nil {
+		t.Fatal(err)
+	}
+	created, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(created) != "model: local/code\nvariant: high\n" {
+		t.Fatalf("created config = %q", created)
+	}
+
+	writeFile(t, path, "# keep this comment\nmodel: old/model\nvariant: low\nweb_fetch:\n  allow_private: false\n")
+	if err := UpdateDefaultSelection(path, "new/model", ""); err != nil {
+		t.Fatal(err)
+	}
+	updated, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	output := string(updated)
+	for _, want := range []string{"# keep this comment", "model: new/model", "web_fetch:", "allow_private: false"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("updated config missing %q: %q", want, output)
+		}
+	}
+	if strings.Contains(output, "variant:") {
+		t.Fatalf("updated config retained variant: %q", output)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm() != 0o600 {
+		t.Fatalf("config mode = %o, want 600", info.Mode().Perm())
 	}
 }
 
