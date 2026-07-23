@@ -10,7 +10,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/monitor"
 )
 
-const monitorSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Identifier of the running shell or agent task."},"timeout_ms":{"type":"integer","minimum":0,"description":"Maximum time to monitor in milliseconds. Zero or omitted waits without a timeout."}},"required":["task_id"],"additionalProperties":false}`
+const monitorSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Process ID for a shell or child session ID for an agent."},"timeout_ms":{"type":"integer","minimum":0,"description":"Maximum time to monitor in milliseconds. Zero or omitted waits without a timeout."}},"required":["task_id"],"additionalProperties":false}`
 
 const maxMonitorTimeoutMS = int64(^uint64(0)>>1) / int64(time.Millisecond)
 
@@ -40,7 +40,7 @@ func (*MonitorTool) Presentation() Presentation {
 }
 
 func (*MonitorTool) Description() string {
-	return "Monitors a managed process in the background and steers a notification into the caller session when it exits or the monitor times out."
+	return "Monitor a shell process or child agent session in the background and steer a notification into the caller session when it exits or the monitor times out. task_id is the process ID for a shell or the child session ID for an agent."
 }
 
 func (*MonitorTool) JSONSchema() json.RawMessage { return json.RawMessage(monitorSchema) }

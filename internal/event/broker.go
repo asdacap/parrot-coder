@@ -8,9 +8,9 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 )
 
-// SessionHierarchy resolves a child session's direct parent and owning task.
+// SessionHierarchy resolves a child session's direct parent.
 type SessionHierarchy interface {
-	ChildRelation(sessionID string) (parentSessionID, taskID string, ok bool)
+	ChildRelation(sessionID string) (parentSessionID string, ok bool)
 }
 
 // Broker is the application event boundary. It combines durable replay with
@@ -58,9 +58,25 @@ func (b *Broker) ObserveSession(sessionID string) {
 	go b.forwardDurable(sessionID, subscription)
 }
 
+// ForgetSession stops projecting durable events from sessionID. It complements
+// ObserveSession when prepared child-session admission is rolled back.
+func (b *Broker) ForgetSession(sessionID string) {
+	if b == nil || sessionID == "" {
+		return
+	}
+	b.mu.Lock()
+	subscription := b.watching[sessionID]
+	delete(b.watching, sessionID)
+	b.mu.Unlock()
+	if subscription != nil {
+		subscription.Close()
+	}
+}
+
 func (b *Broker) forwardDurable(sessionID string, subscription *Subscription) {
 	for item := range subscription.Events {
 		event := v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, Data: item.Data}
+		event.TaskID = b.TaskIDFor(event.SessionID, "")
 		b.notify(sessionID, event)
 		b.project(event)
 	}
@@ -87,9 +103,8 @@ func (b *Broker) TaskIDFor(sessionID, fallback string) string {
 	resolver := b.taskIDFor
 	b.mu.RUnlock()
 	if hierarchy != nil {
-		_, taskID, ok := hierarchy.ChildRelation(sessionID)
-		if ok && taskID != "" {
-			return taskID
+		if _, ok := hierarchy.ChildRelation(sessionID); ok {
+			return sessionID
 		}
 	}
 	if resolver != nil {
@@ -177,12 +192,12 @@ func (b *Broker) project(item v1.Event) {
 		if hierarchy == nil {
 			return
 		}
-		parent, relationTaskID, ok := hierarchy.ChildRelation(origin)
+		parent, ok := hierarchy.ChildRelation(origin)
 		if !ok || parent == "" || seen[parent] {
 			return
 		}
 		if taskID == "" {
-			taskID = relationTaskID
+			taskID = origin
 		}
 		seen[parent] = true
 		projected := item
@@ -232,7 +247,7 @@ func (b *Broker) ReplayAndSubscribe(ctx context.Context, sessionID string, after
 					return
 				}
 				select {
-				case durable <- durableEvent(item):
+				case durable <- b.durableEvent(item):
 				case <-stop:
 					return
 				}
@@ -243,7 +258,7 @@ func (b *Broker) ReplayAndSubscribe(ctx context.Context, sessionID string, after
 	}()
 	converted := make([]v1.Event, len(replay))
 	for i, item := range replay {
-		converted[i] = durableEvent(item)
+		converted[i] = b.durableEvent(item)
 	}
 	return &Stream{Replay: converted, Durable: durable, Transient: live, close: func() {
 		close(stop)
@@ -252,7 +267,7 @@ func (b *Broker) ReplayAndSubscribe(ctx context.Context, sessionID string, after
 	}}, nil
 }
 
-func durableEvent(item Event) v1.Event {
+func (b *Broker) durableEvent(item Event) v1.Event {
 	sequence, createdAt := item.Sequence, item.CreatedAt
-	return v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, Sequence: &sequence, Data: item.Data, CreatedAt: &createdAt}
+	return v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, TaskID: b.TaskIDFor(item.SessionID, ""), Sequence: &sequence, Data: item.Data, CreatedAt: &createdAt}
 }

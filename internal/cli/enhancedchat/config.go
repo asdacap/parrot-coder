@@ -396,7 +396,7 @@ func subtaskPrompt(expansion customcommand.Expansion) string {
 	if expansion.Model != "" {
 		fmt.Fprintf(&request, " and model %q", expansion.Model)
 	}
-	request.WriteString(". agent_spawn returns a task_id. Call wait_task(task_id), then relay its output.\n\n")
+	request.WriteString(". agent_spawn returns a session_id. Call wait_task with that session_id as task_id, then relay its output.\n\n")
 	request.WriteString(expansion.Prompt)
 	return request.String()
 }

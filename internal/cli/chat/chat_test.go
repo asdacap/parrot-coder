@@ -123,7 +123,7 @@ func TestChatHelpListsCustomCommandsAndSubtaskUsesNormalPrompt(t *testing.T) {
 		t.Fatalf("help = %q, exit=%t, code=%d", stdout.String(), exit, code)
 	}
 	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explorer", Model: "local/model", Subtask: true})
-	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". agent_spawn returns a task_id. Call wait_task(task_id), then relay its output.\n\nInspect this"
+	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". agent_spawn returns a session_id. Call wait_task with that session_id as task_id, then relay its output.\n\nInspect this"
 	if prompt != want {
 		t.Fatalf("subtask prompt = %q, want %q", prompt, want)
 	}

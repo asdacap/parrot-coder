@@ -33,9 +33,9 @@ const (
 
 // Event is used for both durable and disposable live events. Sequence and
 // CreatedAt are present only for durable session events. TaskID identifies the
-// task which produced the event; every event belongs to exactly one task. Task
-// events are flat: a subtask's events are never nested inside a parent task's
-// event, they carry their own task_id and session_id instead.
+// task which produced the event; child-session activity uses the child session
+// ID as its task ID. Task events are flat: a subtask's events are never nested
+// inside a parent task's event, they carry their own task_id and session_id.
 type Event struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"`

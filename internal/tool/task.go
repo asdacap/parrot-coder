@@ -40,9 +40,9 @@ func (t *TaskTool) Presentation() Presentation {
 }
 func (t *TaskTool) Description() string {
 	if t.Kind == "task_interrupt" {
-		return "Interrupt a running shell or agent task. Agent tasks are retained for follow-up messages."
+		return "Interrupt a running shell process or child agent session. task_id is the process ID for a shell or the child session ID for an agent. Agent sessions are retained for follow-up messages."
 	}
-	return "List active shell and agent tasks visible to the current session."
+	return "List active shell processes and child agent sessions visible to the current session. Returned task_id values are process IDs for shells and child session IDs for agents."
 }
 
 func (t *TaskTool) DescribeRequest(raw json.RawMessage) (string, error) {
@@ -58,7 +58,7 @@ func (t *TaskTool) DescribeRequest(raw json.RawMessage) (string, error) {
 
 func (t *TaskTool) JSONSchema() json.RawMessage {
 	if t.Kind == "task_interrupt" {
-		return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string","minLength":1}},"required":["task_id"],"additionalProperties":false}`)
+		return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Process ID for a shell or child session ID for an agent."}},"required":["task_id"],"additionalProperties":false}`)
 	}
 	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 }
@@ -112,7 +112,7 @@ func taskResult(item managedtask.Active) Result {
 	return resultFromJSON(data)
 }
 
-const waitTaskSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Identifier of the running shell or agent task."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the task has not completed after this many milliseconds. Zero or omitted waits indefinitely."}},"required":["task_id"],"additionalProperties":false}`
+const waitTaskSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Process ID for a shell or child session ID for an agent."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the task has not completed after this many milliseconds. Zero or omitted waits indefinitely."}},"required":["task_id"],"additionalProperties":false}`
 
 const maxTaskWaitMS = int64(^uint64(0)>>1) / int64(time.Millisecond)
 
@@ -128,7 +128,7 @@ type waitTaskInput struct {
 
 func (*WaitTaskTool) ID() string { return "wait_task" }
 func (*WaitTaskTool) Description() string {
-	return "Wait for a shell or agent task to complete, yielding if the requested period elapses. Waiting never stops the task."
+	return "Wait for a shell process or child agent session to complete, yielding if the requested period elapses. task_id is the process ID for a shell or the child session ID for an agent. Waiting never stops the task."
 }
 func (*WaitTaskTool) Presentation() Presentation {
 	return Presentation{Subagent: true, Modeline: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}, TaskName: true}}}}

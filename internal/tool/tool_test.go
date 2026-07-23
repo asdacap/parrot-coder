@@ -308,7 +308,7 @@ func TestModelTextBoundsWithoutTouchingTheRecord(t *testing.T) {
 // field before encoding rather than cutting the encoded document.
 func TestJSONToolsKeepModelCopyParseable(t *testing.T) {
 	large := strings.Repeat("y", maxModelTextBytes*2)
-	result := agentResult(subagent.Task{ID: "tsk_1", Agent: "reviewer", Status: "completed", Output: large, Error: large})
+	result := agentResult(subagent.Task{SessionID: "session_1", Agent: "reviewer", Status: "completed", Output: large, Error: large})
 	if len(result.Text) <= maxModelTextBytes {
 		t.Fatalf("record was bounded: %d bytes", len(result.Text))
 	}
@@ -321,7 +321,7 @@ func TestJSONToolsKeepModelCopyParseable(t *testing.T) {
 			t.Fatalf("%s has %d bytes, want at most %d", field, len(value), maxModelTextBytes)
 		}
 	}
-	if decoded["task_id"] != "tsk_1" {
+	if decoded["session_id"] != "session_1" {
 		t.Fatalf("model copy lost its identifiers: %v", decoded)
 	}
 }

@@ -406,7 +406,7 @@ func ToolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "agent"))
 		add(firstString(input, "prompt"))
 	case "agent_send":
-		add(firstString(input, "task_id"))
+		add(firstString(input, "session_id"))
 		add(firstString(input, "message"))
 	case "task_interrupt", "wait_task":
 		add(firstString(input, "task_id"))

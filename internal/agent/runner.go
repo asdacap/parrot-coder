@@ -25,7 +25,9 @@ import (
 
 type SessionRuntime interface {
 	Get(context.Context, string) (session.Session, error)
+	List(context.Context) ([]session.Session, error)
 	CreateSelected(context.Context, session.CreateParams, session.Selection) (session.Session, error)
+	Delete(context.Context, string) error
 	Admit(context.Context, string, session.AdmitParams) (session.Admission, error)
 	ListMessages(context.Context, string) ([]session.Message, error)
 	LatestSequence(context.Context, string) (int64, error)

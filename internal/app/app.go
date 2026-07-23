@@ -435,8 +435,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 		return profile.RecursionLimit
 	}, Tasks: tasks, Sessions: subagentExecutor, OnProgress: func(task subagent.Task) {
-		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
-		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.ID, Data: data})
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
+		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
 	}, OnEvent: func(item subagent.LifecycleEvent) {
 		publishSubagentLifecycle(live, item)
 	}})
@@ -458,7 +458,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		data, _ := json.Marshal(payload)
 		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
 	})
-	monitors := monitor.NewService(processes, subagents, sessions, live, tasks)
+	monitors := monitor.NewService(processes, tasks, sessions, live)
 	result.monitors = monitors
 	tools := tool.NewRegistry()
 	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks))
@@ -513,7 +513,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.compactions = compactionRepository
 	reporter := statusReporter{live: live, subagents: subagents, started: &sync.Map{}}
-	agentSessions, err := agent.NewAgentSessionRepository(agent.AgentSessionConfig{
+	agentSessions, err := agent.NewAgentSessionRepository(ctx, agent.AgentSessionConfig{
 		Sessions: sessions, Contexts: contexts, Profiles: profileResolver, Providers: providerRegistry,
 		ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
@@ -1199,31 +1199,36 @@ type appSubagentExecutor struct {
 	events           *event.Broker
 }
 
-func (e *appSubagentExecutor) ChildRelation(sessionID string) (parentSessionID, taskID string, ok bool) {
-	if e.agentSessions == nil {
-		return "", "", false
-	}
-	return e.agentSessions.ChildRelation(sessionID)
-}
-
 func (e *appSubagentExecutor) HasChildSessions(parentSessionID string) bool {
 	return e.agentSessions != nil && e.agentSessions.HasChildSessions(parentSessionID)
 }
 
-func (e *appSubagentExecutor) ForgetChild(sessionID, taskID string) error {
+func (e *appSubagentExecutor) ForgetChild(sessionID string) error {
 	if e.agentSessions == nil {
 		return nil
 	}
-	return e.agentSessions.ForgetChild(sessionID, taskID)
+	return e.agentSessions.ForgetChild(sessionID)
 }
 
-func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Execution) (string, error) {
+func (e *appSubagentExecutor) DiscardPreparation(ctx context.Context, sessionID string) error {
+	if e.agentSessions == nil {
+		return errors.New("app: subagent agentSessions is unavailable")
+	}
+	if err := e.agentSessions.DiscardChild(ctx, sessionID); err != nil {
+		return err
+	}
+	if e.events != nil {
+		e.events.ForgetSession(sessionID)
+	}
+	return nil
+}
+
+func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Preparation) (string, error) {
 	if e.agentSessions == nil {
 		return "", errors.New("app: subagent agentSessions is unavailable")
 	}
 	child, err := e.agentSessions.CreateChild(ctx, agent.ChildSessionRequest{
 		ParentSessionID:  execution.ParentSession,
-		TaskID:           execution.TaskID,
 		ProjectID:        e.projectID,
 		Name:             execution.Request.Name,
 		Agent:            execution.Request.Agent,
@@ -1267,11 +1272,7 @@ func (e *appSubagentExecutor) Send(ctx context.Context, execution subagent.Execu
 type managedTaskController struct{ tasks *managedtask.Manager }
 
 func (c *managedTaskController) Interrupt(ctx context.Context, callerSession, id string) (managedtask.Active, error) {
-	item, err := c.tasks.Get(callerSession, id)
-	if err != nil {
-		return managedtask.Active{}, err
-	}
-	return item.Interrupt(ctx)
+	return c.tasks.Interrupt(ctx, callerSession, id)
 }
 
 func (c *managedTaskController) ListActive(callerSession string) []managedtask.Active {
@@ -1279,24 +1280,12 @@ func (c *managedTaskController) ListActive(callerSession string) []managedtask.A
 }
 
 func (c *managedTaskController) Wait(ctx context.Context, callerSession, id string) (managedtask.Result, error) {
-	item, err := c.tasks.Get(callerSession, id)
-	if err != nil {
-		return managedtask.Result{}, err
-	}
-	completion, err := item.Wait(ctx)
-	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			snapshot := item.Snapshot()
-			return managedtask.Result{ID: snapshot.ID, Kind: snapshot.Kind, Status: snapshot.Status}, err
-		}
-		return managedtask.Result{}, err
-	}
-	return managedtask.Result{ID: completion.Task.ID, Kind: completion.Task.Kind, Status: completion.Task.Status, ExitCode: completion.ExitCode, Output: completion.Output, Error: completion.Error}, nil
+	return c.tasks.Wait(ctx, callerSession, id)
 }
 
 func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) {
 	task := item.Task
-	payload := v1.TaskEvent{TaskID: task.ID, SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
+	payload := v1.TaskEvent{TaskID: task.SessionID, SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
 	eventType := ""
 	switch item.Kind {
 	case subagent.LifecycleStart:
@@ -1313,7 +1302,7 @@ func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) 
 		return
 	}
 	data, _ := json.Marshal(payload)
-	live.PublishEvent(v1.Event{Type: eventType, SessionID: task.ParentSession, TaskID: task.ID, Data: data})
+	live.PublishEvent(v1.Event{Type: eventType, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
 }
 
 func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {

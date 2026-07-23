@@ -7,25 +7,50 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 )
 
 type executorFunc func(context.Context, Execution) (string, error)
+
+func (f executorFunc) Prepare(_ context.Context, preparation Preparation) (string, error) {
+	return preparation.ParentSession + "/" + preparation.Request.Agent + "/" + preparation.Request.Prompt, nil
+}
 
 func (f executorFunc) Execute(ctx context.Context, execution Execution) (string, error) {
 	return f(ctx, execution)
 }
 
 type preparedExecutor struct {
-	prepare func(context.Context, Execution) (string, error)
+	prepare func(context.Context, Preparation) (string, error)
 	execute func(context.Context, Execution) (string, error)
 }
 
-func (e preparedExecutor) Prepare(ctx context.Context, execution Execution) (string, error) {
-	return e.prepare(ctx, execution)
+type discardingExecutor struct {
+	preparedExecutor
+	discard func(context.Context, string) error
+}
+
+func (e discardingExecutor) DiscardPreparation(ctx context.Context, sessionID string) error {
+	return e.discard(ctx, sessionID)
+}
+
+func (e preparedExecutor) Prepare(ctx context.Context, preparation Preparation) (string, error) {
+	return e.prepare(ctx, preparation)
 }
 
 func (e preparedExecutor) Execute(ctx context.Context, execution Execution) (string, error) {
 	return e.execute(ctx, execution)
+}
+
+type testManagedTask struct{ snapshot managedtask.Snapshot }
+
+func (t testManagedTask) Snapshot() managedtask.Snapshot { return t.snapshot }
+func (testManagedTask) Wait(context.Context) (managedtask.Completion, error) {
+	return managedtask.Completion{}, nil
+}
+func (t testManagedTask) Interrupt(context.Context) (managedtask.Snapshot, error) {
+	return t.snapshot, nil
 }
 
 func TestFriendlyNames(t *testing.T) {
@@ -41,7 +66,7 @@ func TestFriendlyNames(t *testing.T) {
 		{Prompt: "generated", Agent: "explorer"},
 		{Prompt: "duplicate", Agent: "worker", Name: "API Review"},
 	} {
-		id, err := manager.Launch("parent", nil, request)
+		id, err := manager.Spawn(context.Background(), "parent", "root", request)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +101,7 @@ func TestFriendlyNames(t *testing.T) {
 	}
 }
 
-func TestLaunchConcurrencyAwaitAndStatus(t *testing.T) {
+func TestSpawnConcurrencyAwaitAndStatus(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan Execution, 2)
 	executor := executorFunc(func(ctx context.Context, execution Execution) (string, error) {
@@ -89,7 +114,7 @@ func TestLaunchConcurrencyAwaitAndStatus(t *testing.T) {
 		}
 	})
 	manager := NewManager(executor, Config{MaxConcurrent: 2, MaxConcurrentPerParent: 1, MaxDepth: 3})
-	id, err := manager.Launch("parent-a", []string{"root"}, Request{Prompt: "work", Agent: "worker", Model: "m"})
+	id, err := manager.Spawn(context.Background(), "parent-a", "root", Request{Prompt: "work", Agent: "worker", Model: "m"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,14 +126,14 @@ func TestLaunchConcurrencyAwaitAndStatus(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("executor did not start")
 	}
-	if _, err := manager.Launch("parent-a", nil, Request{Prompt: "more", Agent: "other"}); !errors.Is(err, ErrConcurrency) {
+	if _, err := manager.Spawn(context.Background(), "parent-a", "root", Request{Prompt: "more", Agent: "other"}); !errors.Is(err, ErrConcurrency) {
 		t.Fatalf("per-parent error = %v", err)
 	}
-	id2, err := manager.Launch("parent-b", nil, Request{Prompt: "more", Agent: "other"})
+	id2, err := manager.Spawn(context.Background(), "parent-b", "root", Request{Prompt: "more", Agent: "other"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Launch("parent-c", nil, Request{Prompt: "more", Agent: "third"}); !errors.Is(err, ErrConcurrency) {
+	if _, err := manager.Spawn(context.Background(), "parent-c", "root", Request{Prompt: "more", Agent: "third"}); !errors.Is(err, ErrConcurrency) {
 		t.Fatalf("global error = %v", err)
 	}
 
@@ -130,7 +155,7 @@ func TestLaunchConcurrencyAwaitAndStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	listed := manager.List("parent-a")
-	if len(listed) != 1 || listed[0].ID != id {
+	if len(listed) != 1 || listed[0].SessionID != id {
 		t.Fatalf("list = %#v", listed)
 	}
 }
@@ -148,16 +173,24 @@ func TestDepthRecursionCancelAndResultBound(t *testing.T) {
 	})
 	manager := NewManager(executor, Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4, MaxDepth: 2, MaxResultBytes: 5, AgentRecursionLimit: func(string) int { return 1 }})
 	limited := NewManager(executor, Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4, MaxPromptBytes: 3})
-	if _, err := limited.Launch("p", nil, Request{Prompt: "large", Agent: "worker"}); !errors.Is(err, ErrRequestLimit) {
+	if _, err := limited.Spawn(context.Background(), "p", "root", Request{Prompt: "large", Agent: "worker"}); !errors.Is(err, ErrRequestLimit) {
 		t.Fatalf("request limit error = %v", err)
 	}
-	if _, err := manager.Launch("p", []string{"a", "b"}, Request{Prompt: "x", Agent: "c"}); !errors.Is(err, ErrDepth) {
+	depthManager := NewManager(executorFunc(func(context.Context, Execution) (string, error) { return "", nil }), Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4, MaxDepth: 2})
+	parentID, err := depthManager.Spawn(context.Background(), "p", "a", Request{Prompt: "parent", Agent: "b"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := depthManager.Await(context.Background(), "p", parentID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := depthManager.Spawn(context.Background(), parentID, "b", Request{Prompt: "x", Agent: "c"}); !errors.Is(err, ErrDepth) {
 		t.Fatalf("depth error = %v", err)
 	}
-	if _, err := manager.Launch("p", []string{"a"}, Request{Prompt: "x", Agent: "a"}); !errors.Is(err, ErrRecursion) {
+	if _, err := manager.Spawn(context.Background(), "p", "a", Request{Prompt: "x", Agent: "a"}); !errors.Is(err, ErrRecursion) {
 		t.Fatalf("recursion error = %v", err)
 	}
-	id, err := manager.Launch("p", nil, Request{Prompt: "wait", Agent: "worker"})
+	id, err := manager.Spawn(context.Background(), "p", "root", Request{Prompt: "wait", Agent: "worker"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +211,7 @@ func TestDepthRecursionCancelAndResultBound(t *testing.T) {
 	}
 
 	largeManager := NewManager(executorFunc(func(context.Context, Execution) (string, error) { return strings.Repeat("y", 20), nil }), Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4, MaxResultBytes: 5})
-	largeID, err := largeManager.Launch("p", nil, Request{Prompt: "large", Agent: "worker"})
+	largeID, err := largeManager.Spawn(context.Background(), "p", "root", Request{Prompt: "large", Agent: "worker"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +235,7 @@ func TestObserverReturnsTerminalLifecycleAsData(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			manager := NewManager(test.executor, test.config)
-			id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore"})
+			id, err := manager.Spawn(context.Background(), "parent", "root", Request{Prompt: "work", Agent: "explore"})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -236,7 +269,7 @@ func TestProgressAccumulatesAndReportsSnapshots(t *testing.T) {
 			close(terminalProgress)
 		}
 	}})
-	id, err := manager.Launch("parent", nil, Request{Prompt: "work", Agent: "explore", ToolCallID: "call"})
+	id, err := manager.Spawn(context.Background(), "parent", "root", Request{Prompt: "work", Agent: "explore", ToolCallID: "call"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,6 +286,72 @@ func TestProgressAccumulatesAndReportsSnapshots(t *testing.T) {
 	}
 }
 
+func TestSpawnDiscardsPreparationWhenManagedTaskAdmissionFails(t *testing.T) {
+	const sessionID = "prepared-child-session"
+	tasks := managedtask.NewManager()
+	if err := tasks.Register(testManagedTask{snapshot: managedtask.Snapshot{ID: sessionID, SessionID: "existing"}}, func(string) bool { return true }); err != nil {
+		t.Fatal(err)
+	}
+	discarded := make(chan string, 1)
+	manager := NewManager(discardingExecutor{
+		preparedExecutor: preparedExecutor{
+			prepare: func(context.Context, Preparation) (string, error) { return sessionID, nil },
+			execute: func(context.Context, Execution) (string, error) {
+				t.Fatal("execution started after failed task admission")
+				return "", nil
+			},
+		},
+		discard: func(_ context.Context, id string) error {
+			discarded <- id
+			return nil
+		},
+	}, Config{MaxConcurrent: 1, MaxConcurrentPerParent: 1, Tasks: tasks})
+
+	if _, err := manager.Spawn(context.Background(), "parent", "builder", Request{Prompt: "work", Agent: "worker"}); !errors.Is(err, managedtask.ErrDuplicate) {
+		t.Fatalf("Spawn error = %v, want duplicate task", err)
+	}
+	if id := <-discarded; id != sessionID {
+		t.Fatalf("discarded session = %q, want %q", id, sessionID)
+	}
+	if len(manager.List("parent")) != 0 || len(manager.ListActive("parent")) != 0 {
+		t.Fatalf("failed admission retained tasks: all=%#v active=%#v", manager.List("parent"), manager.ListActive("parent"))
+	}
+}
+
+func TestSpawnUsesPreparedSessionIDAsTaskIdentity(t *testing.T) {
+	const preparedSessionID = "prepared-child-session"
+	preparations := make(chan Preparation, 1)
+	executions := make(chan Execution, 1)
+	manager := NewManager(preparedExecutor{
+		prepare: func(_ context.Context, preparation Preparation) (string, error) {
+			preparations <- preparation
+			return preparedSessionID, nil
+		},
+		execute: func(_ context.Context, execution Execution) (string, error) {
+			executions <- execution
+			return "done", nil
+		},
+	}, Config{MaxConcurrent: 1, MaxConcurrentPerParent: 1})
+
+	id, err := manager.Spawn(context.Background(), "parent-session", "builder", Request{Prompt: "work", Agent: "worker"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	preparation := <-preparations
+	execution := <-executions
+	task, err := manager.Await(context.Background(), "parent-session", id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySession, ok := manager.TaskForSession(preparedSessionID)
+	if id != preparedSessionID || task.SessionID != preparedSessionID || execution.SessionID != preparedSessionID || !ok || bySession.SessionID != preparedSessionID {
+		t.Fatalf("session identity: id=%q task=%#v execution=%#v bySession=%#v found=%v", id, task, execution, bySession, ok)
+	}
+	if preparation.ParentSession != "parent-session" || preparation.RootSession != "parent-session" || preparation.Turn != 1 || len(preparation.Lineage) != 1 || preparation.Lineage[0] != "builder" {
+		t.Fatalf("preparation = %#v", preparation)
+	}
+}
+
 type reusableExecutor struct {
 	mu       sync.Mutex
 	runs     chan Execution
@@ -264,14 +363,14 @@ func newReusableExecutor() *reusableExecutor {
 	return &reusableExecutor{runs: make(chan Execution, 8), releases: make(map[string]chan string), sends: make(chan string, 8)}
 }
 
-func (e *reusableExecutor) Prepare(_ context.Context, execution Execution) (string, error) {
-	return "session-" + execution.TaskID, nil
+func (e *reusableExecutor) Prepare(_ context.Context, preparation Preparation) (string, error) {
+	return "session-" + preparation.Request.Prompt, nil
 }
 
 func (e *reusableExecutor) Execute(ctx context.Context, execution Execution) (string, error) {
 	e.mu.Lock()
 	release := make(chan string, 1)
-	e.releases[execution.TaskID] = release
+	e.releases[execution.SessionID] = release
 	e.mu.Unlock()
 	e.runs <- execution
 	select {
@@ -305,7 +404,7 @@ func TestReusableAgentLifecycleOwnershipObservationAndActiveListing(t *testing.T
 		t.Fatal(err)
 	}
 	first := <-executor.runs
-	if first.SessionID != "session-"+first.TaskID || first.Turn != 1 || first.Request.Prompt != "first" {
+	if id != "session-first" || first.SessionID != id || first.Turn != 1 || first.Request.Prompt != "first" {
 		t.Fatalf("first execution = %#v", first)
 	}
 	task, err := manager.Status("root", id)
@@ -335,7 +434,7 @@ func TestReusableAgentLifecycleOwnershipObservationAndActiveListing(t *testing.T
 		t.Fatal(err)
 	}
 	active := manager.ListActive("root")
-	if len(active) != 2 || active[0].ID != min(id, otherID) || active[1].ID != max(id, otherID) {
+	if len(active) != 2 || active[0].SessionID != min(id, otherID) || active[1].SessionID != max(id, otherID) {
 		t.Fatalf("active tasks = %#v", active)
 	}
 	if _, err := manager.Send(context.Background(), "root", otherID, "unrelated"); err != nil {
@@ -373,7 +472,7 @@ func TestReusableAgentLifecycleOwnershipObservationAndActiveListing(t *testing.T
 		t.Fatalf("second completion = %#v, %v", completed, err)
 	}
 	active = manager.ListActive("root")
-	if len(active) != 1 || active[0].ID != otherID {
+	if len(active) != 1 || active[0].SessionID != otherID {
 		t.Fatalf("active after completion = %#v", active)
 	}
 
@@ -383,8 +482,8 @@ func TestReusableAgentLifecycleOwnershipObservationAndActiveListing(t *testing.T
 	if err := manager.Shutdown(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Launch("root", nil, Request{Prompt: "closed", Agent: "explore"}); !errors.Is(err, ErrClosed) {
-		t.Fatalf("closed launch error = %v", err)
+	if _, err := manager.Spawn(context.Background(), "root", "build", Request{Prompt: "closed", Agent: "explore"}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("closed spawn error = %v", err)
 	}
 }
 
@@ -408,7 +507,7 @@ func TestObserveAndListActivePreserveDescendantVisibility(t *testing.T) {
 
 	rootActive := manager.ListActive("root")
 	parentActive := manager.ListActive(parent.SessionID)
-	if len(rootActive) != 2 || len(parentActive) != 1 || parentActive[0].ID != childID || len(manager.ListActive("unrelated")) != 0 {
+	if len(rootActive) != 2 || len(parentActive) != 1 || parentActive[0].SessionID != childID || len(manager.ListActive("unrelated")) != 0 {
 		t.Fatalf("active tasks: root=%#v parent=%#v", rootActive, parentActive)
 	}
 	if _, err := manager.Observe(parent.SessionID, childID); err != nil {
@@ -429,7 +528,7 @@ func TestObserveAndListActivePreserveDescendantVisibility(t *testing.T) {
 	}
 }
 
-func TestLaunchEnforcesPerAgentRecursionLimits(t *testing.T) {
+func TestSpawnEnforcesPerAgentRecursionLimits(t *testing.T) {
 	manager := NewManager(executorFunc(func(context.Context, Execution) (string, error) { return "", nil }), Config{MaxConcurrent: 16, MaxConcurrentPerParent: 16, AgentIdentity: func(id string) string {
 		if id == "explore" {
 			return "explorer"
@@ -456,16 +555,38 @@ func TestLaunchEnforcesPerAgentRecursionLimits(t *testing.T) {
 		{name: "maximum depth remains independent", lineage: []string{"a", "b", "c", "d"}, target: "worker", wantErr: ErrDepth},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := manager.Launch("root-"+test.name, test.lineage, Request{Prompt: "recurse", Agent: test.target})
+			parentSession := "root-" + test.name
+			callerAgent := "root"
+			if len(test.lineage) != 0 {
+				callerAgent = test.lineage[0]
+			}
+			for i := 1; i < len(test.lineage); i++ {
+				ancestor := test.lineage[i]
+				id, err := manager.Spawn(context.Background(), parentSession, callerAgent, Request{Prompt: "ancestor", Agent: ancestor})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := manager.Await(context.Background(), parentSession, id); err != nil {
+					t.Fatal(err)
+				}
+				parentSession = id
+				callerAgent = ancestor
+			}
+			id, err := manager.Spawn(context.Background(), parentSession, callerAgent, Request{Prompt: "recurse", Agent: test.target})
 			if !errors.Is(err, test.wantErr) {
-				t.Fatalf("Launch(%v -> %q) error = %v, want %v", test.lineage, test.target, err, test.wantErr)
+				t.Fatalf("Spawn(%v -> %q) error = %v, want %v", test.lineage, test.target, err, test.wantErr)
+			}
+			if err == nil {
+				if _, err := manager.Await(context.Background(), parentSession, id); err != nil {
+					t.Fatal(err)
+				}
 			}
 		})
 	}
 
 	derived := NewManager(preparedExecutor{
-		prepare: func(_ context.Context, execution Execution) (string, error) {
-			return "session-" + execution.TaskID, nil
+		prepare: func(_ context.Context, preparation Preparation) (string, error) {
+			return preparation.ParentSession + "/child", nil
 		},
 		execute: func(context.Context, Execution) (string, error) { return "", nil },
 	}, Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4})
@@ -493,11 +614,11 @@ func TestSpawnFailureAndCancellationDoNotRetainUnreachableAgents(t *testing.T) {
 		cancel   bool
 	}{
 		{name: "failure", executor: preparedExecutor{
-			prepare: func(context.Context, Execution) (string, error) { return "", errors.New("create failed") },
+			prepare: func(context.Context, Preparation) (string, error) { return "", errors.New("create failed") },
 			execute: func(context.Context, Execution) (string, error) { return "", nil },
 		}},
 		{name: "cancellation", cancel: true, executor: preparedExecutor{
-			prepare: func(ctx context.Context, _ Execution) (string, error) { <-ctx.Done(); return "", ctx.Err() },
+			prepare: func(ctx context.Context, _ Preparation) (string, error) { <-ctx.Done(); return "", ctx.Err() },
 			execute: func(context.Context, Execution) (string, error) { return "", nil },
 		}},
 	} {
