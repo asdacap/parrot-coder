@@ -88,23 +88,22 @@ func usageLimitValue(value string) bool {
 	}
 }
 
-// IsEngineOverloadedError reports a transient provider overload signal. Both
-// HTTP failures and errors delivered inside a successful response stream are
-// recognized from structured fields; human-readable message text remains
-// display-only.
+// IsEngineOverloadedError reports a transient provider failure. Both HTTP
+// failures and errors delivered inside a successful response stream are
+// recognized from structured fields or a known retryable provider message.
 func IsEngineOverloadedError(err error) bool {
-	var kind, code string
+	var kind, code, message string
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
-		kind, code = httpErr.Type, httpErr.Code
+		kind, code, message = httpErr.Type, httpErr.Code, httpErr.Message
 	} else {
 		var responseErr *ResponseError
 		if !errors.As(err, &responseErr) {
 			return false
 		}
-		kind, code = responseErr.Type, responseErr.Code
+		kind, code, message = responseErr.Type, responseErr.Code, responseErr.Message
 	}
-	return overloadValue(kind) || overloadValue(code)
+	return overloadValue(kind) || overloadValue(code) || retryableProviderMessage(message)
 }
 
 func overloadValue(value string) bool {
@@ -114,6 +113,17 @@ func overloadValue(value string) bool {
 	default:
 		return false
 	}
+}
+
+func retryableProviderMessage(message string) bool {
+	const prefix = "an error occurred while processing your request. you can retry your request, or contact us through our help center at help.openai.com if the error persists. please include the request id "
+	const suffix = " in your message."
+
+	message = strings.ToLower(strings.TrimSpace(message))
+	if !strings.HasPrefix(message, prefix) || !strings.HasSuffix(message, suffix) {
+		return false
+	}
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(message, prefix), suffix)) != ""
 }
 
 // RetryNotice reports an automatic retry of a transient provider failure so
