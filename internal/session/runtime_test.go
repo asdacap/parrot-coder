@@ -12,6 +12,75 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/store"
 )
 
+func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
+	ctx, _, repository, service, sessionID := newService(t)
+	if err := service.SetSelection(ctx, sessionID, session.Selection{Agent: "build", Provider: "local", Model: "code"}); err != nil {
+		t.Fatal(err)
+	}
+	assertPending := func(want bool) {
+		t.Helper()
+		got, err := service.StatusPromptPending(ctx, sessionID)
+		if err != nil || got != want {
+			t.Fatalf("StatusPromptPending() = %v, %v; want %v", got, err, want)
+		}
+	}
+	assertPending(true)
+	assistant, err := service.StartAssistant(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.FinishAssistant(ctx, sessionID, assistant.ID, session.AssistantFinal{Parts: []protocol.ContentPart{{Type: protocol.ContentText, Text: "done"}}}); err != nil {
+		t.Fatal(err)
+	}
+	assertPending(false)
+	interrupted, err := service.StartAssistant(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.FinishAssistant(ctx, sessionID, interrupted.ID, session.AssistantFinal{Status: "interrupted", Error: "cancelled"}); err != nil {
+		t.Fatal(err)
+	}
+	assertPending(false)
+	variant := "high"
+	if _, err := service.UpdateSelection(ctx, sessionID, session.SelectionPatch{Model: "other", Variant: &variant}, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertPending(false)
+	if _, err := service.UpdateSelection(ctx, sessionID, session.SelectionPatch{Agent: "plan"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	assertPending(true)
+	interrupted, err = service.StartAssistant(ctx, sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.FinishAssistant(ctx, sessionID, interrupted.ID, session.AssistantFinal{Status: "interrupted", Error: "cancelled"}); err != nil {
+		t.Fatal(err)
+	}
+	assertPending(true)
+
+	events, err := repository.List(ctx, sessionID, -1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var changes []bool
+	for _, item := range events {
+		if item.Type != "session.selection.changed" {
+			continue
+		}
+		var data struct {
+			ModeChanged bool `json:"mode_changed"`
+		}
+		if err := json.Unmarshal(item.Data, &data); err != nil {
+			t.Fatal(err)
+		}
+		changes = append(changes, data.ModeChanged)
+	}
+	if want := []bool{true, false, true}; !reflect.DeepEqual(changes, want) {
+		t.Fatalf("mode_changed values = %v, want %v", changes, want)
+	}
+}
+
 func TestModelHistoryCutoffIsInclusive(t *testing.T) {
 	ctx, _, _, service, sessionID := newService(t)
 	for _, text := range []string{"zero", "one", "two"} {
