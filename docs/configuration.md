@@ -33,6 +33,7 @@ selected model. Durations are integer milliseconds.
 
 ```yaml
 model: provider/model
+variant: high # optional reasoning variant exposed by the selected model
 providers:
   provider:
     type: compatible # compatible or openai-compatible
@@ -84,11 +85,18 @@ web_fetch:
   allow_private: false
 ```
 
-The `model` field is also updated in-place by the interactive `/model` chat
-command and the model picker: when you select a model interactively, Parrot
-writes it to the global config file so the selection persists across restarts.
-This makes the global config file a form of persistent state as well as
-configuration. Project-scope config files are not written to.
+The `model` and `variant` fields form the default model selection. `variant` is
+optional, but when present it must name a reasoning variant exposed by `model`.
+A command-line `--variant` takes precedence over this configured value; when no
+variant is configured, Parrot can restore one from the latest matching project
+session.
+
+The interactive `/model` and `/effort` commands and the model picker update the
+`model`/`variant` pair together in the global config file, so the complete
+selection persists across restarts. Selecting a model without variants removes
+the global `variant` field. This makes the global config file a form of
+persistent state as well as configuration. Project-scope config files are not
+written to.
 
 ### Providers
 

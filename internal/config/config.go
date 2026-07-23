@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/amirulashraf/parrot-coder/internal/atomicfile"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -22,12 +23,13 @@ const (
 
 // Config is the typed configuration consumed by later application phases.
 type Config struct {
-	DefaultModel  string              `json:"model,omitempty"`
-	Providers     map[string]Provider `json:"providers,omitempty"`
-	MCP           map[string]MCP      `json:"mcp,omitempty"`
-	WebFetch      WebFetch            `json:"web_fetch,omitempty"`
-	ToolBlacklist []string            `json:"tool_blacklist,omitempty"`
-	SandboxRules  []SandboxRule       `json:"sandbox_rules,omitempty"`
+	DefaultModel   string              `json:"model,omitempty"`
+	DefaultVariant string              `json:"variant,omitempty"`
+	Providers      map[string]Provider `json:"providers,omitempty"`
+	MCP            map[string]MCP      `json:"mcp,omitempty"`
+	WebFetch       WebFetch            `json:"web_fetch,omitempty"`
+	ToolBlacklist  []string            `json:"tool_blacklist,omitempty"`
+	SandboxRules   []SandboxRule       `json:"sandbox_rules,omitempty"`
 }
 
 // SandboxRule is one ordered filesystem rule applied to the sandbox. Rule
@@ -376,6 +378,8 @@ const predefinedConfigYAML = `# Predefined configuration reference.
 
 # Default model selected as provider/model.
 model: ""
+# Default model variant (the reasoning effort name exposed by the model).
+variant: ""
 
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
@@ -501,6 +505,8 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 
 # Default model selected as provider/model.
 # model: provider/model
+# Default model variant (the reasoning effort name exposed by the model).
+# variant: high
 
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
@@ -625,21 +631,21 @@ func writeDefaultConfig(path string) error {
 	return os.WriteFile(path, []byte(defaultConfigYAML), 0o600)
 }
 
-// UpdateDefaultModel updates or adds the top-level "model" field in a YAML
-// config file at path, preserving comments and other fields. The value must
-// be in provider/model format. It is a no-op when the file already contains
-// the same value.
-func UpdateDefaultModel(path, model string) error {
+// UpdateDefaultSelection updates the correlated top-level "model" and
+// "variant" fields in one write, preserving comments and unrelated fields.
+// An empty variant removes the field. If path does not exist, it is created.
+func UpdateDefaultSelection(path, model, variant string) error {
 	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read config for model update: %w", err)
-	}
-	var doc yaml.Node
-	if err := yaml.Unmarshal(data, &doc); err != nil {
-		return fmt.Errorf("parse config for model update: %w", err)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read config for selection update: %w", err)
 	}
 
-	// Walk to the root mapping node.
+	var doc yaml.Node
+	if errors.Is(err, os.ErrNotExist) || len(bytes.TrimSpace(data)) == 0 {
+		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	} else if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse config for selection update: %w", err)
+	}
 	root := &doc
 	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
 		root = doc.Content[0]
@@ -648,28 +654,53 @@ func UpdateDefaultModel(path, model string) error {
 		return errors.New("config root must be a mapping")
 	}
 
-	// Check whether the model key already exists.
-	for i := 0; i < len(root.Content)-1; i += 2 {
-		if root.Content[i].Value == "model" {
-			if root.Content[i+1].Value == model {
-				return nil // already set; nothing to do
-			}
-			root.Content[i+1].Value = model
-			out, err := yaml.Marshal(&doc)
-			if err != nil {
-				return fmt.Errorf("encode updated config: %w", err)
-			}
-			return os.WriteFile(path, out, 0o600)
-		}
+	changed := false
+	if variant == "" {
+		changed = removeTopLevelField(root, "variant")
+	} else {
+		changed = setTopLevelScalar(root, "variant", variant)
 	}
-
-	// Not found; insert at the beginning of the mapping.
-	key := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "model"}
-	value := &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: model}
-	root.Content = append([]*yaml.Node{key, value}, root.Content...)
+	changed = setTopLevelScalar(root, "model", model) || changed
+	if !changed {
+		return nil
+	}
 	out, err := yaml.Marshal(&doc)
 	if err != nil {
 		return fmt.Errorf("encode updated config: %w", err)
 	}
-	return os.WriteFile(path, out, 0o600)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config directory for selection update: %w", err)
+	}
+	if err := atomicfile.Write(path, out); err != nil {
+		return fmt.Errorf("write config selection update: %w", err)
+	}
+	return nil
+}
+
+func setTopLevelScalar(root *yaml.Node, key, value string) bool {
+	for i := 0; i < len(root.Content)-1; i += 2 {
+		if root.Content[i].Value == key {
+			if root.Content[i+1].Value == value {
+				return false
+			}
+			node := root.Content[i+1]
+			node.Kind, node.Tag, node.Value, node.Content = yaml.ScalarNode, "!!str", value, nil
+			return true
+		}
+	}
+	root.Content = append([]*yaml.Node{
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	}, root.Content...)
+	return true
+}
+
+func removeTopLevelField(root *yaml.Node, key string) bool {
+	for i := 0; i < len(root.Content)-1; i += 2 {
+		if root.Content[i].Value == key {
+			root.Content = append(root.Content[:i], root.Content[i+2:]...)
+			return true
+		}
+	}
+	return false
 }

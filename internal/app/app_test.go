@@ -360,6 +360,170 @@ func TestOpenRestoresLatestProjectModelSelection(t *testing.T) {
 	}
 }
 
+func TestOpenVariantPrecedenceAndValidation(t *testing.T) {
+	providerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			_, _ = io.WriteString(w, `{"data":[{"id":"reasoning"},{"id":"plain"}]}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer providerServer.Close()
+	root := t.TempDir()
+	paths := appdirs.Overrides{
+		Home: root, ConfigHome: filepath.Join(root, "config"), DataHome: filepath.Join(root, "data"),
+		StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache"),
+	}
+	configPath := filepath.Join(root, "config", "parrot", config.FileName)
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	providerConfig := fmt.Sprintf(`providers:
+  local:
+    type: compatible
+    protocol: responses
+    base_url: %q
+    api_key_env: PARROT_VARIANT_TEST_KEY
+    allow_insecure_localhost: true
+    models:
+      reasoning:
+        context: 1000
+        variants:
+          low:
+            reasoning_effort: low
+          medium:
+            reasoning_effort: medium
+          high:
+            reasoning_effort: high
+      plain:
+        context: 1000
+`, providerServer.URL+"/v1")
+	if err := os.WriteFile(configPath, []byte(providerConfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PARROT_VARIANT_TEST_KEY", "test")
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err := runtime.Client.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected, variantless v1.Model
+	for _, item := range catalog.Items {
+		if len(item.Variants) >= 3 && selected.ID == "" {
+			selected = item
+		}
+		if len(item.Variants) == 0 && variantless.ID == "" {
+			variantless = item
+		}
+	}
+	if selected.ID == "" || variantless.ID == "" {
+		t.Fatalf("catalog lacks variant fixtures: %#v", catalog.Items)
+	}
+	model := selected.Provider + "/" + selected.ID
+	historyVariant, configVariant, cliVariant := selected.Variants[0].Name, selected.Variants[1].Name, selected.Variants[2].Name
+	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
+		ProjectID: runtime.Project.ID, Title: "history", Agent: "build", Model: model, Variant: &historyVariant,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := config.UpdateDefaultSelection(configPath, model, configVariant); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name    string
+		options Options
+		want    string
+	}{
+		{name: "config supersedes history", options: Options{}, want: configVariant},
+		{name: "cli supersedes config", options: Options{Variant: cliVariant}, want: cliVariant},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			options := test.options
+			options.CWD, options.Paths, options.NonInteractive = root, paths, true
+			opened, openErr := Open(context.Background(), options)
+			if openErr != nil {
+				t.Fatal(openErr)
+			}
+			defer opened.Close()
+			if opened.DefaultSelection.Provider+"/"+opened.DefaultSelection.Model != model || opened.DefaultSelection.Variant != test.want {
+				t.Fatalf("selection = %#v, want %s variant %q", opened.DefaultSelection, model, test.want)
+			}
+		})
+	}
+
+	for _, test := range []struct {
+		name    string
+		model   string
+		variant string
+		wantErr string
+	}{
+		{name: "unknown", model: model, variant: "bogus", wantErr: `variant "bogus" is not available`},
+		{name: "incompatible", model: variantless.Provider + "/" + variantless.ID, variant: historyVariant, wantErr: `variant "` + historyVariant + `" is not available`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			_, openErr := Open(context.Background(), Options{CWD: root, Paths: paths, Model: test.model, Variant: test.variant, NonInteractive: true})
+			if openErr == nil || !strings.Contains(openErr.Error(), test.wantErr) {
+				t.Fatalf("Open error = %v, want %q", openErr, test.wantErr)
+			}
+		})
+	}
+
+	modelLessRoot := t.TempDir()
+	modelLessPaths := appdirs.Overrides{Home: modelLessRoot, ConfigHome: filepath.Join(modelLessRoot, "config"), DataHome: filepath.Join(modelLessRoot, "data"), StateHome: filepath.Join(modelLessRoot, "state"), CacheHome: filepath.Join(modelLessRoot, "cache")}
+	_, err = Open(context.Background(), Options{CWD: modelLessRoot, Paths: modelLessPaths, Variant: "high", AllowNoModel: true, NonInteractive: true})
+	if err == nil || !strings.Contains(err.Error(), `variant "high" requires a model`) {
+		t.Fatalf("model-less variant error = %v", err)
+	}
+}
+
+func TestOpenRestoresVariantWhenModelMatches(t *testing.T) {
+	root := t.TempDir()
+	paths := appdirs.Overrides{
+		Home: root, ConfigHome: filepath.Join(root, "config"), DataHome: filepath.Join(root, "data"),
+		StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache"),
+	}
+	// First, open without a model to create a session with a variant.
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := runtime.Client.Models(context.Background())
+	if err != nil || len(models.Items) == 0 {
+		t.Fatalf("Models = %#v, %v", models, err)
+	}
+	model := models.Items[0]
+	variant := "high"
+	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
+		ProjectID: runtime.Project.ID, Title: "variant", Agent: "build", Model: model.Provider + "/" + model.ID, Variant: &variant,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen with the model explicitly configured; variant should still be restored.
+	modelArg := model.Provider + "/" + model.ID
+	reopened, err := Open(context.Background(), Options{CWD: root, Paths: paths, Model: modelArg, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.DefaultSelection.Variant != variant {
+		t.Fatalf("restored variant = %q, want %q", reopened.DefaultSelection.Variant, variant)
+	}
+	if reopened.DefaultSelection.Provider != model.Provider || reopened.DefaultSelection.Model != model.ID {
+		t.Fatalf("restored model = %s/%s, want %s/%s", reopened.DefaultSelection.Provider, reopened.DefaultSelection.Model, model.Provider, model.ID)
+	}
+}
+
 func assertAppProblem(t *testing.T, err error, code string) {
 	t.Helper()
 	var apiErr *client.APIError

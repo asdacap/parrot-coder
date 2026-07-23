@@ -93,14 +93,16 @@ parrot auth login openai
 parrot auth login openai --no-browser
 
 parrot models
-parrot chat --model chatgpt/gpt-5.6-sol
+parrot chat --model chatgpt/gpt-5.6-sol --variant high
 ```
 
 OAuth credentials are stored in Parrot's private data directory. They are sent
 only to the compiled OpenAI authentication and ChatGPT endpoints.
 At startup, Parrot requests the ChatGPT Codex model catalog to obtain current
 model names, context windows, and reasoning variants. If the catalog is
-unavailable, Parrot keeps using its bundled model metadata.
+unavailable, Parrot keeps using its bundled model metadata. Interactive
+`/model` and `/effort` selections are saved as the global `model`/`variant`
+pair and become the defaults for later sessions.
 `parrot usage` (or `/usage` in chat) shows the remaining percentage and reset
 time for the subscription's available rate-limit windows. This relies on an
 upstream ChatGPT endpoint and requires a stored ChatGPT OAuth credential.

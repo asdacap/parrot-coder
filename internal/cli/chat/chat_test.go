@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/app"
 	"github.com/amirulashraf/parrot-coder/internal/auth"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
@@ -129,14 +130,42 @@ func TestChatHelpListsCustomCommandsAndSubtaskUsesNormalPrompt(t *testing.T) {
 }
 
 func TestCreateChatSessionIncludesSelectionAtomically(t *testing.T) {
-	creator := &recordingSessionCreator{}
-	_, err := createChatSession(context.Background(), creator, "project", "title", chatSelection{agent: "plan", provider: "local", model: "test"})
-	if err != nil {
-		t.Fatal(err)
+	for _, variant := range []string{"", "high"} {
+		creator := &recordingSessionCreator{}
+		_, err := createChatSession(context.Background(), creator, "project", "title", chatSelection{agent: "plan", provider: "local", model: "test", variant: variant})
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := creator.request
+		if request.ProjectID != "project" || request.Title != "title" || request.Agent != "plan" || request.Model != "local/test" || request.Variant == nil || *request.Variant != variant {
+			t.Fatalf("variant %q request = %#v", variant, request)
+		}
 	}
-	want := (v1.CreateSessionRequest{ProjectID: "project", Title: "title", Agent: "plan", Model: "local/test"})
-	if creator.request != want {
-		t.Fatalf("request = %#v; want %#v", creator.request, want)
+}
+
+func TestCodingCommandsForwardVariantToAppOpen(t *testing.T) {
+	openErr := errors.New("stop after options")
+	for _, test := range []struct {
+		name string
+		run  func(func(context.Context, app.Options) (*app.App, error)) Result
+	}{
+		{name: "chat", run: func(open func(context.Context, app.Options) (*app.App, error)) Result {
+			return Run(Config{Context: context.Background(), Args: []string{"--variant", "high"}, Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard, Open: open})
+		}},
+		{name: "run", run: func(open func(context.Context, app.Options) (*app.App, error)) Result {
+			return RunPrompt(PromptConfig{Context: context.Background(), Args: []string{"--variant", "high", "prompt"}, Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard, Open: open})
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var opened app.Options
+			result := test.run(func(_ context.Context, options app.Options) (*app.App, error) {
+				opened = options
+				return nil, openErr
+			})
+			if opened.Variant != "high" || !errors.Is(result.Err, openErr) {
+				t.Fatalf("options = %#v, result = %#v", opened, result)
+			}
+		})
 	}
 }
 
@@ -365,7 +394,9 @@ func (r *recordingSessionCreator) CreateSession(_ context.Context, request v1.Cr
 }
 
 func (a *effortSwitchAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
-func (a *effortSwitchAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, error) { return v1.Model{}, nil }
+func (a *effortSwitchAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, error) {
+	return v1.Model{}, nil
+}
 
 func (a *effortSwitchAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
 	a.updates = append(a.updates, request)
@@ -531,7 +562,9 @@ func TestEnhancedSetCurrentRefreshesModelineWindow(t *testing.T) {
 }
 
 func (a catalogOnlyAPI) Models(context.Context) (v1.ModelList, error) { return a.models, nil }
-func (a catalogOnlyAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, error) { return v1.Model{}, nil }
+func (a catalogOnlyAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, error) {
+	return v1.Model{}, nil
+}
 
 func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	var output bytes.Buffer
@@ -1301,8 +1334,9 @@ func TestApplyModelClearsVariantForModelsWithoutVariants(t *testing.T) {
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			api := &effortSwitchAPI{models: models}
+			configDir := t.TempDir()
 			shell := &chatShell{
-				ctx: context.Background(), api: api, models: models.Items,
+				ctx: context.Background(), api: api, models: models.Items, configDir: configDir,
 				current: v1.Session{ID: "session"}, selection: chatSelection{variant: testCase.current},
 				stdout: io.Discard, stderr: io.Discard,
 			}
@@ -1320,7 +1354,34 @@ func TestApplyModelClearsVariantForModelsWithoutVariants(t *testing.T) {
 			if api.updates[0].Variant == nil || *api.updates[0].Variant != testCase.want {
 				t.Fatalf("patched variant = %v, want explicit %q", api.updates[0].Variant, testCase.want)
 			}
+			persisted, err := os.ReadFile(filepath.Join(configDir, "parrot.yaml"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(persisted), "model: "+testCase.target) || (testCase.want == "" && strings.Contains(string(persisted), "variant:")) || (testCase.want != "" && !strings.Contains(string(persisted), "variant: "+testCase.want)) {
+				t.Fatalf("persisted selection = %q", persisted)
+			}
 		})
+	}
+}
+
+func TestSelectEffortPersistsCorrelatedSelection(t *testing.T) {
+	configDir := t.TempDir()
+	models := v1.ModelList{Items: []v1.Model{{Provider: "chatgpt", ID: "sol", Variants: []v1.ModelVariant{{Name: "low"}, {Name: "high"}}}}}
+	shell := &chatShell{
+		ctx: context.Background(), api: &effortSwitchAPI{models: models}, configDir: configDir,
+		current:   v1.Session{ID: "session", Provider: "chatgpt", Model: "sol", Variant: "low"},
+		selection: chatSelection{provider: "chatgpt", model: "sol", variant: "low"}, stdout: io.Discard, stderr: io.Discard,
+	}
+	if err := shell.selectEffort("high"); err != nil {
+		t.Fatal(err)
+	}
+	persisted, err := os.ReadFile(filepath.Join(configDir, "parrot.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(persisted) != "model: chatgpt/sol\nvariant: high\n" {
+		t.Fatalf("persisted selection = %q", persisted)
 	}
 }
 
