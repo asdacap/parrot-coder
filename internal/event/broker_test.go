@@ -9,8 +9,53 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 )
 
+func TestBrokerAttributesOrdinaryAndChildSessions(t *testing.T) {
+	broker := event.NewBroker(nil, nil)
+	broker.SetTaskIDFor(func(string) string { return "main" })
+	broker.RegisterChild("child", "parent", "task_child")
+	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
+
+	for _, test := range []struct {
+		sessionID string
+		want      string
+	}{
+		{sessionID: "ordinary", want: "main"},
+		{sessionID: "child", want: "task_child"},
+	} {
+		events, closeSubscription := broker.Subscribe(test.sessionID, 1)
+		broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: test.sessionID, Data: data})
+		if item := <-events; item.TaskID != test.want {
+			t.Fatalf("%s task = %q, want %q", test.sessionID, item.TaskID, test.want)
+		}
+		closeSubscription()
+	}
+}
+
+func TestBrokerProjectsDescendantsToEveryAncestor(t *testing.T) {
+	broker := event.NewBroker(nil, nil)
+	broker.RegisterChild("child", "parent", "task_child")
+	broker.RegisterChild("grandchild", "child", "task_grandchild")
+	parent, closeParent := broker.Subscribe("parent", 2)
+	defer closeParent()
+	child, closeChild := broker.Subscribe("child", 2)
+	defer closeChild()
+	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
+
+	broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "grandchild", Data: data})
+	for name, item := range map[string]v1.Event{"parent": <-parent, "child": <-child} {
+		if item.SessionID != name || item.TaskID != "task_grandchild" || item.Sequence != nil || item.CreatedAt != nil {
+			t.Fatalf("%s projection = %#v", name, item)
+		}
+	}
+
+	broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "grandchild", TaskID: "nested", Data: data})
+	if item := <-parent; item.TaskID != "nested" {
+		t.Fatalf("explicit task attribution = %#v", item)
+	}
+}
+
 func TestLiveBrokerAssignsIDAndDropsSlowSubscriber(t *testing.T) {
-	broker := event.NewBroker()
+	broker := event.NewBroker(nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 1)
 	defer closeSubscription()
 	broker.Publish("ses_test", protocol.Event{Type: protocol.EventTextDelta, Text: "one"})
@@ -29,7 +74,7 @@ func TestLiveBrokerAssignsIDAndDropsSlowSubscriber(t *testing.T) {
 }
 
 func TestLiveBrokerPreservesMessagePartID(t *testing.T) {
-	broker := event.NewBroker()
+	broker := event.NewBroker(nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 1)
 	defer closeSubscription()
 	broker.Publish("ses_test", protocol.Event{
@@ -48,7 +93,7 @@ func TestLiveBrokerPreservesMessagePartID(t *testing.T) {
 }
 
 func TestLiveBrokerRejectsUnknownOrInvalidEvents(t *testing.T) {
-	broker := event.NewBroker()
+	broker := event.NewBroker(nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 2)
 	defer closeSubscription()
 	broker.PublishEvent(v1.Event{Type: "unknown", SessionID: "ses_test", Data: json.RawMessage(`{}`)})
@@ -61,7 +106,7 @@ func TestLiveBrokerRejectsUnknownOrInvalidEvents(t *testing.T) {
 }
 
 func TestLiveBrokerMapsProviderRetryNotice(t *testing.T) {
-	broker := event.NewBroker()
+	broker := event.NewBroker(nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 1)
 	defer closeSubscription()
 	broker.Publish("ses_test", protocol.Event{Type: protocol.EventProviderRetry, Text: "provider fake is overloaded; retrying in 2s (attempt 1)"})
@@ -80,7 +125,7 @@ func TestLiveBrokerMapsProviderRetryNotice(t *testing.T) {
 }
 
 func TestLiveBrokerPreservesReasoningSummaryPartID(t *testing.T) {
-	broker := event.NewBroker()
+	broker := event.NewBroker(nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 1)
 	defer closeSubscription()
 
@@ -103,7 +148,7 @@ func TestLiveBrokerPreservesReasoningSummaryPartID(t *testing.T) {
 }
 
 func TestLiveBrokerPublishesReasoningSummaryDone(t *testing.T) {
-	broker := event.NewBroker()
+	broker := event.NewBroker(nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 1)
 	defer closeSubscription()
 
@@ -123,7 +168,7 @@ func TestLiveBrokerPublishesReasoningSummaryDone(t *testing.T) {
 }
 
 func TestLiveBrokerPublishesToolOutput(t *testing.T) {
-	broker := event.NewBroker()
+	broker := event.NewBroker(nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 1)
 	defer closeSubscription()
 	broker.Publish("ses_test", protocol.Event{Type: protocol.EventToolOutputDelta, ToolCallID: "call_test", Text: "line\n"})
@@ -139,7 +184,7 @@ func TestLiveBrokerPublishesToolOutput(t *testing.T) {
 }
 
 func TestLiveBrokerDropsToolOutputWithoutClosingSlowSubscriber(t *testing.T) {
-	broker := event.NewBroker()
+	broker := event.NewBroker(nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 1)
 	defer closeSubscription()
 	broker.Publish("ses_test", protocol.Event{Type: protocol.EventToolOutputDelta, ToolCallID: "call", Text: "first"})

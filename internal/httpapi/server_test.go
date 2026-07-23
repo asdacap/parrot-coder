@@ -595,7 +595,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := New(&DomainBackend{Sessions: sessions, Events: repository}, Config{})
+	server := New(&DomainBackend{Sessions: sessions, Events: event.NewBroker(repository, event.NewTransientRepository())}, Config{})
 	body := `{"message_id":"msg_retry","content":"hello","delivery":"steer"}`
 	for attempt := 0; attempt < 2; attempt++ {
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID+"/prompts", strings.NewReader(body))

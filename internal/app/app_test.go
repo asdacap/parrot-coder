@@ -96,7 +96,7 @@ func (f appDrainerFunc) Drain(ctx context.Context, sessionID string) error {
 }
 
 func TestStatusDrainerPublishesOnlyLifecycleCompletion(t *testing.T) {
-	live := event.NewBroker()
+	live := event.NewBroker(nil, nil)
 	events, unsubscribe := live.Subscribe("session", 2)
 	defer unsubscribe()
 	drainer := statusReporter{
@@ -119,7 +119,7 @@ func TestStatusDrainerPublishesOnlyLifecycleCompletion(t *testing.T) {
 }
 
 func TestStatusDrainerPublishesLifecycleError(t *testing.T) {
-	live := event.NewBroker()
+	live := event.NewBroker(nil, nil)
 	events, unsubscribe := live.Subscribe("session", 1)
 	defer unsubscribe()
 	drainer := statusReporter{live: live}
@@ -1003,24 +1003,20 @@ func TestReportSubagentEventConvertsUsageAndToolCalls(t *testing.T) {
 	}
 }
 
-func TestForwardEventFlattensTaskAttribution(t *testing.T) {
-	live := event.NewBroker()
+func TestBrokerFlattensTaskAttribution(t *testing.T) {
+	live := event.NewBroker(nil, nil)
+	live.RegisterChild("child", "parent", "outer-task")
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
-	executor := &appSubagentExecutor{live: live}
-	execution := subagent.Execution{TaskID: "outer-task", ParentSession: "parent", Request: subagent.Request{Agent: "explore"}}
 
-	// An event the child session produced itself is attributed to the child's
-	// main task, which is the subagent task.
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "working"})
-	executor.forwardEvent(execution, v1.Event{Type: v1.EventMessagePartDelta, SessionID: "child", Data: delta})
+	live.PublishEvent(v1.Event{Type: v1.EventMessagePartDelta, SessionID: "child", Data: delta})
 	direct := <-parentEvents
 	if direct.Type != v1.EventMessagePartDelta || direct.SessionID != "parent" || direct.TaskID != "outer-task" || direct.Sequence != nil {
 		t.Fatalf("direct projection = %#v", direct)
 	}
 
-	// An event belonging to the child's own subtask keeps that subtask's id.
-	executor.forwardEvent(execution, v1.Event{Type: v1.EventMessagePartDelta, SessionID: "child", TaskID: "inner-task", Data: delta})
+	live.PublishEvent(v1.Event{Type: v1.EventMessagePartDelta, SessionID: "child", TaskID: "inner-task", Data: delta})
 	nested := <-parentEvents
 	if nested.TaskID != "inner-task" || nested.SessionID != "parent" {
 		t.Fatalf("nested projection = %#v", nested)
@@ -1028,7 +1024,7 @@ func TestForwardEventFlattensTaskAttribution(t *testing.T) {
 }
 
 func TestPublishSubagentLifecycleEmitsFlatTaskEvents(t *testing.T) {
-	live := event.NewBroker()
+	live := event.NewBroker(nil, nil)
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
 
@@ -1058,28 +1054,23 @@ func decodeTaskEvent(t *testing.T, item v1.Event) *v1.TaskEvent {
 	return task
 }
 
-func TestForwardSubagentEventsRelaysLiveEventsAndProgress(t *testing.T) {
-	live := event.NewBroker()
+func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
+	live := event.NewBroker(nil, nil)
+	live.RegisterChild("child", "parent", "task-explore")
 	parentEvents, unsubscribeParent := live.Subscribe("parent", 2)
 	defer unsubscribeParent()
 	var progress []subagent.Progress
-	executor := &appSubagentExecutor{live: live}
-	stop := executor.forwardEvents("child", subagent.Execution{
-		TaskID: "task-explore", ParentSession: "parent", Request: subagent.Request{Agent: "explore"},
-		ReportProgress: func(item subagent.Progress) { progress = append(progress, item) },
+	stop := live.ObserveTransient("child", func(item v1.Event) {
+		reportSubagentEvent(func(item subagent.Progress) { progress = append(progress, item) }, item)
 	})
+	defer stop()
 
 	usage, _ := json.Marshal(v1.SessionStatus{MessageID: "child-message", Kind: "usage", Usage: &v1.Usage{TotalTokens: 42}})
 	live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "child", Data: usage})
-	select {
-	case item := <-parentEvents:
-		if item.Type != v1.EventSessionStatus || item.SessionID != "parent" || item.TaskID != "task-explore" {
-			t.Fatalf("projection = %#v", item)
-		}
-	case <-time.After(time.Second):
-		t.Fatal("live child event was not relayed")
+	item := <-parentEvents
+	if item.Type != v1.EventSessionStatus || item.SessionID != "parent" || item.TaskID != "task-explore" {
+		t.Fatalf("projection = %#v", item)
 	}
-	stop()
 	if len(progress) != 1 || progress[0].Usage.TotalTokens != 42 {
 		t.Fatalf("progress = %#v", progress)
 	}
