@@ -25,7 +25,6 @@ type Config struct {
 	DefaultModel  string              `json:"model,omitempty"`
 	Providers     map[string]Provider `json:"providers,omitempty"`
 	MCP           map[string]MCP      `json:"mcp,omitempty"`
-	LSP           map[string]LSP      `json:"lsp,omitempty"`
 	WebFetch      WebFetch            `json:"web_fetch,omitempty"`
 	ToolBlacklist []string            `json:"tool_blacklist,omitempty"`
 	SandboxRules  []SandboxRule       `json:"sandbox_rules,omitempty"`
@@ -50,15 +49,6 @@ type MCP struct {
 	AllowInsecureLocalhost bool              `json:"allow_insecure_localhost,omitempty"`
 	StartupTimeoutMS       int               `json:"startup_timeout_ms,omitempty"`
 	CallTimeoutMS          int               `json:"call_timeout_ms,omitempty"`
-}
-
-type LSP struct {
-	Command    string            `json:"command"`
-	Args       []string          `json:"args,omitempty"`
-	Env        map[string]string `json:"env,omitempty"`
-	Extensions []string          `json:"extensions,omitempty"`
-	Languages  map[string]string `json:"languages,omitempty"`
-	TimeoutMS  int               `json:"timeout_ms,omitempty"`
 }
 
 type WebFetch struct {
@@ -237,9 +227,10 @@ func Load(options Options) (Result, error) {
 		}
 		mergeObject(merged, value, "", source.Path, provenance)
 	}
-	// Snapshot configuration is obsolete, but accepting it keeps existing
-	// configuration files usable after filesystem journaling was removed.
+	// Obsolete configuration is ignored so existing files remain usable after
+	// the corresponding features are removed.
 	delete(merged, "snapshot")
+	delete(merged, "lsp")
 
 	data, err := json.Marshal(merged)
 	if err != nil {
@@ -256,9 +247,6 @@ func Load(options Options) (Result, error) {
 	}
 	if typed.MCP == nil {
 		typed.MCP = make(map[string]MCP)
-	}
-	if typed.LSP == nil {
-		typed.LSP = make(map[string]LSP)
 	}
 	if options.ConfigDir != "" {
 		if err := WritePredefinedConfig(filepath.Join(options.ConfigDir, PredefinedFileName)); err != nil {
@@ -468,26 +456,6 @@ model: ""
 #     # Milliseconds to wait for a call; zero uses default.
 #     call_timeout_ms: 30000
 
-# Language servers for the workspace.
-# lsp:
-#   go:
-#     # Absolute path to the language server executable.
-#     command: /absolute/path/to/gopls
-#     # Arguments for the language server.
-#     args:
-#       - serve
-#     # Environment variables for the language server.
-#     env:
-#       GOTOOLCHAIN: local
-#     # File extensions associated with this server.
-#     extensions:
-#       - .go
-#     # Maps file extensions to language IDs.
-#     languages:
-#       .go: go
-#     # Milliseconds to wait for responses; zero uses default.
-#     timeout_ms: 15000
-
 # Ordered sandbox rules applied after the built-in mounts below.
 # Each rule has a path and an action: allow_write, deny_read,
 # allow_read, or deny_write. Later rules override earlier ones.
@@ -618,26 +586,6 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 #     startup_timeout_ms: 15000
 #     # Milliseconds to wait for a call; zero uses default.
 #     call_timeout_ms: 30000
-
-# Language servers for the workspace.
-# lsp:
-#   go:
-#     # Absolute path to the language server executable.
-#     command: /absolute/path/to/gopls
-#     # Arguments for the language server.
-#     args:
-#       - serve
-#     # Environment variables for the language server.
-#     env:
-#       GOTOOLCHAIN: local
-#     # File extensions associated with this server.
-#     extensions:
-#       - .go
-#     # Maps file extensions to language IDs.
-#     languages:
-#       .go: go
-#     # Milliseconds to wait for responses; zero uses default.
-#     timeout_ms: 15000
 
 # Ordered sandbox rules applied after the built-in mounts below.
 # Each rule has a path and an action: allow_write, deny_read,

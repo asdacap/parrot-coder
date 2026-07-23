@@ -144,7 +144,7 @@ project metadata, `AGENTS.md` files, available skills, and tool guidance.
 
 ## Extension Boundaries
 
-Provider protocols, secret storage, tools, MCP transports, LSP processes, and
+Provider protocols, secret storage, tools, MCP transports, and
 formatters are replaceable I/O boundaries. Internal domain behavior should use
 concrete types until an interface is required by one of those boundaries.
 

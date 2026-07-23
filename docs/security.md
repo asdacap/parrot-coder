@@ -108,7 +108,7 @@ write only the workspace, its linked-worktree Git
 metadata, and private temporary area. Parrot metadata inside the workspace is
 read-only to shell commands; use reviewed structured tools for intended changes.
 Network destinations are not restricted. Unrestricted shell, configured
-formatter, LSP, and MCP processes are trusted local execution and do not use the
+formatter and MCP processes are trusted local execution and do not use the
 agent shell sandbox. Command parsing is never represented as a security boundary.
 
 Configured `sandbox_rules` in global `parrot.yaml` apply ordered filesystem

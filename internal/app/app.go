@@ -31,7 +31,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/httpapi"
 	"github.com/amirulashraf/parrot-coder/internal/id"
-	"github.com/amirulashraf/parrot-coder/internal/lsp"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/monitor"
@@ -179,7 +178,6 @@ type App struct {
 	processes    *process.Runner
 	monitors     *monitor.Service
 	mcp          *mcp.Manager
-	lsp          *lsp.Manager
 	providers    *agent.ProviderRegistry
 	httpClient   *http.Client
 	closeOnce    sync.Once
@@ -398,23 +396,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return nil, fmt.Errorf("app: MCP tool discovery: %w", err)
 		}
 	}
-	lspConfigs, lspLanguages, err := buildLSPConfigs(loaded.Config.LSP, info.Root)
-	if err != nil {
-		return nil, err
-	}
-	var lspManager *lsp.Manager
-	var lspClient tool.LSPClientFunc
-	if len(lspConfigs) != 0 {
-		lspManager, err = lsp.NewManager(lspConfigs)
-		if err != nil {
-			return nil, fmt.Errorf("app: LSP config: %w", err)
-		}
-		result.lsp = lspManager
-		lspClient = func(ctx context.Context, name string) (tool.LSPClient, error) { return lspManager.Client(ctx, name) }
-	}
-	if err != nil {
-		return nil, err
-	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
 	subagentExecutor := &appSubagentExecutor{sessions: sessions, events: repository, project: info, providers: providerRegistry, defaultSelection: defaultSelection, live: live}
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
@@ -473,7 +454,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
 		Changes: changes, Processes: processes, Monitor: monitors, Tasks: monitors, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
-		LSP:       tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages},
 		Subagents: subagents, Agents: agentLookup,
 		ConfigDir: paths.Config,
 	}); err != nil {
@@ -606,7 +586,6 @@ func validateConfigTrust(loaded config.Result) error {
 			continue
 		}
 		restricted := strings.HasPrefix(field, "mcp.") ||
-			strings.HasPrefix(field, "lsp.") ||
 			strings.HasPrefix(field, "sandbox_rules.") ||
 			field == "web_fetch.allow_private"
 		if strings.HasPrefix(field, "providers.") {
@@ -717,9 +696,6 @@ func (a *App) Close() error {
 		}
 		if a.mcp != nil {
 			a.closeErr = errors.Join(a.closeErr, a.mcp.Close())
-		}
-		if a.lsp != nil {
-			a.closeErr = errors.Join(a.closeErr, a.lsp.Close())
 		}
 		if a.sessionStore != nil {
 			a.closeErr = errors.Join(a.closeErr, a.sessionStore.Close())
@@ -1136,41 +1112,6 @@ func buildMCPConfigs(configs map[string]config.MCP) ([]mcp.Config, error) {
 		result = append(result, mapped)
 	}
 	return result, nil
-}
-
-func buildLSPConfigs(configs map[string]config.LSP, root string) ([]lsp.Config, map[string]map[string]string, error) {
-	names := sortedKeys(configs)
-	result := make([]lsp.Config, 0, len(names))
-	languages := make(map[string]map[string]string, len(names))
-	for _, name := range names {
-		item := configs[name]
-		if item.TimeoutMS < 0 {
-			return nil, nil, fmt.Errorf("app: LSP server %q timeout integer cannot be negative", name)
-		}
-		if err := requireExecutable("LSP server "+strconv.Quote(name)+" command", item.Command); err != nil {
-			return nil, nil, err
-		}
-		mapping := make(map[string]string)
-		for extension, language := range item.Languages {
-			extension = normalizeExtension(extension)
-			if extension == "" || language == "" {
-				return nil, nil, fmt.Errorf("app: LSP server %q has an empty extension or language", name)
-			}
-			mapping[extension] = language
-		}
-		for _, extension := range item.Extensions {
-			extension = normalizeExtension(extension)
-			if extension == "" {
-				return nil, nil, fmt.Errorf("app: LSP server %q has an empty extension", name)
-			}
-			if mapping[extension] == "" {
-				mapping[extension] = strings.TrimPrefix(extension, ".")
-			}
-		}
-		languages[name] = mapping
-		result = append(result, lsp.Config{Name: name, Command: item.Command, Args: append([]string(nil), item.Args...), Workspace: root, Environment: cloneMap(item.Env), Timeout: time.Duration(item.TimeoutMS) * time.Millisecond})
-	}
-	return result, languages, nil
 }
 
 func requireExecutable(label, path string) error {

@@ -22,7 +22,7 @@ may require upgrading.
 ## Threat Boundaries
 
 Parrot treats model/provider output, tool calls, project files and config, MCP
-servers, LSP servers, formatter output, and fetched web content as untrusted.
+servers, formatter output, and fetched web content as untrusted.
 Credentials, canonical permission binding, workspace containment, bounded I/O,
 terminal sanitation, process-group cleanup, and loopback HTTP binding are in
 scope for security reports.
@@ -35,7 +35,7 @@ the workspace and Git metadata are writable except for existing Parrot metadata
 execution fails when the sandbox is unavailable. The separate
 `unrestricted_shell` tool requires permission and runs
 without the sandbox, with the invoking user's local authority. Configured local
-formatter, LSP, and MCP executables are likewise trusted services with that
+formatter and MCP executables are likewise trusted services with that
 authority. Another same-user process, a
 compromised provider account, malicious dependencies used to build Parrot, and
 the confidentiality of intentionally readable, fetched, or submitted content
