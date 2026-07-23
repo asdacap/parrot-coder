@@ -115,7 +115,7 @@ func newEditor(decoder *KeyDecoder, writer io.Writer, options ...EditorOption) *
 		maxInputBytes:     64 << 10,
 		maxInputRunes:     16 << 10,
 		maxHistory:        100,
-		maxCompletionRows: defaultLiveRows - 1,
+		maxCompletionRows: DefaultLiveRows - 1,
 	}
 	for _, option := range options {
 		option(&config)

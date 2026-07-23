@@ -8,6 +8,7 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -31,29 +32,23 @@ func (r *enhancedChatRuntime) activityFrames(now time.Time, columns int) []termi
 			frames = append(frames, terminal.LiveFrame{TaskID: task.TaskID, SessionID: task.SessionID, ParentSessionID: task.ParentSessionID})
 		}
 	}
-	visible := make([]enhancedActivityItem, 0, len(r.activity))
-	for _, item := range r.activity {
-		if !item.hidden && !r.isModelineActivity(item) {
-			visible = append(visible, item)
-		}
-	}
-	if len(visible) > 4 {
-		visible = visible[len(visible)-4:]
-	}
 	statusByTask := make(map[string]int)
-	for _, item := range visible {
+	for _, item := range r.visibleActivity() {
 		taskID := item.taskID
 		if taskID == "" {
-			taskID = "task_main"
+			taskID = managedtask.MainTaskID
 		}
-		if item.mainStatus {
+		// render appends the main task's own status frame, so an activity row that
+		// resolves to the main task must never claim that role as well.
+		mainStatus := item.mainStatus && taskID != managedtask.MainTaskID
+		if mainStatus {
 			if previous, ok := statusByTask[taskID]; ok {
 				frames[previous].MainStatus = false
 			}
 			statusByTask[taskID] = len(frames)
 		}
 		frames = append(frames, terminal.LiveFrame{
-			TaskID: taskID, SessionID: item.sessionID, ParentSessionID: item.parentSessionID, MainStatus: item.mainStatus,
+			TaskID: taskID, SessionID: item.sessionID, ParentSessionID: item.parentSessionID, MainStatus: mainStatus,
 			StyledActivity: []terminal.StyledText{styledActivity(item, now, columns)},
 		})
 	}
@@ -75,9 +70,19 @@ func styledActivity(item enhancedActivityItem, now time.Time, columns int) termi
 }
 
 func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []terminal.StyledText {
-	if len(r.activity) == 0 {
-		return nil
+	visible := r.visibleActivity()
+	rows := make([]terminal.StyledText, 0, len(visible))
+	for _, item := range visible {
+		rows = append(rows, styledActivity(item, now, columns))
 	}
+	return rows
+}
+
+// visibleActivity returns the newest activity items eligible for the live
+// region. An item never occupies fewer than one row, so retaining more items
+// than the renderer's row budget can never add anything visible. The renderer
+// applies the exact row-accurate clip once the items have been laid out.
+func (r *enhancedChatRuntime) visibleActivity() []enhancedActivityItem {
 	visible := make([]enhancedActivityItem, 0, len(r.activity))
 	for _, item := range r.activity {
 		if item.hidden || r.isModelineActivity(item) {
@@ -85,15 +90,19 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 		}
 		visible = append(visible, item)
 	}
-	rows := make([]terminal.StyledText, 0, len(visible))
-	start := 0
-	if len(visible) > 4 {
-		start = len(visible) - 4
+	if limit := r.liveActivityLimit(); len(visible) > limit {
+		visible = visible[len(visible)-limit:]
 	}
-	for _, item := range visible[start:] {
-		rows = append(rows, styledActivity(item, now, columns))
+	return visible
+}
+
+// liveActivityLimit is the renderer's live row budget. A runtime without a
+// renderer attached falls back to the package default.
+func (r *enhancedChatRuntime) liveActivityLimit() int {
+	if r.shell == nil || r.shell.renderer == nil {
+		return terminal.DefaultLiveRows
 	}
-	return rows
+	return r.shell.renderer.MaxRows()
 }
 
 func reasoningSummaryActivity(item enhancedActivityItem, now time.Time) terminal.StyledText {

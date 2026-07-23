@@ -12,7 +12,9 @@ import (
 )
 
 const (
-	defaultLiveRows         = 10
+	// DefaultLiveRows is the live region's row budget when a renderer is created
+	// without an explicit MaxRows.
+	DefaultLiveRows         = 10
 	defaultInputRows        = 12
 	defaultColumns          = 80
 	liveBackgroundANSI      = "48;5;236"
@@ -214,7 +216,7 @@ func NewLiveRenderer(w io.Writer, config RendererConfig) *LiveRenderer {
 	}
 	maxRows := config.MaxRows
 	if maxRows <= 0 {
-		maxRows = defaultLiveRows
+		maxRows = DefaultLiveRows
 	}
 	maxInputRows := config.MaxInputRows
 	if maxInputRows <= 0 {
@@ -247,6 +249,14 @@ func (r *LiveRenderer) Columns() int {
 	defer r.mu.Unlock()
 	r.syncColumns()
 	return r.columns
+}
+
+// MaxRows returns the live region's row budget for transient status rows. It
+// bounds how tall activity can grow before the renderer clips its oldest rows.
+func (r *LiveRenderer) MaxRows() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.maxRows
 }
 
 // Marquee returns one display-width-bounded window moving from right to left.

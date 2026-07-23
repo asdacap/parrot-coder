@@ -840,6 +840,26 @@ func TestLiveRendererKeepsLiveBudgetSeparateFromInputMenu(t *testing.T) {
 	}
 }
 
+func TestLiveRendererKeepsNewestActivityWithinTheLiveBudget(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: DefaultLiveRows})
+	activity := make([]StyledText, 12)
+	for i := range activity {
+		activity[i] = StyledText{Text: fmt.Sprintf("working %02d", i+1)}
+	}
+	if err := renderer.Frame(LiveFrame{StyledActivity: activity}); err != nil {
+		t.Fatal(err)
+	}
+	// The live budget holds the ten newest rows; the empty prompt row that
+	// follows belongs to the independently budgeted input region.
+	if len(renderer.rows) != DefaultLiveRows+1 {
+		t.Fatalf("frame rows = %d, want %d: %#v", len(renderer.rows), DefaultLiveRows+1, renderer.rows)
+	}
+	if renderer.rows[0] != "working 03" || renderer.rows[DefaultLiveRows-1] != "working 12" {
+		t.Fatalf("oldest activity was not the clipped end: %#v", renderer.rows)
+	}
+}
+
 func TestLiveRendererDividerDoesNotReduceTwelveRowMenu(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80, MaxRows: 1, MaxInputRows: 12})
