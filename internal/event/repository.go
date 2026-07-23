@@ -9,11 +9,16 @@ import (
 	"sync"
 	"time"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 )
 
-var ErrInvalidEvent = errors.New("event: type and valid JSON data are required")
+// ErrInvalidEvent rejects an event the v1 stream cannot carry. The manifest is
+// a closed set: the client drops its stream on an unknown type, so an
+// unmanifested type is refused at the append instead of silently ending the
+// UI's event delivery once it reaches SSE.
+var ErrInvalidEvent = errors.New("event: a manifested type and valid JSON data are required")
 
 type Event struct {
 	ID        string          `json:"id"`
@@ -108,7 +113,7 @@ func (r *Repository) AppendBuilt(ctx context.Context, sessionID string, build Bu
 		now := time.Now().UTC()
 		committed = make([]Event, len(pending))
 		for i, candidate := range pending {
-			if candidate.Type == "" || len(candidate.Data) == 0 || !json.Valid(candidate.Data) {
+			if !v1.KnownEvent(candidate.Type) || len(candidate.Data) == 0 || !json.Valid(candidate.Data) {
 				return ErrInvalidEvent
 			}
 			eventID, err := id.New("evt")

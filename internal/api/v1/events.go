@@ -175,6 +175,7 @@ var EventManifest = []EventDefinition{
 	{Name: "session.context.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.replaced", Durable: true, Payload: "object"},
 	{Name: "session.message.appended", Durable: true, Payload: "object"},
+	{Name: "session.status_prompt.appended", Durable: true, Payload: "object"},
 	{Name: "session.assistant.started", Durable: true, Payload: "object"},
 	{Name: "session.assistant.complete", Durable: true, Payload: "object"},
 	{Name: "session.assistant.error", Durable: true, Payload: "object"},

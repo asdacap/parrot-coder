@@ -15,6 +15,37 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/store"
 )
 
+// testEventType stands in for any durable event. Append accepts only manifested
+// types, and none of the sequencing tests below depend on which one they use.
+const testEventType = "session.message.appended"
+
+func TestAppendRejectsEventTheStreamCannotCarry(t *testing.T) {
+	ctx := context.Background()
+	_, repository, sessionID := newRepository(t)
+	for _, test := range []struct {
+		name    string
+		pending event.NewEvent
+	}{
+		{name: "unmanifested type", pending: event.NewEvent{Type: "session.invented.appended", Data: json.RawMessage(`{}`)}},
+		{name: "empty type", pending: event.NewEvent{Data: json.RawMessage(`{}`)}},
+		{name: "empty data", pending: event.NewEvent{Type: testEventType}},
+		{name: "malformed data", pending: event.NewEvent{Type: testEventType, Data: json.RawMessage(`{`)}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := repository.Append(ctx, sessionID, []event.NewEvent{test.pending}, nil); !errors.Is(err, event.ErrInvalidEvent) {
+				t.Fatalf("Append error = %v, want ErrInvalidEvent", err)
+			}
+		})
+	}
+	items, err := repository.List(ctx, sessionID, -1, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 0 {
+		t.Fatalf("committed events = %d, want 0", len(items))
+	}
+}
+
 func TestAppendRollsBackEventSequenceAndProjection(t *testing.T) {
 	ctx := context.Background()
 	db, repository, sessionID := newRepository(t)
@@ -23,7 +54,7 @@ func TestAppendRollsBackEventSequenceAndProjection(t *testing.T) {
 
 	projectorErr := errors.New("projection failed")
 	_, err := repository.Append(ctx, sessionID,
-		[]event.NewEvent{{Type: "test.failed", Data: json.RawMessage(`{"ok":true}`)}},
+		[]event.NewEvent{{Type: testEventType, Data: json.RawMessage(`{"ok":true}`)}},
 		func(ctx context.Context, tx *sql.Tx, _ []event.Event) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE session SET title = 'not committed' WHERE id = ?`, sessionID); err != nil {
 				return err
@@ -54,7 +85,7 @@ func TestAppendRollsBackEventSequenceAndProjection(t *testing.T) {
 		t.Fatalf("projected title after rollback = %q", title)
 	}
 	appended, err := repository.Append(ctx, sessionID,
-		[]event.NewEvent{{Type: "test.committed", Data: json.RawMessage(`{}`)}}, nil)
+		[]event.NewEvent{{Type: testEventType, Data: json.RawMessage(`{}`)}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,7 +113,7 @@ func TestConcurrentAppendIsContiguous(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			_, err := repository.Append(ctx, sessionID, []event.NewEvent{{
-				Type: "test.concurrent", Data: json.RawMessage(fmt.Sprintf(`{"worker":%d}`, i)),
+				Type: testEventType, Data: json.RawMessage(fmt.Sprintf(`{"worker":%d}`, i)),
 			}}, nil)
 			errs <- err
 		}(i)
@@ -130,7 +161,7 @@ func TestConcurrentAppendPublishesInSequenceOrder(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if _, err := repository.Append(ctx, sessionID, []event.NewEvent{{Type: "test.ordered", Data: json.RawMessage(`{}`)}}, nil); err != nil {
+			if _, err := repository.Append(ctx, sessionID, []event.NewEvent{{Type: testEventType, Data: json.RawMessage(`{}`)}}, nil); err != nil {
 				t.Errorf("Append: %v", err)
 			}
 		}()
@@ -157,8 +188,8 @@ func TestSlowSubscriberIsDisconnected(t *testing.T) {
 	subscription := repository.Subscribe(sessionID, 1)
 	defer subscription.Close()
 	if _, err := repository.Append(ctx, sessionID, []event.NewEvent{
-		{Type: "test.one", Data: json.RawMessage(`{}`)},
-		{Type: "test.two", Data: json.RawMessage(`{}`)},
+		{Type: testEventType, Data: json.RawMessage(`{}`)},
+		{Type: testEventType, Data: json.RawMessage(`{}`)},
 	}, nil); err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +211,7 @@ func TestReplayAndSubscribeHasNoGapOrDuplicate(t *testing.T) {
 	go func() {
 		<-start
 		for i := 0; i < count; i++ {
-			_, err := repository.Append(ctx, sessionID, []event.NewEvent{{Type: "test.replay", Data: json.RawMessage(`{}`)}}, nil)
+			_, err := repository.Append(ctx, sessionID, []event.NewEvent{{Type: testEventType, Data: json.RawMessage(`{}`)}}, nil)
 			if err != nil {
 				done <- err
 				return
