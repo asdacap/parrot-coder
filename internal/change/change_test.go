@@ -200,10 +200,12 @@ func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 	ctx := context.Background()
 	service := NewService(Config{})
 	tests := []struct {
-		name    string
-		before  []byte
-		blocks  string
-		wantErr bool
+		name           string
+		before         []byte
+		blocks         string
+		wantErr        bool
+		wantMatch      string
+		maxErrorLength int
 	}{
 		{
 			name:    "repeated line is ambiguous",
@@ -240,6 +242,21 @@ func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 			blocks:  aiderBlock("", "dup\ndup", "first\nsecond"),
 			wantErr: false,
 		},
+		{
+			name:      "missing multiline search reports match",
+			before:    []byte("one\ntwo\n"),
+			blocks:    aiderBlock("", "missing\nlines", "changed"),
+			wantErr:   true,
+			wantMatch: `"missing\nlines"`,
+		},
+		{
+			name:           "large missing search is bounded",
+			before:         []byte("existing\n"),
+			blocks:         aiderBlock("", strings.Repeat("x", (1<<10)+100), "changed"),
+			wantErr:        true,
+			wantMatch:      "100 bytes omitted",
+			maxErrorLength: (4 << 10) + 256,
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -250,6 +267,12 @@ func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 			_, err := service.PlanPatch(ctx, ws, "file\n"+tc.blocks, PatchFormatAider)
 			if tc.wantErr && !errors.Is(err, ErrConflict) {
 				t.Fatalf("err = %v, want ErrConflict", err)
+			}
+			if tc.wantMatch != "" && !strings.Contains(err.Error(), tc.wantMatch) {
+				t.Fatalf("err = %v, want failed match %q", err, tc.wantMatch)
+			}
+			if tc.maxErrorLength > 0 && len(err.Error()) > tc.maxErrorLength {
+				t.Fatalf("error length = %d, want at most %d", len(err.Error()), tc.maxErrorLength)
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("err = %v, want success", err)
