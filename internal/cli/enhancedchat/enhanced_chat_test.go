@@ -342,7 +342,7 @@ func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: usage}); err != nil {
 		t.Fatal(err)
 	}
-	if got := formatReasoningActivity(runtime.activity[0], runtime.activity[0].started, 100); !strings.Contains(got, "⠋ Thought: Checking the implementation · 123 tokens · 0.0s") {
+	if got := formatReasoningActivity(runtime.activity[0], runtime.activity[0].started, 100); !strings.Contains(got, "⠋ Thinking: Checking the implementation · 123 tokens · 0.0s") {
 		t.Fatalf("activity after usage = %q", got)
 	}
 	if runtime.contextTokens != 456 {
@@ -726,7 +726,7 @@ func TestEnhancedReasoningSummaryDoneCommitsOnlyFinalizedPart(t *testing.T) {
 	if len(runtime.activity) != 1 || runtime.activity[0].label != "Second item" || runtime.activity[0].status != "thinking" {
 		t.Fatalf("live activity = %#v", runtime.activity)
 	}
-	if got := output.String(); !strings.Contains(got, "✓ Final first item") {
+	if got := output.String(); !strings.Contains(got, "· Final first item") {
 		t.Fatalf("finalized summary was not committed: %q", got)
 	}
 }
@@ -823,7 +823,7 @@ func TestEnhancedCompletedAssistantActivityIsRemovedOrFlushed(t *testing.T) {
 			if len(runtime.activity) != 0 {
 				t.Fatalf("completed activity remains live: %#v", runtime.activity)
 			}
-			flushed := strings.Contains(output.String(), "✓ Checking · 12 tokens")
+			flushed := strings.Contains(output.String(), "· Checking")
 			if flushed != test.wantFlushed {
 				t.Fatalf("flushed activity = %t, want %t; output=%q", flushed, test.wantFlushed, output.String())
 			}
@@ -846,8 +846,8 @@ func TestEnhancedReasoningSummaryRendersMarkdownAndIsRetainedBeforeAnswer(t *tes
 		t.Fatal(err)
 	}
 	got := output.String()
-	summary := strings.Index(got, "✓ Verifying")
-	list := strings.Index(got, "• complete suite · 12 tokens")
+	summary := strings.Index(got, "· Verifying")
+	list := strings.Index(got, "• complete suite")
 	answer := strings.Index(got, "final answer")
 	if summary < 0 || list < summary || answer < list || strings.Contains(got, "# Verifying") || strings.Contains(got, "**") {
 		t.Fatalf("output = %q", got)

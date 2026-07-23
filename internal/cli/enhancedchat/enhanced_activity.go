@@ -109,15 +109,30 @@ func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns i
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	prefix := activityTitle("thinking", elapsed) + ": "
-	suffix := fmt.Sprintf("%s · %.1fs", formatActivityUsage(item), elapsed.Seconds())
-	width := max(1, columns-len(prefix)-len(suffix)-1)
-	label := singleLineReasoningSummary(item.label)
-	if strings.TrimSpace(label) == "" {
-		label = "Thinking…"
+	frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
+	header := spinnerFrames[frame] + " Thinking:"
+
+	lines := strings.Split(item.label, "\n")
+	nonEmpty := make([]string, 0, 3)
+	for _, l := range lines {
+		if trimmed := strings.TrimSpace(l); trimmed != "" {
+			nonEmpty = append(nonEmpty, trimmed)
+		}
 	}
-	offset := int(elapsed / (100 * time.Millisecond))
-	return prefix + terminal.Marquee(label, width, offset) + suffix
+	if len(nonEmpty) > 3 {
+		nonEmpty = nonEmpty[len(nonEmpty)-3:]
+	}
+	suffix := fmt.Sprintf("%s · %.1fs", formatActivityUsage(item), elapsed.Seconds())
+	if len(nonEmpty) == 0 {
+		return header + " Thinking…" + suffix
+	}
+
+	indent := strings.Repeat(" ", len(header)+1)
+	out := header + " " + nonEmpty[0] + suffix
+	for i := 1; i < len(nonEmpty); i++ {
+		out += "\n" + indent + nonEmpty[i]
+	}
+	return out
 }
 
 func formatActivity(item enhancedActivityItem, now time.Time) string {
@@ -322,7 +337,7 @@ func (r *enhancedChatRuntime) finishReasoningSummaryPart(messageID, partID strin
 			return nil
 		}
 		if singleLineReasoningSummary(item.label) != "" {
-			if err := r.shell.renderer.CommitStyled(reasoningSummaryActivity(*item, now)); err != nil {
+			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
 				return err
 			}
 			r.borderCommitted = false
@@ -523,7 +538,7 @@ func (r *enhancedChatRuntime) finishAssistantActivity(id string, noContent bool)
 		if r.shouldFlushActivityItem(r.activity[i], noContent) && r.shell != nil && r.shell.renderer != nil {
 			var err error
 			if r.activity[i].reasoningSummary {
-				err = r.shell.renderer.CommitStyled(reasoningSummaryActivity(r.activity[i], time.Now()))
+				err = r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: r.activity[i].label, Style: r.activity[i].style, Markdown: true})
 			} else {
 				err = r.shell.renderer.Commit(formatActivity(r.activity[i], time.Now()))
 			}
@@ -664,7 +679,7 @@ func (r *enhancedChatRuntime) flushReasoningBeforeAnswer(messageID string) error
 			item.status = "success"
 			item.terminal = true
 			item.ended = now
-			if err := r.shell.renderer.CommitStyled(reasoningSummaryActivity(*item, now)); err != nil {
+			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
 				return err
 			}
 			r.borderCommitted = false
