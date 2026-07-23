@@ -605,11 +605,18 @@ type taskNode struct {
 	agent    string
 	name     string
 	status   string
+	error    string
 	orphan   bool
 
-	messages map[string]*taskMessageState
-	tools    *StreamToolTracker
-	done     map[string]bool
+	messages         map[string]*taskMessageState
+	tools            *StreamToolTracker
+	done             map[string]bool
+	progress         *v1.TaskProgress
+	progressID       string
+	progressDone     bool
+	progressFlushed  bool
+	finished         bool
+	lifecycleFlushed bool
 
 	direct TaskUsage
 }
@@ -848,9 +855,96 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if owner != nil {
 			reports[i].ParentTaskID = owner.parentID
 		}
-		reports[i].MainStatus = item.Type == v1.EventTaskProgress || item.Type == v1.EventTaskFinished
+		reports[i].MainStatus = item.Type == v1.EventTaskFinished
+	}
+	if item.Type == v1.EventTaskProgress || item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
+		reports = append(reports, t.taskStatusReports(item.TaskID)...)
 	}
 	return reports, nil
+}
+
+func (t *TaskTracker) taskActive(node *taskNode) bool {
+	if node == nil {
+		return false
+	}
+	selfActive := node.status == "working"
+	if node.progress != nil {
+		selfActive = !node.progressDone
+	}
+	if selfActive {
+		return true
+	}
+	for _, child := range t.tasks {
+		if child.parentID == node.id && t.taskActive(child) {
+			return true
+		}
+	}
+	return false
+}
+
+func (t *TaskTracker) activeChildCount(node *taskNode) int {
+	count := 0
+	for _, child := range t.tasks {
+		if child.parentID == node.id && t.taskActive(child) {
+			count++
+		}
+	}
+	return count
+}
+
+func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
+	var reports []TaskReport
+	for node := t.tasks[taskID]; node != nil && node.id != managedtask.MainTaskID; node = t.tasks[node.parentID] {
+		children := t.activeChildCount(node)
+		if node.progress == nil {
+			if !node.finished || node.lifecycleFlushed || children != 0 {
+				continue
+			}
+			icon, body, style := "✓", "completed", terminal.TextStyleMuted
+			if node.status != "" && node.status != "succeeded" {
+				icon, body, style = "✗", node.status, terminal.TextStyleDefault
+				if node.error != "" {
+					body += ": " + cleanActivityDetail(node.error)
+				}
+			}
+			node.lifecycleFlushed = true
+			reports = append(reports, TaskReport{
+				ID: node.id + ":lifecycle", TaskID: node.id, ParentTaskID: node.parentID,
+				Line: prefixTaskActivity(t.prefix(node), icon+" "+body), Terminal: true,
+				EmitPlain: true, MainStatus: true, Style: style,
+			})
+			continue
+		}
+		if node.progressFlushed {
+			continue
+		}
+		body := fmt.Sprintf("agent: %s · %s tokens · %d tools", node.progress.Agent, FormatTokenCount(node.progress.Usage.TotalTokens), node.progress.ToolUses)
+		if children > 0 {
+			unit := "active task"
+			if children != 1 {
+				unit += "s"
+			}
+			body += fmt.Sprintf(" · %d %s", children, unit)
+		}
+		terminalEvent := node.progressDone && children == 0
+		icon := SpinnerFrames[0]
+		if terminalEvent {
+			icon = "✓"
+			if node.progress.Status != "" && node.progress.Status != "succeeded" {
+				icon = "✗"
+				if node.error != "" {
+					body += ": " + cleanActivityDetail(node.error)
+				}
+			}
+			node.progressFlushed = true
+		}
+		reports = append(reports, TaskReport{
+			ID: node.progressID, TaskID: node.id, ParentTaskID: node.parentID,
+			Line: prefixTaskActivity(t.prefix(node), icon+" "+body), Terminal: terminalEvent,
+			EmitPlain: terminalEvent, MainStatus: true, Style: terminal.TextStyleMuted,
+		})
+	}
+	return reports
 }
 
 func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) {
@@ -1057,18 +1151,19 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if node.done[id] {
 			return nil, nil
 		}
-		// Progress reports what the agent has spent so far, but it is read here
-		// only to render the line: AddUsage is the one writer of a task's usage,
-		// and counting the same tokens through both would double them.
-		line := fmt.Sprintf("agent: %s · %s tokens · %d tools", progress.Agent, FormatTokenCount(progress.Usage.TotalTokens), progress.ToolUses)
-		terminalEvent := progress.Status != "pending" && progress.Status != "running"
-		if terminalEvent {
+		if node.progressID != id {
+			node.progressFlushed = false
+		}
+		copy := *progress
+		node.progress, node.progressID = &copy, id
+		node.progressDone = progress.Status != "pending" && progress.Status != "running"
+		if node.progressDone {
 			if node.done == nil {
 				node.done = make(map[string]bool)
 			}
 			node.done[id] = true
 		}
-		return []TaskReport{{ID: id, Line: prefix + line, Terminal: terminalEvent, EmitPlain: !terminalEvent, Skip: terminalEvent, Style: terminal.TextStyleMuted}}, nil
+		return nil, nil
 	case v1.EventSessionStatus:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {
@@ -1140,6 +1235,9 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 			return t.unknownTask(event.TaskID, item.Type), nil
 		}
 		node.status = "working"
+		node.error = ""
+		node.progress, node.progressID = nil, ""
+		node.progressDone, node.progressFlushed, node.finished, node.lifecycleFlushed = false, false, false, false
 		return nil, nil
 	case v1.EventTaskIdle:
 		node := t.known(event.TaskID)
@@ -1154,18 +1252,13 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 			return t.unknownTask(event.TaskID, item.Type), nil
 		}
 		node.status = event.Status
+		node.error = event.Error
+		node.finished = true
+		node.lifecycleFlushed = false
 		if node.id == managedtask.MainTaskID {
 			return nil, nil
 		}
-		if event.Status == "" || event.Status == "succeeded" {
-			line := "✓ completed"
-			return []TaskReport{{ID: node.id + ":lifecycle", Line: prefixTaskActivity(t.prefix(node), line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
-		}
-		line := "✗ " + event.Status
-		if event.Error != "" {
-			line += ": " + cleanActivityDetail(event.Error)
-		}
-		return []TaskReport{{ID: node.id + ":lifecycle", Line: prefixTaskActivity(t.prefix(node), line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleDefault}}, nil
+		return nil, nil
 	default:
 		return nil, nil
 	}

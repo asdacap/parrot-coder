@@ -177,6 +177,14 @@ func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns i
 
 func formatActivity(item enhancedActivityItem, now time.Time) string {
 	if item.rendered != "" {
+		if item.mainStatus && item.status == "running" {
+			elapsed := now.Sub(item.started)
+			if elapsed < 0 {
+				elapsed = 0
+			}
+			frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
+			return strings.Replace(item.rendered, spinnerFrames[0], spinnerFrames[frame], 1)
+		}
 		return item.rendered
 	}
 	end := now

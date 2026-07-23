@@ -116,6 +116,45 @@ func TestTaskTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	}
 }
 
+func TestTaskTrackerDefersProgressUntilDescendantsFinish(t *testing.T) {
+	tracker := NewTaskTracker()
+	apply := func(event v1.Event) []TaskReport {
+		reports, err := tracker.Apply(event, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reports
+	}
+	progress := func(taskID, status string, tokens, tools int) v1.Event {
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: taskID, ToolCallID: "call-" + taskID, Agent: "explore", Status: status, Usage: v1.Usage{TotalTokens: tokens}, ToolUses: tools})
+		return v1.Event{Type: v1.EventTaskProgress, TaskID: taskID, Data: data}
+	}
+
+	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "parent", ParentTaskID: "task_main", Kind: "agent", Agent: "explore", Name: "parent"}))
+	apply(progress("parent", "running", 100, 2))
+	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "child", ParentTaskID: "parent", Kind: "agent", Agent: "explore", Name: "child"}))
+	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "grandchild", ParentTaskID: "child", Kind: "agent", Agent: "explore", Name: "grandchild"}))
+
+	reports := apply(progress("parent", "succeeded", 125, 3))
+	if len(reports) != 1 || reports[0].Terminal || !strings.Contains(reports[0].Line, "⠋ agent: explore · 125 tokens · 3 tools · 1 active task") {
+		t.Fatalf("parent terminal progress with descendants = %#v", reports)
+	}
+	apply(taskLifecycleEvent(v1.EventTaskFinished, v1.TaskEvent{TaskID: "child", Status: "succeeded"}))
+	reports = apply(taskLifecycleEvent(v1.EventTaskFinished, v1.TaskEvent{TaskID: "grandchild", Status: "succeeded"}))
+	var parent *TaskReport
+	for i := range reports {
+		if reports[i].TaskID == "parent" {
+			parent = &reports[i]
+		}
+	}
+	if parent == nil || !parent.Terminal || !parent.EmitPlain || !strings.Contains(parent.Line, "✓ agent: explore · 125 tokens · 3 tools") {
+		t.Fatalf("settled parent progress = %#v", reports)
+	}
+	if reports := apply(taskLifecycleEvent(v1.EventTaskIdle, v1.TaskEvent{TaskID: "grandchild"})); len(reports) != 0 {
+		t.Fatalf("duplicate settled progress = %#v", reports)
+	}
+}
+
 func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	tracker := NewTaskTracker()
 
