@@ -382,7 +382,7 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 // surrounding lines to say which occurrence it meant.
 func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) (int, error) {
 	if len(pattern) == 0 || start < 0 || start > len(lines) {
-		return -1, fmt.Errorf("%w: failed to find expected lines", ErrConflict)
+		return -1, failedPatchMatchError(pattern)
 	}
 	comparators := []func(string, string) bool{
 		func(a, b string) bool { return a == b },
@@ -418,7 +418,17 @@ func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) (int,
 			return found, nil
 		}
 	}
-	return -1, fmt.Errorf("%w: failed to find expected lines", ErrConflict)
+	return -1, failedPatchMatchError(pattern)
+}
+
+func failedPatchMatchError(pattern []string) error {
+	const maxMatchBytes = 1 << 10
+	match := strings.Join(pattern, "\n")
+	if len(match) > maxMatchBytes {
+		omitted := len(match) - maxMatchBytes
+		return fmt.Errorf("%w: failed to find expected lines %q (... %d bytes omitted)", ErrConflict, match[:maxMatchBytes], omitted)
+	}
+	return fmt.Errorf("%w: failed to find expected lines %q", ErrConflict, match)
 }
 
 func patchSequenceEqual(lines, pattern []string, equal func(string, string) bool) bool {

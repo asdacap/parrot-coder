@@ -317,6 +317,18 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	}
 }
 
+func TestApplyPatchReportsMissingSearchMatch(t *testing.T) {
+	ctx, ws, changes := workspaceToolHarness(t)
+	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("existing\ncontent\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	raw := json.RawMessage(`{"patchText":"file\n<<<<<<< SEARCH\nmissing\nmatch\n=======\nreplacement\n>>>>>>> REPLACE\n"}`)
+	_, err := NewApplyPatchTool(changes).Plan(ctx, raw, CallContext{Workspace: ws})
+	if !errors.Is(err, change.ErrConflict) || !strings.Contains(err.Error(), `"missing\nmatch"`) {
+		t.Fatalf("error = %v, want ErrConflict identifying the missing match", err)
+	}
+}
+
 func TestApplyPatchFormatParameter(t *testing.T) {
 	_, ws, changes := workspaceToolHarness(t)
 	tool := NewApplyPatchTool(changes)
