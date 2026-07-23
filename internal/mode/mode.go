@@ -17,6 +17,7 @@ import (
 const (
 	BuildID = "build"
 	PlanID  = "plan"
+	QueryID = "query"
 )
 
 // Mode is a foreground execution policy. Agents are deliberately separate:
@@ -126,18 +127,24 @@ func (m *planMode) PrepareTurn(sessionID string) (agent.Profile, error) {
 	if err := os.MkdirAll(m.directory, 0o700); err != nil {
 		return agent.Profile{}, fmt.Errorf("mode: create plan directory: %w", err)
 	}
-	file, err := os.CreateTemp(m.directory, "plan-*.md")
-	if err != nil {
-		return agent.Profile{}, fmt.Errorf("mode: create plan file: %w", err)
+	path := m.files[sessionID]
+	if path == "" {
+		file, err := os.CreateTemp(m.directory, "plan-*.md")
+		if err != nil {
+			return agent.Profile{}, fmt.Errorf("mode: create plan file: %w", err)
+		}
+		path = file.Name()
+		if err = file.Close(); err != nil {
+			return agent.Profile{}, err
+		}
+		m.files[sessionID] = path
 	}
-	path := file.Name()
-	if err = file.Close(); err != nil {
-		return agent.Profile{}, err
+	if err := os.Chmod(path, 0o600); err != nil {
+		return agent.Profile{}, fmt.Errorf("mode: make plan file writable: %w", err)
 	}
-	if err = os.Chmod(path, 0o600); err != nil {
-		return agent.Profile{}, err
+	if err := os.Truncate(path, 0); err != nil {
+		return agent.Profile{}, fmt.Errorf("mode: truncate plan file: %w", err)
 	}
-	m.files[sessionID] = path
 	profile := m.profile
 	profile.WritePaths = []string{path}
 	profile.Prompt += "\n\nWrite the complete implementation plan as Markdown to this exact file: " + path + ". Do not include the plan in your assistant response. Finish only after writing the file."
@@ -168,6 +175,7 @@ func BuiltinsWithPlanDirectory(directory string) []Mode {
 	return []Mode{
 		builtin{profile: agent.Profile{ID: BuildID, Prompt: "You are Parrot's build mode. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64, RecursionLimit: 3, Status: status.Static{ProviderKey: "profile:build-mode", Text: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."}}},
 		&planMode{builtin: builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and write an implementation plan to the designated plan file.", HardRules: []string{"Read-only mode is enforced by the runtime except for the designated plan file."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true, Status: status.Static{ProviderKey: "profile:plan-mode", Text: "Plan mode: inspect the project and write the plan artifact. The workspace remains read-only."}}}, directory: directory, files: make(map[string]string)},
+		builtin{profile: agent.Profile{ID: QueryID, Prompt: "You are Parrot's query mode. Inspect the project and answer the user's question without making changes.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true, Status: status.Static{ProviderKey: "profile:query-mode", Text: "Query mode: inspect the project and answer questions. The workspace remains read-only."}}},
 	}
 }
 

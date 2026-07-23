@@ -3,6 +3,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -507,6 +508,12 @@ func TestLoadSandboxRules(t *testing.T) {
 	for i, want := range cases {
 		if rules[i].Path != want.path || rules[i].Rule != want.rule {
 			t.Fatalf("rule[%d] = {%s, %s}, want {%s, %s}", i, rules[i].Path, rules[i].Rule, want.path, want.rule)
+		}
+		for _, field := range []string{"path", "rule"} {
+			path := fmt.Sprintf("sandbox_rules.%d.%s", i, field)
+			if result.Provenance[path] != filepath.Join(configDir, FileName) {
+				t.Fatalf("Provenance[%q] = %q, want global config", path, result.Provenance[path])
+			}
 		}
 	}
 }

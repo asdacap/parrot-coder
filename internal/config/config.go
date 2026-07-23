@@ -382,13 +382,25 @@ func mergeObject(destination, source map[string]any, prefix, sourcePath string, 
 }
 
 func markProvenance(value any, path, source string, provenance map[string]string) {
-	object, ok := value.(map[string]any)
-	if !ok || len(object) == 0 {
+	switch value := value.(type) {
+	case map[string]any:
+		if len(value) == 0 {
+			provenance[path] = source
+			return
+		}
+		for key, child := range value {
+			markProvenance(child, path+"."+key, source, provenance)
+		}
+	case []any:
+		if len(value) == 0 {
+			provenance[path] = source
+			return
+		}
+		for index, child := range value {
+			markProvenance(child, fmt.Sprintf("%s.%d", path, index), source, provenance)
+		}
+	default:
 		provenance[path] = source
-		return
-	}
-	for key, child := range object {
-		markProvenance(child, path+"."+key, source, provenance)
 	}
 }
 

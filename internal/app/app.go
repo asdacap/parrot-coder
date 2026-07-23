@@ -607,7 +607,7 @@ func validateConfigTrust(loaded config.Result) error {
 			continue
 		}
 		restricted := strings.HasPrefix(field, "mcp.") ||
-			strings.HasPrefix(field, "sandbox_rules.") ||
+			field == "sandbox_rules" || strings.HasPrefix(field, "sandbox_rules.") ||
 			field == "web_fetch.allow_private"
 		if strings.HasPrefix(field, "providers.") {
 			parts := strings.Split(field, ".")

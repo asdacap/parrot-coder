@@ -610,26 +610,57 @@ func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd, 
 	writePaths = append(writePaths, baseWritePaths...)
 	if !readOnly {
 		writePaths = append(writePaths, workspaceRoot)
-	}
-	granted, err := r.writableForSession(sessionID)
-	if err != nil {
-		return nil, err
-	}
-	writePaths = append(writePaths, granted...)
-	if commonDir, ok := linkedGitCommonDirectory(workspaceRoot); ok {
-		writePaths = append(writePaths, commonDir)
+		granted, err := r.writableForSession(sessionID)
+		if err != nil {
+			return nil, err
+		}
+		writePaths = append(writePaths, granted...)
+		if commonDir, ok := linkedGitCommonDirectory(workspaceRoot); ok {
+			writePaths = append(writePaths, commonDir)
+		}
 	}
 
 	denyWrite := make([]string, 0, len(baseDenyWritePaths)+4)
 	denyWrite = append(denyWrite, baseDenyWritePaths...)
 	denyWrite = append(denyWrite, protectedWorkspacePaths(workspaceRoot, cwd)...)
 
+	rules := r.config.SandboxRules
+	if readOnly {
+		rules = rulesForReadOnlyProfile(rules, baseWritePaths)
+	}
 	return &sandboxProfile{
+		readOnly:   readOnly,
 		readPaths:  readPaths,
 		writePaths: writePaths,
 		denyWrite:  denyWrite,
-		rules:      r.config.SandboxRules,
+		rules:      rules,
 	}, nil
+}
+
+// rulesForReadOnlyProfile keeps configured rules from widening a read-only
+// profile or masking one of its deliberately writable paths. Other read
+// restrictions still apply, and writable profiles retain the configured rule
+// ordering unchanged.
+func rulesForReadOnlyProfile(rules []security.Rule, writePaths []string) []security.Rule {
+	filtered := make([]security.Rule, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Action == security.ActionAllowWrite || overlapsAnyPath(rule.Path, writePaths) {
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	return filtered
+}
+
+func overlapsAnyPath(path string, paths []string) bool {
+	path = filepath.Clean(path)
+	for _, candidate := range paths {
+		candidate = filepath.Clean(candidate)
+		if isPathWithin(path, candidate) || isPathWithin(candidate, path) {
+			return true
+		}
+	}
+	return false
 }
 
 // streamWriter fans command output out to managed storage and the live

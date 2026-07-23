@@ -160,6 +160,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 	statusPending := false
 	statusPrompt := ""
 	turn := 0
+	var profile Profile
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -200,11 +201,11 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if err != nil {
 			return err
 		}
-		profile, err := r.config.Profiles.GetProfile(selected.Agent)
-		if err != nil {
-			return err
-		}
 		if turn == 0 {
+			profile, err = r.config.Profiles.GetProfile(selected.Agent)
+			if err != nil {
+				return err
+			}
 			if preparer, ok := r.config.Profiles.(interface {
 				PrepareTurn(string, string) (Profile, error)
 			}); ok {
