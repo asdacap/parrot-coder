@@ -8,6 +8,7 @@ import (
 	"io"
 	"sort"
 	"strings"
+	"time"
 	"unicode"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
@@ -840,7 +841,7 @@ func (t *TaskTracker) nodeCumulativeUsage(node *taskNode) TaskUsage {
 // to one of them and not to another.
 func IsTaskEvent(item v1.Event) bool {
 	switch item.Type {
-	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
+	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished, v1.EventMonitorStarted, v1.EventMonitorFinished:
 		return true
 	}
 	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
@@ -854,9 +855,13 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	if err != nil {
 		return nil, err
 	}
-	owner := t.tasks[item.TaskID]
+	ownerID := item.TaskID
+	if ownerID == "" {
+		ownerID = managedtask.MainTaskID
+	}
+	owner := t.tasks[ownerID]
 	for i := range reports {
-		reports[i].TaskID = item.TaskID
+		reports[i].TaskID = ownerID
 		if owner != nil {
 			reports[i].SessionID = owner.sessionID
 			reports[i].ParentSessionID = owner.parentSessionID
@@ -957,12 +962,19 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	if item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
 		return t.applyLifecycle(item)
 	}
-	if item.TaskID == "" || item.TaskID == managedtask.MainTaskID {
-		return nil, nil
+	taskID := item.TaskID
+	if taskID == "" {
+		taskID = managedtask.MainTaskID
 	}
-	node := t.known(item.TaskID)
+	node := t.known(taskID)
 	if node == nil {
-		return t.unknownTask(item.TaskID, item.Type), nil
+		return t.unknownTask(taskID, item.Type), nil
+	}
+	if item.Type == v1.EventMonitorStarted || item.Type == v1.EventMonitorFinished {
+		return t.monitorReport(node, item)
+	}
+	if taskID == managedtask.MainTaskID {
+		return nil, nil
 	}
 	if !v1.KnownEvent(item.Type) {
 		return nil, nil
@@ -1194,6 +1206,43 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	default:
 		return nil, nil
 	}
+}
+
+func (t *TaskTracker) monitorReport(node *taskNode, item v1.Event) ([]TaskReport, error) {
+	var event v1.MonitorEvent
+	if err := json.Unmarshal(item.Data, &event); err != nil {
+		return nil, err
+	}
+	id := node.id + ":monitor:" + event.ToolCallID
+	if event.ToolCallID == "" {
+		id = node.id + ":monitor:" + event.TaskID
+	}
+	body := "Monitoring task " + event.TaskID
+	terminalEvent := item.Type == v1.EventMonitorFinished
+	icon, style := SpinnerFrames[0], terminal.TextStyleMuted
+	if !terminalEvent && event.TimeoutMS > 0 {
+		body += " · timeout " + (time.Duration(event.TimeoutMS) * time.Millisecond).String()
+	}
+	if terminalEvent {
+		switch event.Status {
+		case "completed":
+			icon, body = "✓", "Monitoring task "+event.TaskID+" completed"
+		case "timed_out":
+			icon, body = "■", "Monitoring task "+event.TaskID+" timed out"
+		case "canceled":
+			icon, body = "■", "Monitoring task "+event.TaskID+" canceled"
+		default:
+			icon, body, style = "✗", "Monitoring task "+event.TaskID+" failed", terminal.TextStyleDefault
+		}
+		if detail := cleanActivityDetail(event.Error); detail != "" {
+			body += ": " + detail
+		}
+	}
+	line := icon + " " + body
+	if node.id != managedtask.MainTaskID {
+		line = prefixTaskActivity(t.prefix(node), line)
+	}
+	return []TaskReport{{ID: id, Line: line, Terminal: terminalEvent, EmitPlain: terminalEvent, Style: style}}, nil
 }
 
 // applyLifecycle folds one task lifecycle event into the tree. task.start is

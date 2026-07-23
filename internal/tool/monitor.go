@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/monitor"
 )
 
 const monitorSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Identifier of the running shell or agent task."},"timeout_ms":{"type":"integer","minimum":0,"description":"Maximum time to monitor in milliseconds. Zero or omitted waits without a timeout."}},"required":["task_id"],"additionalProperties":false}`
@@ -14,7 +16,7 @@ const maxMonitorTimeoutMS = int64(^uint64(0)>>1) / int64(time.Millisecond)
 
 // ProcessMonitor starts application-owned process monitors.
 type ProcessMonitor interface {
-	Start(sessionID, taskID string, timeout time.Duration) error
+	Start(monitor.Request) error
 }
 
 type MonitorTool struct {
@@ -78,7 +80,7 @@ func (t *MonitorTool) Execute(_ context.Context, plan Plan, call CallContext) (R
 		return Result{}, errors.New("monitor: service is required")
 	}
 	input := plan.Data.(monitorInput)
-	if err := t.Service.Start(call.SessionID, input.TaskID, time.Duration(input.TimeoutMS)*time.Millisecond); err != nil {
+	if err := t.Service.Start(monitor.Request{SessionID: call.SessionID, CallerTask: call.TaskID, ToolCallID: call.ToolCallID, TaskID: input.TaskID, Timeout: time.Duration(input.TimeoutMS) * time.Millisecond}); err != nil {
 		return Result{}, fmt.Errorf("monitor failed: %w", err)
 	}
 	text := fmt.Sprintf("Monitoring task %s in the background; this session will be notified when it finishes", input.TaskID)

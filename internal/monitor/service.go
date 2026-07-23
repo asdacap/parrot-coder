@@ -4,12 +4,14 @@ package monitor
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/process"
@@ -24,6 +26,17 @@ type sessionAdmitter interface {
 
 type sessionWaker interface{ Wake(string) }
 
+type lifecyclePublisher interface{ PublishEvent(v1.Event) }
+
+// Request identifies one background observation and the tool call which created it.
+type Request struct {
+	SessionID  string
+	CallerTask string
+	ToolCallID string
+	TaskID     string
+	Timeout    time.Duration
+}
+
 type monitorKey struct {
 	sessionID string
 	taskID    string
@@ -31,7 +44,8 @@ type monitorKey struct {
 
 type activeMonitor struct {
 	cancel context.CancelFunc
-	done   chan struct{}
+	done    chan struct{}
+	request Request
 }
 
 // Service owns process monitors independently of the tool calls which create
@@ -41,6 +55,7 @@ type Service struct {
 	agents    *subagent.Manager
 	tasks     *managedtask.Manager
 	sessions  sessionAdmitter
+	lifecycle lifecyclePublisher
 
 	mu     sync.Mutex
 	ctx    context.Context
@@ -52,14 +67,14 @@ type Service struct {
 	wg     sync.WaitGroup
 }
 
-func NewService(processes *process.Runner, agents *subagent.Manager, sessions sessionAdmitter, tasks ...*managedtask.Manager) *Service {
+func NewService(processes *process.Runner, agents *subagent.Manager, sessions sessionAdmitter, lifecycle lifecyclePublisher, tasks ...*managedtask.Manager) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	var taskManager *managedtask.Manager
 	if len(tasks) > 0 {
 		taskManager = tasks[0]
 	}
 	return &Service{
-		processes: processes, agents: agents, tasks: taskManager, sessions: sessions, ctx: ctx, cancel: cancel,
+		processes: processes, agents: agents, tasks: taskManager, sessions: sessions, lifecycle: lifecycle, ctx: ctx, cancel: cancel,
 		active: make(map[monitorKey]*activeMonitor), paused: make(map[string]int),
 	}
 }
@@ -73,14 +88,14 @@ func (s *Service) SetWaker(waker sessionWaker) {
 
 // Start validates and captures the task before returning, then waits in the
 // background and eventually steers a notification into the caller session.
-func (s *Service) Start(sessionID, taskID string, timeout time.Duration) error {
+func (s *Service) Start(request Request) error {
 	if s == nil || s.processes == nil || s.sessions == nil {
 		return errors.New("monitor: service is unavailable")
 	}
-	if sessionID == "" || taskID == "" || timeout < 0 {
+	if request.SessionID == "" || request.TaskID == "" || request.Timeout < 0 {
 		return errors.New("monitor: session, task ID, and nonnegative timeout are required")
 	}
-	wait, err := s.observe(sessionID, taskID)
+	wait, err := s.observe(request.SessionID, request.TaskID)
 	if err != nil {
 		return err
 	}
@@ -94,21 +109,22 @@ func (s *Service) Start(sessionID, taskID string, timeout time.Duration) error {
 		s.mu.Unlock()
 		return errors.New("monitor: session waker is unavailable")
 	}
-	if s.paused[sessionID] > 0 {
+	if s.paused[request.SessionID] > 0 {
 		s.mu.Unlock()
 		return errors.New("monitor: session monitoring is paused")
 	}
-	key := monitorKey{sessionID: sessionID, taskID: taskID}
+	key := monitorKey{sessionID: request.SessionID, taskID: request.TaskID}
 	if s.active[key] != nil {
 		s.mu.Unlock()
-		return fmt.Errorf("monitor: task %s is already being monitored", taskID)
+		return fmt.Errorf("monitor: task %s is already being monitored", request.TaskID)
 	}
 	monitorCtx, cancel := context.WithCancel(s.ctx)
-	active := &activeMonitor{cancel: cancel, done: make(chan struct{})}
+	active := &activeMonitor{cancel: cancel, done: make(chan struct{}), request: request}
 	s.active[key] = active
 	s.wg.Add(1)
 	s.mu.Unlock()
-	go s.run(monitorCtx, key, timeout, wait, active)
+	s.publishLifecycle(v1.EventMonitorStarted, request, "", "")
+	go s.run(monitorCtx, key, request.Timeout, wait, active)
 	return nil
 }
 
@@ -228,7 +244,9 @@ func (s *Service) observe(sessionID, taskID string) (taskWait, error) {
 }
 
 func (s *Service) run(ctx context.Context, key monitorKey, timeout time.Duration, wait taskWait, active *activeMonitor) {
+	status, lifecycleError := "canceled", ""
 	defer func() {
+		s.publishLifecycle(v1.EventMonitorFinished, active.request, status, lifecycleError)
 		s.mu.Lock()
 		if s.active[key] == active {
 			delete(s.active, key)
@@ -250,13 +268,33 @@ func (s *Service) run(ctx context.Context, key monitorKey, timeout time.Duration
 
 	switch {
 	case errors.Is(err, context.DeadlineExceeded):
+		status = "timed_out"
 		content = fmt.Sprintf("Task monitor notification: monitoring task %s timed out after %s. The task was not stopped and may still be running.", key.taskID, timeout)
 	case err != nil:
+		status, lifecycleError = "failed", err.Error()
 		content = fmt.Sprintf("Task monitor notification: waiting for task %s failed: %v.", key.taskID, err)
+	default:
+		status = "completed"
 	}
-	if err := s.notify(ctx, key.sessionID, content); err != nil && !errors.Is(err, context.Canceled) {
-		diagnostics.Error("task_monitor_notification_failed", "session_id", key.sessionID, "task_id", key.taskID, "error_type", diagnostics.ErrorType(err))
+	if notifyErr := s.notify(ctx, key.sessionID, content); notifyErr != nil {
+		if errors.Is(notifyErr, context.Canceled) {
+			status = "canceled"
+			return
+		}
+		status, lifecycleError = "failed", notifyErr.Error()
+		diagnostics.Error("task_monitor_notification_failed", "session_id", key.sessionID, "task_id", key.taskID, "error_type", diagnostics.ErrorType(notifyErr))
 	}
+}
+
+func (s *Service) publishLifecycle(eventType string, request Request, status, errorText string) {
+	if s.lifecycle == nil {
+		return
+	}
+	data, err := json.Marshal(v1.MonitorEvent{ToolCallID: request.ToolCallID, TaskID: request.TaskID, TimeoutMS: request.Timeout.Milliseconds(), Status: status, Error: errorText})
+	if err != nil {
+		return
+	}
+	s.lifecycle.PublishEvent(v1.Event{Type: eventType, SessionID: request.SessionID, TaskID: request.CallerTask, Data: data})
 }
 
 // Interrupt stops one active shell or agent task visible to sessionID.

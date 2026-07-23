@@ -868,6 +868,40 @@ func TestStreamTaskEventSkipsEmptyCompletedResponse(t *testing.T) {
 	}
 }
 
+func TestStreamMonitorLifecycleUpdatesLiveRowAndPrintsTerminalResult(t *testing.T) {
+	monitorEvent := func(eventType, status string) v1.Event {
+		data, _ := json.Marshal(v1.MonitorEvent{ToolCallID: "call-monitor", TaskID: "proc-child", TimeoutMS: 1000, Status: status})
+		return v1.Event{Type: eventType, Data: data}
+	}
+
+	var live bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&live, terminal.RendererConfig{TTY: true})
+	tracker := newTaskStreamTracker(chatview.Presentations{})
+	for _, event := range []v1.Event{monitorEvent(v1.EventMonitorStarted, ""), monitorEvent(v1.EventMonitorFinished, "completed")} {
+		before := live.Len()
+		if err := writeStreamTaskEvent(streamOptions{stderr: io.Discard, renderer: renderer}, &tracker, event); err != nil {
+			t.Fatal(err)
+		}
+		if live.Len() == before {
+			t.Fatalf("%s did not update live renderer", event.Type)
+		}
+	}
+	if !strings.Contains(live.String(), "Monitoring task proc-child") {
+		t.Fatalf("live monitor output = %q", live.String())
+	}
+
+	var plain bytes.Buffer
+	tracker = newTaskStreamTracker(chatview.Presentations{})
+	for _, event := range []v1.Event{monitorEvent(v1.EventMonitorStarted, ""), monitorEvent(v1.EventMonitorFinished, "completed")} {
+		if err := writeStreamTaskEvent(streamOptions{stderr: &plain}, &tracker, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := plain.String(); got != "✓ Monitoring task proc-child completed\n" {
+		t.Fatalf("plain monitor output = %q", got)
+	}
+}
+
 func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})

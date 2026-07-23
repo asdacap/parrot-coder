@@ -463,7 +463,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		data, _ := json.Marshal(payload)
 		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
 	})
-	monitors := monitor.NewService(processes, subagents, sessions, tasks)
+	monitors := monitor.NewService(processes, subagents, sessions, live, tasks)
 	result.monitors = monitors
 	tools := tool.NewRegistry()
 	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{})

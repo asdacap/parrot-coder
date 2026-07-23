@@ -60,6 +60,16 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			event: v1.Event{Type: v1.EventTaskFinished, TaskID: "task_1", Data: json.RawMessage(`{"task_id":"task_1","session_id":"ses_child","kind":"agent","status":"failed","error":"boom"}`)},
 			want:  &v1.TaskEvent{TaskID: "task_1", SessionID: "ses_child", Kind: "agent", Status: "failed", Error: "boom"},
 		},
+		{
+			name:  "monitor started",
+			event: v1.Event{Type: v1.EventMonitorStarted, TaskID: "task_monitor", Data: json.RawMessage(`{"tool_call_id":"call_1","task_id":"task_1","timeout_ms":1500}`)},
+			want:  &v1.MonitorEvent{ToolCallID: "call_1", TaskID: "task_1", TimeoutMS: 1500},
+		},
+		{
+			name:  "monitor finished",
+			event: v1.Event{Type: v1.EventMonitorFinished, TaskID: "task_monitor", Data: json.RawMessage(`{"tool_call_id":"call_1","task_id":"task_1","timeout_ms":1500,"status":"failed","error":"boom"}`)},
+			want:  &v1.MonitorEvent{ToolCallID: "call_1", TaskID: "task_1", TimeoutMS: 1500, Status: "failed", Error: "boom"},
+		},
 	}
 
 	for _, test := range tests {
@@ -81,9 +91,30 @@ func TestDecodeSessionInputEventDataRejectsUnknownFields(t *testing.T) {
 		{Type: v1.EventSessionInputPromoted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","extra":true}`)},
 		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","agent":"explore","status":"running","usage":{},"tool_uses":0,"extra":true}`)},
 		{Type: v1.EventTaskStart, Data: json.RawMessage(`{"task_id":"task_1","kind":"agent","extra":true}`)},
+		{Type: v1.EventMonitorStarted, Data: json.RawMessage(`{"tool_call_id":"call_1","task_id":"task_1","timeout_ms":1500,"extra":true}`)},
 	} {
 		if _, err := v1.DecodeEventData(event); err == nil {
 			t.Fatalf("DecodeEventData(%q) accepted an unknown field", event.Type)
 		}
+	}
+}
+
+func TestMonitorEventsAreLiveManifestEntries(t *testing.T) {
+	want := map[string]bool{
+		v1.EventMonitorStarted:  false,
+		v1.EventMonitorFinished: false,
+	}
+	for _, definition := range v1.EventManifest {
+		durable, ok := want[definition.Name]
+		if !ok {
+			continue
+		}
+		if definition.Durable != durable || definition.Payload != "MonitorEvent" {
+			t.Errorf("EventManifest entry for %q = %#v, want durable=%t payload=MonitorEvent", definition.Name, definition, durable)
+		}
+		delete(want, definition.Name)
+	}
+	for name := range want {
+		t.Errorf("EventManifest is missing %q", name)
 	}
 }

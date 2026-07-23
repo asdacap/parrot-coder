@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
@@ -60,6 +61,10 @@ type recordingWaker struct{ woken chan string }
 
 func (w *recordingWaker) Wake(sessionID string) { w.woken <- sessionID }
 
+type recordingLifecycle struct{ events chan v1.Event }
+
+func (p *recordingLifecycle) PublishEvent(event v1.Event) { p.events <- event }
+
 func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *testing.T) {
 	workspaceRoot, err := workspace.New(t.TempDir())
 	if err != nil {
@@ -73,7 +78,8 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 2)}
 	waker := &recordingWaker{woken: make(chan string, 2)}
-	service := NewService(runner, subagent.NewManager(nil, subagent.Config{}), admitter)
+	lifecycle := &recordingLifecycle{events: make(chan v1.Event, 4)}
+	service := NewService(runner, subagent.NewManager(nil, subagent.Config{}), admitter, lifecycle)
 	service.SetWaker(waker)
 	defer service.Close(context.Background())
 
@@ -89,13 +95,13 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	if err != nil || timed.ProcessID == nil {
 		t.Fatalf("timed process start = %#v, %v", timed, err)
 	}
-	if err := service.Start("other", *exited.ProcessID, 0); err == nil || !strings.Contains(err.Error(), "unknown process") {
+	if err := service.Start(Request{SessionID: "other", TaskID: *exited.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "unknown process") {
 		t.Fatalf("cross-session start error = %v", err)
 	}
-	if err := service.Start("session", *exited.ProcessID, 0); err != nil {
+	if err := service.Start(Request{SessionID: "session", CallerTask: "task_main", ToolCallID: "call_exit", TaskID: *exited.ProcessID, Timeout: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Start("session", *timed.ProcessID, 20*time.Millisecond); err != nil {
+	if err := service.Start(Request{SessionID: "session", CallerTask: "task_main", ToolCallID: "call_timeout", TaskID: *timed.ProcessID, Timeout: 20 * time.Millisecond}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -119,6 +125,31 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 			t.Fatal("session was not woken")
 		}
 	}
+	started, finished := map[string]bool{}, map[string]string{}
+	for range 4 {
+		select {
+		case event := <-lifecycle.events:
+			payload, decodeErr := v1.DecodeEventData(event)
+			if decodeErr != nil {
+				t.Fatal(decodeErr)
+			}
+			item := payload.(*v1.MonitorEvent)
+			if event.SessionID != "session" || event.TaskID != "task_main" {
+				t.Fatalf("monitor event attribution = %#v", event)
+			}
+			if event.Type == v1.EventMonitorStarted {
+				started[item.ToolCallID] = true
+			} else {
+				finished[item.ToolCallID] = item.Status
+			}
+		case <-time.After(time.Second):
+			t.Fatal("monitor lifecycle event timed out")
+		}
+	}
+	if !started["call_exit"] || !started["call_timeout"] || finished["call_exit"] != "completed" || finished["call_timeout"] != "timed_out" {
+		t.Fatalf("monitor lifecycle = started %#v, finished %#v", started, finished)
+	}
+
 	joined := strings.Join(contents, "\n")
 	if !strings.Contains(joined, "exited with code 4") || !strings.Contains(joined, "timed out after 20ms") || !strings.Contains(joined, "was not stopped") {
 		t.Fatalf("notifications = %q", contents)
@@ -158,7 +189,7 @@ func TestServiceWaitYieldsThenReturnsShellCompletionWithoutConsumingOutput(t *te
 		t.Fatal(err)
 	}
 	defer runner.Close()
-	service := NewService(runner, nil, nil)
+	service := NewService(runner, nil, nil, nil)
 	running, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
 		Shell: "/bin/sh", Command: "sleep .3; printf retained; sleep .05; exit 4", SessionID: "session", Yield: process.MinYieldTime, Unrestricted: true,
 	})
@@ -198,21 +229,21 @@ func TestServiceRequiresWakerAndStopsNotificationsOnClose(t *testing.T) {
 	}
 	defer runner.Close()
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 1)}
-	service := NewService(runner, subagent.NewManager(nil, subagent.Config{}), admitter)
+	service := NewService(runner, subagent.NewManager(nil, subagent.Config{}), admitter, nil)
 	running, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
 		Shell: "/bin/sh", Command: "sleep 5", SessionID: "session", Yield: process.MinYieldTime, Unrestricted: true,
 	})
 	if err != nil || running.ProcessID == nil {
 		t.Fatalf("process start = %#v, %v", running, err)
 	}
-	if err := service.Start("session", *running.ProcessID, 0); err == nil || !strings.Contains(err.Error(), "waker") {
+	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "waker") {
 		t.Fatalf("start without waker error = %v", err)
 	}
 	service.SetWaker(&recordingWaker{woken: make(chan string, 1)})
-	if err := service.Start("session", *running.ProcessID, 0); err != nil {
+	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Start("session", *running.ProcessID, 0); err == nil || !strings.Contains(err.Error(), "already being monitored") {
+	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "already being monitored") {
 		t.Fatalf("duplicate monitor error = %v", err)
 	}
 	if err := service.SuspendSession(context.Background(), "session"); err != nil {
@@ -221,21 +252,21 @@ func TestServiceRequiresWakerAndStopsNotificationsOnClose(t *testing.T) {
 	if err := service.SuspendSession(context.Background(), "session"); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Start("session", *running.ProcessID, 0); err == nil || !strings.Contains(err.Error(), "paused") {
+	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "paused") {
 		t.Fatalf("start while nested suspension is active = %v", err)
 	}
 	service.ResumeSession("session")
-	if err := service.Start("session", *running.ProcessID, 0); err == nil || !strings.Contains(err.Error(), "paused") {
+	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "paused") {
 		t.Fatalf("start after partial resume = %v", err)
 	}
 	service.ResumeSession("session")
-	if err := service.Start("session", *running.ProcessID, 0); err != nil {
+	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err != nil {
 		t.Fatalf("start after complete resume: %v", err)
 	}
 	if err := service.Close(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.Start("session", *running.ProcessID, 0); err == nil || !strings.Contains(err.Error(), "closed") {
+	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("start after close error = %v", err)
 	}
 	select {

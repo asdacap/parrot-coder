@@ -462,6 +462,27 @@ func taskContent(taskID string, eventType string, data json.RawMessage) v1.Event
 	return v1.Event{Type: eventType, TaskID: taskID, Data: data}
 }
 
+func TestEnhancedMonitorLifecycleUpdatesNamespacedLiveActivity(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
+	runtime.activity = append(runtime.activity, enhancedActivityItem{id: "call-monitor", label: "ordinary tool", status: "running", started: time.Now()})
+
+	started, _ := json.Marshal(v1.MonitorEvent{ToolCallID: "call-monitor", TaskID: "proc_child", TimeoutMS: 1000})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMonitorStarted, Data: started}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 2 || runtime.activity[1].id != "task_main:monitor:call-monitor" || !strings.Contains(runtime.activity[1].rendered, "Monitoring task proc_child") {
+		t.Fatalf("started monitor activity = %#v", runtime.activity)
+	}
+
+	finished, _ := json.Marshal(v1.MonitorEvent{ToolCallID: "call-monitor", TaskID: "proc_child", TimeoutMS: 1000, Status: "completed"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventMonitorFinished, Data: finished}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 || runtime.activity[0].id != "call-monitor" {
+		t.Fatalf("finished monitor activity = %#v", runtime.activity)
+	}
+}
+
 func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
 	if err := runtime.handleEvent(taskStart("task-1", "task_main", "explore")); err != nil {

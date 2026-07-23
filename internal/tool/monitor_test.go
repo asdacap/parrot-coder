@@ -5,18 +5,17 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
-	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/monitor"
 )
 
 type recordingProcessMonitor struct {
-	sessionID string
-	taskID    string
-	timeout   time.Duration
-	err       error
+	request monitor.Request
+	err     error
 }
 
-func (m *recordingProcessMonitor) Start(sessionID, taskID string, timeout time.Duration) error {
-	m.sessionID, m.taskID, m.timeout = sessionID, taskID, timeout
+func (m *recordingProcessMonitor) Start(request monitor.Request) error {
+	m.request = request
 	return m.err
 }
 
@@ -31,12 +30,12 @@ func TestMonitorToolPlansAndStartsBackgroundMonitor(t *testing.T) {
 	if len(plan.Permissions) != 0 {
 		t.Fatalf("permissions = %#v", plan.Permissions)
 	}
-	result, err := item.Execute(context.Background(), plan, CallContext{SessionID: "caller"})
+	result, err := item.Execute(context.Background(), plan, CallContext{SessionID: "caller", TaskID: "task_main", ToolCallID: "call_monitor"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if monitor.sessionID != "caller" || monitor.taskID != "proc_test" || monitor.timeout != 1500*time.Millisecond {
-		t.Fatalf("monitor call = %q, %q, %s", monitor.sessionID, monitor.taskID, monitor.timeout)
+	if monitor.request.SessionID != "caller" || monitor.request.CallerTask != "task_main" || monitor.request.ToolCallID != "call_monitor" || monitor.request.TaskID != "proc_test" || monitor.request.Timeout.Milliseconds() != 1500 {
+		t.Fatalf("monitor request = %#v", monitor.request)
 	}
 	if !strings.Contains(result.Text, "proc_test") || !strings.Contains(result.Text, "1500 ms") {
 		t.Fatalf("result = %q", result.Text)
