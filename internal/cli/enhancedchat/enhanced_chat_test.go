@@ -157,8 +157,8 @@ func TestEnhancedNoticesFlushImmediately(t *testing.T) {
 			if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: status}); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(output.String(), test.message) {
-				t.Fatalf("notice was not flushed: %q", output.String())
+			if !strings.Contains(output.String(), "↻ "+test.message) {
+				t.Fatalf("notice was not flushed with its event icon: %q", output.String())
 			}
 		})
 	}

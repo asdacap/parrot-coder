@@ -297,7 +297,7 @@ func (s *chatShell) commitError(value string) {
 }
 func (s *chatShell) commitNotice(value string) {
 	if s.renderer != nil {
-		_ = s.renderer.Commit("↻ " + terminal.Sanitize(value))
+		_ = s.renderer.Commit(chatview.EventLine(0, "", "↻ "+terminal.Sanitize(value)))
 	}
 }
 func (s *chatShell) slash(name, arguments string) (bool, int) {

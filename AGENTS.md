@@ -12,3 +12,4 @@
 - Pay higher attention to two of the SOLID principle, the Open-Closed principle and Dependency Inversion princible.
 - Prefer interface rather than config.
 - Hardcoding id match is likely an antipattern. For example, changing a behavior of the UI by checking the tool id match a specific id. This is wrong. Rather, make a method in the Tool interface that itself will change behavior. 
+- On CLI Event line. Do not forget to put icon or at least indentation.

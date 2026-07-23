@@ -903,7 +903,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				// instead of buffering it into the assistant stream.
 				label := "status: " + value.Kind
 				if (value.Kind == "provider_retry" || value.Kind == "status_prompt") && value.Message != "" {
-					label = value.Message
+					label = chatview.EventLine(0, "", "↻ "+value.Message)
 				}
 				if value.Kind == "router_metadata" && value.Message != "" {
 					label = value.Message
