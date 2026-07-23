@@ -433,7 +433,7 @@ func command(ctx context.Context, config Config) int {
 				shell.enhanced = true
 				shell.stdout = stdout
 				shell.renderer = terminal.NewLiveRenderer(stdout, terminal.RendererConfig{
-					TTY: true, Color: terminal.ColorEnabled(stdout, noColor), Columns: terminal.Columns(stdout), MaxRows: 10, MaxInputRows: 12,
+					TTY: true, Color: terminal.ColorEnabled(stdout, noColor), Columns: terminal.Columns(stdout), MaxRows: terminal.DefaultLiveRows, MaxInputRows: 12,
 					ColumnsFunc: func() int { return terminal.Columns(stdout) },
 				})
 				shell.decoder = terminal.NewKeyDecoder(inputFile)

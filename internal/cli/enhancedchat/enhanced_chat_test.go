@@ -734,6 +734,41 @@ func TestEnhancedReasoningSummaryPartsShowAsSeparateActivityRows(t *testing.T) {
 	}
 }
 
+func TestEnhancedActivityGrowsToTheRendererLiveRowBudget(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		rendererRows      int
+		thoughts, wantRow int
+	}{
+		{name: "below budget", thoughts: 3, wantRow: 3},
+		{name: "past the former four row cap", thoughts: 8, wantRow: 8},
+		{name: "clipped to the default budget", thoughts: 14, wantRow: terminal.DefaultLiveRows},
+		{name: "clipped to a narrower renderer", rendererRows: 6, thoughts: 14, wantRow: 6},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			shell := &chatShell{}
+			if test.rendererRows > 0 {
+				shell.renderer = terminal.NewLiveRenderer(io.Discard, terminal.RendererConfig{Columns: 100, MaxRows: test.rendererRows})
+			}
+			runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+			for thought := range test.thoughts {
+				runtime.startReasoningActivity("assistant", fmt.Sprintf("reasoning:%d", thought), fmt.Sprintf("Thought %d", thought), true)
+			}
+
+			now := time.Now()
+			rows := runtime.activityRows(now, 100)
+			frames := runtime.activityFrames(now, 100)
+			if len(rows) != test.wantRow || len(frames) != test.wantRow {
+				t.Fatalf("activity rows = %d, frames = %d, want %d: %#v", len(rows), len(frames), test.wantRow, rows)
+			}
+			newest := fmt.Sprintf("Thought %d", test.thoughts-1)
+			if !strings.Contains(rows[len(rows)-1], newest) {
+				t.Fatalf("newest thought %q missing from last row %q", newest, rows[len(rows)-1])
+			}
+		})
+	}
+}
+
 func TestEnhancedReasoningSummaryStripsAdjacentBoldDelimiters(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")
