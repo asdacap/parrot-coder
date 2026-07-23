@@ -4,7 +4,11 @@ package mode
 import (
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
+	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
 	"github.com/amirulashraf/parrot-coder/internal/status"
@@ -25,6 +29,8 @@ type Mode interface {
 	// Dialog for the user to choose, or directly transition without a dialog.
 	// The mode owns this behavior; callers must not branch on the mode's ID.
 	OnTurnComplete() TurnCompleteResult
+	PrepareTurn(string) (agent.Profile, error)
+	CompleteTurn(string, string) (TurnCompleteResult, error)
 }
 
 // TurnCompleteResult is what a mode wants the runtime to do after a turn
@@ -44,6 +50,7 @@ type TurnCompleteResult struct {
 // choice's action.
 type TurnCompleteDialog struct {
 	Prompt            string
+	Markdown          string
 	Context           []string
 	Choices           []DialogChoice
 	CustomChoice      string
@@ -78,20 +85,28 @@ type builtin struct {
 	profile agent.Profile
 }
 
-func (m builtin) ID() string                       { return m.profile.ID }
-func (m builtin) Profile() agent.Profile           { return m.profile }
-func (builtin) OnTurnComplete() TurnCompleteResult { return TurnCompleteResult{} }
+func (m builtin) ID() string                                { return m.profile.ID }
+func (m builtin) Profile() agent.Profile                    { return m.profile }
+func (builtin) OnTurnComplete() TurnCompleteResult          { return TurnCompleteResult{} }
+func (m builtin) PrepareTurn(string) (agent.Profile, error) { return m.profile, nil }
+func (builtin) CompleteTurn(string, string) (TurnCompleteResult, error) {
+	return TurnCompleteResult{}, nil
+}
 
 // planMode extends builtin with a turn-complete dialog that lets the user
 // approve, decline, or provide feedback on the plan.
 type planMode struct {
 	builtin
+	directory string
+	mu        sync.Mutex
+	files     map[string]string
 }
 
-func (planMode) OnTurnComplete() TurnCompleteResult {
+func planCompletion(markdown string) TurnCompleteResult {
 	return TurnCompleteResult{Dialog: &TurnCompleteDialog{
-		Prompt:  "Plan complete: ",
-		Context: []string{"Review the plan before implementation."},
+		Markdown: markdown,
+		Prompt:   "Plan complete: ",
+		Context:  []string{"Review the plan before implementation."},
 		Choices: []DialogChoice{
 			{Value: "yes", Description: "Implement the approved plan", Aliases: []string{"y"}, Action: ChoiceAction{Agent: BuildID, Prompt: "Implement the approved plan."}},
 			{Value: "no", Description: "Stop after planning", Aliases: []string{"n"}},
@@ -103,10 +118,56 @@ func (planMode) OnTurnComplete() TurnCompleteResult {
 	}}
 }
 
-func Builtins() []Mode {
+func (m *planMode) OnTurnComplete() TurnCompleteResult { return planCompletion("") }
+
+func (m *planMode) PrepareTurn(sessionID string) (agent.Profile, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if err := os.MkdirAll(m.directory, 0o700); err != nil {
+		return agent.Profile{}, fmt.Errorf("mode: create plan directory: %w", err)
+	}
+	file, err := os.CreateTemp(m.directory, "plan-*.md")
+	if err != nil {
+		return agent.Profile{}, fmt.Errorf("mode: create plan file: %w", err)
+	}
+	path := file.Name()
+	if err = file.Close(); err != nil {
+		return agent.Profile{}, err
+	}
+	if err = os.Chmod(path, 0o600); err != nil {
+		return agent.Profile{}, err
+	}
+	m.files[sessionID] = path
+	profile := m.profile
+	profile.WritePaths = []string{path}
+	profile.Prompt += "\n\nWrite the complete implementation plan as Markdown to this exact file: " + path + ". Do not include the plan in your assistant response. Finish only after writing the file."
+	return profile, nil
+}
+
+func (m *planMode) CompleteTurn(sessionID, _ string) (TurnCompleteResult, error) {
+	m.mu.Lock()
+	path := m.files[sessionID]
+	m.mu.Unlock()
+	if path == "" {
+		return TurnCompleteResult{}, nil
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return TurnCompleteResult{}, fmt.Errorf("mode: read plan: %w", err)
+	}
+	plan := strings.TrimSpace(string(data))
+	if plan == "" {
+		return TurnCompleteResult{}, nil
+	}
+	return planCompletion(plan), nil
+}
+
+func Builtins() []Mode { return BuiltinsWithPlanDirectory(filepath.Join(os.TempDir(), "parrot-plans")) }
+
+func BuiltinsWithPlanDirectory(directory string) []Mode {
 	return []Mode{
 		builtin{profile: agent.Profile{ID: BuildID, Prompt: "You are Parrot's build mode. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64, RecursionLimit: 3, Status: status.Static{ProviderKey: "profile:build-mode", Text: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."}}},
-		planMode{builtin: builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and produce an implementation plan.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true, Status: status.Static{ProviderKey: "profile:plan-mode", Text: "Plan mode: inspect the project and produce an implementation plan. Read-only mode is enforced by the runtime."}}}},
+		&planMode{builtin: builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and write an implementation plan to the designated plan file.", HardRules: []string{"Read-only mode is enforced by the runtime except for the designated plan file."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true, Status: status.Static{ProviderKey: "profile:plan-mode", Text: "Plan mode: inspect the project and write the plan artifact. The workspace remains read-only."}}}, directory: directory, files: make(map[string]string)},
 	}
 }
 
@@ -129,6 +190,10 @@ func NewRegistry(modes ...Mode) (*Registry, error) {
 	return r, nil
 }
 
+func NewRegistryWithPlanDirectory(directory string) (*Registry, error) {
+	return NewRegistry(BuiltinsWithPlanDirectory(directory)...)
+}
+
 func (r *Registry) Get(id string) (Mode, error) {
 	if id == "" {
 		id = BuildID
@@ -147,6 +212,22 @@ func (r *Registry) List() []Mode {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID() < result[j].ID() })
 	return result
+}
+
+func (r *Registry) PrepareTurn(id, sessionID string) (agent.Profile, error) {
+	item, err := r.Get(id)
+	if err != nil {
+		return agent.Profile{}, err
+	}
+	return item.PrepareTurn(sessionID)
+}
+
+func (r *Registry) CompleteTurn(id, sessionID, messageID string) (TurnCompleteResult, error) {
+	item, err := r.Get(id)
+	if err != nil {
+		return TurnCompleteResult{}, err
+	}
+	return item.CompleteTurn(sessionID, messageID)
 }
 
 func (r *Registry) GetProfile(id string) (agent.Profile, error) {

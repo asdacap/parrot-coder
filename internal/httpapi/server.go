@@ -69,6 +69,7 @@ var routes = []Route{
 	{"DELETE", "/api/v1/sessions/{id}", "deleteSession"},
 	{"PUT", "/api/v1/sessions/{id}/selection", "updateSessionSelection"},
 	{"GET", "/api/v1/sessions/{id}/messages", "listMessages"},
+	{"GET", "/api/v1/sessions/{id}/turn-completion", "getTurnCompletion"},
 	{"GET", "/api/v1/sessions/{id}/todos", "listTodos"},
 	{"GET", "/api/v1/sessions/{id}/goal", "getGoal"},
 	{"PUT", "/api/v1/sessions/{id}/goal", "putGoal"},
@@ -107,6 +108,7 @@ func New(backend Backend, config Config) *Server {
 	s.mux.HandleFunc("/api/v1/sessions/{id}", s.session)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/selection", s.selection)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/messages", s.messages)
+	s.mux.HandleFunc("/api/v1/sessions/{id}/turn-completion", s.turnCompletion)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/todos", s.todos)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/goal", s.goal)
 	s.mux.HandleFunc("/api/v1/sessions/{id}/prompts", s.prompts)
@@ -243,6 +245,21 @@ func (s *Server) messages(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		item, err = paginateMessages(r, item)
 	}
+	s.respond(w, r, http.StatusOK, item, err)
+}
+
+func (s *Server) turnCompletion(w http.ResponseWriter, r *http.Request) {
+	if !s.requireMethod(w, r, http.MethodGet) {
+		return
+	}
+	provider, ok := s.backend.(interface {
+		CompleteTurn(context.Context, string, string) (v1.TurnCompletion, error)
+	})
+	if !ok {
+		s.writeBackendError(w, r, ErrNotFound)
+		return
+	}
+	item, err := provider.CompleteTurn(r.Context(), r.PathValue("id"), r.URL.Query().Get("message_id"))
 	s.respond(w, r, http.StatusOK, item, err)
 }
 
