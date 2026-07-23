@@ -10,8 +10,9 @@ import (
 )
 
 const (
-	maxHighlightBytes = 512 * 1024
-	maxHighlightLines = 10_000
+	maxHighlightBytes    = 512 * 1024
+	maxHighlightLines    = 10_000
+	maxMarkdownTableRows = 256
 	// Live previews are redrawn for every cumulative stream update. Keep their
 	// source budget much smaller than the final highlighting budget so an open
 	// fence or unfinished line cannot cause unbounded work before row clipping.
@@ -50,15 +51,35 @@ type richRows struct {
 }
 
 type markdownState struct {
-	inFence     bool
-	fenceChar   rune
-	fenceLength int
-	language    string
-	lexer       chroma.Lexer
-	plainFence  bool
-	code        []string
-	codeBytes   int
+	inFence       bool
+	fenceChar     rune
+	fenceLength   int
+	language      string
+	lexer         chroma.Lexer
+	plainFence    bool
+	code          []string
+	codeBytes     int
+	table         markdownTableState
+	tableRowLimit int
 }
+
+type markdownTableState struct {
+	prefix        string
+	candidateLine string
+	candidate     []string
+	header        []string
+	rows          [][]string
+	align         []tableAlignment
+	plain         bool
+}
+
+type tableAlignment uint8
+
+const (
+	tableAlignLeft tableAlignment = iota
+	tableAlignRight
+	tableAlignCenter
+)
 
 func renderAssistantMarkdown(prefix, source string, columns int, color bool) richRows {
 	return renderMarkdown(prefix, source, "", columns, color)
@@ -84,6 +105,10 @@ func renderMarkdown(prefix, source, suffix string, columns int, color bool) rich
 		output.append(rendered)
 		started = started || len(rendered.rows) > 0
 	}
+	if rendered := flushMarkdownTable(&state, columns); len(rendered.rows) > 0 {
+		output.append(rendered)
+		started = true
+	}
 	if state.inFence {
 		if !state.plainFence {
 			rendered := renderCodeBlock(markdownPrefix(prefix, started), state, columns, color)
@@ -103,6 +128,14 @@ func renderMarkdown(prefix, source, suffix string, columns int, color bool) rich
 
 func renderMarkdownLineWithSuffix(prefix, line, suffix string, columns int, state *markdownState, color bool) richRows {
 	line = strings.TrimSuffix(line, "\r")
+	if state.table.pending() {
+		rendered := renderMarkdownLine(prefix, line, columns, state, color)
+		rendered.append(flushMarkdownTable(state, columns))
+		if !state.inFence {
+			appendRichSuffix(&rendered, suffix, hangingIndent(prefix), columns)
+		}
+		return rendered
+	}
 	if state.inFence {
 		rendered := renderMarkdownLine(prefix, line, columns, state, color)
 		if !state.inFence && suffix != "" {
@@ -121,6 +154,40 @@ func renderMarkdownLineWithSuffix(prefix, line, suffix string, columns int, stat
 
 func renderMarkdownLine(prefix, line string, columns int, state *markdownState, color bool) richRows {
 	line = strings.TrimSuffix(line, "\r")
+	var output richRows
+	if state.table.plain {
+		if _, ok := parseMarkdownTableRow(line); ok {
+			runs := markdownLineRuns(line, columns-displayWidth(prefix))
+			return layoutRichRuns(withMarkdownPrefix(prefix, runs), hangingIndent(prefix), columns)
+		}
+		state.table = markdownTableState{}
+	}
+	if len(state.table.header) > 0 {
+		if cells, ok := parseMarkdownTableRow(line); ok {
+			state.table.rows = append(state.table.rows, normalizeTableRow(cells, len(state.table.header)))
+			if state.tableRowLimit > 0 && len(state.table.rows) >= state.tableRowLimit {
+				tablePrefix := state.table.prefix
+				output.append(flushMarkdownTable(state, columns))
+				state.table = markdownTableState{prefix: tablePrefix, plain: true}
+			}
+			return output
+		}
+		tablePrefix := state.table.prefix
+		output.append(flushMarkdownTable(state, columns))
+		prefix = hangingIndent(tablePrefix)
+	}
+	if len(state.table.candidate) > 0 {
+		if align, ok := parseTableDelimiter(line, len(state.table.candidate)); ok {
+			state.table.header = state.table.candidate
+			state.table.candidate = nil
+			state.table.align = align
+			return output
+		}
+		tablePrefix := state.table.prefix
+		output.append(layoutRichRuns(withMarkdownPrefix(tablePrefix, markdownLineRuns(state.table.candidateLine, columns-displayWidth(tablePrefix))), hangingIndent(tablePrefix), columns))
+		state.table = markdownTableState{}
+		prefix = hangingIndent(tablePrefix)
+	}
 	if state.inFence {
 		if isFenceClosing(line, state.fenceChar, state.fenceLength) {
 			var rendered richRows
@@ -151,11 +218,17 @@ func renderMarkdownLine(prefix, line string, columns int, state *markdownState, 
 		state.language = marker.language
 		state.codeBytes = 0
 		state.lexer = lexerForLanguage(marker.language)
-		return richRows{}
+		return output
+	}
+
+	if cells, ok := parseMarkdownTableRow(line); ok {
+		state.table = markdownTableState{prefix: prefix, candidateLine: line, candidate: cells}
+		return output
 	}
 
 	runs := markdownLineRuns(line, columns-displayWidth(prefix))
-	return layoutRichRuns(withMarkdownPrefix(prefix, runs), hangingIndent(prefix), columns)
+	output.append(layoutRichRuns(withMarkdownPrefix(prefix, runs), hangingIndent(prefix), columns))
+	return output
 }
 
 func appendCodeLine(state *markdownState, line string) {
@@ -705,6 +778,22 @@ func layoutRichRuns(runs []textRun, indent string, columns int) richRows {
 		}
 	}
 	return output
+}
+
+func appendRichSuffix(rows *richRows, suffix, indent string, columns int) {
+	if suffix == "" {
+		return
+	}
+	if len(rows.rows) == 0 {
+		rows.append(layoutRichRuns([]textRun{{text: suffix}}, indent, columns))
+		return
+	}
+	last := len(rows.rows) - 1
+	runs := runsFromRichRow(rows.rows[last], rows.spans[last])
+	appendTextRun(&runs, suffix, ansiStyle{})
+	replacement := layoutRichRuns(runs, indent, columns)
+	rows.rows = append(rows.rows[:last], replacement.rows...)
+	rows.spans = append(rows.spans[:last], replacement.spans...)
 }
 
 func (r *richRows) append(other richRows) {

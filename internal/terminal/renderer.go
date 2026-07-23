@@ -1306,6 +1306,10 @@ func (r *LiveRenderer) commitRowsAsRich(rows []string, styles []TextStyle, spans
 func cloneLiveStream(value liveStream) liveStream {
 	value.pending = append([]rune(nil), value.pending...)
 	value.markdown.code = append([]string(nil), value.markdown.code...)
+	value.markdown.table.candidate = append([]string(nil), value.markdown.table.candidate...)
+	value.markdown.table.header = append([]string(nil), value.markdown.table.header...)
+	value.markdown.table.align = append([]tableAlignment(nil), value.markdown.table.align...)
+	value.markdown.table.rows = cloneTableRows(value.markdown.table.rows)
 	return value
 }
 
@@ -1372,6 +1376,10 @@ func (r *LiveRenderer) advanceStream(message StreamMessage, complete bool) (rich
 			}
 			r.stream.markdown = markdownState{}
 		}
+		if rendered := flushMarkdownTable(&r.stream.markdown, r.columns); len(rendered.rows) > 0 {
+			promoted.append(rendered)
+			r.stream.started = true
+		}
 		return promoted, richRows{}, nil
 	}
 
@@ -1411,6 +1419,8 @@ func (r *LiveRenderer) renderStreamPreview(prefix string) richRows {
 	}
 	if previewState.inFence {
 		live = renderOpenFencePreview(prefix, previewState, "", false, r.columns, r.maxRows, r.color)
+	} else if previewState.table.pending() {
+		live.append(flushMarkdownTable(&previewState, r.columns))
 	}
 	return live.tail(r.maxRows)
 }
@@ -1505,6 +1515,9 @@ func suffixRunes(value string, limit int) (string, bool) {
 }
 
 func (r *LiveRenderer) renderStreamLine(line string, state *markdownState, started bool) richRows {
+	if state.tableRowLimit == 0 {
+		state.tableRowLimit = maxMarkdownTableRows
+	}
 	prefix := markdownPrefix(r.stream.prefix, started)
 	return renderMarkdownLine(prefix, line, r.columns, state, r.color)
 }

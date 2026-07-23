@@ -47,6 +47,137 @@ func TestRenderAssistantMarkdownFormatsBlockAndInlineSyntax(t *testing.T) {
 	}
 }
 
+func TestRenderAssistantMarkdownFormatsTables(t *testing.T) {
+	rendered := renderAssistantMarkdown("- ", strings.Join([]string{
+		"| Name | Count | State |",
+		"| :--- | ---: | :---: |",
+		"| **A** | 7 | ok |",
+		"| 東京 | 12 | `a|b` |",
+		"| escaped \\| pipe | 3 | ready |",
+	}, "\n"), 50, true)
+
+	want := []string{
+		"- ┌────────────────┬───────┬───────┐",
+		"  │ Name           │ Count │ State │",
+		"  ├────────────────┼───────┼───────┤",
+		"  │ A              │     7 │  ok   │",
+		"  │ 東京           │    12 │  a|b  │",
+		"  │ escaped | pipe │     3 │ ready │",
+		"  └────────────────┴───────┴───────┘",
+	}
+	if !equalMarkdownRows(rendered.rows, want) {
+		t.Fatalf("table rows = %#v; want %#v", rendered.rows, want)
+	}
+	if !hasANSIStyle(rendered, func(style ansiStyle) bool { return style.bold && style.color == "36" }) ||
+		!hasANSIStyle(rendered, func(style ansiStyle) bool { return style.bold }) {
+		t.Fatal("table header or inline Markdown style was not retained")
+	}
+	for _, row := range rendered.rows {
+		if displayWidth(row) > 50 {
+			t.Fatalf("table row exceeded terminal width: %q", row)
+		}
+	}
+
+	for _, test := range []struct {
+		name    string
+		source  string
+		columns int
+		want    string
+	}{
+		{name: "narrow", source: "A | B | C\n--- | --- | ---\none | two | three", columns: 12, want: "- A: one\n  B: two\n  C: three"},
+		{name: "wide rune cannot fit grid cell", source: "A | B\n--- | ---\n字 | x", columns: 11, want: "- A: 字\n  B: x"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			narrow := renderAssistantMarkdown("- ", test.source, test.columns, false)
+			if got := strings.Join(narrow.rows, "\n"); got != test.want {
+				t.Fatalf("table fallback = %q; want %q", got, test.want)
+			}
+			for _, row := range narrow.rows {
+				if displayWidth(row) > test.columns {
+					t.Fatalf("fallback row exceeded terminal width: %q", row)
+				}
+			}
+		})
+	}
+	if _, ok := parseTableDelimiter("::--- | ---", 2); ok {
+		t.Fatal("delimiter with repeated alignment colons was accepted")
+	}
+
+	ordinary := renderMarkdown("- ", "left | right", " suffix", 50, false)
+	if got := strings.Join(ordinary.rows, "\n"); got != "- left | right suffix" {
+		t.Fatalf("unconfirmed table row = %q", got)
+	}
+
+	single := renderMarkdown("- ", "| Name |\n| --- |\n| A |\nAfter", " suffix", 30, false)
+	singleText := strings.Join(single.rows, "\n")
+	if !strings.Contains(singleText, "│ Name │") || !strings.HasSuffix(singleText, "After suffix") {
+		t.Fatalf("single-column table or boundary suffix = %q", singleText)
+	}
+	fenceAfterCandidate := renderMarkdown("- ", "A | B\n```\ncode", " suffix", 30, false)
+	if got := strings.Count(strings.Join(fenceAfterCandidate.rows, "\n"), " suffix"); got != 1 {
+		t.Fatalf("table candidate before fence rendered suffix %d times: %#v", got, fenceAfterCandidate.rows)
+	}
+}
+
+func TestStreamBuffersMarkdownTableUntilItsBoundary(t *testing.T) {
+	renderer := NewLiveRenderer(&bytes.Buffer{}, RendererConfig{TTY: true, Columns: 50, MaxRows: 20})
+	message := StreamMessage{ID: "table", Prefix: "- ", Text: "Name | Value\n--- | ---:\na | 1\n"}
+	promoted, preview, err := renderer.advanceStream(message, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(promoted.rows) != 0 || !renderer.stream.markdown.table.pending() {
+		t.Fatalf("table was promoted before its boundary: promoted=%#v state=%#v", promoted.rows, renderer.stream.markdown.table)
+	}
+	if got := strings.Join(preview.rows, "\n"); !strings.Contains(got, "│ Name │ Value │") || !strings.Contains(got, "│ a    │     1 │") {
+		t.Fatalf("table preview = %q", got)
+	}
+
+	message.Text += "longer value | 200\n"
+	promoted, preview, err = renderer.advanceStream(message, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(promoted.rows) != 0 || !strings.Contains(strings.Join(preview.rows, "\n"), "│ Name         │ Value │") {
+		t.Fatalf("later row did not realign buffered table: promoted=%#v preview=%#v", promoted.rows, preview.rows)
+	}
+
+	message.Text += "After\n"
+	promoted, _, err = renderer.advanceStream(message, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(promoted.rows, "\n")
+	if renderer.stream.markdown.table.pending() || !strings.Contains(joined, "│ longer value │   200 │") || !strings.HasSuffix(joined, "\n  After") {
+		t.Fatalf("table boundary promotion = %q; state=%#v", joined, renderer.stream.markdown.table)
+	}
+
+	finishing := NewLiveRenderer(&bytes.Buffer{}, RendererConfig{TTY: true, Columns: 50})
+	message = StreamMessage{ID: "finish", Prefix: "- ", Text: "A | B\n--- | ---\nx | y"}
+	promoted, _, err = finishing.advanceStream(message, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(promoted.rows, "\n"); !strings.Contains(got, "│ x │ y │") || finishing.stream.markdown.table.pending() {
+		t.Fatalf("completed table was not flushed: %q", got)
+	}
+
+	bounded := markdownState{tableRowLimit: maxMarkdownTableRows}
+	renderMarkdownLine("- ", "A | B", 50, &bounded, false)
+	renderMarkdownLine("- ", "--- | ---", 50, &bounded, false)
+	var overflow richRows
+	for range maxMarkdownTableRows {
+		overflow.append(renderMarkdownLine("- ", "x | y", 50, &bounded, false))
+	}
+	if !bounded.table.plain || len(bounded.table.rows) != 0 || !strings.Contains(strings.Join(overflow.rows, "\n"), "│ x │ y │") {
+		t.Fatalf("large table did not switch to bounded plain streaming: state=%#v rows=%d", bounded.table, len(overflow.rows))
+	}
+	plain := renderMarkdownLine("  ", "next | row", 50, &bounded, false)
+	if got := strings.Join(plain.rows, "\n"); got != "  next | row" {
+		t.Fatalf("large table plain continuation = %q", got)
+	}
+}
+
 func TestStyledMarkdownRendersInLiveAndCommittedActivity(t *testing.T) {
 	activity := StyledText{Text: "# Checking\n\n- **tests**", Markdown: true, Prefix: "✓ ", Suffix: " · 2 tokens"}
 	for _, test := range []struct {
