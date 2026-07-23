@@ -23,6 +23,9 @@ var (
 	errStreamMessageConflict = errors.New("terminal: another assistant message is still streaming")
 	errStreamPrefixChanged   = errors.New("terminal: stream message prefix changed")
 	errStreamTextChanged     = errors.New("terminal: streamed assistant text changed")
+	errFrameTaskIDEmpty      = errors.New("terminal: live frame task ID is empty")
+	errFrameTaskCycle        = errors.New("terminal: live frame task hierarchy contains a cycle")
+	errFrameStatusConflict   = errors.New("terminal: task has multiple main status frames")
 )
 
 // RenderErrorClass returns a content-free classification for renderer-owned
@@ -40,6 +43,12 @@ func RenderErrorClass(err error) string {
 		return "stream_prefix_changed"
 	case errors.Is(err, errStreamTextChanged):
 		return "stream_text_changed"
+	case errors.Is(err, errFrameTaskIDEmpty):
+		return "frame_task_id_empty"
+	case errors.Is(err, errFrameTaskCycle):
+		return "frame_task_cycle"
+	case errors.Is(err, errFrameStatusConflict):
+		return "frame_status_conflict"
 	default:
 		return ""
 	}
@@ -99,9 +108,15 @@ func MutedText(text string) StyledText {
 	return StyledText{Text: text, Style: TextStyleMuted}
 }
 
-// LiveFrame combines an active response with the always-visible input area.
-// Pending entries are displayed inside the input area below its top divider.
+// LiveFrame describes one task-scoped portion of the redrawable region.
+// TaskID and ParentTaskID form a flat task tree when passed to Frames.
+// MainStatus marks the frame that contains the task's primary status; child
+// tasks are rendered before that frame. Frame accepts the zero-value metadata
+// for compatibility with callers rendering one isolated composite frame.
 type LiveFrame struct {
+	TaskID        string
+	ParentTaskID  string
+	MainStatus    bool
 	MessagePrefix string
 	Message       string
 	Context       []string
@@ -302,12 +317,152 @@ func (r *LiveRenderer) Prompt(state PromptState) error {
 	return r.redrawRich(content.rows, nil, content.spans, cursorRow, cursorCol)
 }
 
-// Frame redraws a composite response, pending queue, and editor while keeping
-// the cursor in the editor. Transient output and the expandable input/menu are
-// separately bounded, so opening a picker does not consume live-status rows.
+// Frame redraws one composite response, pending queue, and editor while keeping
+// the cursor in the editor. It remains the compatibility entry point for an
+// isolated frame; task-aware callers should use Frames.
 func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.frame(frame)
+}
+
+// Frames redraws task-scoped frames in post-order: a task's descendants appear
+// before its MainStatus frame. Sibling order follows first appearance in the
+// input, and frames whose parent is absent are rendered as independent roots.
+func (r *LiveRenderer) Frames(frames []LiveFrame) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	ordered, err := orderLiveFrames(frames)
+	if err != nil {
+		return err
+	}
+	return r.frame(mergeLiveFrames(ordered))
+}
+
+func orderLiveFrames(frames []LiveFrame) ([]LiveFrame, error) {
+	type taskFrames struct {
+		parent   string
+		ordinary []LiveFrame
+		status   *LiveFrame
+	}
+	tasks := make(map[string]*taskFrames)
+	order := make([]string, 0)
+	for i := range frames {
+		frame := frames[i]
+		if frame.TaskID == "" {
+			return nil, errFrameTaskIDEmpty
+		}
+		task := tasks[frame.TaskID]
+		if task == nil {
+			task = &taskFrames{parent: frame.ParentTaskID}
+			tasks[frame.TaskID] = task
+			order = append(order, frame.TaskID)
+		} else if task.parent == "" {
+			task.parent = frame.ParentTaskID
+		}
+		if frame.MainStatus {
+			if task.status != nil {
+				return nil, errFrameStatusConflict
+			}
+			task.status = &frame
+		} else {
+			task.ordinary = append(task.ordinary, frame)
+		}
+	}
+	children := make(map[string][]string)
+	for _, id := range order {
+		parent := tasks[id].parent
+		if parent != "" && tasks[parent] != nil {
+			children[parent] = append(children[parent], id)
+		}
+	}
+	state := make(map[string]uint8)
+	ordered := make([]LiveFrame, 0, len(frames))
+	var visit func(string) error
+	visit = func(id string) error {
+		switch state[id] {
+		case 1:
+			return errFrameTaskCycle
+		case 2:
+			return nil
+		}
+		state[id] = 1
+		task := tasks[id]
+		for _, child := range children[id] {
+			if err := visit(child); err != nil {
+				return err
+			}
+		}
+		ordered = append(ordered, task.ordinary...)
+		if task.status != nil {
+			ordered = append(ordered, *task.status)
+		}
+		state[id] = 2
+		return nil
+	}
+	for _, id := range order {
+		parent := tasks[id].parent
+		if parent == "" || tasks[parent] == nil {
+			if err := visit(id); err != nil {
+				return nil, err
+			}
+		}
+	}
+	for _, id := range order {
+		if err := visit(id); err != nil {
+			return nil, err
+		}
+	}
+	return ordered, nil
+}
+
+// mergeLiveFrames combines already ordered task portions into the composite
+// representation used by the terminal layout engine. The final status frame
+// owns the shared stream, modeline, pending queue, and editor chrome.
+func mergeLiveFrames(frames []LiveFrame) LiveFrame {
+	var merged LiveFrame
+	chrome := -1
+	for i, frame := range frames {
+		merged.Context = append(merged.Context, frame.Context...)
+		merged.Activity = append(merged.Activity, frame.Activity...)
+		merged.StyledActivity = append(merged.StyledActivity, frame.StyledActivity...)
+		if frame.Message != "" || frame.MessagePrefix != "" {
+			merged.MessagePrefix = frame.MessagePrefix
+			merged.Message = frame.Message
+		}
+		if frame.Stream != nil {
+			merged.Stream = frame.Stream
+		}
+		if frame.MainStatus && (chrome < 0 || liveFrameOwnsChrome(frame)) {
+			chrome = i
+		}
+	}
+	if chrome < 0 {
+		return merged
+	}
+	frame := frames[chrome]
+	merged.TaskID = frame.TaskID
+	merged.ParentTaskID = frame.ParentTaskID
+	merged.MainStatus = true
+	merged.PromptContext = frame.PromptContext
+	merged.InputLeft = frame.InputLeft
+	merged.InputCenter = frame.InputCenter
+	merged.InputRight = frame.InputRight
+	merged.Pending = frame.Pending
+	merged.Prompt = frame.Prompt
+	merged.Busy = frame.Busy
+	merged.Spinner = frame.Spinner
+	merged.ShowDivider = frame.ShowDivider
+	return merged
+}
+
+func liveFrameOwnsChrome(frame LiveFrame) bool {
+	return frame.Prompt.Prefix != "" || frame.Prompt.Text != "" || len(frame.Prompt.Completions) != 0 ||
+		len(frame.PromptContext) != 0 || len(frame.Pending) != 0 || frame.InputLeft != "" ||
+		frame.InputCenter != "" || frame.InputRight != "" || frame.Stream != nil || frame.Busy || frame.ShowDivider
+}
+
+func (r *LiveRenderer) frame(frame LiveFrame) error {
 	if r.closed {
 		return errRendererClosed
 	}

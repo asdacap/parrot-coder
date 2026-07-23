@@ -24,6 +24,56 @@ func (r *enhancedChatRuntime) activityRows(now time.Time, columns int) []string 
 	return rows
 }
 
+func (r *enhancedChatRuntime) activityFrames(now time.Time, columns int) []terminal.LiveFrame {
+	var frames []terminal.LiveFrame
+	if tracker := r.subagents.Tracker(); tracker != nil {
+		for _, task := range tracker.Tasks() {
+			frames = append(frames, terminal.LiveFrame{TaskID: task.TaskID, ParentTaskID: task.ParentTaskID})
+		}
+	}
+	visible := make([]enhancedActivityItem, 0, len(r.activity))
+	for _, item := range r.activity {
+		if !isModelineThinkingActivity(item) {
+			visible = append(visible, item)
+		}
+	}
+	if len(visible) > 4 {
+		visible = visible[len(visible)-4:]
+	}
+	statusByTask := make(map[string]int)
+	for _, item := range visible {
+		taskID := item.taskID
+		if taskID == "" {
+			taskID = "task_main"
+		}
+		if item.mainStatus {
+			if previous, ok := statusByTask[taskID]; ok {
+				frames[previous].MainStatus = false
+			}
+			statusByTask[taskID] = len(frames)
+		}
+		frames = append(frames, terminal.LiveFrame{
+			TaskID: taskID, ParentTaskID: item.parentTaskID, MainStatus: item.mainStatus,
+			StyledActivity: []terminal.StyledText{styledActivity(item, now, columns)},
+		})
+	}
+	return frames
+}
+
+func styledActivity(item enhancedActivityItem, now time.Time, columns int) terminal.StyledText {
+	if item.reasoningSummary {
+		return reasoningSummaryActivity(item, now)
+	}
+	line := formatActivity(item, now)
+	if item.reasoning && item.status == "thinking" {
+		line = formatReasoningActivity(item, now, columns)
+	}
+	if output := item.output.String(); output != "" {
+		line += "\n" + output
+	}
+	return terminal.StyledText{Text: line, Style: item.style}
+}
+
 func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []terminal.StyledText {
 	if len(r.activity) == 0 {
 		return nil
@@ -41,18 +91,7 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 		start = len(visible) - 4
 	}
 	for _, item := range visible[start:] {
-		if item.reasoningSummary {
-			rows = append(rows, reasoningSummaryActivity(item, now))
-			continue
-		}
-		line := formatActivity(item, now)
-		if item.reasoning && item.status == "thinking" {
-			line = formatReasoningActivity(item, now, columns)
-		}
-		if output := item.output.String(); output != "" {
-			line += "\n" + output
-		}
-		rows = append(rows, terminal.StyledText{Text: line, Style: item.style})
+		rows = append(rows, styledActivity(item, now, columns))
 	}
 	return rows
 }

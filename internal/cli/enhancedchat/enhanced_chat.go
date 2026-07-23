@@ -13,6 +13,7 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/client"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -23,7 +24,7 @@ const (
 	maxToolBlockLines   = 10
 	maxShellOutputLines = 3
 	maxShellOutputBytes = 16 << 10
-	permissionTimeout  = 2 * time.Minute
+	permissionTimeout   = 2 * time.Minute
 )
 
 func isExecutionHaltKey(key terminal.Key) bool {
@@ -125,6 +126,9 @@ type queuedChatInput struct {
 
 type enhancedActivityItem struct {
 	id               string
+	taskID           string
+	parentTaskID     string
+	mainStatus       bool
 	messageID        string
 	label            string
 	toolName         string
@@ -560,10 +564,13 @@ func (r *enhancedChatRuntime) render() error {
 	if r.mainTaskUsage.Cost > 0 {
 		right += " · " + formatCost(r.mainTaskUsage.Cost)
 	}
-	return r.shell.renderer.Frame(terminal.LiveFrame{
-		Stream: stream, PromptContext: r.modalContext(), StyledActivity: r.styledActivityRows(now, r.shell.renderer.Columns()), Pending: pending,
+	frames := r.activityFrames(now, r.shell.renderer.Columns())
+	frames = append(frames, terminal.LiveFrame{
+		TaskID: managedtask.MainTaskID, MainStatus: true,
+		Stream: stream, PromptContext: r.modalContext(), Pending: pending,
 		InputLeft: r.inputModeLabel(), InputCenter: r.modelineThinking(now), InputRight: right,
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})
+	return r.shell.renderer.Frames(frames)
 }

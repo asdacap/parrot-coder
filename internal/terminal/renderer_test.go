@@ -25,6 +25,62 @@ func TestLiveRendererExactBytesAndClear(t *testing.T) {
 	}
 }
 
+func TestLiveRendererOrdersTaskFramesPostOrder(t *testing.T) {
+	tests := []struct {
+		name   string
+		frames []LiveFrame
+		want   string
+		class  string
+	}{
+		{
+			name: "nested children before statuses",
+			frames: []LiveFrame{
+				{TaskID: "root", MainStatus: true, StyledActivity: []StyledText{{Text: "root status"}}, Prompt: PromptState{Prefix: "$ "}},
+				{TaskID: "child", ParentTaskID: "root", MainStatus: true, StyledActivity: []StyledText{{Text: "child status"}}},
+				{TaskID: "grandchild", ParentTaskID: "child", StyledActivity: []StyledText{{Text: "grandchild work"}}},
+			},
+			want: "grandchild work\nchild status\nroot status\n$ \n",
+		},
+		{
+			name: "orphan remains visible",
+			frames: []LiveFrame{
+				{TaskID: "orphan", ParentTaskID: "missing", StyledActivity: []StyledText{{Text: "orphan work"}}},
+				{TaskID: "root", MainStatus: true, Prompt: PromptState{Prefix: "$ "}},
+			},
+			want: "orphan work\n$ \n",
+		},
+		{
+			name: "cycle rejected",
+			frames: []LiveFrame{
+				{TaskID: "one", ParentTaskID: "two"},
+				{TaskID: "two", ParentTaskID: "one"},
+			},
+			class: "frame_task_cycle",
+		},
+		{
+			name: "duplicate status rejected",
+			frames: []LiveFrame{
+				{TaskID: "root", MainStatus: true},
+				{TaskID: "root", MainStatus: true},
+			},
+			class: "frame_status_conflict",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := NewLiveRenderer(&output, RendererConfig{Columns: 80, MaxRows: 20})
+			err := renderer.Frames(test.frames)
+			if class := RenderErrorClass(err); class != test.class {
+				t.Fatalf("error class = %q, want %q (err=%v)", class, test.class, err)
+			}
+			if test.class == "" && output.String() != test.want {
+				t.Fatalf("output = %q, want %q", output.String(), test.want)
+			}
+		})
+	}
+}
+
 func TestLiveRendererDoesNotWriteUnchangedFrame(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 80})

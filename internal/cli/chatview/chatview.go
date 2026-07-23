@@ -568,15 +568,32 @@ type taskMessageState struct {
 	reasoningDone    bool
 }
 
-// TaskReport is one renderable unit derived from a flat task event.
+// TaskReport is one renderable unit derived from a flat task event. TaskID and
+// ParentTaskID identify the task which owns the report. MainStatus marks the
+// report as that task's primary status rather than ordinary task activity.
 type TaskReport struct {
-	ID        string
-	Line      string
-	Block     string
-	Terminal  bool
-	EmitPlain bool
-	Skip      bool
-	Style     terminal.TextStyle
+	ID           string
+	TaskID       string
+	ParentTaskID string
+	Line         string
+	Block        string
+	Terminal     bool
+	EmitPlain    bool
+	Skip         bool
+	MainStatus   bool
+	Style        terminal.TextStyle
+}
+
+// TaskInfo is the read-only public projection of one task tracked from the
+// event stream. It intentionally contains values rather than tracker-owned
+// state so callers cannot mutate the tree.
+type TaskInfo struct {
+	TaskID       string
+	ParentTaskID string
+	Kind         string
+	Agent        string
+	Name         string
+	Status       string
 }
 
 // taskNode is one task in the tracker's tree. Tasks form a tree through
@@ -698,6 +715,58 @@ func (t *TaskTracker) known(id string) *taskNode {
 	return t.tasks[id]
 }
 
+// Tasks returns a deterministic snapshot of the tracked task tree. Parents
+// precede their children and siblings are ordered by task id. A task whose
+// parent is absent is treated as an additional root.
+func (t *TaskTracker) Tasks() []TaskInfo {
+	children := make(map[string][]*taskNode)
+	roots := make([]*taskNode, 0)
+	for _, node := range t.tasks {
+		if node.parentID == "" || t.tasks[node.parentID] == nil {
+			roots = append(roots, node)
+		} else {
+			children[node.parentID] = append(children[node.parentID], node)
+		}
+	}
+	sortNodes := func(nodes []*taskNode) {
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].id < nodes[j].id })
+	}
+	sortNodes(roots)
+	for _, nodes := range children {
+		sortNodes(nodes)
+	}
+
+	result := make([]TaskInfo, 0, len(t.tasks))
+	seen := make(map[string]bool, len(t.tasks))
+	var appendTree func(*taskNode)
+	appendTree = func(node *taskNode) {
+		if seen[node.id] {
+			return
+		}
+		seen[node.id] = true
+		result = append(result, TaskInfo{TaskID: node.id, ParentTaskID: node.parentID, Kind: node.kind, Agent: node.agent, Name: node.name, Status: node.status})
+		for _, child := range children[node.id] {
+			appendTree(child)
+		}
+	}
+	for _, root := range roots {
+		appendTree(root)
+	}
+	// Malformed cyclic ancestry has no root. Keep the projection complete and
+	// deterministic without allowing such input to recurse forever.
+	remaining := make([]*taskNode, 0)
+	for _, node := range t.tasks {
+		if !seen[node.id] {
+			remaining = append(remaining, node)
+		}
+	}
+	sortNodes(remaining)
+	for _, node := range remaining {
+		appendTree(node)
+	}
+	return result
+}
+
 // TaskUsage is what one task spent. Cost is the runner's price for the tokens,
 // so it is reported alongside them rather than accounted separately.
 type TaskUsage struct {
@@ -769,6 +838,22 @@ func IsTaskEvent(item v1.Event) bool {
 // Events belonging to the session's main task return nil; the caller renders
 // those through the main transcript path instead.
 func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) {
+	reports, err := t.apply(item, thinking)
+	if err != nil {
+		return nil, err
+	}
+	owner := t.tasks[item.TaskID]
+	for i := range reports {
+		reports[i].TaskID = item.TaskID
+		if owner != nil {
+			reports[i].ParentTaskID = owner.parentID
+		}
+		reports[i].MainStatus = item.Type == v1.EventTaskProgress || item.Type == v1.EventTaskFinished
+	}
+	return reports, nil
+}
+
+func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) {
 	if item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
 		return t.applyLifecycle(item)
 	}
