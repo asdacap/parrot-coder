@@ -13,7 +13,7 @@ import (
 type TaskController interface {
 	Interrupt(context.Context, string, string) (managedtask.Active, error)
 	ListActive(string) []managedtask.Active
-	Wait(context.Context, string, string) (managedtask.Result, error)
+	WaitKind(context.Context, string, string, managedtask.Kind) (managedtask.Result, error)
 }
 
 type TaskTool struct {
@@ -26,7 +26,8 @@ func NewTaskTools(controller TaskController) []Tool {
 	return []Tool{
 		&TaskTool{Kind: "task_interrupt", Controller: controller},
 		&TaskTool{Kind: "task_list_active", Controller: controller},
-		&WaitTaskTool{Controller: controller},
+		&WaitTool{Kind: managedtask.KindAgent, Controller: controller},
+		&WaitTool{Kind: managedtask.KindShell, Controller: controller},
 	}
 }
 
@@ -40,7 +41,7 @@ func (t *TaskTool) Presentation() Presentation {
 }
 func (t *TaskTool) Description() string {
 	if t.Kind == "task_interrupt" {
-		return "Interrupt a running shell process or child agent session. task_id is the process ID for a shell or the child session ID for an agent. Agent sessions are retained for follow-up messages."
+		return "Interrupt a running shell process or child agent session by canonical ID or friendly name. Agent sessions are retained for follow-up messages."
 	}
 	return "List active shell processes and child agent sessions visible to the current session. Returned task_id values are process IDs for shells and child session IDs for agents."
 }
@@ -58,7 +59,7 @@ func (t *TaskTool) DescribeRequest(raw json.RawMessage) (string, error) {
 
 func (t *TaskTool) JSONSchema() json.RawMessage {
 	if t.Kind == "task_interrupt" {
-		return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Process ID for a shell or child session ID for an agent."}},"required":["task_id"],"additionalProperties":false}`)
+		return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Canonical process or child session ID, or friendly task name."}},"required":["task_id"],"additionalProperties":false}`)
 	}
 	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 }
@@ -112,58 +113,95 @@ func taskResult(item managedtask.Active) Result {
 	return resultFromJSON(data)
 }
 
-const waitTaskSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Process ID for a shell or child session ID for an agent."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the task has not completed after this many milliseconds. Zero or omitted waits indefinitely."}},"required":["task_id"],"additionalProperties":false}`
+const (
+	waitAgentSchema   = `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"description":"Child agent session ID or friendly name."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the agent has not completed after this many milliseconds. Zero or omitted waits indefinitely."}},"required":["session_id"],"additionalProperties":false}`
+	waitProcessSchema = `{"type":"object","properties":{"process_id":{"type":"string","minLength":1,"description":"Shell process ID or friendly name."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the process has not completed after this many milliseconds. Zero or omitted waits indefinitely."}},"required":["process_id"],"additionalProperties":false}`
+	maxTaskWaitMS     = int64(^uint64(0)>>1) / int64(time.Millisecond)
+)
 
-const maxTaskWaitMS = int64(^uint64(0)>>1) / int64(time.Millisecond)
-
-type WaitTaskTool struct {
+type WaitTool struct {
 	BasePresentation
+	Kind       managedtask.Kind
 	Controller TaskController
 }
 
-type waitTaskInput struct {
-	TaskID       string `json:"task_id"`
+type waitInput struct {
+	SessionID    string `json:"session_id"`
+	ProcessID    string `json:"process_id"`
 	YieldAfterMS int64  `json:"yield_after_ms"`
 }
 
-func (*WaitTaskTool) ID() string { return "wait_task" }
-func (*WaitTaskTool) Description() string {
-	return "Wait for a shell process or child agent session to complete, yielding if the requested period elapses. task_id is the process ID for a shell or the child session ID for an agent. Waiting never stops the task."
+func (t *WaitTool) ID() string {
+	if t.Kind == managedtask.KindAgent {
+		return "wait_agent"
+	}
+	return "wait_process"
 }
-func (*WaitTaskTool) Presentation() Presentation {
-	return Presentation{Subagent: true, Modeline: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}, TaskName: true}}}}
+
+func (t *WaitTool) identifier(input waitInput) string {
+	if t.Kind == managedtask.KindAgent {
+		return input.SessionID
+	}
+	return input.ProcessID
 }
-func (*WaitTaskTool) JSONSchema() json.RawMessage { return json.RawMessage(waitTaskSchema) }
-func (*WaitTaskTool) DescribeRequest(raw json.RawMessage) (string, error) {
-	var input waitTaskInput
+
+func (t *WaitTool) Description() string {
+	if t.Kind == managedtask.KindAgent {
+		return "Wait for a child agent session to complete, yielding if the requested period elapses. session_id accepts the canonical child session ID or friendly name. Waiting never stops the agent."
+	}
+	return "Wait for a shell process to complete, yielding if the requested period elapses. process_id accepts the canonical process ID or friendly name. Waiting never stops the process."
+}
+
+func (t *WaitTool) Presentation() Presentation {
+	field := "process_id"
+	if t.Kind == managedtask.KindAgent {
+		field = "session_id"
+	}
+	return Presentation{Subagent: t.Kind == managedtask.KindAgent, Modeline: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{field}, TaskName: true}}}}
+}
+
+func (t *WaitTool) JSONSchema() json.RawMessage {
+	if t.Kind == managedtask.KindAgent {
+		return json.RawMessage(waitAgentSchema)
+	}
+	return json.RawMessage(waitProcessSchema)
+}
+
+func (t *WaitTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input waitInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Wait for task %s", input.TaskID), nil
+	return fmt.Sprintf("Wait for %s %s", t.Kind, t.identifier(input)), nil
 }
-func (t *WaitTaskTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
+
+func (t *WaitTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
 	if t.Controller == nil || call.SessionID == "" {
-		return Plan{}, errors.New("wait_task: controller and caller session are required")
+		return Plan{}, fmt.Errorf("%s: controller and caller session are required", t.ID())
 	}
-	var input waitTaskInput
+	if t.Kind != managedtask.KindAgent && t.Kind != managedtask.KindShell {
+		return Plan{}, errors.New("wait: unsupported task kind")
+	}
+	var input waitInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	if input.TaskID == "" {
-		return Plan{}, errors.New("wait_task: task_id is required")
+	if t.identifier(input) == "" {
+		return Plan{}, fmt.Errorf("%s: identifier is required", t.ID())
 	}
 	if input.YieldAfterMS < 0 {
-		return Plan{}, errors.New("wait_task: yield_after_ms must be nonnegative")
+		return Plan{}, fmt.Errorf("%s: yield_after_ms must be nonnegative", t.ID())
 	}
 	if input.YieldAfterMS > maxTaskWaitMS {
-		return Plan{}, errors.New("wait_task: yield_after_ms is too large")
+		return Plan{}, fmt.Errorf("%s: yield_after_ms is too large", t.ID())
 	}
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
-func (t *WaitTaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	input, ok := plan.Data.(waitTaskInput)
+
+func (t *WaitTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	input, ok := plan.Data.(waitInput)
 	if !ok {
-		return Result{}, errors.New("wait_task: incompatible plan")
+		return Result{}, fmt.Errorf("%s: incompatible plan", t.ID())
 	}
 	waitCtx := ctx
 	var cancel context.CancelFunc
@@ -172,7 +210,7 @@ func (t *WaitTaskTool) Execute(ctx context.Context, plan Plan, call CallContext)
 		defer cancel()
 	}
 	started := time.Now()
-	item, err := t.Controller.Wait(waitCtx, call.SessionID, input.TaskID)
+	item, err := t.Controller.WaitKind(waitCtx, call.SessionID, t.identifier(input), t.Kind)
 	item.ElapsedMS = time.Since(started).Milliseconds()
 	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
 		item.Yielded = true

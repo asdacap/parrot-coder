@@ -260,13 +260,13 @@ func (m *Manager) launch(sessionID, parentSession string, lineage []string, requ
 		m.mu.Unlock()
 		return "", ErrConcurrency
 	}
-	name := sanitizeName(request.Name)
+	name := managedtask.SanitizeName(request.Name)
 	if name == "" {
 		generated := petname.Generate(2, "-")
 		if m.config.NameGenerator != nil {
 			generated = m.config.NameGenerator()
 		}
-		name = sanitizeName(request.Agent + "-" + generated)
+		name = managedtask.SanitizeName(request.Agent + "-" + generated)
 	}
 	name = m.uniqueNameLocked(name)
 	rootSession := parentSession
@@ -831,7 +831,7 @@ func (t *managedAgentTask) Interrupt(ctx context.Context) (managedtask.Snapshot,
 }
 
 func agentSnapshot(item Task) managedtask.Snapshot {
-	return managedtask.Snapshot{ID: item.SessionID, SessionID: item.SessionID, Kind: managedtask.KindAgent, Status: string(item.Status), StartedAt: item.StartedAt, Agent: item.Agent, Turn: item.Turn, Depth: item.Depth}
+	return managedtask.Snapshot{ID: item.SessionID, Name: item.Name, SessionID: item.SessionID, Kind: managedtask.KindAgent, Status: string(item.Status), StartedAt: item.StartedAt, Agent: item.Agent, Turn: item.Turn, Depth: item.Depth}
 }
 
 func cloneTask(task Task) Task {
@@ -851,35 +851,14 @@ func taskError(task Task) error {
 }
 
 func (m *Manager) uniqueNameLocked(name string) string {
-	base := name
-	for suffix := 2; ; suffix++ {
-		available := true
+	return managedtask.UniqueName(name, func(candidate string) bool {
 		for _, state := range m.tasks {
-			if state.task.Name == name {
-				available = false
-				break
+			if state.task.Name == candidate {
+				return false
 			}
 		}
-		if available {
-			return name
-		}
-		name = fmt.Sprintf("%s-%d", base, suffix)
-	}
-}
-
-func sanitizeName(name string) string {
-	var result strings.Builder
-	hyphen := true
-	for _, char := range strings.ToLower(name) {
-		if char >= 'a' && char <= 'z' || char >= '0' && char <= '9' {
-			result.WriteRune(char)
-			hyphen = false
-		} else if !hyphen {
-			result.WriteByte('-')
-			hyphen = true
-		}
-	}
-	return strings.TrimSuffix(result.String(), "-")
+		return true
+	})
 }
 
 func validAgent(agent string) bool {
