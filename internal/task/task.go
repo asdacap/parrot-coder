@@ -31,6 +31,7 @@ const (
 
 type Snapshot struct {
 	ID        string    `json:"task_id"`
+	Name      string    `json:"name,omitempty"`
 	SessionID string    `json:"session_id"`
 	Kind      Kind      `json:"kind"`
 	Status    string    `json:"status"`
@@ -65,8 +66,10 @@ type ObserverFactory interface {
 }
 
 var (
-	ErrNotFound  = errors.New("task: not found")
-	ErrDuplicate = errors.New("task: duplicate ID")
+	ErrNotFound      = errors.New("task: not found")
+	ErrDuplicate     = errors.New("task: duplicate ID")
+	ErrWrongKind     = errors.New("task: wrong kind")
+	ErrAmbiguousName = errors.New("task: ambiguous name")
 )
 
 // Visibility decides whether a caller session may access a registered task.
@@ -129,6 +132,76 @@ func (m *Manager) Get(callerSession, id string) (Task, error) {
 	return item.task, nil
 }
 
+// Resolve returns a caller-visible task of the expected kind. Exact canonical
+// IDs take precedence over friendly-name lookup.
+func (m *Manager) Resolve(callerSession, identifier string, kind Kind) (Task, error) {
+	item, err := m.resolve(callerSession, identifier, kind, true)
+	if err != nil {
+		return nil, err
+	}
+	return observedTask(item), nil
+}
+
+// ResolveAny returns a caller-visible task by canonical ID or friendly name.
+func (m *Manager) ResolveAny(callerSession, identifier string) (Task, error) {
+	item, err := m.resolve(callerSession, identifier, "", false)
+	if err != nil {
+		return nil, err
+	}
+	return observedTask(item), nil
+}
+
+func (m *Manager) resolve(callerSession, identifier string, kind Kind, enforceKind bool) (Task, error) {
+	if m == nil || callerSession == "" || identifier == "" {
+		return nil, ErrNotFound
+	}
+	m.mu.RLock()
+	exact, exactFound := m.tasks[identifier]
+	items := make([]entry, 0, len(m.tasks))
+	for _, item := range m.tasks {
+		items = append(items, item)
+	}
+	m.mu.RUnlock()
+	// Visibility callbacks can consult their owning managers, so invoke them
+	// without holding the task index lock.
+	if exactFound && exact.visible(callerSession) {
+		if enforceKind && exact.task.Snapshot().Kind != kind {
+			return nil, ErrWrongKind
+		}
+		return exact.task, nil
+	}
+	var found Task
+	wrongKind := false
+	for _, item := range items {
+		snapshot := item.task.Snapshot()
+		if !item.visible(callerSession) || snapshot.Name != identifier {
+			continue
+		}
+		if enforceKind && snapshot.Kind != kind {
+			wrongKind = true
+			continue
+		}
+		if found != nil {
+			return nil, ErrAmbiguousName
+		}
+		found = item.task
+	}
+	if found != nil {
+		return found, nil
+	}
+	if wrongKind {
+		return nil, ErrWrongKind
+	}
+	return nil, ErrNotFound
+}
+
+func observedTask(item Task) Task {
+	if observer, ok := item.(ObserverFactory); ok {
+		return observer.Observe()
+	}
+	return item
+}
+
 func (m *Manager) ListActive(callerSession string) []Snapshot {
 	if m == nil || callerSession == "" {
 		return nil
@@ -152,7 +225,7 @@ func (m *Manager) ListActive(callerSession string) []Snapshot {
 
 // Interrupt stops a caller-visible task and returns its latest snapshot.
 func (m *Manager) Interrupt(ctx context.Context, callerSession, id string) (Snapshot, error) {
-	item, err := m.Get(callerSession, id)
+	item, err := m.ResolveAny(callerSession, id)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -166,21 +239,36 @@ func (m *Manager) Wait(ctx context.Context, callerSession, id string) (Result, e
 	if err != nil {
 		return Result{}, err
 	}
+	return waitTask(ctx, item)
+}
+
+// WaitKind waits for a task resolved by canonical ID or friendly name and
+// enforces that it has the expected kind.
+func (m *Manager) WaitKind(ctx context.Context, callerSession, identifier string, kind Kind) (Result, error) {
+	item, err := m.Resolve(callerSession, identifier, kind)
+	if err != nil {
+		return Result{}, err
+	}
+	return waitTask(ctx, item)
+}
+
+func waitTask(ctx context.Context, item Task) (Result, error) {
 	completion, err := item.Wait(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			snapshot := item.Snapshot()
-			return Result{ID: snapshot.ID, Kind: snapshot.Kind, Status: snapshot.Status}, err
+			return Result{ID: snapshot.ID, Name: snapshot.Name, Kind: snapshot.Kind, Status: snapshot.Status}, err
 		}
 		return Result{}, err
 	}
-	return Result{ID: completion.Task.ID, Kind: completion.Task.Kind, Status: completion.Task.Status, ExitCode: completion.ExitCode, Output: completion.Output, Error: completion.Error}, nil
+	return Result{ID: completion.Task.ID, Name: completion.Task.Name, Kind: completion.Task.Kind, Status: completion.Task.Status, ExitCode: completion.ExitCode, Output: completion.Output, Error: completion.Error}, nil
 }
 
 // Result describes the state observed by a task wait. Output is populated for
 // agent tasks; shell output remains available through the process tools.
 type Result struct {
 	ID        string `json:"task_id"`
+	Name      string `json:"name,omitempty"`
 	Kind      Kind   `json:"kind"`
 	Status    string `json:"status"`
 	Yielded   bool   `json:"yielded,omitempty"`

@@ -14,7 +14,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
-const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["current_security_context","disable_sandbox"],"description":"Per-command sandbox override. Defaults to \u0060current_security_context\u0060; use \u0060disable_sandbox\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060disable_sandbox\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
+const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"name":{"type":"string","description":"Optional friendly name for the shell task. A name is generated if the command remains running."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["current_security_context","disable_sandbox"],"description":"Per-command sandbox override. Defaults to \u0060current_security_context\u0060; use \u0060disable_sandbox\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060disable_sandbox\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
 
 type ExecCommandTool struct {
 	BasePresentation
@@ -23,6 +23,7 @@ type ExecCommandTool struct {
 
 type execCommandInput struct {
 	Command            string            `json:"cmd"`
+	Name               string            `json:"name"`
 	Workdir            string            `json:"workdir"`
 	Env                map[string]string `json:"env"`
 	TTY                bool              `json:"tty"`
@@ -170,7 +171,7 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 		return Result{}, errors.New("exec_command: workdir changed after planning")
 	}
 	result, err := runner.RunPersistent(ctx, process.PersistentRequest{
-		Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedWorkdir, Env: input.Env,
+		Shell: input.ResolvedShell, Command: input.Command, Name: input.Name, Cwd: input.ResolvedWorkdir, Env: input.Env,
 		SessionID: call.SessionID, Yield: time.Duration(input.YieldTimeMS) * time.Millisecond,
 		MaxOutputTokens: input.MaxOutputTokens, TTY: input.TTY, Output: call.Output,
 		Unrestricted:    input.SandboxPermissions == "disable_sandbox",
@@ -189,7 +190,7 @@ func formatPersistentResult(result process.PersistentResult) string {
 		text += fmt.Sprintf("\nProcess exited with code %d", *result.ExitCode)
 	}
 	if result.ProcessID != nil {
-		text += fmt.Sprintf("\nShell task running with task ID %s", *result.ProcessID)
+		text += fmt.Sprintf("\nShell task %s running with task ID %s", result.Name, *result.ProcessID)
 	}
 	text += fmt.Sprintf("\nOriginal token count: %d\nOutput:\n%s", result.OriginalTokenCount, result.Output)
 	return text

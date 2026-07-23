@@ -50,6 +50,7 @@ type PersistentEvent struct {
 	Kind      string
 	SessionID string
 	TaskID    string
+	Name      string
 	StartedAt time.Time
 	ExitCode  *int
 	Error     string
@@ -106,6 +107,7 @@ type Runner struct {
 	deletedSessions map[string]struct{}
 	processes       map[string]*persistentProcess
 	reservedIDs     map[string]string
+	reservedNames   map[string]string
 	closed          bool
 }
 
@@ -192,7 +194,7 @@ func NewRunner(config Config) (*Runner, error) {
 		config: config, sandbox: implementation,
 		writablePaths: make(map[string]map[string]struct{}),
 		temporaryDirs: make(map[string]*sessionTemporaryDirectory), deletedSessions: make(map[string]struct{}),
-		processes: make(map[string]*persistentProcess), reservedIDs: make(map[string]string),
+		processes: make(map[string]*persistentProcess), reservedIDs: make(map[string]string), reservedNames: make(map[string]string),
 	}, nil
 }
 

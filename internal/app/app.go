@@ -443,7 +443,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	result.subagents = subagents
 
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
-		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Kind: string(managedtask.KindShell), Error: item.Error}
+		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Name: item.Name, Kind: string(managedtask.KindShell), Error: item.Error}
 		eventType := managedtask.EventStart
 		if item.Kind == process.PersistentEventFinished {
 			eventType = managedtask.EventFinished
@@ -1281,6 +1281,10 @@ func (c *managedTaskController) ListActive(callerSession string) []managedtask.A
 
 func (c *managedTaskController) Wait(ctx context.Context, callerSession, id string) (managedtask.Result, error) {
 	return c.tasks.Wait(ctx, callerSession, id)
+}
+
+func (c *managedTaskController) WaitKind(ctx context.Context, callerSession, id string, kind managedtask.Kind) (managedtask.Result, error) {
+	return c.tasks.WaitKind(ctx, callerSession, id, kind)
 }
 
 func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) {
