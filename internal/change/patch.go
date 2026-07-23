@@ -185,8 +185,8 @@ func isPatchDivider(line string) bool {
 }
 
 func validPatchPath(path string) error {
-	if path == "" || filepath.IsAbs(path) || filepath.Clean(path) != path || path == "." || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
-		return errors.New("path must be a clean relative workspace path")
+	if path == "" || filepath.Clean(path) != path || path == "." || path == ".." || strings.HasPrefix(path, ".."+string(filepath.Separator)) {
+		return errors.New("path must be a clean workspace path")
 	}
 	return nil
 }

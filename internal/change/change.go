@@ -184,11 +184,7 @@ func (s *Service) Commit(ctx context.Context, ws *workspace.Workspace, plan Plan
 		return pathDepth(directories[i]) < pathDepth(directories[j])
 	})
 	for _, directory := range directories {
-		relative, err := filepath.Rel(ws.Root(), directory)
-		if err != nil {
-			return ErrStale
-		}
-		resolved, err := ws.ResolveCreate(relative)
+		resolved, err := ws.ResolveCreate(directory)
 		if err != nil || resolved != directory {
 			return ErrStale
 		}

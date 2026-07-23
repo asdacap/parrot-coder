@@ -14,6 +14,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/change"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/question"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -154,6 +155,102 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	}
 	if len(planned.Permissions) != 0 {
 		t.Fatalf("plan = %#v", planned)
+	}
+}
+
+type patchSecurityProfile struct {
+	readOnly bool
+	rules    []security.Rule
+}
+
+func (p patchSecurityProfile) IsReadOnly() bool       { return p.readOnly }
+func (p patchSecurityProfile) Rules() []security.Rule { return p.rules }
+
+func TestApplyPatchHonorsOrderedSecurityRules(t *testing.T) {
+	ctx, ws, changes := workspaceToolHarness(t)
+	tool := NewApplyPatchTool(changes)
+	workspaceFile := filepath.Join(ws.Root(), "workspace")
+	externalDirectory := t.TempDir()
+	externalFile := filepath.Join(externalDirectory, "plan.md")
+	sibling := filepath.Join(externalDirectory, "sibling.md")
+	for _, path := range []string{workspaceFile, externalFile, sibling} {
+		if err := os.WriteFile(path, []byte("old\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	patch := func(paths ...string) json.RawMessage {
+		var text strings.Builder
+		for _, path := range paths {
+			text.WriteString(path + "\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n")
+		}
+		encoded, err := json.Marshal(map[string]string{"patchText": text.String()})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return encoded
+	}
+	read := func(path string) string {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+
+	allowed := patchSecurityProfile{readOnly: true, rules: []security.Rule{{Path: externalFile, Action: security.ActionAllowWrite}}}
+	planned, err := tool.Plan(ctx, patch(externalFile), CallContext{Workspace: ws, SecurityProfile: allowed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(ctx, planned, CallContext{Workspace: ws, SecurityProfile: allowed}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(externalFile); got != "new\n" {
+		t.Fatalf("allowed external file = %q", got)
+	}
+	if err := os.WriteFile(externalFile, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := tool.Plan(ctx, patch(sibling), CallContext{Workspace: ws, SecurityProfile: allowed}); !errors.Is(err, workspace.ErrOutsideRoot) {
+		t.Fatalf("sibling plan error = %v, want ErrOutsideRoot", err)
+	}
+	planned, err = tool.Plan(ctx, patch(externalFile, workspaceFile), CallContext{Workspace: ws, SecurityProfile: allowed})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(ctx, planned, CallContext{Workspace: ws, SecurityProfile: allowed}); err == nil {
+		t.Fatal("mixed authorized and unauthorized patch succeeded")
+	}
+	if got := read(externalFile); got != "old\n" {
+		t.Fatalf("authorized file changed before whole-patch rejection: %q", got)
+	}
+	if got := read(workspaceFile); got != "old\n" {
+		t.Fatalf("workspace file changed before whole-patch rejection: %q", got)
+	}
+
+	denied := patchSecurityProfile{readOnly: true, rules: []security.Rule{
+		{Path: externalDirectory, Action: security.ActionAllowWrite},
+		{Path: externalFile, Action: security.ActionDenyWrite},
+	}}
+	planned, err = tool.Plan(ctx, patch(externalFile), CallContext{Workspace: ws, SecurityProfile: denied})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(ctx, planned, CallContext{Workspace: ws, SecurityProfile: denied}); err == nil {
+		t.Fatal("later deny_write rule was ignored")
+	}
+
+	writable := patchSecurityProfile{}
+	planned, err = tool.Plan(ctx, patch("workspace"), CallContext{Workspace: ws, SecurityProfile: writable})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tool.Execute(ctx, planned, CallContext{Workspace: ws, SecurityProfile: writable}); err != nil {
+		t.Fatal(err)
+	}
+	if got := read(workspaceFile); got != "new\n" {
+		t.Fatalf("writable profile workspace file = %q", got)
 	}
 }
 

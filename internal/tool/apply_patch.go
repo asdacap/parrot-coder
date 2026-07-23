@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/amirulashraf/parrot-coder/internal/change"
+	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type ApplyPatchTool struct {
@@ -38,7 +40,7 @@ func (*ApplyPatchTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	return "Apply the reviewed workspace patch", nil
 }
 func (*ApplyPatchTool) JSONSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string","description":"The patch text, written in the format named by the format field."},"format":{"type":"string","enum":["aider","unified"],"description":"Edit syntax of patchText, defaulting to aider. \"aider\": one or more SEARCH/REPLACE blocks, each a workspace-relative file path on its own line, then <<<<<<< SEARCH, the exact lines to replace, =======, the replacement lines, and >>>>>>> REPLACE; repeat blocks under the same path for several edits to one file, and leave the SEARCH section empty to create a new file. \"unified\": git diff text with --- and +++ headers and @@ hunks; a /dev/null source creates the file and a /dev/null target deletes it, and renames are rejected."}},"required":["patchText"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string","description":"The patch text, written in the format named by the format field."},"format":{"type":"string","enum":["aider","unified"],"description":"Edit syntax of patchText, defaulting to aider. \"aider\": one or more SEARCH/REPLACE blocks, each a workspace-relative or explicitly security-authorized absolute file path on its own line, then <<<<<<< SEARCH, the exact lines to replace, =======, the replacement lines, and >>>>>>> REPLACE; repeat blocks under the same path for several edits to one file, and leave the SEARCH section empty to create a new file. \"unified\": git diff text with --- and +++ headers and @@ hunks; a /dev/null source creates the file and a /dev/null target deletes it, and renames are rejected."}},"required":["patchText"],"additionalProperties":false}`)
 }
 func (*ApplyPatchTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
 	var input struct {
@@ -117,16 +119,45 @@ func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call Cal
 	if err != nil {
 		return Plan{}, err
 	}
-	planned, err := service.PlanPatch(ctx, call.Workspace, input.PatchText, format)
+	scoped := patchWorkspace(call.Workspace, call.SecurityProfile)
+	planned, err := service.PlanPatch(ctx, scoped, input.PatchText, format)
 	if err != nil {
 		return Plan{}, err
 	}
-	return mutationToolPlan(t.ID(), raw, planned)
+	return mutationToolPlan(t.ID(), raw, planned, scoped)
+}
+
+func patchWorkspace(ws *workspace.Workspace, profile security.SecurityProfile) *workspace.Workspace {
+	if ws == nil || profile == nil {
+		return ws
+	}
+	var paths []workspace.ExternalPath
+	for _, rule := range profile.Rules() {
+		if rule.Action != security.ActionAllowWrite || ws.Contains(rule.Path) {
+			continue
+		}
+		path, err := workspace.NewExternalPath(rule.Path)
+		if err == nil {
+			paths = append(paths, path)
+		}
+	}
+	return ws.WithExternalPaths(paths...)
 }
 
 func (t *ApplyPatchTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if call.SecurityProfile != nil && call.SecurityProfile.IsReadOnly() {
-		return Result{}, errors.New("apply_patch is not permitted by the current security profile")
+	planned, ok := plan.Data.(mutationPlan)
+	if !ok {
+		return Result{}, errors.New("apply_patch received incompatible plan")
+	}
+	for _, mutation := range planned.Change.Mutations {
+		if !security.CanWrite(call.SecurityProfile, mutation.Path) {
+			return Result{}, errors.New("apply_patch is not permitted by the current security profile")
+		}
+	}
+	for _, directory := range planned.Change.Directories {
+		if !security.CanWrite(call.SecurityProfile, directory) {
+			return Result{}, errors.New("apply_patch is not permitted by the current security profile")
+		}
 	}
 	return executeMutation(ctx, t.Changes, plan, call)
 }
