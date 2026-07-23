@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 )
@@ -12,6 +13,7 @@ import (
 type TaskController interface {
 	Interrupt(context.Context, string, string) (managedtask.Active, error)
 	ListActive(string) []managedtask.Active
+	Wait(context.Context, string, string) (managedtask.Result, error)
 }
 
 type TaskTool struct {
@@ -24,6 +26,7 @@ func NewTaskTools(controller TaskController) []Tool {
 	return []Tool{
 		&TaskTool{Kind: "task_interrupt", Controller: controller},
 		&TaskTool{Kind: "task_list_active", Controller: controller},
+		&WaitTaskTool{Controller: controller},
 	}
 }
 
@@ -106,6 +109,84 @@ func (t *TaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 
 func taskResult(item managedtask.Active) Result {
 	data, _ := json.Marshal(item)
+	return resultFromJSON(data)
+}
+
+const waitTaskSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Identifier of the running shell or agent task."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the task has not completed after this many milliseconds. Zero or omitted waits indefinitely."}},"required":["task_id"],"additionalProperties":false}`
+
+const maxTaskWaitMS = int64(^uint64(0)>>1) / int64(time.Millisecond)
+
+type WaitTaskTool struct {
+	BasePresentation
+	Controller TaskController
+}
+
+type waitTaskInput struct {
+	TaskID       string `json:"task_id"`
+	YieldAfterMS int64  `json:"yield_after_ms"`
+}
+
+func (*WaitTaskTool) ID() string { return "wait_task" }
+func (*WaitTaskTool) Description() string {
+	return "Wait for a shell or agent task to complete, yielding if the requested period elapses. Waiting never stops the task."
+}
+func (*WaitTaskTool) Presentation() Presentation {
+	return Presentation{Subagent: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}, TaskName: true}}}}
+}
+func (*WaitTaskTool) JSONSchema() json.RawMessage { return json.RawMessage(waitTaskSchema) }
+func (*WaitTaskTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input waitTaskInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Wait for task %s", input.TaskID), nil
+}
+func (t *WaitTaskTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
+	if t.Controller == nil || call.SessionID == "" {
+		return Plan{}, errors.New("wait_task: controller and caller session are required")
+	}
+	var input waitTaskInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return Plan{}, err
+	}
+	if input.TaskID == "" {
+		return Plan{}, errors.New("wait_task: task_id is required")
+	}
+	if input.YieldAfterMS < 0 {
+		return Plan{}, errors.New("wait_task: yield_after_ms must be nonnegative")
+	}
+	if input.YieldAfterMS > maxTaskWaitMS {
+		return Plan{}, errors.New("wait_task: yield_after_ms is too large")
+	}
+	return NewPlan(t.ID(), raw, nil, nil, input)
+}
+func (t *WaitTaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+	input, ok := plan.Data.(waitTaskInput)
+	if !ok {
+		return Result{}, errors.New("wait_task: incompatible plan")
+	}
+	waitCtx := ctx
+	var cancel context.CancelFunc
+	if input.YieldAfterMS > 0 {
+		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(input.YieldAfterMS)*time.Millisecond)
+		defer cancel()
+	}
+	item, err := t.Controller.Wait(waitCtx, call.SessionID, input.TaskID)
+	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		return taskWaitResult(item), nil
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	return taskWaitResult(item), nil
+}
+
+func taskWaitResult(item managedtask.Result) Result {
+	data, _ := json.Marshal(item)
+	return resultFromJSON(data)
+}
+
+func resultFromJSON(data []byte) Result {
 	var metadata map[string]any
 	_ = json.Unmarshal(data, &metadata)
 	text := string(data)

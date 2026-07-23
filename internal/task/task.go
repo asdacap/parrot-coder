@@ -32,3 +32,14 @@ type Active struct {
 	Turn      int       `json:"turn,omitempty"`
 	Depth     int       `json:"depth,omitempty"`
 }
+
+// Result describes the state observed by a task wait. Output is populated for
+// agent tasks; shell output remains available through the process tools.
+type Result struct {
+	ID       string `json:"task_id"`
+	Kind     Kind   `json:"kind"`
+	Status   string `json:"status"`
+	ExitCode *int   `json:"exit_code,omitempty"`
+	Output   string `json:"output,omitempty"`
+	Error    string `json:"error,omitempty"`
+}

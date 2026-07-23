@@ -1,7 +1,9 @@
 package monitor
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -27,6 +29,25 @@ func (discardOutputStore) Create(context.Context) (process.ManagedOutput, error)
 	return discardManagedOutput{}, nil
 }
 func (discardOutputStore) Read(string, int64, int64) ([]byte, error) { return nil, nil }
+
+type retainedOutputStore struct{ data []byte }
+type retainedManagedOutput struct {
+	bytes.Buffer
+	store *retainedOutputStore
+}
+
+func (s *retainedOutputStore) Create(context.Context) (process.ManagedOutput, error) {
+	return &retainedManagedOutput{store: s}, nil
+}
+func (s *retainedOutputStore) Read(_ string, offset, limit int64) ([]byte, error) {
+	return append([]byte(nil), s.data[offset:min(offset+limit, int64(len(s.data)))]...), nil
+}
+func (o *retainedManagedOutput) ID() string { return "retained" }
+func (o *retainedManagedOutput) Finalize(context.Context) (process.StoredOutput, error) {
+	o.store.data = append([]byte(nil), o.Bytes()...)
+	return process.StoredOutput{ID: o.ID(), Size: int64(len(o.store.data))}, nil
+}
+func (*retainedManagedOutput) Discard() {}
 
 type recordingAdmitter struct{ admitted chan session.AdmitParams }
 
@@ -123,6 +144,46 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	})
 	if err != nil || exitOutput.ExitCode == nil || *exitOutput.ExitCode != 4 {
 		t.Fatalf("exit process output was consumed = %#v, %v", exitOutput, err)
+	}
+}
+
+func TestServiceWaitYieldsThenReturnsShellCompletionWithoutConsumingOutput(t *testing.T) {
+	workspaceRoot, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	store := &retainedOutputStore{}
+	runner, err := process.NewRunner(process.Config{Workspace: workspaceRoot, TerminationGrace: 50 * time.Millisecond, OutputStore: store})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runner.Close()
+	service := NewService(runner, nil, nil)
+	running, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
+		Shell: "/bin/sh", Command: "sleep .3; printf retained; sleep .05; exit 4", SessionID: "session", Yield: process.MinYieldTime, Unrestricted: true,
+	})
+	if err != nil || running.ProcessID == nil {
+		t.Fatalf("process start = %#v, %v", running, err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	result, err := service.Wait(ctx, "session", *running.ProcessID)
+	if !errors.Is(err, context.DeadlineExceeded) || result.Status != "running" {
+		t.Fatalf("yield = %#v, %v", result, err)
+	}
+	result, err = service.Wait(context.Background(), "session", *running.ProcessID)
+	if err != nil || result.Status != "failed" || result.ExitCode == nil || *result.ExitCode != 4 {
+		t.Fatalf("completion = %#v, %v", result, err)
+	}
+	drained, err := runner.WritePersistent(context.Background(), process.PersistentWriteRequest{
+		SessionID: "session", ProcessID: *running.ProcessID, Yield: process.MinYieldTime,
+	})
+	if err != nil || drained.Output != "retained" {
+		t.Fatalf("drained output = %#v, %v", drained, err)
+	}
+	if _, err := service.Wait(context.Background(), "other", *running.ProcessID); err == nil {
+		t.Fatal("cross-session wait succeeded")
 	}
 }
 

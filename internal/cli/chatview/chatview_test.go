@@ -47,6 +47,7 @@ func TestTaskActivityLabelsUseTaskID(t *testing.T) {
 	}{
 		{name: "agent_send", input: map[string]any{"task_id": "task_agent", "message": "continue"}, want: "agent_send · task_agent · continue"},
 		{name: "monitor", input: map[string]any{"task_id": "task_agent"}, want: "monitor · task_agent"},
+		{name: "wait_task", input: map[string]any{"task_id": "task_agent"}, want: "wait_task · task_agent"},
 		{name: "task_interrupt", input: map[string]any{"task_id": "task_agent"}, want: "task_interrupt · task_agent"},
 		{name: "task_list_active", input: map[string]any{}, want: "task_list_active"},
 		{name: "write_stdin", input: map[string]any{"task_id": "task_shell", "chars": "input"}, want: "write_stdin · task_shell · input"},

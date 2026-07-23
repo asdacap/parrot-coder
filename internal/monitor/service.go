@@ -107,6 +107,49 @@ func (s *Service) Start(sessionID, taskID string, timeout time.Duration) error {
 	return nil
 }
 
+// Wait waits for a caller-visible shell or agent task without consuming its
+// output or affecting its execution. On context cancellation it returns the
+// task's last observable running state along with the context error.
+func (s *Service) Wait(ctx context.Context, sessionID, taskID string) (managedtask.Result, error) {
+	if s == nil || s.processes == nil {
+		return managedtask.Result{}, errors.New("task: controller is unavailable")
+	}
+	switch {
+	case strings.HasPrefix(taskID, "proc_"):
+		observer, err := s.processes.ObservePersistent(sessionID, taskID)
+		if err != nil {
+			return managedtask.Result{}, err
+		}
+		completion, err := observer.Wait(ctx)
+		if err != nil {
+			return managedtask.Result{ID: taskID, Kind: managedtask.KindShell, Status: "running"}, err
+		}
+		result := managedtask.Result{ID: taskID, Kind: managedtask.KindShell, Status: "succeeded", ExitCode: completion.ExitCode}
+		if completion.WaitError != nil || completion.ExitCode == nil || *completion.ExitCode != 0 {
+			result.Status = "failed"
+		}
+		if completion.WaitError != nil {
+			result.Error = completion.WaitError.Error()
+		}
+		return result, nil
+	case strings.HasPrefix(taskID, "task_"):
+		if s.agents == nil {
+			return managedtask.Result{}, errors.New("task: agent manager is unavailable")
+		}
+		observer, err := s.agents.Observe(sessionID, taskID)
+		if err != nil {
+			return managedtask.Result{}, err
+		}
+		item, err := observer.Wait(ctx)
+		if err != nil {
+			return managedtask.Result{ID: taskID, Kind: managedtask.KindAgent, Status: "running"}, err
+		}
+		return managedtask.Result{ID: item.ID, Kind: managedtask.KindAgent, Status: string(item.Status), Output: item.Output, Error: item.Error}, nil
+	default:
+		return managedtask.Result{}, fmt.Errorf("task: unknown task ID %q", taskID)
+	}
+}
+
 type taskWait func(context.Context) (string, error)
 
 func (s *Service) observe(sessionID, taskID string) (taskWait, error) {
