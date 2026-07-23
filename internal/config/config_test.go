@@ -166,16 +166,17 @@ func TestLoadSubagentDefaultsMergeAndValidation(t *testing.T) {
 `)
 	writeFile(t, projectFile, `subagents:
   max_concurrent_per_parent: 6
+  max_depth: 7
 `)
 
 	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Config.Subagents.MaxConcurrent != 12 || result.Config.Subagents.MaxConcurrentPerParent != 6 {
+	if result.Config.Subagents.MaxConcurrent != 12 || result.Config.Subagents.MaxConcurrentPerParent != 6 || result.Config.Subagents.MaxDepth != 7 {
 		t.Fatalf("Subagents = %#v", result.Config.Subagents)
 	}
-	if result.Provenance["subagents.max_concurrent"] != global || result.Provenance["subagents.max_concurrent_per_parent"] != projectFile {
+	if result.Provenance["subagents.max_concurrent"] != global || result.Provenance["subagents.max_concurrent_per_parent"] != projectFile || result.Provenance["subagents.max_depth"] != projectFile {
 		t.Fatalf("provenance = %#v", result.Provenance)
 	}
 
@@ -187,6 +188,7 @@ func TestLoadSubagentDefaultsMergeAndValidation(t *testing.T) {
 		{name: "non-positive global", config: "subagents:\n  max_concurrent: 0\n", want: "subagents.max_concurrent must be greater than zero"},
 		{name: "non-positive per parent", config: "subagents:\n  max_concurrent_per_parent: -1\n", want: "subagents.max_concurrent_per_parent must be greater than zero"},
 		{name: "per parent exceeds global", config: "subagents:\n  max_concurrent: 2\n  max_concurrent_per_parent: 3\n", want: "must not exceed"},
+		{name: "non-positive depth", config: "subagents:\n  max_depth: 0\n", want: "subagents.max_depth must be greater than zero"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			caseRoot := t.TempDir()
@@ -205,10 +207,10 @@ func TestLoadSubagentDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Config.Subagents.MaxConcurrent != 8 || result.Config.Subagents.MaxConcurrentPerParent != 4 {
+	if result.Config.Subagents.MaxConcurrent != 8 || result.Config.Subagents.MaxConcurrentPerParent != 4 || result.Config.Subagents.MaxDepth != 4 {
 		t.Fatalf("Subagents = %#v", result.Config.Subagents)
 	}
-	if result.Provenance["subagents.max_concurrent"] != PredefinedFileName || result.Provenance["subagents.max_concurrent_per_parent"] != PredefinedFileName {
+	if result.Provenance["subagents.max_concurrent"] != PredefinedFileName || result.Provenance["subagents.max_concurrent_per_parent"] != PredefinedFileName || result.Provenance["subagents.max_depth"] != PredefinedFileName {
 		t.Fatalf("provenance = %#v", result.Provenance)
 	}
 }
@@ -381,7 +383,8 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 	for _, comment := range []string{
 		"Parrot Coder configuration file.",
 		"Default model selected as provider/model.",
-		"Child-agent concurrency limits.",
+		"Child-agent concurrency and nesting limits.",
+		"Maximum number of nested child-agent levels.",
 		"OpenAI-compatible providers and their model catalogs.",
 		"Provider adapter type: 'compatible' or 'openai-compatible'.",
 		"API protocol: 'responses' or 'chat-completions'.",

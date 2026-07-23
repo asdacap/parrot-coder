@@ -33,10 +33,11 @@ type Config struct {
 	SandboxRules   []SandboxRule       `json:"sandbox_rules,omitempty"`
 }
 
-// Subagents controls the number of child-agent turns that may run at once.
+// Subagents controls child-agent concurrency and nesting.
 type Subagents struct {
 	MaxConcurrent          int `json:"max_concurrent"`
 	MaxConcurrentPerParent int `json:"max_concurrent_per_parent"`
+	MaxDepth               int `json:"max_depth"`
 }
 
 // SandboxRule is one ordered filesystem rule applied to the sandbox. Rule
@@ -283,6 +284,9 @@ func validateSubagents(value Subagents) error {
 	if value.MaxConcurrentPerParent > value.MaxConcurrent {
 		return errors.New("subagents.max_concurrent_per_parent must not exceed subagents.max_concurrent")
 	}
+	if value.MaxDepth <= 0 {
+		return errors.New("subagents.max_depth must be greater than zero")
+	}
 	return nil
 }
 
@@ -425,12 +429,14 @@ variant: ""
 # tool_blacklist:
 #   - web_fetch
 
-# Child-agent concurrency limits.
+# Child-agent concurrency and nesting limits.
 subagents:
   # Maximum child-agent turns running across the process.
   max_concurrent: 8
   # Maximum child-agent turns running for one parent session.
   max_concurrent_per_parent: 4
+  # Maximum number of nested child-agent levels.
+  max_depth: 4
 
 # OpenAI-compatible providers and their model catalogs.
 # providers:
@@ -559,12 +565,14 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 # tool_blacklist:
 #   - web_fetch
 
-# Child-agent concurrency limits. Defaults are defined in predefined_config.yaml.
+# Child-agent concurrency and nesting limits. Defaults are defined in predefined_config.yaml.
 # subagents:
 #   # Maximum child-agent turns running across the process.
 #   max_concurrent: 8
 #   # Maximum child-agent turns running for one parent session.
 #   max_concurrent_per_parent: 4
+#   # Maximum number of nested child-agent levels.
+#   max_depth: 4
 
 # OpenAI-compatible providers and their model catalogs.
 # providers:

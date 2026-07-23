@@ -91,6 +91,7 @@ web_fetch:
 subagents:
   max_concurrent: 8
   max_concurrent_per_parent: 4
+  max_depth: 4
 ```
 
 The `model` and `variant` fields form the default model selection. `variant` is
@@ -110,8 +111,11 @@ written to.
 
 `subagents.max_concurrent` limits child-agent turns running across the process.
 `subagents.max_concurrent_per_parent` limits child-agent turns owned by one
-parent session. Both values must be positive, and the per-parent limit must not
-exceed the global limit. Their defaults are `8` and `4`, respectively.
+parent session. `subagents.max_depth` limits the total number of nested
+child-agent levels. All three values must be positive, and the per-parent limit
+must not exceed the global limit. Their defaults are `8`, `4`, and `4`,
+respectively. The nesting limit is independent of each profile's same-agent
+recursion policy.
 
 ### Providers
 
