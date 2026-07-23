@@ -383,7 +383,7 @@ variant: ""
 
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
-#   - unrestricted_shell
+#   - web_fetch
 
 # OpenAI-compatible providers and their model catalogs.
 # providers:
@@ -510,7 +510,7 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
-#   - unrestricted_shell
+#   - web_fetch
 
 # OpenAI-compatible providers and their model catalogs.
 # providers:

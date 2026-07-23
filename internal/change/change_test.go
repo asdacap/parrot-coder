@@ -6,7 +6,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 
@@ -20,51 +19,6 @@ func testWorkspace(t *testing.T) *workspace.Workspace {
 		t.Fatal(err)
 	}
 	return ws
-}
-
-func TestEditFullReplaceAndStale(t *testing.T) {
-	ctx := context.Background()
-	ws := testWorkspace(t)
-	path := filepath.Join(ws.Root(), "file.txt")
-	before := append([]byte{0xef, 0xbb, 0xbf}, []byte("one\r\ntwo\r\n")...)
-	if err := os.WriteFile(path, before, 0o640); err != nil {
-		t.Fatal(err)
-	}
-	service := NewService(Config{})
-	replacement := []byte("replaced\nverbatim")
-	plan, err := service.PlanEdit(ctx, ws, Edit{Path: "file.txt", ExpectedSHA256: SHA256(before), New: string(replacement)})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(plan.Mutations[0].After.Data, replacement) {
-		t.Fatalf("full replace not verbatim: %q", plan.Mutations[0].After.Data)
-	}
-	if err := service.Commit(ctx, ws, plan); err != nil {
-		t.Fatal(err)
-	}
-	info, _ := os.Stat(path)
-	if info.Mode().Perm() != 0o640 {
-		t.Fatalf("mode = %o", info.Mode().Perm())
-	}
-	if _, err := service.PlanEdit(ctx, ws, Edit{Path: "file.txt", ExpectedSHA256: SHA256(before), New: "four"}); !errors.Is(err, ErrStale) {
-		t.Fatalf("stale hash error = %v", err)
-	}
-}
-
-func TestEditExplicitCreation(t *testing.T) {
-	ctx := context.Background()
-	ws := testWorkspace(t)
-	service := NewService(Config{})
-	if _, err := service.PlanEdit(ctx, ws, Edit{Path: "new", New: "content"}); err == nil {
-		t.Fatal("implicit creation accepted")
-	}
-	created, err := service.PlanEdit(ctx, ws, Edit{Path: "new", New: "content", Create: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := service.Commit(ctx, ws, created); err != nil {
-		t.Fatal(err)
-	}
 }
 
 // aiderBlock renders one SEARCH/REPLACE block. An empty path repeats the
@@ -393,29 +347,4 @@ func TestCommitRollbackAndSymlinkSwap(t *testing.T) {
 		}
 	}
 
-	if runtime.GOOS == "darwin" || runtime.GOOS == "linux" {
-		inside := filepath.Join(ws.Root(), "inside")
-		link := filepath.Join(ws.Root(), "link")
-		outside := filepath.Join(t.TempDir(), "outside")
-		_ = os.WriteFile(inside, []byte("safe"), 0o600)
-		_ = os.WriteFile(outside, []byte("secret"), 0o600)
-		if err := os.Symlink("inside", link); err != nil {
-			t.Fatal(err)
-		}
-		linkPlan, err := planner.PlanEdit(ctx, ws, Edit{Path: "link", ExpectedSHA256: SHA256([]byte("safe")), New: "changed"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_ = os.Remove(link)
-		if err := os.Symlink(outside, link); err != nil {
-			t.Fatal(err)
-		}
-		if err := planner.Commit(ctx, ws, linkPlan); !errors.Is(err, ErrStale) {
-			t.Fatalf("symlink swap error = %v", err)
-		}
-		data, _ := os.ReadFile(outside)
-		if string(data) != "secret" {
-			t.Fatal("outside file mutated")
-		}
-	}
 }

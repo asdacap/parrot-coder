@@ -719,7 +719,7 @@ func TestToolActivityStyleMutesReadOnlyRetrievalTools(t *testing.T) {
 		{name: "grep", want: terminal.TextStyleMuted},
 		{name: "glob", want: terminal.TextStyleMuted},
 		{name: "web_fetch", want: terminal.TextStyleMuted},
-		{name: "shell", want: terminal.TextStyleDefault},
+		{name: "exec_command", want: terminal.TextStyleDefault},
 		{name: "todowrite", want: terminal.TextStyleDefault},
 	}
 	for _, test := range tests {
@@ -734,7 +734,7 @@ func TestStreamToolTrackerCommitsEditAndFailureBlocks(t *testing.T) {
 	options := streamOptions{stderr: &output}
 	var tracker streamToolTracker
 
-	pendingEdit := json.RawMessage(`{"call_id":"edit_call","name":"edit","input":{"path":"file.go"}}`)
+	pendingEdit := json.RawMessage(`{"call_id":"edit_call","name":"apply_patch","input":{"path":"file.go"}}`)
 	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.pending", Data: pendingEdit}); err != nil {
 		t.Fatal(err)
 	}
@@ -744,7 +744,7 @@ func TestStreamToolTrackerCommitsEditAndFailureBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	pendingShell := json.RawMessage(`{"call_id":"shell_call","name":"shell","input":{"command":"exit 1","limit":9007199254740993}}`)
+	pendingShell := json.RawMessage(`{"call_id":"shell_call","name":"exec_command","input":{"command":"exit 1","limit":9007199254740993}}`)
 	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.pending", Data: pendingShell}); err != nil {
 		t.Fatal(err)
 	}
@@ -1032,26 +1032,26 @@ func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
 	if _, err := tracker.describe(taskStart("task-explore", "task_main", "explore"), false); err != nil {
 		t.Fatal(err)
 	}
-	pending := json.RawMessage(`{"call_id":"shell-call","name":"shell","input":{"command":"exit 1"}}`)
+	pending := json.RawMessage(`{"call_id":"shell-call","name":"exec_command","input":{"cmd":"exit 1"}}`)
 	reports, err := tracker.describe(taskContent("task-explore", "session.tool.pending", pending), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || reports[0].line != "  ○ [explore] Queued shell · exit 1" {
+	if len(reports) != 1 || reports[0].line != "  ○ [explore] Queued exec_command · exit 1" {
 		t.Fatalf("pending tool report = %#v", reports)
 	}
 	reports, err = tracker.describe(taskContent("task-explore", "session.tool.failure", json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || reports[0].line != "  ✗ [explore] shell · exit 1: exit status 1" || reports[0].block != "    request:\n      command: exit 1" {
+	if len(reports) != 1 || reports[0].line != "  ✗ [explore] exec_command · exit 1: exit status 1" || reports[0].block != "    request:\n      cmd: exit 1" {
 		t.Fatalf("tool report = %#v", reports)
 	}
 }
 
 func TestStreamToolTrackerTruncatesBlocks(t *testing.T) {
 	var tracker streamToolTracker
-	tracker.describe(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"edit_call","name":"edit","input":{"path":"file.go"}}`)})
+	tracker.describe(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"edit_call","name":"apply_patch","input":{"path":"file.go"}}`)})
 	lines := make([]string, 12)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("line-%02d", i+1)
@@ -1101,7 +1101,7 @@ func TestToolActivityLabelSanitizesAndTruncatesDetails(t *testing.T) {
 
 func TestPermissionContextUsesOnlySingleLineToolDescription(t *testing.T) {
 	lines := permissionContextLines(v1.Permission{
-		ToolID:         "shell",
+		ToolID:         "exec_command",
 		Description:    "Run shell command:\r\nprintf 'a  b'\nWorking directory: /tmp",
 		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"do not render this canonical JSON","env":{"SECRET":"hidden"}}`),
 		Review:         json.RawMessage(`{"review_secret":"do not render this review JSON","diff":"--- a/file.go\n+++ b/file.go\n-old\n+new\n"}`),
@@ -1116,14 +1116,14 @@ func TestPermissionContextUsesOnlySingleLineToolDescription(t *testing.T) {
 }
 
 func TestPermissionContextOmitsEmptyDescription(t *testing.T) {
-	if got := permissionContextLines(v1.Permission{ToolID: "shell"}); len(got) != 0 {
+	if got := permissionContextLines(v1.Permission{ToolID: "exec_command"}); len(got) != 0 {
 		t.Fatalf("permission context = %#v, want none", got)
 	}
 }
 
 func TestPermissionContextIgnoresMalformedReview(t *testing.T) {
 	got := strings.Join(permissionContextLines(v1.Permission{
-		ToolID:      "edit",
+		ToolID:      "apply_patch",
 		Description: "Edit workspace file \"main.go\"",
 		Review:      json.RawMessage(`REVIEW_SECRET: [unterminated`),
 	}), "\n")
@@ -1134,8 +1134,8 @@ func TestPermissionContextIgnoresMalformedReview(t *testing.T) {
 
 func TestSettlePromptsSettlesEveryPendingRequest(t *testing.T) {
 	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{
-		{ID: "first", ToolID: "shell"},
-		{ID: "second", ToolID: "edit"},
+		{ID: "first", ToolID: "exec_command"},
+		{ID: "second", ToolID: "apply_patch"},
 	}}}
 	if err := settlePrompts(context.Background(), api, "session", strings.NewReader("yes\nno\n"), io.Discard); err != nil {
 		t.Fatal(err)
@@ -1150,7 +1150,7 @@ func TestSettlePromptsSettlesEveryPendingRequest(t *testing.T) {
 
 func TestSettlePromptsDoesNotRenderAuthorizationJSON(t *testing.T) {
 	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
-		ID: "permission", ToolID: "shell", Description: "Run shell command:\nprintf ok",
+		ID: "permission", ToolID: "exec_command", Description: "Run shell command:\nprintf ok",
 		CanonicalInput: json.RawMessage(`{"command":"CANONICAL_SECRET"}`), Review: json.RawMessage(`{"secret":"REVIEW_SECRET"}`),
 	}}}}
 	var output bytes.Buffer
@@ -1168,8 +1168,8 @@ func TestSettlePromptsDoesNotRenderAuthorizationJSON(t *testing.T) {
 
 func TestSettleStreamPromptsSettlesEveryPendingRequest(t *testing.T) {
 	api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{
-		{ID: "first", ToolID: "shell"},
-		{ID: "second", ToolID: "edit"},
+		{ID: "first", ToolID: "exec_command"},
+		{ID: "second", ToolID: "apply_patch"},
 	}}}
 	// Accept the initially selected "yes" choice for each pending request.
 	decoder := terminal.NewKeyDecoder(strings.NewReader("\r\r"))
@@ -1203,7 +1203,7 @@ func TestEnhancedPermissionEscapeDeniesAndInterruptPropagates(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			api := &promptReplyAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
-				ID: "permission", ToolID: "shell", Description: "Run shell command:\nprintf ok",
+				ID: "permission", ToolID: "exec_command", Description: "Run shell command:\nprintf ok",
 				CanonicalInput: json.RawMessage(`{"command":"CANONICAL_SECRET"}`), Review: json.RawMessage(`{"secret":"REVIEW_SECRET"}`),
 			}}}}
 			decoder := terminal.NewKeyDecoder(bytes.NewBufferString(test.input))

@@ -101,9 +101,9 @@ remain present without color, so meaning never depends on styling or symbols.
 
 Permanent transcript output has compact and block entries. Consecutive one-line
 tool statuses are compact and have no padding between them. Assistant responses
-and successful `edit` output are blocks. Role colors distinguish user and
+and successful `apply_patch` output are blocks. Role colors distinguish user and
 assistant messages without a leading rule; other block boundaries retain one
-empty line. An edit block contains its completion status followed immediately
+empty line. A patch block contains its completion status followed immediately
 by the first 10 lines of the reviewed unified before/after diff; no empty line
 splits that status and diff. Failed tool request blocks use the same 10-line limit.
 Longer blocks end with the number of omitted lines.

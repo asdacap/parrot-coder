@@ -116,7 +116,7 @@ providers:
       large:
         max_tokens: 500
 tool_blacklist:
-  - unrestricted_shell
+  - monitor
   - web_fetch
 `)
 
@@ -149,7 +149,7 @@ tool_blacklist:
 	if got := result.Provenance["providers.openai.models.large.max_tokens"]; got != nestedFile {
 		t.Fatalf("max_tokens provenance = %q", got)
 	}
-	if got := result.Config.ToolBlacklist; len(got) != 2 || got[0] != "unrestricted_shell" || got[1] != "web_fetch" {
+	if got := result.Config.ToolBlacklist; len(got) != 2 || got[0] != "monitor" || got[1] != "web_fetch" {
 		t.Fatalf("ToolBlacklist = %#v", got)
 	}
 }

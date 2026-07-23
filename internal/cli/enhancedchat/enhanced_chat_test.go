@@ -1346,7 +1346,7 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 func TestShellOutputTailStreamsAndCommitsLastThreeLines(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
-	pending := json.RawMessage(`{"call_id":"shell_call","name":"shell","input":{"command":"run"}}`)
+	pending := json.RawMessage(`{"call_id":"shell_call","name":"exec_command","input":{"command":"run"}}`)
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.running", Data: json.RawMessage(`{"call_id":"shell_call"}`)})
 
@@ -1361,7 +1361,7 @@ func TestShellOutputTailStreamsAndCommitsLastThreeLines(t *testing.T) {
 		t.Fatalf("live rows = %#v", rows)
 	}
 
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"shell_call","tool_name":"shell","result":"one\ntwo\nthree\nfour\nfive"}`)})
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"shell_call","tool_name":"exec_command","result":"one\ntwo\nthree\nfour\nfive"}`)})
 	got := output.String()
 	if !strings.Contains(got, "three\nfour\nfive") || strings.Contains(got, "one\ntwo") {
 		t.Fatalf("committed shell output = %q", got)
@@ -1375,7 +1375,7 @@ func TestEnhancedFailedToolCommitsInputAsIndentedYAML(t *testing.T) {
 	}
 	pending, _ := json.Marshal(map[string]any{
 		"call_id": "shell_call",
-		"name":    "shell",
+		"name":    "exec_command",
 		"input": map[string]any{
 			"shell":   "bash",
 			"command": "exit 1",
@@ -1383,12 +1383,12 @@ func TestEnhancedFailedToolCommitsInputAsIndentedYAML(t *testing.T) {
 		},
 	})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
-	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "shell", "error": "exit status 1"})
+	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "exec_command", "error": "exit status 1"})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
 
 	got := output.String()
 	want := "request:\n  command: exit 1\n  options:\n    cwd: /tmp\n    env:\n      - CI=1\n      - COLOR=0\n  shell: bash"
-	if !strings.Contains(got, "✗ shell · exit 1 · exit status 1") || !strings.Contains(got, want) {
+	if !strings.Contains(got, "✗ exec_command · exit status 1") || !strings.Contains(got, want) {
 		t.Fatalf("failed tool block = %q, want YAML request containing %q", got, want)
 	}
 	if strings.Contains(got, `"command":`) || strings.Contains(got, `{"`) {
@@ -1407,11 +1407,11 @@ func TestEnhancedFailedToolTruncatesRequestAfterTenLines(t *testing.T) {
 	}
 	pending, _ := json.Marshal(map[string]any{
 		"call_id": "shell_call",
-		"name":    "shell",
+		"name":    "exec_command",
 		"input":   map[string]any{"arguments": arguments, "command": "exit 1"},
 	})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
-	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "shell", "error": "exit status 1"})
+	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "exec_command", "error": "exit status 1"})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
 
 	got := output.String()
@@ -1499,7 +1499,7 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 }
 
 func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
-	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "shell"}}}}
+	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "exec_command"}}}}
 	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 	state, err := editor.Start("keep draft")
 	if err != nil {
@@ -1526,7 +1526,7 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 
 func TestEnhancedPermissionModalSelectionStopsSpinnerAndReplies(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
-		ID: "permission", ToolID: "shell",
+		ID: "permission", ToolID: "exec_command",
 		Description:    "Run shell command:\nrm -rf build",
 		CanonicalInput: json.RawMessage(`{"shell":"bash","command":"rm -rf build"}`),
 		Review:         json.RawMessage(`{"review_secret":"not for the dialog"}`),
@@ -1831,13 +1831,13 @@ func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {
 	if err := runtime.shell.renderer.Commit("✓ Done: read · README.md"); err != nil {
 		t.Fatal(err)
 	}
-	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "edit", "input": map[string]any{"path": "file.go"}})
+	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "apply_patch", "input": map[string]any{"path": "file.go"}})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
 	diff := "--- a/file.go\n+++ b/file.go\n@@ -1,1 +1,1 @@\n-before\n+after\n"
-	success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "tool_name": "edit", "status": "success", "result": diff})
+	success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "tool_name": "apply_patch", "status": "success", "result": diff})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
 	got := output.String()
-	if !strings.Contains(got, "README.md\n\n✓ edit · file.go ·") {
+	if !strings.Contains(got, "README.md\n\n✓ apply_patch ·") {
 		t.Fatalf("edit block was not separated from compact output: %q", got)
 	}
 	if !strings.Contains(got, "\n--- a/file.go\n+++ b/file.go\n") || !strings.Contains(got, "\n-before\n+after\n") {
@@ -1848,7 +1848,7 @@ func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {
 func TestEnhancedEditTruncatesDiffAfterTenLines(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
-	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "edit", "input": map[string]any{"path": "file.go"}})
+	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "apply_patch", "input": map[string]any{"path": "file.go"}})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
 	diffLines := []string{
 		"--- a/file.go",
@@ -1865,7 +1865,7 @@ func TestEnhancedEditTruncatesDiffAfterTenLines(t *testing.T) {
 		" context",
 	}
 	success, _ := json.Marshal(map[string]string{
-		"call_id": "edit_call", "tool_name": "edit", "status": "success", "result": strings.Join(diffLines, "\n") + "\n",
+		"call_id": "edit_call", "tool_name": "apply_patch", "status": "success", "result": strings.Join(diffLines, "\n") + "\n",
 	})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
 
