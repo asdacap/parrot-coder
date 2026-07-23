@@ -32,3 +32,7 @@ func (p Profile) AllowWritePaths() []string {
 
 // DenyWritePaths returns paths within AllowWritePaths that must remain read-only.
 func (p Profile) DenyWritePaths() []string { return nil }
+
+// Rules returns ordered sandbox rules. Profiles do not carry rules; the
+// runner applies configured rules from process.Config.
+func (p Profile) Rules() []security.Rule { return nil }

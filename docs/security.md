@@ -111,6 +111,11 @@ Network destinations are not restricted. Unrestricted shell, configured
 formatter, LSP, and MCP processes are trusted local execution and do not use the
 agent shell sandbox. Command parsing is never represented as a security boundary.
 
+Configured `sandbox_rules` in global `parrot.yaml` apply ordered filesystem
+rules after the base mounts. Each rule maps a path to an action —
+`allow_write`, `deny_read`, `allow_read`, or `deny_write` — and later rules
+override earlier ones. Project-scope configuration cannot define sandbox rules.
+
 ## Changes and Recovery
 
 Edits and patches are planned before they are applied, and the plan records the

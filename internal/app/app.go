@@ -42,6 +42,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/question"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
 	"github.com/amirulashraf/parrot-coder/internal/store"
@@ -362,7 +363,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.outputs = outputs
 	changes := change.NewService(change.Config{})
-	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs)})
+	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs), SandboxRules: convertSandboxRules(loaded.Config.SandboxRules)})
 	if err != nil {
 		return nil, fmt.Errorf("app: process: %w", err)
 	}
@@ -472,7 +473,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
 		Changes: changes, Processes: processes, Monitor: monitors, Tasks: monitors, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
-		LSP: tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages},
+		LSP:       tool.LSPToolConfig{Client: lspClient, Languages: lspLanguages},
 		Subagents: subagents, Agents: agentLookup,
 		ConfigDir: paths.Config,
 	}); err != nil {
@@ -489,9 +490,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
 		AgentPrompt: "You are Parrot Coder, a local coding agent.", ToolGuidance: string(guidance),
 		ToolSystemGuidance: toolSystemGuidance,
-		Skills:    skillMetadata(skills),
-		Subagents: subagentIDs,
-		ConfigDir: paths.Config, ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
+		Skills:             skillMetadata(skills),
+		Subagents:          subagentIDs,
+		ConfigDir:          paths.Config, ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
 		AvailableCLIUtilities: availableCLIUtilities, AvailableOptionalCLIUtilities: availableOptionalCLIUtilities,
 	})
 	if err != nil {
@@ -607,6 +608,7 @@ func validateConfigTrust(loaded config.Result) error {
 		}
 		restricted := strings.HasPrefix(field, "mcp.") ||
 			strings.HasPrefix(field, "lsp.") ||
+			strings.HasPrefix(field, "sandbox_rules.") ||
 			field == "web_fetch.allow_private"
 		if strings.HasPrefix(field, "providers.") {
 			parts := strings.Split(field, ".")
@@ -617,6 +619,20 @@ func validateConfigTrust(loaded config.Result) error {
 		}
 	}
 	return nil
+}
+
+// convertSandboxRules translates config.SandboxRule values into security.Rule
+// values for the process runner. Invalid actions are silently skipped.
+func convertSandboxRules(rules []config.SandboxRule) []security.Rule {
+	result := make([]security.Rule, 0, len(rules))
+	for _, rule := range rules {
+		action := security.RuleAction(rule.Rule)
+		if !security.ValidRuleActions[action] {
+			continue
+		}
+		result = append(result, security.Rule{Path: rule.Path, Action: action})
+	}
+	return result
 }
 
 type compactionContextObserver struct{ manager systemcontext.Manager }
@@ -1157,7 +1173,6 @@ func buildLSPConfigs(configs map[string]config.LSP, root string) ([]lsp.Config, 
 	}
 	return result, languages, nil
 }
-
 
 func requireExecutable(label, path string) error {
 	if path == "" || !filepath.IsAbs(path) {

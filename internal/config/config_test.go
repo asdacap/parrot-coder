@@ -276,7 +276,7 @@ func TestLoadGeneratesDefaultConfigWhenMissing(t *testing.T) {
 	if result.Config.DefaultModel != "" {
 		t.Fatalf("DefaultModel = %q, want empty", result.Config.DefaultModel)
 	}
-	if len(result.Config.Providers) != 0 || len(result.Config.MCP) != 0 || len(result.Config.LSP) != 0  {
+	if len(result.Config.Providers) != 0 || len(result.Config.MCP) != 0 || len(result.Config.LSP) != 0 {
 		t.Fatalf("generated starter should be empty, got %#v", result.Config)
 	}
 	if result.Config.WebFetch.AllowPrivate {
@@ -380,5 +380,45 @@ func TestLoadParsesProviderPreferences(t *testing.T) {
 	order, _ := decoded["order"].([]any)
 	if len(order) != 1 || order[0] != "anthropic" {
 		t.Fatalf("order = %#v", order)
+	}
+}
+
+func TestLoadSandboxRules(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	project := filepath.Join(root, "project")
+	if err := os.MkdirAll(project, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(configDir, FileName), `sandbox_rules:
+  - path: /opt/cache
+    rule: allow_write
+  - path: /secret
+    rule: deny_read
+  - path: /readonly/data
+    rule: allow_read
+  - path: /var/log
+    rule: deny_write
+`)
+	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := result.Config.SandboxRules
+	if len(rules) != 4 {
+		t.Fatalf("SandboxRules = %#v, want 4 rules", rules)
+	}
+	cases := []struct {
+		path, rule string
+	}{
+		{"/opt/cache", "allow_write"},
+		{"/secret", "deny_read"},
+		{"/readonly/data", "allow_read"},
+		{"/var/log", "deny_write"},
+	}
+	for i, want := range cases {
+		if rules[i].Path != want.path || rules[i].Rule != want.rule {
+			t.Fatalf("rule[%d] = {%s, %s}, want {%s, %s}", i, rules[i].Path, rules[i].Rule, want.path, want.rule)
+		}
 	}
 }
