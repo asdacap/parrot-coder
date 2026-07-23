@@ -532,6 +532,31 @@ func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	}
 }
 
+func TestEnhancedMonitorLabelUsesFriendlyTaskName(t *testing.T) {
+	presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "monitor",
+		Presentation: v1.ToolPresentation{Label: v1.ToolLabel{Fields: []v1.ToolLabelPart{{
+			Names: []string{"task_id"}, TaskName: true,
+		}}}},
+	}}})
+	runtime := &enhancedChatRuntime{
+		shell:         &chatShell{config: &Config{Presentation: func() chatview.Presentations { return presentation }}},
+		knownMessages: map[string]bool{},
+	}
+	started, _ := json.Marshal(v1.TaskEvent{
+		TaskID: "task-review", ParentTaskID: "task_main", Kind: "agent", Agent: "review", Name: "review-kind-ibex",
+	})
+	if err := runtime.handleEvent(taskContent("task-review", v1.EventTaskStart, started)); err != nil {
+		t.Fatal(err)
+	}
+	pending := json.RawMessage(`{"call_id":"call-monitor","name":"monitor","input":{"task_id":"task-review"}}`)
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+
+	if len(runtime.activity) != 1 || runtime.activity[0].label != "monitor · review-kind-ibex" {
+		t.Fatalf("monitor activity = %#v", runtime.activity)
+	}
+}
+
 func TestTaskActivityLabelsUseTaskID(t *testing.T) {
 	for _, test := range []struct {
 		name  string
