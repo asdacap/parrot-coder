@@ -320,6 +320,7 @@ type ToolPresentation struct {
 	Result            string    `json:"result,omitempty"`
 	Output            string    `json:"output,omitempty"`
 	Subagent          bool      `json:"subagent,omitempty"`
+	Modeline          bool      `json:"modeline,omitempty"`
 	LabelInPermission bool      `json:"label_in_permission,omitempty"`
 }
 

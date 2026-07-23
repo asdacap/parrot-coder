@@ -21,6 +21,9 @@ type Presentation struct {
 	// Subagent marks a tool whose invocations create child task activity, so a
 	// renderer can nest that activity beneath the invoking row.
 	Subagent bool `json:"subagent,omitempty"`
+	// Modeline moves a running invocation in the top-level session from the
+	// activity rows into the transient modeline status.
+	Modeline bool `json:"modeline,omitempty"`
 	// LabelInPermission asks a permission prompt to show Label rather than the
 	// tool's own request description, for tools whose description would echo a
 	// redacted value.

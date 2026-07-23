@@ -235,6 +235,10 @@ func (p Presentations) Subagent(name string) bool {
 	return legacySubagent(name)
 }
 
+// Modeline reports whether a running top-level invocation belongs in the
+// transient modeline status rather than in the activity rows.
+func (p Presentations) Modeline(name string) bool { return p.For(name).Modeline }
+
 func legacySubagent(name string) bool {
 	switch name {
 	case "agent_spawn", "agent_send", "monitor", "wait_task":
