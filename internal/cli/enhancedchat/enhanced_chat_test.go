@@ -363,12 +363,12 @@ func TestEnhancedUntitledThinkingMovesToModeline(t *testing.T) {
 	if rows := runtime.activityRows(started, 100); len(rows) != 0 {
 		t.Fatalf("untitled thinking remained in activity rows: %#v", rows)
 	}
-	if got := runtime.modelineThinking(started); got != "⠋ Thinking… · 0.0s" {
+	if got := runtime.modelineActivity(started); got != "⠋ Thinking… · 0.0s" {
 		t.Fatalf("modeline thinking = %q", got)
 	}
 
 	runtime.startReasoningActivity("assistant", "", "Inspecting the implementation", true)
-	if got := runtime.modelineThinking(started); got != "" {
+	if got := runtime.modelineActivity(started); got != "" {
 		t.Fatalf("titled thought remained in modeline: %q", got)
 	}
 	rows := runtime.activityRows(started, 100)
@@ -564,6 +564,28 @@ func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	}
 	if !strings.Contains(agent, "Working: agent · review") {
 		t.Fatalf("agent activity = %q", agent)
+	}
+}
+
+func TestEnhancedModelineToolOnlyMovesTopLevelInvocation(t *testing.T) {
+	presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "background_wait", Presentation: v1.ToolPresentation{Modeline: true},
+	}}})
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{config: &Config{Presentation: func() chatview.Presentations { return presentation }}},
+		activity: []enhancedActivityItem{
+			{id: "main", toolName: "background_wait", label: "background_wait · build", status: "running", started: time.Unix(100, 0)},
+			{id: "child", taskID: "task-review", toolName: "background_wait", label: "background_wait · review", status: "running", started: time.Unix(100, 0)},
+		},
+	}
+	now := time.Unix(101, 0)
+
+	if got := runtime.modelineActivity(now); got != "⠋ Working: background_wait · build · 1.0s" {
+		t.Fatalf("modeline activity = %q", got)
+	}
+	rows := runtime.activityRows(now, 100)
+	if len(rows) != 1 || !strings.Contains(rows[0], "background_wait · review") {
+		t.Fatalf("activity rows = %#v, want only child invocation", rows)
 	}
 }
 

@@ -131,7 +131,7 @@ func (*WaitTaskTool) Description() string {
 	return "Wait for a shell or agent task to complete, yielding if the requested period elapses. Waiting never stops the task."
 }
 func (*WaitTaskTool) Presentation() Presentation {
-	return Presentation{Subagent: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}, TaskName: true}}}}
+	return Presentation{Subagent: true, Modeline: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}, TaskName: true}}}}
 }
 func (*WaitTaskTool) JSONSchema() json.RawMessage { return json.RawMessage(waitTaskSchema) }
 func (*WaitTaskTool) DescribeRequest(raw json.RawMessage) (string, error) {

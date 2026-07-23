@@ -73,6 +73,20 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 	}
 }
 
+func TestModelinePresentationSurvivesToolAPIProjection(t *testing.T) {
+	registry := tool.NewRegistry()
+	if err := registry.Register(&tool.WaitTaskTool{}); err != nil {
+		t.Fatal(err)
+	}
+	list, err := (&DomainBackend{Tools: registry.Materialize()}).ListTools(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list.Items) != 1 || !list.Items[0].Presentation.Modeline || !chatview.NewPresentations(list).Modeline("wait_task") {
+		t.Fatalf("wait_task presentation = %#v", list.Items)
+	}
+}
+
 // What a tool declares must match what the retired ID switch did, and the
 // switch must survive as the fallback for a server which declares nothing.
 // Together these mean neither a current nor an older server changes behaviour.

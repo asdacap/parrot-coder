@@ -569,7 +569,7 @@ func (r *enhancedChatRuntime) render() error {
 	frames = append(frames, terminal.LiveFrame{
 		TaskID: managedtask.MainTaskID, MainStatus: true,
 		Stream: stream, PromptContext: r.modalContext(), Pending: pending,
-		InputLeft: r.inputModeLabel(), InputCenter: r.modelineThinking(now), InputRight: right,
+		InputLeft: r.inputModeLabel(), InputCenter: r.modelineActivity(now), InputRight: right,
 		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})

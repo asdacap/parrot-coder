@@ -749,7 +749,7 @@ func toolPresentationDTO(presentation tool.Presentation) v1.ToolPresentation {
 		},
 		Redact: presentation.Redact, Muted: presentation.Muted,
 		Result: string(presentation.Result), Output: string(presentation.Output),
-		Subagent: presentation.Subagent, LabelInPermission: presentation.LabelInPermission,
+		Subagent: presentation.Subagent, Modeline: presentation.Modeline, LabelInPermission: presentation.LabelInPermission,
 	}
 }
 

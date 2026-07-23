@@ -33,7 +33,7 @@ func (r *enhancedChatRuntime) activityFrames(now time.Time, columns int) []termi
 	}
 	visible := make([]enhancedActivityItem, 0, len(r.activity))
 	for _, item := range r.activity {
-		if !isModelineThinkingActivity(item) {
+		if !r.isModelineActivity(item) {
 			visible = append(visible, item)
 		}
 	}
@@ -80,7 +80,7 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 	}
 	visible := make([]enhancedActivityItem, 0, len(r.activity))
 	for _, item := range r.activity {
-		if isModelineThinkingActivity(item) {
+		if r.isModelineActivity(item) {
 			continue
 		}
 		visible = append(visible, item)
@@ -116,32 +116,39 @@ func reasoningSummaryActivity(item enhancedActivityItem, now time.Time) terminal
 	}
 }
 
-// modelineThinking moves the one untitled thinking placeholder out of the
-// activity list. Provider-supplied reasoning summaries still have titles and
-// remain as ordinary Thought rows above the modeline.
-func (r *enhancedChatRuntime) modelineThinking(now time.Time) string {
+// modelineActivity moves transient top-level status out of the activity list.
+// Provider-supplied reasoning summaries still have titles and remain as
+// ordinary Thought rows above the modeline. Tools opt in through presentation
+// metadata, and child-agent invocations always remain in their task rows.
+func (r *enhancedChatRuntime) modelineActivity(now time.Time) string {
 	for i := len(r.activity) - 1; i >= 0; i-- {
-		if isModelineThinkingActivity(r.activity[i]) {
-			return formatModelineThinking(r.activity[i], now)
+		if r.isModelineActivity(r.activity[i]) {
+			return formatModelineActivity(r.activity[i], now)
 		}
 	}
 	return ""
 }
 
-func formatModelineThinking(item enhancedActivityItem, now time.Time) string {
+func formatModelineActivity(item enhancedActivityItem, now time.Time) string {
 	elapsed := now.Sub(item.started)
 	if elapsed < 0 {
 		elapsed = 0
 	}
 	frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-	return fmt.Sprintf("%s Thinking…%s · %.1fs", spinnerFrames[frame], formatActivityUsage(item), elapsed.Seconds())
+	if item.status == "thinking" {
+		return fmt.Sprintf("%s Thinking…%s · %.1fs", spinnerFrames[frame], formatActivityUsage(item), elapsed.Seconds())
+	}
+	return fmt.Sprintf("%s Working: %s%s · %.1fs", spinnerFrames[frame], item.label, formatActivityUsage(item), elapsed.Seconds())
 }
 
-func isModelineThinkingActivity(item enhancedActivityItem) bool {
+func (r *enhancedChatRuntime) isModelineActivity(item enhancedActivityItem) bool {
 	// The initial assistant placeholder is the only thinking item that has not
 	// been identified as reasoning. Raw reasoning and titled summaries retain
 	// their existing activity-row behavior.
-	return item.status == "thinking" && !item.terminal && !item.reasoning
+	if item.status == "thinking" && !item.terminal && !item.reasoning {
+		return true
+	}
+	return item.taskID == "" && item.status == "running" && !item.terminal && r.presentation().Modeline(item.toolName)
 }
 
 func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns int) string {
