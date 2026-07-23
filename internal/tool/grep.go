@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 type GrepConfig struct {
@@ -84,6 +85,65 @@ type grepPlan struct {
 	Root  string
 	Regex *regexp.Regexp
 }
+
+type grepLineReader struct {
+	ctx           context.Context
+	reader        *bufio.Reader
+	maxPrefix     int64
+	prefix        strings.Builder
+	length        int64
+	prefixStopped bool
+	exists        bool
+	done          bool
+	err           error
+}
+
+func newGrepLineReader(ctx context.Context, reader *bufio.Reader, maxPrefix int64) *grepLineReader {
+	return &grepLineReader{ctx: ctx, reader: reader, maxPrefix: maxPrefix}
+}
+
+func (r *grepLineReader) ReadRune() (rune, int, error) {
+	if r.done {
+		return 0, 0, io.EOF
+	}
+	if err := r.ctx.Err(); err != nil {
+		r.done = true
+		r.err = err
+		return 0, 0, err
+	}
+	value, size, err := r.reader.ReadRune()
+	if err != nil {
+		r.done = true
+		if err != io.EOF {
+			r.err = err
+		}
+		return 0, 0, err
+	}
+	r.exists = true
+	if value == '\n' {
+		r.done = true
+		return 0, 0, io.EOF
+	}
+	r.length += int64(size)
+	valid := value != utf8.RuneError || size > 1
+	if !r.prefixStopped && valid && int64(r.prefix.Len()+size) <= r.maxPrefix {
+		r.prefix.WriteRune(value)
+	} else if !valid || int64(r.prefix.Len()+size) > r.maxPrefix {
+		r.prefixStopped = true
+	}
+	return value, size, nil
+}
+
+func (r *grepLineReader) drain() error {
+	for !r.done {
+		if _, _, err := r.ReadRune(); err != nil && err != io.EOF {
+			break
+		}
+	}
+	return r.err
+}
+
+func (r *grepLineReader) truncated() bool { return r.prefixStopped || r.length > r.maxPrefix }
 
 func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
 	if call.Workspace == nil {
@@ -158,6 +218,7 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	sort.Strings(files)
 	var out strings.Builder
 	matches := 0
+	truncated := false
 	for _, path := range files {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -180,36 +241,42 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		reader := bufio.NewReader(f)
 		lineNo := 0
 		for {
-			line, e := readBoundedLine(reader, t.Config.MaxLineBytes)
-			if e != nil && e != io.EOF {
+			line := newGrepLineReader(ctx, reader, t.Config.MaxLineBytes)
+			matched := p.Regex.MatchReader(line)
+			if err := line.drain(); err != nil {
 				f.Close()
-				return Result{}, e
+				return Result{}, err
 			}
-			if len(line) > 0 {
-				lineNo++
-				text := strings.TrimSuffix(line, "\n")
-				if p.Regex.MatchString(text) {
-					rel, _ := filepath.Rel(call.Workspace.Root(), path)
-					out.WriteString(filepath.ToSlash(rel))
-					out.WriteByte(':')
-					out.WriteString(strconv.Itoa(lineNo))
-					out.WriteByte(':')
-					out.WriteString(text)
-					out.WriteByte('\n')
-					matches++
-					if matches >= t.Config.MaxMatches {
-						f.Close()
-						text := out.String()
-						return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"matches": matches, "truncated": true}}, nil
-					}
-				}
-			}
-			if e == io.EOF {
+			if !line.exists {
 				break
+			}
+			lineNo++
+			if matched {
+				rel, _ := filepath.Rel(call.Workspace.Root(), path)
+				out.WriteString(filepath.ToSlash(rel))
+				out.WriteByte(':')
+				out.WriteString(strconv.Itoa(lineNo))
+				out.WriteByte(':')
+				out.WriteString(line.prefix.String())
+				if line.truncated() {
+					truncated = true
+					fmt.Fprintf(&out, "... [truncated; original length: %d bytes]", line.length)
+				}
+				out.WriteByte('\n')
+				matches++
+				if matches >= t.Config.MaxMatches {
+					f.Close()
+					text := out.String()
+					return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"matches": matches, "truncated": true}}, nil
+				}
 			}
 		}
 		f.Close()
 	}
 	text := out.String()
-	return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"matches": matches, "files": len(files)}}, nil
+	metadata := map[string]any{"matches": matches, "files": len(files)}
+	if truncated {
+		metadata["truncated"] = true
+	}
+	return Result{Text: text, ModelText: modelText(text), Metadata: metadata}, nil
 }

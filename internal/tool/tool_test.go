@@ -608,6 +608,34 @@ func TestGlobAndGrepDeterministicAndCancellation(t *testing.T) {
 	}
 }
 
+func TestGrepMatchesAndTruncatesOversizedLines(t *testing.T) {
+	w, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := "�1234é--needle\nneedle\n"
+	if err := os.WriteFile(filepath.Join(w.Root(), "oversized.txt"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	grep := NewGrepTool(GrepConfig{MaxLineBytes: 8})
+	call := CallContext{Workspace: w}
+	plan, err := grep.Plan(context.Background(), json.RawMessage(`{"pattern":"needle","path":"oversized.txt"}`), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := grep.Execute(context.Background(), plan, call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "oversized.txt:1:�1234... [truncated; original length: 17 bytes]\noversized.txt:2:needle\n"
+	if result.Text != want || !utf8.ValidString(result.Text) {
+		t.Fatalf("grep output = %q, valid UTF-8 = %t, want %q", result.Text, utf8.ValidString(result.Text), want)
+	}
+	if result.Metadata["matches"] != 2 || result.Metadata["truncated"] != true {
+		t.Fatalf("grep metadata = %#v", result.Metadata)
+	}
+}
+
 func TestGrepDefaultLimits(t *testing.T) {
 	grep := NewGrepTool(GrepConfig{})
 	if grep.Config.MaxFiles != 100000 {
