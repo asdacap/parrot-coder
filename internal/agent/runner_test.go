@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,12 +76,12 @@ func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
 	if got, want := observation.Text, "profile prompt\n\nHard rules:\n- rule\n\nprofile status"; got != want {
 		t.Fatalf("profile status = %q, want %q", got, want)
 	}
-	if got, want := runnerInstructions("baseline", profile, "runtime status", false), "baseline\n\nruntime status"; got != want {
+	if got, want := runnerInstructions("baseline", profile, false), "baseline"; got != want {
 		t.Fatalf("runner instructions = %q, want %q", got, want)
 	}
 }
 
-func TestRunnerInjectsComposedStatusOnlyWhenPending(t *testing.T) {
+func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "done"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
@@ -96,6 +97,16 @@ func TestRunnerInjectsComposedStatusOnlyWhenPending(t *testing.T) {
 	h.runner.config.Status = registry
 	live := &recordingPublisher{}
 	h.runner.config.Live = live
+	if err := h.runner.drainOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := h.sessions.StatusPromptPending(context.Background(), h.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !pending || len(fake.Requests()) != 0 {
+		t.Fatalf("idle drain consumed status: pending=%t requests=%d", pending, len(fake.Requests()))
+	}
 	for _, text := range []string{"first", "second"} {
 		h.admit(t, text, text, session.DeliverySteer)
 		if err := h.runner.drainOnce(context.Background()); err != nil {
@@ -114,14 +125,24 @@ func TestRunnerInjectsComposedStatusOnlyWhenPending(t *testing.T) {
 	if len(requests) != 3 {
 		t.Fatalf("request count = %d, want 3", len(requests))
 	}
-	want := []string{
-		"baseline\n\nbuild prompt\n\nBuild mode status\n\nActive profile: build\nModel: fake/model",
-		"baseline",
-		"baseline\n\nplan prompt\n\nPlan mode status\n\nActive profile: plan\nModel: fake/model",
-	}
-	for index := range requests {
-		if requests[index].Instructions != want[index] {
-			t.Errorf("request %d instructions = %q, want %q", index, requests[index].Instructions, want[index])
+	buildStatus := "build prompt\n\nBuild mode status\n\nActive profile: build\nModel: fake/model"
+	planStatus := "plan prompt\n\nPlan mode status\n\nActive profile: plan\nModel: fake/model"
+	for index, request := range requests {
+		if request.Instructions != "baseline" {
+			t.Errorf("request %d instructions = %q, want baseline", index, request.Instructions)
+		}
+		var statuses []string
+		for _, message := range request.Messages {
+			if message.Role == protocol.RoleSystem {
+				statuses = append(statuses, message.Content[0].Text)
+			}
+		}
+		want := []string{buildStatus}
+		if index == 2 {
+			want = append(want, planStatus)
+		}
+		if !reflect.DeepEqual(statuses, want) {
+			t.Errorf("request %d statuses = %#v, want %#v", index, statuses, want)
 		}
 	}
 	var statusEvents int
@@ -521,10 +542,7 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 	observations := 0
 	h.runner.config.Status = statusObserverFunc(func() string {
 		observations++
-		if observations == 1 {
-			return "Active tasks: none"
-		}
-		return "Active tasks:\n- proc_test (shell, running)"
+		return "Active tasks: none"
 	})
 	h.admit(t, "user", "run tool", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
@@ -543,11 +561,13 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 	if len(requests) != 2 {
 		t.Fatalf("provider turns = %d", len(requests))
 	}
-	wantStatus := []string{"Active tasks: none", "Active tasks:\n- proc_test (shell, running)"}
 	for index, request := range requests {
-		if !strings.HasSuffix(request.Instructions, "\n\n"+wantStatus[index]) {
-			t.Errorf("request %d status instructions = %q, want suffix %q", index, request.Instructions, wantStatus[index])
+		if !containsRoleText(request.Messages, protocol.RoleSystem, "Active tasks: none") {
+			t.Errorf("request %d lost durable status message: %#v", index, request.Messages)
 		}
+	}
+	if observations != 1 {
+		t.Fatalf("status observations = %d, want 1", observations)
 	}
 }
 
@@ -955,8 +975,8 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 		t.Fatalf("provider=%d compactor=%#v", len(requests), compactor.requests)
 	}
 	for index, request := range requests {
-		if !strings.HasSuffix(request.Instructions, "\n\nretry status") {
-			t.Errorf("request %d lost status instructions: %q", index, request.Instructions)
+		if !containsRoleText(request.Messages, protocol.RoleSystem, "retry status") {
+			t.Errorf("request %d lost durable status message: %#v", index, request.Messages)
 		}
 	}
 	events, err := h.repository.List(context.Background(), h.sessionID, -1, 100)
@@ -978,8 +998,8 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 			injections++
 		}
 	}
-	if injections != 2 {
-		t.Fatalf("status prompt injection events = %d, want 2", injections)
+	if injections != 1 {
+		t.Fatalf("status prompt injection events = %d, want 1", injections)
 	}
 }
 
@@ -1056,6 +1076,15 @@ func containsText(messages []protocol.Message, want string) bool {
 			if part.Text == want {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func containsRoleText(messages []protocol.Message, role protocol.Role, want string) bool {
+	for _, message := range messages {
+		if message.Role == role && containsText([]protocol.Message{message}, want) {
+			return true
 		}
 	}
 	return false

@@ -39,6 +39,7 @@ type SessionRuntime interface {
 	StartTool(context.Context, string, string) error
 	SettleTool(context.Context, string, string, string, string, string) error
 	AppendMessage(context.Context, string, protocol.Message) (session.Message, error)
+	AppendStatusPrompt(context.Context, string, string) (session.Message, error)
 	RepairActive(context.Context, string) error
 	StatusPromptPending(context.Context, string) (bool, error)
 }
@@ -157,8 +158,6 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 	if err := r.config.Sessions.RepairActive(ctx, r.id); err != nil {
 		return err
 	}
-	statusPending := false
-	statusPrompt := ""
 	turn := 0
 	var profile Profile
 	for {
@@ -215,22 +214,6 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				}
 			}
 		}
-		if r.config.Status != nil {
-			pending, err := r.config.Sessions.StatusPromptPending(ctx, r.id)
-			if err != nil {
-				return err
-			}
-			if pending {
-				statusPending, statusPrompt = true, ""
-			}
-		}
-		profileStatus := newProfileStatus(profile)
-		if statusPending {
-			statusPrompt, err = r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, profileStatus)
-			if err != nil {
-				return err
-			}
-		}
 		providerClient, model, err := r.config.Providers.Resolve(selected.Provider, selected.Model)
 		if err != nil {
 			return err
@@ -262,11 +245,33 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				return err
 			}
 		}
+		if turn == 0 && r.config.Status != nil {
+			pending, err := r.config.Sessions.StatusPromptPending(ctx, r.id)
+			if err != nil {
+				return err
+			}
+			if pending {
+				statusPrompt, err := r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, newProfileStatus(profile))
+				if err != nil {
+					return err
+				}
+				if strings.TrimSpace(statusPrompt) != "" {
+					if _, err := r.config.Sessions.AppendStatusPrompt(ctx, r.id, statusPrompt); err != nil {
+						return err
+					}
+					r.publishStatusPromptInjected()
+					history, err = r.config.Sessions.ListModelHistory(ctx, r.id, epoch.HistoryCutoff)
+					if err != nil {
+						return err
+					}
+				}
+			}
+		}
 
 		snapshot := r.config.ToolSnapshot()
 		definitions := toolDefinitions(snapshot)
 		turn++
-		instructions := runnerInstructions(epoch.Baseline, profile, statusPrompt, turn >= profile.MaxTurns)
+		instructions := runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
 		if turn >= profile.MaxTurns {
 			definitions = nil
 		}
@@ -287,7 +292,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				if err != nil {
 					return err
 				}
-				instructions = runnerInstructions(epoch.Baseline, profile, statusPrompt, turn >= profile.MaxTurns)
+				instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
 			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
@@ -298,7 +303,6 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 			request.Reasoning = &protocol.ReasoningOptions{Effort: variant.ReasoningEffort, Summary: "auto"}
 		}
-		r.publishStatusPromptInjected(statusPrompt)
 		calls, finish, err := r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 		if err != nil {
 			var failure *providerTurnFailure
@@ -332,9 +336,8 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
-			request.Instructions = runnerInstructions(epoch.Baseline, profile, statusPrompt, turn >= profile.MaxTurns)
+			request.Instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
 			request.Messages = history
-			r.publishStatusPromptInjected(statusPrompt)
 			calls, finish, err = r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 			if err != nil {
 				return err
@@ -369,15 +372,14 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if len(queued) == 0 {
 				return nil
 			}
-			statusPending, statusPrompt = false, ""
 			continue
 		}
 		return nil
 	}
 }
 
-func (r *agentSession) publishStatusPromptInjected(statusPrompt string) {
-	if r.config.Live != nil && strings.TrimSpace(statusPrompt) != "" {
+func (r *agentSession) publishStatusPromptInjected() {
+	if r.config.Live != nil {
 		r.config.Live.Publish(r.id, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
 	}
 }
@@ -601,9 +603,9 @@ func overflowMessage(message string) bool {
 	return false
 }
 
-func runnerInstructions(baseline string, _ Profile, statusPrompt string, final bool) string {
-	sections := make([]string, 0, 3)
-	for _, section := range []string{baseline, finalTurnInstructions(final), statusPrompt} {
+func runnerInstructions(baseline string, _ Profile, final bool) string {
+	sections := make([]string, 0, 2)
+	for _, section := range []string{baseline, finalTurnInstructions(final)} {
 		if section != "" {
 			sections = append(sections, section)
 		}

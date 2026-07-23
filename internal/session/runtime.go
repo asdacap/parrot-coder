@@ -118,27 +118,28 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 	return updated, nil
 }
 
-// StatusPromptPending reports whether the next assistant turn should be told
-// the current runtime status. New sessions need it on their first turn, while
-// established sessions need it only after an actual mode change.
+// StatusPromptPending reports whether the session needs a durable status
+// message. A status is needed once for a new session and after each actual mode
+// change. The append event is the consumption marker, so an interrupted turn
+// does not append the same status again.
 func (s *Service) StatusPromptPending(ctx context.Context, sessionID string) (bool, error) {
 	db, err := s.sessions.Session(ctx, sessionID)
 	if err != nil {
 		return false, err
 	}
-	var assistantCount, changedAfterAssistant int
+	var statusCount, changedAfterStatus int
 	err = db.SQL().QueryRowContext(ctx, `
 		SELECT
-			(SELECT COUNT(*) FROM session_message WHERE session_id=? AND role='assistant' AND status='complete'),
+			(SELECT COUNT(*) FROM event WHERE session_id=? AND type='session.status_prompt.appended'),
 			(SELECT COUNT(*) FROM event
 			 WHERE session_id=? AND type='session.selection.changed'
 			   AND json_extract(data_json, '$.mode_changed') = 1
-			   AND sequence > COALESCE((SELECT MAX(sequence) FROM session_message WHERE session_id=? AND role='assistant' AND status='complete'), -1))`,
-		sessionID, sessionID, sessionID).Scan(&assistantCount, &changedAfterAssistant)
+			   AND sequence > COALESCE((SELECT MAX(sequence) FROM event WHERE session_id=? AND type='session.status_prompt.appended'), -1))`,
+		sessionID, sessionID, sessionID).Scan(&statusCount, &changedAfterStatus)
 	if err != nil {
 		return false, err
 	}
-	return assistantCount == 0 || changedAfterAssistant > 0, nil
+	return statusCount == 0 || changedAfterStatus > 0, nil
 }
 
 func (s *Service) LatestSequence(ctx context.Context, sessionID string) (int64, error) {
@@ -339,6 +340,29 @@ func (s *Service) AppendMessage(ctx context.Context, sessionID string, message p
 		_, err := tx.ExecContext(ctx, `INSERT INTO session_message(id,session_id,role,content,parts_json,status,sequence,created_at) VALUES(?,?,?,?,?,'complete',?,?)`, messageID, sessionID, message.Role, content, parts, events[0].Sequence, formatTime(events[0].CreatedAt))
 		if err == nil {
 			out = Message{ID: messageID, SessionID: sessionID, Role: string(message.Role), Content: content, Parts: parts, Status: "complete", Sequence: events[0].Sequence, CreatedAt: events[0].CreatedAt}
+		}
+		return err
+	})
+	return out, err
+}
+
+// AppendStatusPrompt persists rendered runtime status in its model-history
+// position and records the marker used to avoid duplicate delivery.
+func (s *Service) AppendStatusPrompt(ctx context.Context, sessionID, text string) (Message, error) {
+	messageID, err := id.New("msg")
+	if err != nil {
+		return Message{}, err
+	}
+	parts, err := json.Marshal([]protocol.ContentPart{{Type: protocol.ContentText, Text: text}})
+	if err != nil {
+		return Message{}, err
+	}
+	payload, _ := json.Marshal(map[string]string{"message_id": messageID})
+	var out Message
+	_, err = s.events.Append(ctx, sessionID, []event.NewEvent{{Type: "session.status_prompt.appended", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+		_, err := tx.ExecContext(ctx, `INSERT INTO session_message(id,session_id,role,content,parts_json,status,sequence,created_at) VALUES(?,?,'system',?,?,'complete',?,?)`, messageID, sessionID, text, parts, events[0].Sequence, formatTime(events[0].CreatedAt))
+		if err == nil {
+			out = Message{ID: messageID, SessionID: sessionID, Role: string(protocol.RoleSystem), Content: text, Parts: parts, Status: "complete", Sequence: events[0].Sequence, CreatedAt: events[0].CreatedAt}
 		}
 		return err
 	})

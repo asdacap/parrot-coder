@@ -25,12 +25,12 @@ func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 		}
 	}
 	assertPending(true)
-	assistant, err := service.StartAssistant(ctx, sessionID)
+	statusMessage, err := service.AppendStatusPrompt(ctx, sessionID, "build status")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.FinishAssistant(ctx, sessionID, assistant.ID, session.AssistantFinal{Parts: []protocol.ContentPart{{Type: protocol.ContentText, Text: "done"}}}); err != nil {
-		t.Fatal(err)
+	if statusMessage.Role != string(protocol.RoleSystem) || statusMessage.Content != "build status" {
+		t.Fatalf("status message = %#v", statusMessage)
 	}
 	assertPending(false)
 	interrupted, err := service.StartAssistant(ctx, sessionID)
@@ -50,6 +50,10 @@ func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPending(true)
+	if _, err := service.AppendStatusPrompt(ctx, sessionID, "plan status"); err != nil {
+		t.Fatal(err)
+	}
+	assertPending(false)
 	interrupted, err = service.StartAssistant(ctx, sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -57,7 +61,21 @@ func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 	if err := service.FinishAssistant(ctx, sessionID, interrupted.ID, session.AssistantFinal{Status: "interrupted", Error: "cancelled"}); err != nil {
 		t.Fatal(err)
 	}
-	assertPending(true)
+	assertPending(false)
+
+	messages, err := service.ListModelHistory(ctx, sessionID, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var statuses []string
+	for _, message := range messages {
+		if message.Role == protocol.RoleSystem {
+			statuses = append(statuses, message.Content[0].Text)
+		}
+	}
+	if want := []string{"build status", "plan status"}; !reflect.DeepEqual(statuses, want) {
+		t.Fatalf("status history = %#v, want %#v", statuses, want)
+	}
 
 	events, err := repository.List(ctx, sessionID, -1, 100)
 	if err != nil {
