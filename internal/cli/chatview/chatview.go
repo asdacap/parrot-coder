@@ -642,22 +642,46 @@ func NewTaskTracker() *TaskTracker {
 	return tracker
 }
 
-func taskPrefix(depth int, agent, name string) string {
-	if depth < 1 {
-		depth = 1
-	}
+func taskAgentLabel(agent, name string) string {
 	agent = strings.TrimSpace(agent)
 	name = strings.TrimSpace(name)
-	label := agent
-	if label == "" {
-		label = name
-	} else if name != "" {
-		label += ":" + name
+	if agent == "" {
+		return name
 	}
-	if label == "" {
-		label = "agent"
+	if name == "" {
+		return agent
 	}
-	return strings.Repeat("  ", depth) + "[" + label + "] "
+	return agent + ":" + name
+}
+
+// EventLine renders agent and subagent events with one layout. Indent is the
+// task depth and agent is the optional label shown in brackets. The event owns
+// its leading icon; a generic activity icon is added if it does not supply one.
+func EventLine(indent int, agent, event string) string {
+	if indent < 0 {
+		indent = 0
+	}
+	icon, event := splitEventIcon(event)
+	if icon == "" {
+		icon = "•"
+	}
+	indentation := strings.Repeat("  ", indent)
+	agent = strings.TrimSpace(agent)
+	prefix := indentation + icon + " "
+	if agent != "" {
+		prefix += "[" + agent + "] "
+	}
+
+	lines := strings.Split(event, "\n")
+	lines[0] = prefix + lines[0]
+	continuation := indentation
+	if agent != "" {
+		continuation += "[" + agent + "] "
+	}
+	for i := 1; i < len(lines); i++ {
+		lines[i] = continuation + lines[i]
+	}
+	return strings.Join(lines, "\n")
 }
 
 func prefixTaskText(prefix, text string) string {
@@ -668,20 +692,15 @@ func prefixTaskText(prefix, text string) string {
 	return strings.Join(lines, "\n")
 }
 
-func prefixTaskActivity(prefix, text string) string {
-	lines := strings.Split(text, "\n")
-	icons := append([]string{"○", "◌", "◐", "✓", "✗", "■"}, SpinnerFrames...)
+func splitEventIcon(event string) (string, string) {
+	trimmed := strings.TrimLeft(event, " ")
+	icons := append([]string{"•", "○", "◌", "◐", "✓", "✗", "■", "↻"}, SpinnerFrames...)
 	for _, icon := range icons {
-		if rest, ok := strings.CutPrefix(strings.TrimLeft(lines[0], " "), icon+" "); ok {
-			indent := prefix[:len(prefix)-len(strings.TrimLeft(prefix, " "))]
-			lines[0] = indent + icon + " " + strings.TrimSpace(prefix) + " " + rest
-			for i := 1; i < len(lines); i++ {
-				lines[i] = prefix + lines[i]
-			}
-			return strings.Join(lines, "\n")
+		if rest, ok := strings.CutPrefix(trimmed, icon+" "); ok {
+			return icon, rest
 		}
 	}
-	return prefix + text
+	return "", event
 }
 
 // depth resolves a task's indentation by walking the parent chain to the main
@@ -702,8 +721,12 @@ func (t *TaskTracker) depth(node *taskNode) int {
 	return depth
 }
 
-func (t *TaskTracker) prefix(node *taskNode) string {
-	return taskPrefix(t.depth(node), node.agent, node.name)
+func (t *TaskTracker) eventLine(node *taskNode, event string) string {
+	label := taskAgentLabel(node.agent, node.name)
+	if label == "" {
+		label = "agent"
+	}
+	return EventLine(max(1, t.depth(node)), label, event)
 }
 
 // unknownTask reports an event for a task the tracker never registered. The
@@ -920,7 +943,7 @@ func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 			node.lifecycleFlushed = true
 			reports = append(reports, TaskReport{
 				ID: node.id + ":lifecycle", TaskID: node.id, SessionID: node.sessionID, ParentSessionID: node.parentSessionID,
-				Line: prefixTaskActivity(t.prefix(node), icon+" "+body), Terminal: true,
+				Line: t.eventLine(node, icon+" "+body), Terminal: true,
 				EmitPlain: true, MainStatus: true, Style: style,
 			})
 			continue
@@ -950,7 +973,7 @@ func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 		}
 		reports = append(reports, TaskReport{
 			ID: node.progressID, TaskID: node.id, SessionID: node.sessionID, ParentSessionID: node.parentSessionID,
-			Line: prefixTaskActivity(t.prefix(node), icon+" "+body), Terminal: terminalEvent,
+			Line: t.eventLine(node, icon+" "+body), Terminal: terminalEvent,
 			EmitPlain: terminalEvent, MainStatus: true, Style: terminal.TextStyleMuted,
 		})
 	}
@@ -979,7 +1002,6 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		return nil, nil
 	}
 	scope := node.id + ":"
-	prefix := t.prefix(node)
 	switch item.Type {
 	case "session.assistant.started":
 		var payload struct {
@@ -1031,7 +1053,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			if strings.TrimSpace(state.text.String()) == "" {
 				return nil, nil
 			}
-			line := prefixTaskActivity(prefix, "○ response: "+state.text.String())
+			line := t.eventLine(node, "○ response: "+state.text.String())
 			return []TaskReport{{ID: key + ":response", Line: line, Style: terminal.TextStyleMuted}}, nil
 		case "reasoning_summary":
 			if !state.reasoningSummary {
@@ -1052,7 +1074,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			if delta.Done {
 				icon = "✓"
 			}
-			line := prefixTaskActivity(prefix, icon+" Thought: "+SingleLineReasoningSummary(state.reasoning.String()))
+			line := t.eventLine(node, icon+" Thought: "+SingleLineReasoningSummary(state.reasoning.String()))
 			return []TaskReport{{ID: key + ":reasoning", Line: line, Terminal: delta.Done, EmitPlain: delta.Done, Style: terminal.TextStyleMuted}}, nil
 		case "reasoning":
 			if !thinking || state.reasoningSummary {
@@ -1062,12 +1084,12 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			if strings.TrimSpace(state.reasoning.String()) == "" {
 				return nil, nil
 			}
-			line := prefixTaskActivity(prefix, SpinnerFrames[0]+" Reasoning: "+SingleLineReasoningSummary(state.reasoning.String()))
+			line := t.eventLine(node, SpinnerFrames[0]+" Reasoning: "+SingleLineReasoningSummary(state.reasoning.String()))
 			return []TaskReport{{ID: key + ":reasoning", Line: line, Style: terminal.TextStyleMuted}}, nil
 		case "tool_input":
 			return nil, nil
 		default:
-			return []TaskReport{{ID: key + ":status", Line: prefix + "status: " + delta.Kind, Style: terminal.TextStyleMuted}}, nil
+			return []TaskReport{{ID: key + ":status", Line: t.eventLine(node, "status: "+delta.Kind), Style: terminal.TextStyleMuted}}, nil
 		}
 	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
 		var payload struct {
@@ -1112,7 +1134,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 				if state.reasoningSummary {
 					label = "Thought: "
 				}
-				reasoning.Line = prefixTaskActivity(prefix, "✓ "+label+SingleLineReasoningSummary(state.reasoning.String()))
+				reasoning.Line = t.eventLine(node, "✓ "+label+SingleLineReasoningSummary(state.reasoning.String()))
 				reasoning.EmitPlain = true
 				reasoning.Skip = false
 			}
@@ -1124,7 +1146,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if text == "" {
 			text = "response complete"
 		}
-		return append(reports, TaskReport{ID: key + ":response", Line: prefixTaskActivity(prefix, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
+		return append(reports, TaskReport{ID: key + ":response", Line: t.eventLine(node, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
 	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}
@@ -1139,7 +1161,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if report.Block != "" {
 			block = prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
 		}
-		return []TaskReport{{ID: scope + "tool:" + callID, Line: prefixTaskActivity(prefix, line), Block: block, Terminal: report.Terminal, EmitPlain: true, Skip: report.Hidden, Style: report.Style}}, nil
+		return []TaskReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, Terminal: report.Terminal, EmitPlain: true, Skip: report.Hidden, Style: report.Style}}, nil
 	case v1.EventToolOutputDelta:
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}
@@ -1154,7 +1176,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			return nil, nil
 		}
 		block := prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
-		return []TaskReport{{ID: scope + "tool:" + output.ToolCallID, Line: prefixTaskActivity(prefix, report.Line), Block: block, Style: report.Style}}, nil
+		return []TaskReport{{ID: scope + "tool:" + output.ToolCallID, Line: t.eventLine(node, report.Line), Block: block, Style: report.Style}}, nil
 	case v1.EventTaskProgress:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {
@@ -1194,12 +1216,12 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if status.Message != "" {
 			line = status.Message
 		}
-		return []TaskReport{{ID: scope + "status:" + status.MessageID, Line: prefix + line, Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
+		return []TaskReport{{ID: scope + "status:" + status.MessageID, Line: t.eventLine(node, "↻ "+line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
 	case "session.context.initialized", "session.context.changed", "session.context.replaced":
 		lines := AgentsLoadedActivities(item)
 		reports := make([]TaskReport, 0, len(lines))
 		for i, line := range lines {
-			reports = append(reports, TaskReport{ID: fmt.Sprintf("%scontext:%d", scope, i), Line: prefixTaskActivity(prefix, line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted})
+			reports = append(reports, TaskReport{ID: fmt.Sprintf("%scontext:%d", scope, i), Line: t.eventLine(node, line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted})
 		}
 		return reports, nil
 	default:
@@ -1237,9 +1259,9 @@ func (t *TaskTracker) monitorReport(node *taskNode, item v1.Event) ([]TaskReport
 			body += ": " + detail
 		}
 	}
-	line := icon + " " + body
+	line := EventLine(0, "", icon+" "+body)
 	if node.id != managedtask.MainTaskID {
-		line = prefixTaskActivity(t.prefix(node), line)
+		line = t.eventLine(node, icon+" "+body)
 	}
 	return []TaskReport{{ID: id, Line: line, Terminal: terminalEvent, EmitPlain: terminalEvent, Style: style}}, nil
 }

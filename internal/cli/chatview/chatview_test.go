@@ -67,31 +67,41 @@ func TestPresentationResolvesFriendlyTaskNames(t *testing.T) {
 	}
 }
 
-func TestTaskPrefixIncludesAgentNameAndLeadsWithActivityIcon(t *testing.T) {
+func TestEventLineRendersAgentAndSubagentEvents(t *testing.T) {
 	for _, test := range []struct {
-		name       string
-		depth      int
-		agent      string
-		session    string
-		activity   string
-		wantPrefix string
-		want       string
+		name, icon, agent, event, want string
+		indent                         int
 	}{
-		{name: "named tool", depth: 1, agent: "explorer", session: "ui-hierarchy", activity: "✓ read · internal/app/app.go", wantPrefix: "  [explorer:ui-hierarchy] ", want: "  ✓ [explorer:ui-hierarchy] read · internal/app/app.go"},
-		{name: "streaming tool", depth: 1, agent: "explorer", session: "ui-hierarchy", activity: "  ◐ Running exec_command", wantPrefix: "  [explorer:ui-hierarchy] ", want: "  ◐ [explorer:ui-hierarchy] Running exec_command"},
-		{name: "agent only", depth: 2, agent: "review", activity: "○ response: checking", wantPrefix: "    [review] ", want: "    ○ [review] response: checking"},
-		{name: "name only", depth: 1, session: "ui-hierarchy", activity: "⠋ Thought: inspecting", wantPrefix: "  [ui-hierarchy] ", want: "  ⠋ [ui-hierarchy] Thought: inspecting"},
-		{name: "generic fallback", depth: 0, activity: "status: idle", wantPrefix: "  [agent] ", want: "  [agent] status: idle"},
+		{name: "main agent", icon: "↻", event: "Status prompt injected", want: "↻ Status prompt injected"},
+		{name: "subagent", indent: 1, icon: "↻", agent: "explorer:plan-sandbox-flow", event: "Status prompt injected", want: "  ↻ [explorer:plan-sandbox-flow] Status prompt injected"},
+		{name: "nested subagent", indent: 2, icon: "○", agent: "review", event: "response: checking", want: "    ○ [review] response: checking"},
+		{name: "default icon", indent: 1, agent: "agent", event: "status: idle", want: "  • [agent] status: idle"},
+		{name: "multiline", indent: 1, icon: "✓", agent: "explorer", event: "first\nsecond", want: "  ✓ [explorer] first\n  [explorer] second"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			prefix := taskPrefix(test.depth, test.agent, test.session)
-			if prefix != test.wantPrefix {
-				t.Errorf("taskPrefix() = %q, want %q", prefix, test.wantPrefix)
+			event := test.event
+			if test.icon != "" {
+				event = test.icon + " " + event
 			}
-			if got := prefixTaskActivity(prefix, test.activity); got != test.want {
-				t.Errorf("prefixTaskActivity() = %q, want %q", got, test.want)
+			if got := EventLine(test.indent, test.agent, event); got != test.want {
+				t.Errorf("EventLine() = %q, want %q", got, test.want)
 			}
 		})
+	}
+}
+
+func TestTaskStatusLeadsWithActivityIcon(t *testing.T) {
+	tracker := NewTaskTracker()
+	_, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
+		TaskID: "task-explorer", SessionID: "session-explorer", Kind: "agent", Agent: "explorer", Name: "plan-sandbox-flow",
+	}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(v1.SessionStatus{Kind: "status_prompt", Message: "Status prompt injected"})
+	reports, err := tracker.Apply(v1.Event{Type: v1.EventSessionStatus, TaskID: "task-explorer", Data: data}, false)
+	if err != nil || len(reports) != 1 || reports[0].Line != "  ↻ [explorer:plan-sandbox-flow] Status prompt injected" {
+		t.Fatalf("status report = %#v, %v", reports, err)
 	}
 }
 
