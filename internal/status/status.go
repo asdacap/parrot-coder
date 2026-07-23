@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/amirulashraf/parrot-coder/internal/task"
 )
 
 type Query struct {
@@ -37,6 +39,41 @@ type Static struct {
 func (s Static) Key() string { return s.ProviderKey }
 func (s Static) Observe(context.Context, Query) (Observation, error) {
 	return Observation{Available: strings.TrimSpace(s.Text) != "", Text: s.Text}, nil
+}
+
+type activeTaskLister interface {
+	ListActive(sessionID string) []task.Active
+}
+
+type ActiveTasks struct {
+	tasks activeTaskLister
+}
+
+func NewActiveTasks(tasks activeTaskLister) ActiveTasks { return ActiveTasks{tasks: tasks} }
+
+func (ActiveTasks) Key() string { return "runtime:tasks" }
+func (p ActiveTasks) Observe(_ context.Context, query Query) (Observation, error) {
+	if p.tasks == nil {
+		return Observation{Available: true, Text: "Active tasks: none"}, nil
+	}
+	active := append([]task.Active(nil), p.tasks.ListActive(query.SessionID)...)
+	sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
+	if len(active) == 0 {
+		return Observation{Available: true, Text: "Active tasks: none"}, nil
+	}
+	lines := make([]string, 1, len(active)+1)
+	lines[0] = "Active tasks:"
+	for _, item := range active {
+		details := []string{string(item.Kind), item.Status}
+		if item.Kind == task.KindAgent {
+			if item.Agent != "" {
+				details = append(details, "agent: "+item.Agent)
+			}
+			details = append(details, fmt.Sprintf("turn: %d", item.Turn), fmt.Sprintf("depth: %d", item.Depth))
+		}
+		lines = append(lines, fmt.Sprintf("- %s (%s)", item.ID, strings.Join(details, ", ")))
+	}
+	return Observation{Available: true, Text: strings.Join(lines, "\n")}, nil
 }
 
 type Selection struct{}

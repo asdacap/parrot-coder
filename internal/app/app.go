@@ -465,7 +465,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	monitors := monitor.NewService(processes, subagents, sessions, live, tasks)
 	result.monitors = monitors
 	tools := tool.NewRegistry()
-	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{})
+	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks))
 	if err != nil {
 		return nil, fmt.Errorf("app: status registry: %w", err)
 	}
