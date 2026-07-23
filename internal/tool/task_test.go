@@ -40,8 +40,11 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != `{"task_id":"task_agent","kind":"agent","status":"succeeded","output":"done"}` {
+	if result.Metadata["task_id"] != "task_agent" || result.Metadata["kind"] != "agent" || result.Metadata["status"] != "succeeded" || result.Metadata["output"] != "done" {
 		t.Fatalf("completion = %s", result.Text)
+	}
+	if _, ok := result.Metadata["elapsed_ms"].(float64); !ok || result.Metadata["yielded"] != nil {
+		t.Fatalf("completion metadata = %#v", result.Metadata)
 	}
 
 	controller.wait = func(ctx context.Context, _, taskID string) (managedtask.Result, error) {
@@ -56,8 +59,11 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != `{"task_id":"task_agent","kind":"agent","status":"running"}` {
+	if result.Metadata["task_id"] != "task_agent" || result.Metadata["kind"] != "agent" || result.Metadata["status"] != "running" || result.Metadata["yielded"] != true {
 		t.Fatalf("yield = %s", result.Text)
+	}
+	if elapsed, ok := result.Metadata["elapsed_ms"].(float64); !ok || elapsed < 1 {
+		t.Fatalf("elapsed_ms = %#v", result.Metadata["elapsed_ms"])
 	}
 	if described, err := item.DescribeRequest(plan.CanonicalInput); err != nil || described != "Wait for task task_agent" {
 		t.Fatalf("description = %q, %v", described, err)
