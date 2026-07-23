@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -52,6 +53,45 @@ func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
 	}
 	if recreated := repository.Get("a"); recreated == first {
 		t.Fatal("removed session was not recreated")
+	}
+}
+
+func TestAgentSessionRepositoryChildHierarchy(t *testing.T) {
+	repository := &AgentSessionRepository{children: map[string]ChildSession{
+		"child-b": {SessionID: "child-b", ParentSessionID: "parent", TaskID: "task-b"},
+		"nested":  {SessionID: "nested", ParentSessionID: "child-a", TaskID: "task-nested"},
+		"child-a": {SessionID: "child-a", ParentSessionID: "parent", TaskID: "task-a"},
+	}}
+
+	parent, task, ok := repository.ChildRelation("child-a")
+	if !ok || parent != "parent" || task != "task-a" {
+		t.Fatalf("ChildRelation = %q, %q, %v", parent, task, ok)
+	}
+	if _, _, ok := repository.ChildRelation("missing"); ok {
+		t.Fatal("missing child relation was found")
+	}
+	children := repository.ChildSessions("parent")
+	want := []ChildSession{
+		{SessionID: "child-a", ParentSessionID: "parent", TaskID: "task-a"},
+		{SessionID: "child-b", ParentSessionID: "parent", TaskID: "task-b"},
+	}
+	if !slices.Equal(children, want) {
+		t.Fatalf("ChildSessions = %#v, want %#v", children, want)
+	}
+	if err := repository.ForgetChild("child-a", "other-task"); !errors.Is(err, ErrChildTaskMismatch) {
+		t.Fatalf("ForgetChild wrong task = %v", err)
+	}
+	if _, _, ok := repository.ChildRelation("child-a"); !ok {
+		t.Fatal("wrong task forgot child relation")
+	}
+	if err := repository.ForgetChild("child-a", "task-a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := repository.ForgetChild("missing", "task"); err != nil {
+		t.Fatalf("ForgetChild missing = %v", err)
+	}
+	if _, _, ok := repository.ChildRelation("child-a"); ok {
+		t.Fatal("child relation was not forgotten")
 	}
 }
 

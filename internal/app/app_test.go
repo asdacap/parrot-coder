@@ -1003,9 +1003,15 @@ func TestReportSubagentEventConvertsUsageAndToolCalls(t *testing.T) {
 	}
 }
 
+type testSessionHierarchy map[string]agent.ChildSession
+
+func (h testSessionHierarchy) ChildRelation(sessionID string) (string, string, bool) {
+	relation, ok := h[sessionID]
+	return relation.ParentSessionID, relation.TaskID, ok
+}
+
 func TestBrokerFlattensTaskAttribution(t *testing.T) {
-	live := event.NewBroker(nil, nil)
-	live.RegisterChild("child", "parent", "outer-task")
+	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent", TaskID: "outer-task"}})
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
 
@@ -1055,8 +1061,7 @@ func decodeTaskEvent(t *testing.T, item v1.Event) *v1.TaskEvent {
 }
 
 func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
-	live := event.NewBroker(nil, nil)
-	live.RegisterChild("child", "parent", "task-explore")
+	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent", TaskID: "task-explore"}})
 	parentEvents, unsubscribeParent := live.Subscribe("parent", 2)
 	defer unsubscribeParent()
 	var progress []subagent.Progress

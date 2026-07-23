@@ -343,14 +343,29 @@ func TestAgentSessionPromptAndSendOwnAdmissionAndResultHandling(t *testing.T) {
 	}
 }
 
+type childCreatedObserverFunc func(ChildSession)
+
+func (f childCreatedObserverFunc) ChildCreated(child ChildSession) { f(child) }
+
 func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	parent, err := h.sessions.Get(context.Background(), h.sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
+	var observed ChildSession
+	h.agentSessions.AddChildCreatedObserver(childCreatedObserverFunc(func(child ChildSession) {
+		observed = child
+		if relationParent, taskID, ok := h.agentSessions.ChildRelation(child.SessionID); !ok || relationParent != child.ParentSessionID || taskID != child.TaskID {
+			t.Fatalf("relationship unavailable to observer: %q, %q, %v", relationParent, taskID, ok)
+		}
+		if _, ok := h.agentSessions.Lookup(child.SessionID); !ok {
+			t.Fatal("runtime unavailable to observer")
+		}
+	}))
 	child, err := h.agentSessions.CreateChild(context.Background(), ChildSessionRequest{
 		ParentSessionID:  parent.ID,
+		TaskID:           "task-inspect",
 		ProjectID:        parent.ProjectID,
 		Name:             "inspect",
 		Agent:            BuildID,
@@ -369,6 +384,14 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	}
 	if bound, ok := h.agentSessions.Lookup(selected.ID); !ok || bound != child {
 		t.Fatal("created child was not bound in the repository")
+	}
+	wantRelation := ChildSession{SessionID: selected.ID, ParentSessionID: parent.ID, TaskID: "task-inspect"}
+	if observed != wantRelation {
+		t.Fatalf("observed child = %#v, want %#v", observed, wantRelation)
+	}
+	children := h.agentSessions.ChildSessions(parent.ID)
+	if len(children) != 1 || children[0] != wantRelation {
+		t.Fatalf("ChildSessions = %#v, want %#v", children, []ChildSession{wantRelation})
 	}
 }
 
