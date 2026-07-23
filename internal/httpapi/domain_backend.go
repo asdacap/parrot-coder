@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
@@ -36,8 +35,7 @@ type DomainBackend struct {
 	Questions          *question.Broker
 	Todos              *session.TodoService
 	Goals              *session.GoalService
-	Events             *event.Repository
-	Live               *event.Broker
+	Events             *event.Broker
 	EventQueue         int
 	DefaultSelection   session.Selection
 	ProviderResolver   agent.ProviderResolver
@@ -349,9 +347,9 @@ func (b *DomainBackend) Wake(id string) {
 		return
 	}
 	b.AgentSessions.Wake(id)
-	if b.Live != nil {
+	if b.Events != nil {
 		data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
-		b.Live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})
+		b.Events.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})
 	}
 }
 
@@ -397,50 +395,11 @@ func (b *DomainBackend) OpenEvents(ctx context.Context, id string, after int64) 
 	if capacity <= 0 {
 		capacity = 64
 	}
-	var live <-chan v1.Event
-	closeLive := func() {}
-	if b.Live != nil {
-		live, closeLive = b.Live.Subscribe(id, capacity)
-	}
-	replay, subscription, err := b.Events.ReplayAndSubscribe(ctx, id, after, capacity)
+	stream, err := b.Events.ReplayAndSubscribe(ctx, id, after, capacity)
 	if err != nil {
-		closeLive()
 		return nil, err
 	}
-	out := &EventStream{Replay: make([]v1.Event, len(replay)), Durable: make(chan v1.Event), Live: live}
-	durable := make(chan v1.Event)
-	out.Durable = durable
-	stop := make(chan struct{})
-	go func() {
-		defer close(durable)
-		for {
-			select {
-			case item, ok := <-subscription.Events:
-				if !ok {
-					return
-				}
-				select {
-				case durable <- durableEvent(item):
-				case <-stop:
-					return
-				}
-			case <-stop:
-				return
-			}
-		}
-	}()
-	for i, item := range replay {
-		out.Replay[i] = durableEvent(item)
-	}
-	var once sync.Once
-	out.Close = func() {
-		once.Do(func() {
-			close(stop)
-			subscription.Close()
-			closeLive()
-		})
-	}
-	return out, nil
+	return &EventStream{Replay: stream.Replay, Durable: stream.Durable, Live: stream.Transient, Close: stream.Close}, nil
 }
 
 func (b *DomainBackend) ListPermissions(ctx context.Context, id string) (v1.PermissionList, error) {
@@ -509,9 +468,9 @@ func (b *DomainBackend) ReplyPermission(ctx context.Context, sessionID, requestI
 	if err != nil {
 		return ErrPermissionNotFound
 	}
-	if b.Live != nil {
+	if b.Events != nil {
 		data, _ := json.Marshal(v1.PermissionResolved{RequestID: requestID, Decision: reply.Decision})
-		b.Live.PublishEvent(v1.Event{Type: v1.EventPermissionReply, SessionID: sessionID, Data: data})
+		b.Events.PublishEvent(v1.Event{Type: v1.EventPermissionReply, SessionID: sessionID, Data: data})
 	}
 	return nil
 }
@@ -560,9 +519,9 @@ func (b *DomainBackend) ReplyQuestion(ctx context.Context, sessionID, requestID 
 		if err := b.Questions.Reject(requestID); err != nil {
 			return ErrQuestionNotFound
 		}
-		if b.Live != nil {
+		if b.Events != nil {
 			data, _ := json.Marshal(v1.QuestionResolved{RequestID: requestID, Rejected: true})
-			b.Live.PublishEvent(v1.Event{Type: v1.EventQuestionReply, SessionID: sessionID, Data: data})
+			b.Events.PublishEvent(v1.Event{Type: v1.EventQuestionReply, SessionID: sessionID, Data: data})
 		}
 		return nil
 	}
@@ -573,9 +532,9 @@ func (b *DomainBackend) ReplyQuestion(ctx context.Context, sessionID, requestID 
 	if err := b.Questions.Reply(requestID, response); err != nil {
 		return ErrInvalid
 	}
-	if b.Live != nil {
+	if b.Events != nil {
 		data, _ := json.Marshal(v1.QuestionResolved{RequestID: requestID})
-		b.Live.PublishEvent(v1.Event{Type: v1.EventQuestionReply, SessionID: sessionID, Data: data})
+		b.Events.PublishEvent(v1.Event{Type: v1.EventQuestionReply, SessionID: sessionID, Data: data})
 	}
 	return nil
 }
@@ -821,11 +780,6 @@ func (b *DomainBackend) validateSelection(selection session.Selection) error {
 		}
 	}
 	return nil
-}
-
-func durableEvent(item event.Event) v1.Event {
-	sequence, created := item.Sequence, item.CreatedAt
-	return v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, Sequence: &sequence, Data: item.Data, CreatedAt: &created}
 }
 
 func containsPermission(items []v1.Permission, id string) bool {

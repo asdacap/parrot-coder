@@ -326,7 +326,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	// The project table was a cache of project.StableID, which is a pure
 	// function of the canonical working directory, so every host recomputes it instead.
 	repository := event.NewRepository(sessionStore)
-	live := event.NewBroker()
+	live := event.NewBroker(repository, event.NewTransientRepository())
+	live.SetTaskIDFor(func(string) string { return managedtask.MainTaskID })
 	sessions := session.NewService(sessionStore, repository)
 	configuredVariant := loaded.Config.DefaultVariant
 	if options.Variant != "" {
@@ -419,7 +420,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
-	subagentExecutor := &appSubagentExecutor{events: repository, projectID: info.ID, defaultSelection: defaultSelection, live: live}
+	subagentExecutor := &appSubagentExecutor{projectID: info.ID, defaultSelection: defaultSelection, events: live}
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
 	subagents := subagent.NewManager(subagentExecutor, subagent.Config{AgentIdentity: func(id string) string {
 		profile, resolveErr := profileResolver.GetProfile(id)
@@ -440,12 +441,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		publishSubagentLifecycle(live, item)
 	}})
 	result.subagents = subagents
-	live.SetTaskIDFor(func(sessionID string) string {
-		if task, ok := subagents.TaskForSession(sessionID); ok {
-			return task.ID
-		}
-		return managedtask.MainTaskID
-	})
+
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
 		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Kind: string(managedtask.KindShell), Error: item.Error}
 		eventType := managedtask.EventStart
@@ -524,10 +520,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
 		},
 		Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
-			if task, ok := subagents.TaskForSession(sessionID); ok {
-				return task.ID
-			}
-			return managedtask.MainTaskID
+			return live.TaskIDFor(sessionID, managedtask.MainTaskID)
 		}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
 		ToolPanicLogger: toolPanicLogger(),
 	}, reporter)
@@ -540,7 +533,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, AgentSessions: agentSessions, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
-		Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: monitors,
+		Events: live, DefaultSelection: defaultSelection, Processes: monitors,
 		ProviderResolver: providerRegistry, Tools: toolSnapshot,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
@@ -1183,11 +1176,10 @@ func skillMetadata(registry *skill.Registry) string {
 }
 
 type appSubagentExecutor struct {
-	events           *event.Repository
 	agentSessions    *agent.AgentSessionRepository
 	projectID        string
 	defaultSelection session.Selection
-	live             *event.Broker
+	events           *event.Broker
 }
 
 func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Execution) (string, error) {
@@ -1205,6 +1197,7 @@ func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Ex
 	if err != nil {
 		return "", err
 	}
+	e.events.RegisterChild(child.ID(), execution.ParentSession, execution.TaskID)
 	return child.ID(), nil
 }
 
@@ -1216,8 +1209,10 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	if !ok {
 		return "", errors.New("app: subagent session is unavailable")
 	}
-	stopEvents := e.forwardEvents(execution.SessionID, execution)
-	defer stopEvents()
+	stopProgress := e.events.ObserveTransient(execution.SessionID, func(item v1.Event) {
+		reportSubagentEvent(execution.ReportProgress, item)
+	})
+	defer stopProgress()
 	return child.Prompt(ctx, execution.Request.Prompt)
 }
 
@@ -1230,123 +1225,6 @@ func (e *appSubagentExecutor) Send(ctx context.Context, execution subagent.Execu
 		return "", errors.New("app: subagent session is unavailable")
 	}
 	return child.Send(ctx, message)
-}
-
-// forwardEvents projects both durable child lifecycle/tool events and
-// disposable provider deltas onto the parent session as flat events. Nothing
-// is nested: every event keeps its own type and data, and its task_id
-// identifies the task which produced it. A terminal only needs one
-// subscription regardless of subagent recursion.
-func (e *appSubagentExecutor) forwardEvents(childSession string, execution subagent.Execution) func() {
-	if e.live == nil {
-		return func() {}
-	}
-	liveEvents, unsubscribeLive := e.live.Subscribe(childSession, 256)
-	var durableEvents <-chan event.Event
-	var durableSubscription *event.Subscription
-	if e.events != nil {
-		durableSubscription = e.events.Subscribe(childSession, 256)
-		durableEvents = durableSubscription.Events
-	}
-	stop := make(chan struct{})
-	done := make(chan struct{})
-	forwardLive := func(item v1.Event) {
-		reportSubagentEvent(execution.ReportProgress, item)
-		e.forwardEvent(execution, item)
-	}
-	forwardDurable := func(item event.Event) {
-		e.forwardEvent(execution, v1.Event{Type: item.Type, SessionID: item.SessionID, Data: item.Data})
-	}
-	go func() {
-		defer close(done)
-		for {
-			select {
-			case item, ok := <-liveEvents:
-				if !ok {
-					liveEvents = nil
-					continue
-				}
-				forwardLive(item)
-			case item, ok := <-durableEvents:
-				if !ok {
-					durableEvents = nil
-					continue
-				}
-				// Provider deltas are published before the durable assistant
-				// completion they lead to. Drain ready deltas first so the parent
-				// observes the same causal order as a direct session subscriber.
-				if strings.HasPrefix(item.Type, "session.assistant.") && item.Type != "session.assistant.started" {
-					for {
-						select {
-						case liveItem, liveOK := <-liveEvents:
-							if !liveOK {
-								liveEvents = nil
-								break
-							}
-							forwardLive(liveItem)
-						default:
-							goto liveDrained
-						}
-					}
-				}
-			liveDrained:
-				forwardDurable(item)
-			case <-stop:
-				// The execution is complete by the time stop is closed. Drain events
-				// which were already queued without waiting on subscriptions that stay
-				// open for the lifetime of the application. Disposable provider deltas
-				// must be drained before durable completion events, or a final answer
-				// could be rendered as complete before its text arrives.
-				for {
-					select {
-					case item, ok := <-liveEvents:
-						if !ok {
-							liveEvents = nil
-							goto durableDrain
-						}
-						forwardLive(item)
-					default:
-						goto durableDrain
-					}
-				}
-			durableDrain:
-				for {
-					select {
-					case item, ok := <-durableEvents:
-						if !ok {
-							return
-						}
-						forwardDurable(item)
-					default:
-						return
-					}
-				}
-			}
-		}
-	}()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			close(stop)
-			<-done
-			unsubscribeLive()
-			if durableSubscription != nil {
-				durableSubscription.Close()
-			}
-		})
-	}
-}
-
-// forwardEvent republishes one child-session event on the parent session's
-// stream. The republished event is live and sequence-free on the parent, and
-// its task attribution is the child's main task unless the event already
-// belongs to one of the child's own subtasks.
-func (e *appSubagentExecutor) forwardEvent(execution subagent.Execution, item v1.Event) {
-	taskID := item.TaskID
-	if taskID == "" {
-		taskID = execution.TaskID
-	}
-	e.live.PublishEvent(v1.Event{Type: item.Type, SessionID: execution.ParentSession, TaskID: taskID, Data: item.Data})
 }
 
 // publishSubagentLifecycle publishes one flat task lifecycle event for an
