@@ -111,7 +111,9 @@ command sandbox. Command parsing is never represented as a security boundary.
 Configured `sandbox_rules` in global `parrot.yaml` apply ordered filesystem
 rules after the base mounts. Each rule maps a path to an action —
 `allow_write`, `deny_read`, `allow_read`, or `deny_write` — and later rules
-override earlier ones. Project-scope configuration cannot define sandbox rules.
+override earlier ones for writable profiles. Project-scope configuration cannot
+define sandbox rules. For read-only profiles, configured rules cannot add write
+access or mask a narrow explicit write path such as a designated plan artifact.
 
 ## Changes and Recovery
 

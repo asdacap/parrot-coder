@@ -802,6 +802,47 @@ func TestRunnerCancellationDuringProviderStreamDropsUnexecutedToolCalls(t *testi
 	}
 }
 
+type preparedProfileResolver struct{ base Profile }
+
+func (r preparedProfileResolver) GetProfile(string) (Profile, error) { return r.base, nil }
+func (r preparedProfileResolver) PrepareTurn(string, string) (Profile, error) {
+	profile := r.base
+	profile.WritePaths = []string{"/tmp/plan.md"}
+	return profile, nil
+}
+
+type profileCaptureTool struct {
+	fakeTool
+	paths []string
+}
+
+func (t *profileCaptureTool) Execute(_ context.Context, _ tool.Plan, call tool.CallContext) (tool.Result, error) {
+	t.paths = call.SecurityProfile.AllowWritePaths()
+	return tool.Result{Text: "ok", ModelText: "ok"}, nil
+}
+
+func TestRunnerKeepsPreparedProfileAcrossToolContinuations(t *testing.T) {
+	capture := &profileCaptureTool{fakeTool: fakeTool{id: "capture"}}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		if index < 2 {
+			name := []string{"status", "capture"}[index]
+			call := protocol.ToolCall{ID: name, Name: name, Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	base := Profile{ID: "plan", Prompt: "plan", ReadOnly: true, MaxTurns: 10}
+	h := newRunnerHarness(t, fake, []Profile{base}, &fakeTool{id: "status"}, capture)
+	h.runner.config.Profiles = preparedProfileResolver{base: base}
+	h.admit(t, "user", "plan", session.DeliverySteer)
+	if err := h.runner.drainOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(capture.paths) != 1 || capture.paths[0] != "/tmp/plan.md" {
+		t.Fatalf("continuation write paths = %#v", capture.paths)
+	}
+}
+
 func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {
 	var executed atomic.Bool
 	mutation := &fakeTool{id: "mutate", execute: func(context.Context) (tool.Result, error) {

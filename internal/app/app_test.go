@@ -75,6 +75,7 @@ func TestAgentRecursionLimitPolicy(t *testing.T) {
 		limit    int
 	}{
 		{id: mode.PlanID, identity: mode.PlanID, limit: 1},
+		{id: mode.QueryID, identity: mode.QueryID, limit: 1},
 		{id: mode.BuildID, identity: mode.BuildID, limit: 3},
 		{id: agent.ExploreID, identity: agent.ExplorerID, limit: 3},
 		{id: agent.ExplorerID, identity: agent.ExplorerID, limit: 3},
@@ -655,6 +656,7 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 		"providers.local.header_timeout_ms",
 		"mcp.server.command",
 		"web_fetch.allow_private",
+		"sandbox_rules",
 		"sandbox_rules.0.path",
 		"sandbox_rules.0.rule",
 	} {

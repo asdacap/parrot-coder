@@ -745,15 +745,70 @@ func (s *recordingStore) Create(context.Context) (ManagedOutput, error) {
 func (s *recordingStore) Read(string, int64, int64) ([]byte, error) { return nil, nil }
 
 type recordingRulesSandbox struct {
-	rules []security.Rule
+	rules    []security.Rule
+	writable []string
 }
 
 func (s *recordingRulesSandbox) command(_ string, _ string, _ string, profile security.SecurityProfile, _ string) (string, []string, error) {
 	s.rules = append([]security.Rule(nil), profile.Rules()...)
+	s.writable = append([]string(nil), profile.AllowWritePaths()...)
 	return "/bin/sh", []string{"-c", "true"}, nil
 }
 
 func (*recordingRulesSandbox) temporaryDirectory(path string) string { return path }
+
+type testSecurityProfile struct {
+	readOnly  bool
+	writePath string
+}
+
+func (p testSecurityProfile) IsReadOnly() bool          { return p.readOnly }
+func (testSecurityProfile) AllowReadPaths() []string    { return []string{"/"} }
+func (p testSecurityProfile) AllowWritePaths() []string { return []string{p.writePath} }
+func (testSecurityProfile) DenyWritePaths() []string    { return nil }
+func (testSecurityProfile) Rules() []security.Rule      { return nil }
+
+func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.T) {
+	root := t.TempDir()
+	ws, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	artifact := filepath.Join(t.TempDir(), "plan.md")
+	if err := os.WriteFile(artifact, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules := []security.Rule{
+		{Path: "/", Action: security.ActionAllowWrite},
+		{Path: artifact, Action: security.ActionDenyWrite},
+		{Path: "/secret", Action: security.ActionDenyRead},
+	}
+	runner, err := NewRunner(Config{Workspace: ws, OutputStore: &memoryOutputStore{}, SandboxRules: rules})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name    string
+		profile testSecurityProfile
+		want    []security.Rule
+	}{
+		{name: "read-only", profile: testSecurityProfile{readOnly: true, writePath: artifact}, want: rules[2:]},
+		{name: "writable", profile: testSecurityProfile{writePath: artifact}, want: rules},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			profile, err := runner.buildProfile(test.profile, test.name, root, t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(profile.Rules(), test.want) {
+				t.Fatalf("Rules() = %#v, want %#v", profile.Rules(), test.want)
+			}
+			if !slices.Contains(profile.AllowWritePaths(), artifact) {
+				t.Fatalf("AllowWritePaths() = %q, want artifact %q", profile.AllowWritePaths(), artifact)
+			}
+		})
+	}
+}
 
 func TestBuildProfileIncludesSandboxRules(t *testing.T) {
 	root := t.TempDir()
