@@ -94,6 +94,8 @@ func TestRunnerInjectsComposedStatusOnlyWhenPending(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.runner.config.Status = registry
+	live := &recordingPublisher{}
+	h.runner.config.Live = live
 	for _, text := range []string{"first", "second"} {
 		h.admit(t, text, text, session.DeliverySteer)
 		if err := h.runner.drainOnce(context.Background()); err != nil {
@@ -121,6 +123,18 @@ func TestRunnerInjectsComposedStatusOnlyWhenPending(t *testing.T) {
 		if requests[index].Instructions != want[index] {
 			t.Errorf("request %d instructions = %q, want %q", index, requests[index].Instructions, want[index])
 		}
+	}
+	var statusEvents int
+	for _, item := range live.events {
+		if item.Type == protocol.EventStatusPromptInjected {
+			statusEvents++
+			if item.Text != "Status prompt injected" {
+				t.Fatalf("status prompt event text = %q", item.Text)
+			}
+		}
+	}
+	if statusEvents != 2 {
+		t.Fatalf("status prompt event count = %d, want 2", statusEvents)
 	}
 }
 
@@ -882,6 +896,8 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	h.runner.config.Status = statusObserver("retry status")
+	live := &recordingPublisher{}
+	h.runner.config.Live = live
 	compactor := &fakeCompactor{compact: func(request compaction.Request) (compaction.Result, error) {
 		if request.Force {
 			return compaction.Result{Status: "complete", RecordID: "cmpr_retry"}, nil
@@ -914,6 +930,15 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 	}
 	if retries != 1 {
 		t.Fatalf("retry events = %d", retries)
+	}
+	injections := 0
+	for _, item := range live.events {
+		if item.Type == protocol.EventStatusPromptInjected {
+			injections++
+		}
+	}
+	if injections != 2 {
+		t.Fatalf("status prompt injection events = %d, want 2", injections)
 	}
 }
 

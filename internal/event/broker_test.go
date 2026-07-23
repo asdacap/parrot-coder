@@ -148,22 +148,32 @@ func TestLiveBrokerRejectsUnknownOrInvalidEvents(t *testing.T) {
 	}
 }
 
-func TestLiveBrokerMapsProviderRetryNotice(t *testing.T) {
-	broker := event.NewBroker(nil, nil, nil)
-	events, closeSubscription := broker.Subscribe("ses_test", 1)
-	defer closeSubscription()
-	broker.Publish("ses_test", protocol.Event{Type: protocol.EventProviderRetry, Text: "provider fake is overloaded; retrying in 2s (attempt 1)"})
-	item := <-events
-	if item.Type != v1.EventSessionStatus {
-		t.Fatalf("type = %q", item.Type)
-	}
-	payload, err := v1.DecodeEventData(item)
-	if err != nil {
-		t.Fatal(err)
-	}
-	status := payload.(*v1.SessionStatus)
-	if status.Kind != "provider_retry" || status.Message != "provider fake is overloaded; retrying in 2s (attempt 1)" {
-		t.Fatalf("status = %#v", status)
+func TestLiveBrokerMapsRunnerNotices(t *testing.T) {
+	for _, test := range []struct {
+		name, kind, message string
+		eventType           protocol.EventType
+	}{
+		{name: "provider retry", eventType: protocol.EventProviderRetry, kind: "provider_retry", message: "provider fake is overloaded; retrying in 2s (attempt 1)"},
+		{name: "status prompt", eventType: protocol.EventStatusPromptInjected, kind: "status_prompt", message: "Status prompt injected"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			broker := event.NewBroker(nil, nil, nil)
+			events, closeSubscription := broker.Subscribe("ses_test", 1)
+			defer closeSubscription()
+			broker.Publish("ses_test", protocol.Event{Type: test.eventType, Text: test.message})
+			item := <-events
+			if item.Type != v1.EventSessionStatus {
+				t.Fatalf("type = %q", item.Type)
+			}
+			payload, err := v1.DecodeEventData(item)
+			if err != nil {
+				t.Fatal(err)
+			}
+			status := payload.(*v1.SessionStatus)
+			if status.Kind != test.kind || status.Message != test.message {
+				t.Fatalf("status = %#v", status)
+			}
+		})
 	}
 }
 

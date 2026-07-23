@@ -143,17 +143,24 @@ func TestEnhancedBusySlashRunsSafeAndRejectsMutation(t *testing.T) {
 	}
 }
 
-func TestEnhancedProviderRetryNoticeFlushesImmediately(t *testing.T) {
-	var output bytes.Buffer
-	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 50})
-	shell := &chatShell{ctx: context.Background(), renderer: renderer}
-	runtime := &enhancedChatRuntime{shell: shell, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
-	status, _ := json.Marshal(v1.SessionStatus{Kind: "provider_retry", Message: "provider fake is overloaded; retrying in 2s (attempt 1)"})
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: status}); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(output.String(), "provider fake is overloaded; retrying in 2s (attempt 1)") {
-		t.Fatalf("retry notice was not flushed: %q", output.String())
+func TestEnhancedNoticesFlushImmediately(t *testing.T) {
+	for _, test := range []struct{ name, kind, message string }{
+		{name: "provider retry", kind: "provider_retry", message: "provider fake is overloaded; retrying in 2s (attempt 1)"},
+		{name: "status prompt", kind: "status_prompt", message: "Status prompt injected"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 50})
+			shell := &chatShell{ctx: context.Background(), renderer: renderer}
+			runtime := &enhancedChatRuntime{shell: shell, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
+			status, _ := json.Marshal(v1.SessionStatus{Kind: test.kind, Message: test.message})
+			if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: status}); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), test.message) {
+				t.Fatalf("notice was not flushed: %q", output.String())
+			}
+		})
 	}
 }
 

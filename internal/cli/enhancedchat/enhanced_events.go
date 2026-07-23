@@ -441,6 +441,10 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			if r.shell != nil {
 				r.shell.commitNotice(message)
 			}
+		case "status_prompt":
+			if r.shell != nil {
+				r.shell.commitNotice(status.Message)
+			}
 		default:
 			r.status = status.Kind
 		}

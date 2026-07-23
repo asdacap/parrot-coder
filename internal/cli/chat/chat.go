@@ -902,7 +902,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				// Retry notices carry a human-readable message; flush it as-is
 				// instead of buffering it into the assistant stream.
 				label := "status: " + value.Kind
-				if value.Kind == "provider_retry" && value.Message != "" {
+				if (value.Kind == "provider_retry" || value.Kind == "status_prompt") && value.Message != "" {
 					label = value.Message
 				}
 				if value.Kind == "router_metadata" && value.Message != "" {

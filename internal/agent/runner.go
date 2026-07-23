@@ -297,6 +297,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 			request.Reasoning = &protocol.ReasoningOptions{Effort: variant.ReasoningEffort, Summary: "auto"}
 		}
+		r.publishStatusPromptInjected(statusPrompt)
 		calls, finish, err := r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 		if err != nil {
 			var failure *providerTurnFailure
@@ -332,6 +333,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 			request.Instructions = runnerInstructions(epoch.Baseline, profile, statusPrompt, turn >= profile.MaxTurns)
 			request.Messages = history
+			r.publishStatusPromptInjected(statusPrompt)
 			calls, finish, err = r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 			if err != nil {
 				return err
@@ -370,6 +372,12 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			continue
 		}
 		return nil
+	}
+}
+
+func (r *agentSession) publishStatusPromptInjected(statusPrompt string) {
+	if r.config.Live != nil && strings.TrimSpace(statusPrompt) != "" {
+		r.config.Live.Publish(r.id, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
 	}
 }
 

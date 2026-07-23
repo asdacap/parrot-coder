@@ -143,6 +143,7 @@ const (
 	EventFinish                EventType = "finish"
 	EventProviderError         EventType = "provider_error"
 	EventProviderRetry         EventType = "provider_retry"
+	EventStatusPromptInjected  EventType = "status_prompt_injected"
 	EventToolOutputDelta       EventType = "tool_output_delta"
 	EventRouterMetadata        EventType = "router_metadata"
 )
@@ -173,14 +174,14 @@ type RouterMetadata struct {
 // is populated.
 type Event struct {
 	Type           EventType
-	MessageID     string
-	PartID        string
-	Text          string
-	ToolInput     *ToolInputDelta
-	ToolCall      *ToolCall
-	Usage         *Usage
-	FinishReason  FinishReason
-	ProviderError *ProviderError
-	ToolCallID    string
+	MessageID      string
+	PartID         string
+	Text           string
+	ToolInput      *ToolInputDelta
+	ToolCall       *ToolCall
+	Usage          *Usage
+	FinishReason   FinishReason
+	ProviderError  *ProviderError
+	ToolCallID     string
 	RouterMetadata *RouterMetadata
 }
