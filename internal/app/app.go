@@ -30,7 +30,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/httpapi"
-	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/monitor"
@@ -420,7 +419,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
-	subagentExecutor := &appSubagentExecutor{sessions: sessions, events: repository, project: info, providers: providerRegistry, defaultSelection: defaultSelection, live: live}
+	subagentExecutor := &appSubagentExecutor{events: repository, projectID: info.ID, defaultSelection: defaultSelection, live: live}
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
 	subagents := subagent.NewManager(subagentExecutor, subagent.Config{AgentIdentity: func(id string) string {
 		profile, resolveErr := profileResolver.GetProfile(id)
@@ -1184,122 +1183,53 @@ func skillMetadata(registry *skill.Registry) string {
 }
 
 type appSubagentExecutor struct {
-	sessions         *session.Service
 	events           *event.Repository
 	agentSessions    *agent.AgentSessionRepository
-	project          project.Info
-	providers        *agent.ProviderRegistry
+	projectID        string
 	defaultSelection session.Selection
 	live             *event.Broker
 }
 
 func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Execution) (string, error) {
-	child, err := e.createSubagentSession(ctx, execution)
+	if e.agentSessions == nil {
+		return "", errors.New("app: subagent agentSessions is unavailable")
+	}
+	child, err := e.agentSessions.CreateChild(ctx, agent.ChildSessionRequest{
+		ParentSessionID:  execution.ParentSession,
+		ProjectID:        e.projectID,
+		Name:             execution.Request.Name,
+		Agent:            execution.Request.Agent,
+		Model:            execution.Request.Model,
+		DefaultSelection: e.defaultSelection,
+	})
 	if err != nil {
 		return "", err
 	}
-	return child.ID, nil
+	return child.ID(), nil
 }
 
 func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
 	if e.agentSessions == nil {
 		return "", errors.New("app: subagent agentSessions is unavailable")
 	}
-	childSession := execution.SessionID
-	messages, err := e.sessions.ListMessages(ctx, childSession)
-	if err != nil {
-		return "", err
+	child, ok := e.agentSessions.Lookup(execution.SessionID)
+	if !ok {
+		return "", errors.New("app: subagent session is unavailable")
 	}
-	var cutoff int64
-	for _, message := range messages {
-		cutoff = max(cutoff, message.Sequence)
-	}
-	stopEvents := e.forwardEvents(childSession, execution)
+	stopEvents := e.forwardEvents(execution.SessionID, execution)
 	defer stopEvents()
-	if _, err := e.admit(ctx, childSession, execution.Request.Prompt); err != nil {
-		return "", err
-	}
-	if err := e.agentSessions.Resume(ctx, childSession); err != nil {
-		if ctx.Err() != nil {
-			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = e.agentSessions.Interrupt(cleanup, childSession)
-			cancel()
-		}
-		return "", err
-	}
-	messages, err = e.sessions.ListMessages(ctx, childSession)
-	if err != nil {
-		return "", err
-	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "assistant" || messages[i].Sequence <= cutoff {
-			continue
-		}
-		if messages[i].Error != "" {
-			return messages[i].Content, errors.New(messages[i].Error)
-		}
-		return messages[i].Content, nil
-	}
-	return "", errors.New("app: subagent produced no assistant output")
-}
-
-func (e *appSubagentExecutor) createSubagentSession(ctx context.Context, execution subagent.Execution) (session.Session, error) {
-	parent, err := e.sessions.Get(ctx, execution.ParentSession)
-	if err != nil {
-		return session.Session{}, fmt.Errorf("app: subagent parent session: %w", err)
-	}
-	if parent.ProjectID != e.project.ID {
-		return session.Session{}, errors.New("app: subagent parent belongs to another project")
-	}
-	selection := e.defaultSelection
-	if parent.Provider != "" && parent.Model != "" {
-		selection.Provider, selection.Model, selection.Variant = parent.Provider, parent.Model, parent.Variant
-	}
-	selection.Agent = execution.Request.Agent
-	if execution.Request.Model != "" {
-		if providerID, modelID, found := strings.Cut(execution.Request.Model, "/"); found {
-			selection.Provider, selection.Model = providerID, modelID
-		} else {
-			selection.Model = execution.Request.Model
-		}
-		// Variants are model-specific. An explicit model override must not carry
-		// either the parent's or the default model's variant into the child.
-		selection.Variant = ""
-	}
-	if selection.Provider == "" || selection.Model == "" {
-		return session.Session{}, errors.New("app: subagent has no default model")
-	}
-	if _, model, err := e.providers.Resolve(selection.Provider, selection.Model); err != nil {
-		return session.Session{}, fmt.Errorf("app: subagent model: %w", err)
-	} else if selection.Variant != "" {
-		if _, ok := model.Capabilities.Variant(selection.Variant); !ok {
-			return session.Session{}, fmt.Errorf("app: subagent model: unknown model variant %q", selection.Variant)
-		}
-	}
-	title := "Subtask " + execution.Request.Name + " [" + execution.Request.Agent + "]"
-	return e.sessions.CreateSelected(ctx, session.CreateParams{ParentSessionID: parent.ID, ProjectID: parent.ProjectID, ProjectRoot: parent.ProjectRoot, Title: title}, selection)
-}
-
-func (e *appSubagentExecutor) admit(ctx context.Context, childSession, content string) (string, error) {
-	messageID, err := id.New("msg")
-	if err != nil {
-		return "", err
-	}
-	if _, err := e.sessions.Admit(ctx, childSession, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
-		return "", err
-	}
-	return messageID, nil
+	return child.Prompt(ctx, execution.Request.Prompt)
 }
 
 func (e *appSubagentExecutor) Send(ctx context.Context, execution subagent.Execution, message string) (string, error) {
-	if execution.SessionID == "" {
+	if e.agentSessions == nil {
+		return "", errors.New("app: subagent agentSessions is unavailable")
+	}
+	child, ok := e.agentSessions.Lookup(execution.SessionID)
+	if !ok {
 		return "", errors.New("app: subagent session is unavailable")
 	}
-	messageID, err := e.admit(ctx, execution.SessionID, message)
-	if err == nil && e.agentSessions != nil {
-		e.agentSessions.Wake(execution.SessionID)
-	}
-	return messageID, err
+	return child.Send(ctx, message)
 }
 
 // forwardEvents projects both durable child lifecycle/tool events and

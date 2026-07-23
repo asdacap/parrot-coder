@@ -3,8 +3,14 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sort"
+	"strings"
 	"sync"
+	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
 type LifecycleObserver interface {
@@ -41,6 +47,8 @@ type drainState struct {
 // is active for its bound session ID.
 type AgentSession interface {
 	ID() string
+	Prompt(context.Context, string) (string, error)
+	Send(context.Context, string) (string, error)
 	Wake()
 	Resume(context.Context) error
 	Interrupt(context.Context) error
@@ -48,6 +56,65 @@ type AgentSession interface {
 }
 
 func (s *agentSession) ID() string { return s.id }
+
+// Prompt admits input, runs the session to idle, and returns the assistant
+// message produced by that execution lifecycle.
+func (s *agentSession) Prompt(ctx context.Context, content string) (string, error) {
+	messages, err := s.config.Sessions.ListMessages(ctx, s.id)
+	if err != nil {
+		return "", err
+	}
+	var cutoff int64
+	for _, message := range messages {
+		cutoff = max(cutoff, message.Sequence)
+	}
+	if _, err := s.admit(ctx, content); err != nil {
+		return "", err
+	}
+	if err := s.Resume(ctx); err != nil {
+		if ctx.Err() != nil {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			_ = s.Interrupt(cleanup)
+			cancel()
+		}
+		return "", err
+	}
+	messages, err = s.config.Sessions.ListMessages(ctx, s.id)
+	if err != nil {
+		return "", err
+	}
+	for i := len(messages) - 1; i >= 0; i-- {
+		if messages[i].Role != "assistant" || messages[i].Sequence <= cutoff {
+			continue
+		}
+		if messages[i].Error != "" {
+			return messages[i].Content, errors.New(messages[i].Error)
+		}
+		return messages[i].Content, nil
+	}
+	return "", errors.New("agent: session produced no assistant output")
+}
+
+// Send admits steer input and wakes the session without waiting for it to idle.
+func (s *agentSession) Send(ctx context.Context, content string) (string, error) {
+	messageID, err := s.admit(ctx, content)
+	if err != nil {
+		return "", err
+	}
+	s.Wake()
+	return messageID, nil
+}
+
+func (s *agentSession) admit(ctx context.Context, content string) (string, error) {
+	messageID, err := id.New("msg")
+	if err != nil {
+		return "", err
+	}
+	if _, err := s.config.Sessions.Admit(ctx, s.id, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
+		return "", err
+	}
+	return messageID, nil
+}
 
 // Wake coalesces with an active drain and returns immediately.
 func (s *agentSession) Wake() { s.startOrJoin(true) }
@@ -190,6 +257,59 @@ func NewAgentSessionRepository(config AgentSessionConfig, observers ...Lifecycle
 		return nil, err
 	}
 	return &AgentSessionRepository{config: config, observers: observers, sessions: make(map[string]*agentSession)}, nil
+}
+
+type ChildSessionRequest struct {
+	ParentSessionID  string
+	ProjectID        string
+	Name             string
+	Agent            string
+	Model            string
+	DefaultSelection session.Selection
+}
+
+// CreateChild persists a selected child session and returns its bound runtime.
+func (r *AgentSessionRepository) CreateChild(ctx context.Context, request ChildSessionRequest) (AgentSession, error) {
+	parent, err := r.config.Sessions.Get(ctx, request.ParentSessionID)
+	if err != nil {
+		return nil, fmt.Errorf("agent: child parent session: %w", err)
+	}
+	if parent.ProjectID != request.ProjectID {
+		return nil, errors.New("agent: child parent belongs to another project")
+	}
+	selection := request.DefaultSelection
+	if parent.Provider != "" && parent.Model != "" {
+		selection.Provider, selection.Model, selection.Variant = parent.Provider, parent.Model, parent.Variant
+	}
+	selection.Agent = request.Agent
+	if request.Model != "" {
+		if providerID, modelID, found := strings.Cut(request.Model, "/"); found {
+			selection.Provider, selection.Model = providerID, modelID
+		} else {
+			selection.Model = request.Model
+		}
+		selection.Variant = ""
+	}
+	if selection.Provider == "" || selection.Model == "" {
+		return nil, errors.New("agent: child has no default model")
+	}
+	if _, model, err := r.config.Providers.Resolve(selection.Provider, selection.Model); err != nil {
+		return nil, fmt.Errorf("agent: child model: %w", err)
+	} else if selection.Variant != "" {
+		if _, ok := model.Capabilities.Variant(selection.Variant); !ok {
+			return nil, fmt.Errorf("agent: child model: unknown model variant %q", selection.Variant)
+		}
+	}
+	child, err := r.config.Sessions.CreateSelected(ctx, session.CreateParams{
+		ParentSessionID: parent.ID,
+		ProjectID:       parent.ProjectID,
+		ProjectRoot:     parent.ProjectRoot,
+		Title:           "Subtask " + request.Name + " [" + request.Agent + "]",
+	}, selection)
+	if err != nil {
+		return nil, err
+	}
+	return r.Get(child.ID), nil
 }
 
 func (r *AgentSessionRepository) Get(sessionID string) AgentSession {
