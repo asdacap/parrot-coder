@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"sync"
@@ -187,12 +188,13 @@ func (t *fakeTool) Execute(ctx context.Context, _ tool.Plan, call tool.CallConte
 }
 
 type runnerHarness struct {
-	db         *store.DB
-	sessions   *session.Service
-	goals      *session.GoalService
-	repository *event.Repository
-	sessionID  string
-	runner     *agentSession
+	db            *store.DB
+	sessions      *session.Service
+	goals         *session.GoalService
+	repository    *event.Repository
+	agentSessions *AgentSessionRepository
+	sessionID     string
+	runner        *agentSession
 }
 
 type fakeCompactor struct {
@@ -262,7 +264,67 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, sessionID: created.ID, runner: runner}
+	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, agentSessions: agentSessions, sessionID: created.ID, runner: runner}
+}
+
+func TestAgentSessionPromptAndSendOwnAdmissionAndResultHandling(t *testing.T) {
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		want := []string{"initial", "steer"}[index]
+		last := request.Messages[len(request.Messages)-1]
+		if last.Role != protocol.RoleUser || last.Content[0].Text != want {
+			return nil, fmt.Errorf("request %d last message = %#v, want user %q", index, last, want)
+		}
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + want},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+
+	result, err := h.runner.Prompt(context.Background(), "initial")
+	if err != nil || result != "answer-initial" {
+		t.Fatalf("Prompt = %q, %v; want answer-initial", result, err)
+	}
+	messageID, err := h.runner.Send(context.Background(), "steer")
+	if err != nil || !strings.HasPrefix(messageID, "msg_") {
+		t.Fatalf("Send = %q, %v; want message ID", messageID, err)
+	}
+	if err := h.runner.Resume(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	messages, err := h.sessions.ListMessages(context.Background(), h.sessionID)
+	if err != nil || messages[len(messages)-1].Content != "answer-steer" {
+		t.Fatalf("last message = %#v, %v; want answer-steer", messages[len(messages)-1], err)
+	}
+}
+
+func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	parent, err := h.sessions.Get(context.Background(), h.sessionID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := h.agentSessions.CreateChild(context.Background(), ChildSessionRequest{
+		ParentSessionID:  parent.ID,
+		ProjectID:        parent.ProjectID,
+		Name:             "inspect",
+		Agent:            BuildID,
+		Model:            "fake/model",
+		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selected, err := h.sessions.Get(context.Background(), child.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if selected.ParentSessionID != parent.ID || selected.Agent != BuildID || selected.Provider != "fake" || selected.Model != "model" || selected.Title != "Subtask inspect [build]" {
+		t.Fatalf("child = %#v", selected)
+	}
+	if bound, ok := h.agentSessions.Lookup(selected.ID); !ok || bound != child {
+		t.Fatal("created child was not bound in the repository")
+	}
 }
 
 func TestRunnerMarksActiveGoalOnStructuredUsageExhaustionOnly(t *testing.T) {
