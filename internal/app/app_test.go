@@ -1096,6 +1096,28 @@ func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
 	}
 }
 
+func TestStoreOutput(t *testing.T) {
+	outputs, err := tool.NewOutputStore(tool.OutputConfig{
+		Directory: t.TempDir(), PreviewBytes: 16, PreviewLines: 4,
+		PerOutput: 1024, Total: 4096, Retention: time.Hour,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	application := &App{outputs: outputs}
+	stored, err := application.StoreOutput(context.Background(), strings.NewReader("oversized paste"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := outputs.Read(stored.ID, 0, stored.Size)
+	if err != nil || string(data) != "oversized paste" {
+		t.Fatalf("stored output = %q, %v", data, err)
+	}
+	if _, err := (*App)(nil).StoreOutput(context.Background(), strings.NewReader("unused")); err == nil {
+		t.Fatal("nil App StoreOutput() succeeded")
+	}
+}
+
 func TestMaintainCleansOnlyManagedOutputs(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

@@ -437,6 +437,16 @@ func command(ctx context.Context, config Config) int {
 					ColumnsFunc: func() int { return terminal.Columns(stdout) },
 				})
 				shell.decoder = terminal.NewKeyDecoder(inputFile)
+				shell.decoder.SetOversizedPasteHandler(func(ctx context.Context, reader io.Reader) (string, error) {
+					if shell.api != runtime.Client {
+						return "", errors.New("oversized paste storage is unavailable for remote connections")
+					}
+					stored, err := runtime.StoreOutput(ctx, reader)
+					if err != nil {
+						return "", err
+					}
+					return fmt.Sprintf("[Pasted content stored as output %s; use read_output to read it.]", stored.ID), nil
+				})
 				shell.editor = terminal.NewEditorDecoder(shell.decoder, stdout,
 					terminal.WithCompletions(chatCompletionCandidates(runtime.Commands)),
 					terminal.WithEditorRenderer(shell.renderer))

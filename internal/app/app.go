@@ -641,6 +641,15 @@ func (o compactionContextObserver) ObserveFull(ctx context.Context) (compaction.
 	return compaction.FullContext{Baseline: observed.Baseline, Sources: observed.Sources}, err
 }
 
+// StoreOutput stores a stream in the managed output store so it can be read by
+// the read_output tool.
+func (a *App) StoreOutput(ctx context.Context, reader io.Reader) (tool.StoredOutput, error) {
+	if a == nil || a.outputs == nil {
+		return tool.StoredOutput{}, errors.New("managed output store is unavailable")
+	}
+	return a.outputs.Store(ctx, reader)
+}
+
 type MaintenanceReport struct {
 	OutputsRemoved int
 }

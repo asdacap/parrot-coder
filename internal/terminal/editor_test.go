@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"testing"
 )
 
@@ -125,6 +126,13 @@ func TestEditorBracketedPasteAndSignals(t *testing.T) {
 }
 
 func TestEditorBoundsAndInvalidInput(t *testing.T) {
+	for _, size := range []int{20 << 10, 64 << 10} {
+		value, err := readEditor(t, "\x1b[200~"+strings.Repeat("a", size)+"\x1b[201~\r")
+		if err != nil || len(value) != size {
+			t.Fatalf("default limit rejected %d-byte ASCII paste: length=%d err=%v", size, len(value), err)
+		}
+	}
+
 	_, err := readEditor(t, "abc", WithEditorLimits(2, 10, 10, 2))
 	if !errors.Is(err, ErrInputLimit) {
 		t.Fatalf("byte bound error = %v", err)
@@ -136,6 +144,48 @@ func TestEditorBoundsAndInvalidInput(t *testing.T) {
 	value, err = readEditor(t, "\x1b[200~bad\tdata\x1b[201~ok\r")
 	if err != nil || value != "ok" {
 		t.Fatalf("invalid paste terminated editor: value=%q err=%v", value, err)
+	}
+}
+
+func TestKeyDecoderStoresOversizedPasteAndKeepsInputSynchronized(t *testing.T) {
+	const payload = "0123456789ABC"
+	decoder := NewKeyDecoder(bytes.NewBufferString("before\x1b[200~" + payload + "\x1b[201~after\r"))
+	editor := NewEditorDecoder(decoder, nil, WithEditorLimits(64, 64, 10, 2))
+	decoder.SetMaxPasteBytes(8)
+	var stored string
+	decoder.SetOversizedPasteHandler(func(_ context.Context, reader io.Reader) (string, error) {
+		data, err := io.ReadAll(reader)
+		stored = string(data)
+		return "[use read_output id opaque]", err
+	})
+	value, err := editor.Read(context.Background())
+	if err != nil || stored != payload || value != "before[use read_output id opaque]after" {
+		t.Fatalf("oversized paste: stored=%q value=%q err=%v", stored, value, err)
+	}
+
+	decoder = NewKeyDecoder(bytes.NewBufferString("\x1b[200~" + payload + "\x1b[201~z"))
+	decoder.SetMaxPasteBytes(8)
+	decoder.SetOversizedPasteHandler(func(_ context.Context, reader io.Reader) (string, error) {
+		buffer := make([]byte, 1)
+		_, _ = reader.Read(buffer)
+		return "", errors.New("store failed")
+	})
+	if _, err := decoder.ReadKey(context.Background()); err == nil || !strings.Contains(err.Error(), "store failed") {
+		t.Fatalf("handler error = %v", err)
+	}
+	key, err := decoder.ReadKey(context.Background())
+	if err != nil || key.Kind != KeyRune || key.Rune != 'z' {
+		t.Fatalf("key after failed storage = %#v, %v", key, err)
+	}
+
+	decoder = NewKeyDecoder(bytes.NewBufferString("\x1b[200~" + payload))
+	decoder.SetMaxPasteBytes(8)
+	decoder.SetOversizedPasteHandler(func(_ context.Context, reader io.Reader) (string, error) {
+		_, err := io.Copy(io.Discard, reader)
+		return "reference", err
+	})
+	if _, err := decoder.ReadKey(context.Background()); err == nil || !strings.Contains(err.Error(), "unterminated bracketed paste") {
+		t.Fatalf("unterminated paste error = %v", err)
 	}
 }
 

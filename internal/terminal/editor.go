@@ -113,7 +113,7 @@ func newEditor(decoder *KeyDecoder, writer io.Writer, options ...EditorOption) *
 	config := editorConfig{
 		prompt:            "> ",
 		maxInputBytes:     64 << 10,
-		maxInputRunes:     16 << 10,
+		maxInputRunes:     64 << 10,
 		maxHistory:        100,
 		maxCompletionRows: DefaultLiveRows - 1,
 	}

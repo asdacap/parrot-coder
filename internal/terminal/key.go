@@ -48,13 +48,18 @@ type ContextReader interface {
 	ReadContext(context.Context, []byte) (int, error)
 }
 
+// OversizedPasteHandler stores paste content which is too large to insert
+// directly and returns the short reference that should replace it.
+type OversizedPasteHandler func(context.Context, io.Reader) (string, error)
+
 // KeyDecoder decodes UTF-8 text and common terminal key sequences.
 type KeyDecoder struct {
-	reader   io.Reader
-	pending  []byte
-	readErr  error
-	maxPaste int
-	timedTTY bool
+	reader           io.Reader
+	pending          []byte
+	readErr          error
+	maxPaste         int
+	timedTTY         bool
+	onOversizedPaste OversizedPasteHandler
 }
 
 // NewKeyDecoder returns a decoder with bounded bracketed-paste input.
@@ -70,6 +75,13 @@ func (d *KeyDecoder) SetMaxPasteBytes(limit int) {
 		limit = 64 << 10
 	}
 	d.maxPaste = limit
+}
+
+// SetOversizedPasteHandler configures storage for bracketed pastes which are
+// too large to insert directly. Without a handler, oversized pastes are
+// consumed and ignored.
+func (d *KeyDecoder) SetOversizedPasteHandler(handler OversizedPasteHandler) {
+	d.onOversizedPaste = handler
 }
 
 // ReadKey reads one key. It never starts a background goroutine.
@@ -219,35 +231,22 @@ func (d *KeyDecoder) readEscape(ctx context.Context) (Key, error) {
 func (d *KeyDecoder) readPaste(ctx context.Context) (Key, error) {
 	const end = "\x1b[201~"
 	data := make([]byte, 0, 256)
-	tooLarge := false
 	for {
 		b, err := d.readByte(ctx)
 		if err != nil {
 			return Key{}, fmt.Errorf("terminal: unterminated bracketed paste: %w", err)
 		}
-		if !tooLarge {
-			data = append(data, b)
-			if len(data) > d.maxPaste+len(end) {
-				// Keep consuming through the end marker so rejected paste bytes do
-				// not become keyboard input after this event.
-				tooLarge = true
-				data = data[len(data)-len(end):]
-			}
-		} else {
-			data = append(data, b)
-			if len(data) > len(end) {
-				data = data[len(data)-len(end):]
-			}
-		}
+		data = append(data, b)
 		if len(data) >= len(end) && string(data[len(data)-len(end):]) == end {
-			if !tooLarge {
-				data = data[:len(data)-len(end)]
+			data = data[:len(data)-len(end)]
+			if len(data) > d.maxPaste {
+				return d.readOversizedPaste(ctx, append(data, end...))
 			}
 			break
 		}
-	}
-	if tooLarge {
-		return Key{Kind: KeyIgnored}, nil
+		if len(data) > d.maxPaste+len(end) {
+			return d.readOversizedPaste(ctx, data)
+		}
 	}
 	if !utf8.Valid(data) {
 		return Key{Kind: KeyIgnored}, nil
@@ -258,6 +257,90 @@ func (d *KeyDecoder) readPaste(ctx context.Context) (Key, error) {
 		}
 	}
 	return Key{Kind: KeyPaste, Text: string(data)}, nil
+}
+
+func (d *KeyDecoder) readOversizedPaste(ctx context.Context, initial []byte) (Key, error) {
+	reader := &bracketedPasteReader{ctx: ctx, decoder: d, initial: initial}
+	if d.onOversizedPaste == nil {
+		_, err := io.Copy(io.Discard, reader)
+		if err != nil {
+			return Key{}, fmt.Errorf("terminal: unterminated bracketed paste: %w", err)
+		}
+		return Key{Kind: KeyIgnored}, nil
+	}
+	reference, handlerErr := d.onOversizedPaste(ctx, reader)
+	_, drainErr := io.Copy(io.Discard, reader)
+	if drainErr != nil {
+		return Key{}, fmt.Errorf("terminal: unterminated bracketed paste: %w", drainErr)
+	}
+	if handlerErr != nil {
+		return Key{}, fmt.Errorf("terminal: store oversized paste: %w", handlerErr)
+	}
+	if reference == "" {
+		return Key{}, errors.New("terminal: oversized paste handler returned an empty reference")
+	}
+	return Key{Kind: KeyPaste, Text: reference}, nil
+}
+
+// bracketedPasteReader streams paste bytes while retaining just enough input
+// to recognize and consume the terminal's end marker.
+type bracketedPasteReader struct {
+	ctx     context.Context
+	decoder *KeyDecoder
+	initial []byte
+	window  []byte
+	done    bool
+	err     error
+}
+
+func (r *bracketedPasteReader) Read(p []byte) (int, error) {
+	const end = "\x1b[201~"
+	if len(p) == 0 {
+		return 0, nil
+	}
+	if r.done {
+		return 0, r.err
+	}
+	n := 0
+	for n < len(p) {
+		for len(r.window) < len(end) {
+			b, err := r.nextByte()
+			if err != nil {
+				r.done = true
+				r.err = err
+				if n > 0 {
+					return n, nil
+				}
+				return 0, err
+			}
+			r.window = append(r.window, b)
+		}
+		if string(r.window) == end {
+			r.done = true
+			r.err = io.EOF
+			if n > 0 {
+				return n, nil
+			}
+			return 0, io.EOF
+		}
+		p[n] = r.window[0]
+		n++
+		r.window = r.window[1:]
+	}
+	return n, nil
+}
+
+func (r *bracketedPasteReader) nextByte() (byte, error) {
+	if len(r.initial) > 0 {
+		b := r.initial[0]
+		r.initial = r.initial[1:]
+		return b, nil
+	}
+	b, err := r.decoder.readByte(r.ctx)
+	if errors.Is(err, io.EOF) {
+		err = io.ErrUnexpectedEOF
+	}
+	return b, err
 }
 
 func (d *KeyDecoder) readRune(ctx context.Context, first byte) (rune, error) {
