@@ -22,7 +22,7 @@ func TestRegisterBuiltinsDefinitions(t *testing.T) {
 	services := BuiltinServices{
 		Skills:    skills,
 		WebFetch:  webfetch.New(webfetch.Config{}),
-		Subagents: subagent.NewManager(nil, subagent.Config{}),
+		Subagents: subagent.NewManager(nil, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4}),
 		Agents:    func(string) (bool, error) { return true, nil },
 		Status:    statuses,
 	}

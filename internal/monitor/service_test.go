@@ -79,7 +79,7 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 2)}
 	waker := &recordingWaker{woken: make(chan string, 2)}
 	lifecycle := &recordingLifecycle{events: make(chan v1.Event, 4)}
-	service := NewService(runner, subagent.NewManager(nil, subagent.Config{}), admitter, lifecycle)
+	service := NewService(runner, subagent.NewManager(nil, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4}), admitter, lifecycle)
 	service.SetWaker(waker)
 	defer service.Close(context.Background())
 
@@ -229,7 +229,7 @@ func TestServiceRequiresWakerAndStopsNotificationsOnClose(t *testing.T) {
 	}
 	defer runner.Close()
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 1)}
-	service := NewService(runner, subagent.NewManager(nil, subagent.Config{}), admitter, nil)
+	service := NewService(runner, subagent.NewManager(nil, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4}), admitter, nil)
 	running, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
 		Shell: "/bin/sh", Command: "sleep 5", SessionID: "session", Yield: process.MinYieldTime, Unrestricted: true,
 	})
