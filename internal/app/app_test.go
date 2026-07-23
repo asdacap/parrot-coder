@@ -138,6 +138,7 @@ func TestStatusDrainerPublishesLifecycleError(t *testing.T) {
 }
 
 func TestCompositionEndToEndInProcess(t *testing.T) {
+	requests := make(chan []byte, 1)
 	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/v1/models" {
 			_, _ = io.WriteString(w, `{"data":[{"id":"test"}]}`)
@@ -148,6 +149,12 @@ func TestCompositionEndToEndInProcess(t *testing.T) {
 		}
 		if r.Header.Get("Authorization") != "Bearer test-secret" {
 			t.Errorf("provider authorization = %q", r.Header.Get("Authorization"))
+		}
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+		} else {
+			requests <- body
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello from provider\"}\n\n"+
@@ -163,7 +170,8 @@ func TestCompositionEndToEndInProcess(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(configHome, "parrot"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	configuration := fmt.Sprintf(`model: local/test-model
+	configuration := fmt.Sprintf(`prompt: configured base prompt
+model: local/test-model
 providers:
   local:
     type: compatible
@@ -237,6 +245,10 @@ providers:
 	}
 	if got := messages.Items[len(messages.Items)-1]; got.Role != "assistant" || got.Content != "hello from provider" || got.Status != "complete" {
 		t.Fatalf("last message = %#v", got)
+	}
+	body := <-requests
+	if !bytes.Contains(body, []byte("configured base prompt")) || bytes.Contains(body, []byte("You are Parrot Coder, a local coding agent.")) {
+		t.Fatalf("provider request did not use the configured base prompt: %s", body)
 	}
 }
 
@@ -671,6 +683,7 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 	loaded := config.Result{
 		Sources: []config.Source{{Path: projectFile, Kind: config.SourceProject}},
 		Provenance: map[string]string{
+			"prompt":                              projectFile,
 			"model":                               projectFile,
 			"providers.local.models.code.context": projectFile,
 		},

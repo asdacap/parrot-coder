@@ -485,7 +485,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
 	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
-		AgentPrompt:        "You are Parrot Coder, a local coding agent.",
+		AgentPrompt:        loaded.Config.Prompt,
 		ToolSystemGuidance: toolSystemGuidance,
 		Skills:             skillMetadata(skills),
 		Subagents:          subagentIDs,

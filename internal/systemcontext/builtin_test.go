@@ -47,7 +47,7 @@ func TestOptionalCLIUtilitiesSourceListsOnlyDetectedUtilities(t *testing.T) {
 
 func TestBuiltinsIncludeCLIUtilitiesSource(t *testing.T) {
 	root := t.TempDir()
-	sources, err := Builtins(BuiltinOptions{ProjectRoot: root, WorkingDirectory: root, AvailableCLIUtilities: []string{"bash", "stat"}, AvailableOptionalCLIUtilities: []string{"bat", "node"}})
+	sources, err := Builtins(BuiltinOptions{AgentPrompt: "configured agent prompt", ProjectRoot: root, WorkingDirectory: root, AvailableCLIUtilities: []string{"bash", "stat"}, AvailableOptionalCLIUtilities: []string{"bat", "node"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -69,6 +69,10 @@ func TestBuiltinsIncludeCLIUtilitiesSource(t *testing.T) {
 	optional, ok := snapshot["runtime:optional-cli-utilities"]
 	if !ok || optional.Baseline != "Available optional CLI utilities: bat, node" {
 		t.Fatalf("optional CLI utility observation = %#v", optional)
+	}
+	prompt, ok := snapshot["agent:prompt"]
+	if !ok || prompt.Baseline != "configured agent prompt" || string(prompt.Value) != `"configured agent prompt"` {
+		t.Fatalf("agent prompt observation = %#v", prompt)
 	}
 }
 

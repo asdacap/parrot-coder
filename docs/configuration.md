@@ -37,6 +37,8 @@ All fields are optional at the document root, but coding commands require a
 selected model. Durations are integer milliseconds.
 
 ```yaml
+prompt: |-
+  You are Parrot Coder, a local coding agent.
 model: provider/model
 variant: high # optional reasoning variant exposed by the selected model
 providers:
@@ -93,6 +95,19 @@ subagents:
   max_concurrent_per_parent: 4
   max_depth: 4
 ```
+
+The `prompt` field is the base `agent:prompt` system-context source. It does not
+replace mode or subagent profile prompts, profile hard rules, `AGENTS.md`, skill
+metadata, or tool guidance. Like other scalar configuration, a higher-precedence
+value replaces the complete lower-precedence prompt rather than appending to it;
+project configuration may override it. Therefore, an override that should retain
+the predefined Parrot identity or child-agent guidance must include that text
+explicitly.
+
+The predefined prompt identifies Parrot and instructs it not to duplicate work
+with `agent_spawn`: if an agent is already handling the work and remains running,
+Parrot should wait for that agent instead of spawning another one for the same
+work.
 
 The `model` and `variant` fields form the default model selection. `variant` is
 optional, but when present it must name a reasoning variant exposed by `model`.
