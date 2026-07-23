@@ -432,7 +432,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			// it immediately instead of buffering it into the assistant stream.
 			message := status.Message
 			if message == "" {
-				message = "provider is overloaded; retrying"
+				message = "Provider error: servers are overloaded. Retrying at the provider level."
 			}
 			if r.shell != nil {
 				r.shell.commitNotice(message)

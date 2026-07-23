@@ -191,8 +191,9 @@ func TestStreamWithHeaderRetryRetriesEngineOverloaded(t *testing.T) {
 		wantCalls int32
 		wantRetry bool
 	}{
-		{"code", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "engine_overloaded_error", Message: "The engine is currently overloaded, please try again later"}, 3, true},
-		{"type", &HTTPError{StatusCode: http.StatusTooManyRequests, Type: "engine_overloaded_error"}, 3, true},
+		{"engine code", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "engine_overloaded_error", Message: "The engine is currently overloaded, please try again later"}, 3, true},
+		{"service unavailable type", &HTTPError{StatusCode: http.StatusServiceUnavailable, Type: "service_unavailable_error"}, 3, true},
+		{"server overloaded code", &HTTPError{StatusCode: http.StatusInternalServerError, Code: "server_is_overloaded"}, 3, true},
 		{"transient rate limit", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "rate_limit_exceeded"}, 1, false},
 		{"usage limit", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "insufficient_quota"}, 1, false},
 	} {
@@ -221,11 +222,23 @@ func TestStreamWithHeaderRetryRetriesEngineOverloaded(t *testing.T) {
 				t.Fatalf("notices = %v", notices)
 			}
 			for i, notice := range notices {
-				if notice.Provider != "retry" || notice.Model != "m" || notice.Attempt != i+1 || notice.Delay != time.Millisecond<<i {
+				if notice.Provider != "retry" || notice.Model != "m" || notice.Attempt != i+1 || notice.MaxRetries != overloadMaxRetries || notice.Delay != time.Millisecond<<i {
 					t.Fatalf("notice[%d] = %#v", i, notice)
 				}
 			}
 		})
+	}
+}
+
+func TestStreamWithHeaderRetryExhaustsOverloadBudget(t *testing.T) {
+	overloaded := &HTTPError{StatusCode: http.StatusServiceUnavailable, Type: "service_unavailable_error"}
+	client := &retryProvider{fn: func(int) (Stream, error) { return nil, overloaded }}
+	var notices []RetryNotice
+	_, err := streamWithHeaderRetry(context.Background(), client, protocol.Request{}, 0, 0, func(notice RetryNotice) {
+		notices = append(notices, notice)
+	})
+	if !errors.Is(err, overloaded) || client.calls.Load() != overloadMaxRetries+1 || len(notices) != overloadMaxRetries {
+		t.Fatalf("calls = %d, notices = %d, err = %v", client.calls.Load(), len(notices), err)
 	}
 }
 
