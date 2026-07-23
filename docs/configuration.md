@@ -230,8 +230,9 @@ services and materially increases SSRF impact.
 
 ### Sandbox Rules
 
-`sandbox_rules` is an ordered list of filesystem rules applied to the sandbox
-after the base workspace mounts. Each rule is an object with `path` and `rule`
+`sandbox_rules` is an ordered list of filesystem rules applied after the
+sandbox's readable baseline and runtime-generated workspace, session-grant,
+and protected-metadata rules. Each rule is an object with `path` and `rule`
 fields. `rule` is one of `allow_write`, `deny_read`, `allow_read`, or
 `deny_write`. Rules are applied in order, so later rules override earlier
 ones. This matches the mount semantics of the platform sandbox: a later
@@ -239,7 +240,7 @@ ones. This matches the mount semantics of the platform sandbox: a later
 
 `sandbox_rules` requires global configuration; project-scope files cannot
 grant filesystem capabilities. Configured rules also cannot grant write access
-to a read-only profile or remove that profile's narrow explicit write paths
+to a read-only profile or remove that profile's narrow explicit write rules
 (such as its designated plan artifact). Writable profiles retain the configured
 ordered-rule behavior.
 

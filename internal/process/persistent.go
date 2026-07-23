@@ -205,7 +205,7 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 			}
 		}()
 		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
-		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved, temporaryDirectory)
+		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved)
 		if buildErr != nil {
 			return PersistentResult{}, buildErr
 		}

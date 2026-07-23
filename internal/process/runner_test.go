@@ -62,7 +62,12 @@ type recordingSandbox struct {
 }
 
 func (s *recordingSandbox) command(shell, script, _ string, profile security.SecurityProfile, temporaryDirectory string) (string, []string, error) {
-	s.writable = append([]string(nil), profile.AllowWritePaths()...)
+	s.writable = s.writable[:0]
+	for _, rule := range profile.Rules() {
+		if rule.Action == security.ActionAllowWrite {
+			s.writable = append(s.writable, rule.Path)
+		}
+	}
 	s.temporaryDir = temporaryDirectory
 	return shell, []string{"-c", script}, nil
 }
@@ -745,13 +750,11 @@ func (s *recordingStore) Create(context.Context) (ManagedOutput, error) {
 func (s *recordingStore) Read(string, int64, int64) ([]byte, error) { return nil, nil }
 
 type recordingRulesSandbox struct {
-	rules    []security.Rule
-	writable []string
+	rules []security.Rule
 }
 
 func (s *recordingRulesSandbox) command(_ string, _ string, _ string, profile security.SecurityProfile, _ string) (string, []string, error) {
 	s.rules = append([]security.Rule(nil), profile.Rules()...)
-	s.writable = append([]string(nil), profile.AllowWritePaths()...)
 	return "/bin/sh", []string{"-c", "true"}, nil
 }
 
@@ -762,11 +765,10 @@ type testSecurityProfile struct {
 	writePath string
 }
 
-func (p testSecurityProfile) IsReadOnly() bool          { return p.readOnly }
-func (testSecurityProfile) AllowReadPaths() []string    { return []string{"/"} }
-func (p testSecurityProfile) AllowWritePaths() []string { return []string{p.writePath} }
-func (testSecurityProfile) DenyWritePaths() []string    { return nil }
-func (testSecurityProfile) Rules() []security.Rule      { return nil }
+func (p testSecurityProfile) IsReadOnly() bool { return p.readOnly }
+func (p testSecurityProfile) Rules() []security.Rule {
+	return []security.Rule{{Path: p.writePath, Action: security.ActionAllowWrite}}
+}
 
 func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.T) {
 	root := t.TempDir()
@@ -792,19 +794,30 @@ func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.
 		profile testSecurityProfile
 		want    []security.Rule
 	}{
-		{name: "read-only", profile: testSecurityProfile{readOnly: true, writePath: artifact}, want: rules[2:]},
-		{name: "writable", profile: testSecurityProfile{writePath: artifact}, want: rules},
+		{
+			name:    "read-only",
+			profile: testSecurityProfile{readOnly: true, writePath: artifact},
+			want: []security.Rule{
+				{Path: artifact, Action: security.ActionAllowWrite},
+				rules[2],
+			},
+		},
+		{
+			name:    "writable",
+			profile: testSecurityProfile{writePath: artifact},
+			want: append([]security.Rule{
+				{Path: root, Action: security.ActionAllowWrite},
+				{Path: artifact, Action: security.ActionAllowWrite},
+			}, rules...),
+		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			profile, err := runner.buildProfile(test.profile, test.name, root, t.TempDir())
+			profile, err := runner.buildProfile(test.profile, test.name, root)
 			if err != nil {
 				t.Fatal(err)
 			}
 			if !slices.Equal(profile.Rules(), test.want) {
 				t.Fatalf("Rules() = %#v, want %#v", profile.Rules(), test.want)
-			}
-			if !slices.Contains(profile.AllowWritePaths(), artifact) {
-				t.Fatalf("AllowWritePaths() = %q, want artifact %q", profile.AllowWritePaths(), artifact)
 			}
 		})
 	}
@@ -838,13 +851,8 @@ func TestBuildProfileIncludesSandboxRules(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sandbox.rules) != 2 {
-		t.Fatalf("rules = %#v, want 2 rules", sandbox.rules)
-	}
-	if sandbox.rules[0].Path != "/opt/cache" || sandbox.rules[0].Action != security.ActionAllowWrite {
-		t.Fatalf("rule[0] = %#v", sandbox.rules[0])
-	}
-	if sandbox.rules[1].Path != "/secret" || sandbox.rules[1].Action != security.ActionDenyRead {
-		t.Fatalf("rule[1] = %#v", sandbox.rules[1])
+	want := append([]security.Rule{{Path: root, Action: security.ActionAllowWrite}}, configRules...)
+	if !slices.Equal(sandbox.rules, want) {
+		t.Fatalf("rules = %#v, want %#v", sandbox.rules, want)
 	}
 }

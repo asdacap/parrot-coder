@@ -47,13 +47,10 @@ func (s linuxSandbox) command(shell, script, cwd string, profile security.Securi
 		"--unshare-user",
 		"--unshare-pid",
 		"--cap-drop", "ALL",
-	}
-	// Readable paths are mounted first because they establish the base
-	// filesystem. A profile's read path is typically "/", and binding it after
-	// the synthetic mounts below would remount the host over them, replacing
-	// the private /tmp and the writable /dev/null with their host counterparts.
-	for _, path := range profile.AllowReadPaths() {
-		args = append(args, "--ro-bind", path, path)
+		// The read-only host root establishes the sandbox's readable baseline.
+		// It must precede synthetic mounts so it cannot replace the private /tmp
+		// or writable /dev/null with their host counterparts.
+		"--ro-bind", "/", "/",
 	}
 	args = append(args,
 		"--tmpfs", "/dev",
@@ -78,12 +75,6 @@ func (s linuxSandbox) command(shell, script, cwd string, profile security.Securi
 	}
 	if maskedBySandbox(cwd) {
 		args = append(args, "--ro-bind", cwd, cwd)
-	}
-	for _, path := range profile.AllowWritePaths() {
-		args = append(args, "--bind", path, path)
-	}
-	for _, path := range profile.DenyWritePaths() {
-		args = append(args, "--ro-bind", path, path)
 	}
 	for _, rule := range profile.Rules() {
 		switch rule.Action {

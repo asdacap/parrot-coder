@@ -23,21 +23,15 @@ func (s unsupportedSandbox) command(_, _, _ string, _ security.SecurityProfile, 
 func (unsupportedSandbox) temporaryDirectory(path string) string { return path }
 
 // sandboxProfile is a concrete security.SecurityProfile that combines a base
-// profile with session-enriched paths. It is constructed by the Runner before
+// profile with session-enriched rules. It is constructed by the Runner before
 // being passed to the sandbox backend.
 type sandboxProfile struct {
-	readOnly   bool
-	readPaths  []string
-	writePaths []string
-	denyWrite  []string
-	rules      []security.Rule
+	readOnly bool
+	rules    []security.Rule
 }
 
-func (p *sandboxProfile) IsReadOnly() bool          { return p.readOnly }
-func (p *sandboxProfile) AllowReadPaths() []string  { return p.readPaths }
-func (p *sandboxProfile) AllowWritePaths() []string { return p.writePaths }
-func (p *sandboxProfile) DenyWritePaths() []string  { return p.denyWrite }
-func (p *sandboxProfile) Rules() []security.Rule    { return p.rules }
+func (p *sandboxProfile) IsReadOnly() bool       { return p.readOnly }
+func (p *sandboxProfile) Rules() []security.Rule { return p.rules }
 
 func protectedWorkspacePaths(root, cwd string) []string {
 	relative, err := filepath.Rel(root, cwd)

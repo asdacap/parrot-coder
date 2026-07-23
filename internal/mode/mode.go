@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
@@ -146,7 +147,7 @@ func (m *planMode) PrepareTurn(sessionID string) (agent.Profile, error) {
 		return agent.Profile{}, fmt.Errorf("mode: truncate plan file: %w", err)
 	}
 	profile := m.profile
-	profile.WritePaths = []string{path}
+	profile.SandboxRules = []security.Rule{{Path: path, Action: security.ActionAllowWrite}}
 	profile.Prompt += "\n\nWrite the complete implementation plan as Markdown to this exact file: " + path + ". Do not include the plan in your assistant response. Finish only after writing the file."
 	return profile, nil
 }
