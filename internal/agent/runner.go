@@ -223,8 +223,9 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				statusPending, statusPrompt = true, ""
 			}
 		}
+		profileStatus := newProfileStatus(profile)
 		if statusPending {
-			statusPrompt, err = r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, profile.Status)
+			statusPrompt, err = r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, profileStatus)
 			if err != nil {
 				return err
 			}
@@ -271,7 +272,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if r.config.Compactor != nil {
 			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
 				SessionID: r.id, ProviderID: selected.Provider, Model: model,
-				Instructions: profileInstructions(profile, turn >= profile.MaxTurns), Tools: definitions,
+				Instructions: finalTurnInstructions(turn >= profile.MaxTurns), Tools: definitions,
 			})
 			if compactErr != nil {
 				return compactErr
@@ -304,7 +305,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
 				SessionID: r.id, ProviderID: selected.Provider, Model: model,
-				Instructions: profileInstructions(profile, turn >= profile.MaxTurns), Tools: definitions, Force: true,
+				Instructions: finalTurnInstructions(turn >= profile.MaxTurns), Tools: definitions, Force: true,
 			})
 			if compactErr != nil || result.Status != "complete" {
 				if compactErr != nil {
@@ -591,9 +592,9 @@ func overflowMessage(message string) bool {
 	return false
 }
 
-func runnerInstructions(baseline string, profile Profile, statusPrompt string, final bool) string {
+func runnerInstructions(baseline string, _ Profile, statusPrompt string, final bool) string {
 	sections := make([]string, 0, 3)
-	for _, section := range []string{baseline, profileInstructions(profile, final), statusPrompt} {
+	for _, section := range []string{baseline, finalTurnInstructions(final), statusPrompt} {
 		if section != "" {
 			sections = append(sections, section)
 		}
@@ -601,15 +602,49 @@ func runnerInstructions(baseline string, profile Profile, statusPrompt string, f
 	return strings.Join(sections, "\n\n")
 }
 
-func profileInstructions(profile Profile, final bool) string {
-	instructions := profile.Prompt
-	if len(profile.HardRules) > 0 {
-		instructions += "\n\nHard rules:\n- " + strings.Join(profile.HardRules, "\n- ")
-	}
+func finalTurnInstructions(final bool) string {
 	if final {
-		instructions += "\n\nThis is the final turn. Do not call tools; provide the best final answer now."
+		return "This is the final turn. Do not call tools; provide the best final answer now."
 	}
-	return instructions
+	return ""
+}
+
+type profileStatus struct {
+	prompt    string
+	hardRules []string
+	provider  statusinfo.Provider
+}
+
+func newProfileStatus(profile Profile) statusinfo.Provider {
+	return profileStatus{prompt: profile.Prompt, hardRules: profile.HardRules, provider: profile.Status}
+}
+
+func (s profileStatus) Key() string {
+	if s.provider != nil {
+		return s.provider.Key()
+	}
+	return "profile:instructions"
+}
+
+func (s profileStatus) Observe(ctx context.Context, query statusinfo.Query) (statusinfo.Observation, error) {
+	sections := make([]string, 0, 2)
+	instructions := s.prompt
+	if len(s.hardRules) > 0 {
+		instructions += "\n\nHard rules:\n- " + strings.Join(s.hardRules, "\n- ")
+	}
+	if instructions != "" {
+		sections = append(sections, instructions)
+	}
+	if s.provider != nil {
+		observation, err := s.provider.Observe(ctx, query)
+		if err != nil {
+			return statusinfo.Observation{}, err
+		}
+		if observation.Available && strings.TrimSpace(observation.Text) != "" {
+			sections = append(sections, observation.Text)
+		}
+	}
+	return statusinfo.Observation{Available: len(sections) > 0, Text: strings.Join(sections, "\n\n")}, nil
 }
 
 func finalParts(text, reasoning string, calls []completedCall) []protocol.ContentPart {
@@ -757,7 +792,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.Sessio
 			if r.config.TaskIDFor != nil {
 				taskID = r.config.TaskIDFor(r.id)
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.id, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.id, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, StatusProvider: profile.Status}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.id, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.id, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, StatusProvider: newProfileStatus(profile)}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

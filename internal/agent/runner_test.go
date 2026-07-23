@@ -66,6 +66,20 @@ func (*sliceStream) Close() error { return nil }
 
 func events(items ...protocol.Event) provider.Stream { return &sliceStream{events: items} }
 
+func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
+	profile := Profile{Prompt: "profile prompt", HardRules: []string{"rule"}, Status: statusinfo.Static{ProviderKey: "profile:test", Text: "profile status"}}
+	observation, err := newProfileStatus(profile).Observe(context.Background(), statusinfo.Query{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := observation.Text, "profile prompt\n\nHard rules:\n- rule\n\nprofile status"; got != want {
+		t.Fatalf("profile status = %q, want %q", got, want)
+	}
+	if got, want := runnerInstructions("baseline", profile, "runtime status", false), "baseline\n\nruntime status"; got != want {
+		t.Fatalf("runner instructions = %q, want %q", got, want)
+	}
+}
+
 func TestRunnerInjectsComposedStatusOnlyWhenPending(t *testing.T) {
 	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "done"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
@@ -100,7 +114,7 @@ func TestRunnerInjectsComposedStatusOnlyWhenPending(t *testing.T) {
 	}
 	want := []string{
 		"baseline\n\nbuild prompt\n\nBuild mode status\n\nActive profile: build\nModel: fake/model",
-		"baseline\n\nbuild prompt",
+		"baseline",
 		"baseline\n\nplan prompt\n\nPlan mode status\n\nActive profile: plan\nModel: fake/model",
 	}
 	for index := range requests {
