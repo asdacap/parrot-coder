@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
@@ -127,7 +128,7 @@ func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns i
 		return header + " Thinking…" + suffix
 	}
 
-	indent := strings.Repeat(" ", len(header)+1)
+	indent := strings.Repeat(" ", utf8.RuneCountInString(header)+1)
 	out := header + " " + nonEmpty[0] + suffix
 	for i := 1; i < len(nonEmpty); i++ {
 		out += "\n" + indent + nonEmpty[i]
