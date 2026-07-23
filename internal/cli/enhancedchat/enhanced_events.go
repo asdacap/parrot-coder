@@ -550,6 +550,11 @@ func (r *enhancedChatRuntime) settleIdle() error {
 		if dialog.Handle == nil {
 			return errors.New("turn completion dialog handler is required")
 		}
+		if dialog.Markdown != "" {
+			if err := r.shell.renderer.CommitMessage("● ", dialog.Markdown, false); err != nil {
+				return err
+			}
+		}
 		state, err := r.shell.editor.Start("")
 		if err != nil {
 			return err

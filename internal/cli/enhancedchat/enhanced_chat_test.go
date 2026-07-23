@@ -225,7 +225,7 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 					if !strings.Contains(output.String(), "finished plan") {
 						t.Fatal("turn completion callback ran before the assistant response was committed")
 					}
-					return &TurnCompleteDialog{Prompt: "continue? ", Context: []string{"turn finished"}, Handle: func(value string) (TurnCompleteResult, error) {
+					return &TurnCompleteDialog{Markdown: "# Written plan\n\n- change code", Prompt: "continue? ", Context: []string{"turn finished"}, Handle: func(value string) (TurnCompleteResult, error) {
 						if strings.TrimSpace(value) == "" {
 							return TurnCompleteResult{ValidationError: "answer required"}, nil
 						}
@@ -248,12 +248,16 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 			if calls != 1 || completed.Session.ID != "session" || completed.Mode != "custom" || completed.MessageID != "assistant" || runtime.modal == nil || runtime.modal.kind != "turn_complete" {
 				t.Fatalf("calls=%d completed=%#v modal=%#v", calls, completed, runtime.modal)
 			}
+			printed := output.String()
+			if !strings.Contains(printed, "● Written plan") || !strings.Contains(printed, "• change code") || strings.Contains(printed, "# Written plan") {
+				t.Fatalf("written artifact was not printed as assistant Markdown: %q", printed)
+			}
 			runtime.idleSeen = true
 			if err := runtime.settleIdle(); err != nil {
 				t.Fatal(err)
 			}
-			if calls != 1 {
-				t.Fatalf("callback called %d times", calls)
+			if calls != 1 || strings.Count(output.String(), "● Written plan") != 1 {
+				t.Fatalf("callback calls=%d artifact output=%q", calls, output.String())
 			}
 			if err := runtime.answerModal(""); !errors.Is(err, errInvalidModalAnswer) || runtime.modal == nil {
 				t.Fatalf("empty answer err=%v modal=%#v", err, runtime.modal)
