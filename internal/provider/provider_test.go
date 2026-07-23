@@ -194,6 +194,8 @@ func TestStreamWithHeaderRetryRetriesEngineOverloaded(t *testing.T) {
 		{"engine code", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "engine_overloaded_error", Message: "The engine is currently overloaded, please try again later"}, 3, true},
 		{"service unavailable type", &HTTPError{StatusCode: http.StatusServiceUnavailable, Type: "service_unavailable_error"}, 3, true},
 		{"server overloaded code", &HTTPError{StatusCode: http.StatusInternalServerError, Code: "server_is_overloaded"}, 3, true},
+		{"request processing message", &HTTPError{StatusCode: http.StatusInternalServerError, Message: "An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_test in your message."}, 3, true},
+		{"incomplete request processing message", &HTTPError{StatusCode: http.StatusBadRequest, Message: "An error occurred while processing your request. You can retry your request."}, 1, false},
 		{"transient rate limit", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "rate_limit_exceeded"}, 1, false},
 		{"usage limit", &HTTPError{StatusCode: http.StatusTooManyRequests, Code: "insufficient_quota"}, 1, false},
 	} {

@@ -70,9 +70,10 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Fixed
 
-- Structured provider overload failures now retry at the provider level up to
-  five times. Every retry emits a live status event and both terminal UIs show
-  an immediate, explicit provider-error and retry-progress message.
+- Structured provider overload failures and OpenAI's known transient
+  request-processing error now retry at the provider level up to five times.
+  Every retry emits a live status event and both terminal UIs show an immediate,
+  explicit provider-error and retry-progress message.
 - Provider streams no longer fail with "sse: read: context deadline exceeded"
   after ten minutes: the whole-request HTTP timeout no longer applies to
   streaming bodies, matching the documented header-timeout-only behavior.
