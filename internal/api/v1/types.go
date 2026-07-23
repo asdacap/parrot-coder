@@ -309,6 +309,10 @@ type ModeList struct {
 	Items []Mode `json:"items"`
 }
 
+type TurnCompletion struct {
+	TurnComplete json.RawMessage `json:"turn_complete,omitempty"`
+}
+
 // ToolPresentation is display-only metadata a tool declares about itself, so
 // that a renderer can branch on what a tool does rather than on its identity.
 // It mirrors tool.Presentation; a client which does not recognise a field

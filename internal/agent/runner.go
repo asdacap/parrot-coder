@@ -204,6 +204,16 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if err != nil {
 			return err
 		}
+		if turn == 0 {
+			if preparer, ok := r.config.Profiles.(interface {
+				PrepareTurn(string, string) (Profile, error)
+			}); ok {
+				profile, err = preparer.PrepareTurn(selected.Agent, r.id)
+				if err != nil {
+					return err
+				}
+			}
+		}
 		if r.config.Status != nil {
 			pending, err := r.config.Sessions.StatusPromptPending(ctx, r.id)
 			if err != nil {

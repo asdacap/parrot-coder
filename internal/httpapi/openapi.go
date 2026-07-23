@@ -25,6 +25,7 @@ var operationSchemas = map[string]operationSchema{
 	"deleteSession":          {status: "204"},
 	"updateSessionSelection": {request: v1.UpdateSessionSelectionRequest{}, response: v1.SessionSelection{}, status: "200"},
 	"listMessages":           {response: v1.MessageList{}, status: "200"},
+	"getTurnCompletion":      {response: v1.TurnCompletion{}, status: "200"},
 	"listTodos":              {response: v1.TodoList{}, status: "200"},
 	"getGoal":                {response: v1.Goal{}, status: "200"},
 	"putGoal":                {request: v1.PutGoalRequest{}, response: v1.Goal{}, status: "200"},

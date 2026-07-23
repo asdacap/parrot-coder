@@ -272,7 +272,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return nil, err
 		}
 	}
-	modes, err := mode.NewRegistry()
+	modes, err := mode.NewRegistryWithPlanDirectory(filepath.Join(paths.State, "plans"))
 	if err != nil {
 		return nil, fmt.Errorf("app: agents: %w", err)
 	}
@@ -1328,6 +1328,13 @@ func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {
 type combinedProfileResolver struct {
 	modes  *mode.Registry
 	agents *agent.Registry
+}
+
+func (r combinedProfileResolver) PrepareTurn(id, sessionID string) (agent.Profile, error) {
+	if _, err := r.modes.Get(id); err == nil {
+		return r.modes.PrepareTurn(id, sessionID)
+	}
+	return r.agents.GetProfile(id)
 }
 
 func (r combinedProfileResolver) GetProfile(id string) (agent.Profile, error) {
