@@ -423,7 +423,7 @@ func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
 	if runtime.mainTaskUsage != want {
 		t.Fatalf("usage with subagent = %#v, want %#v", runtime.mainTaskUsage, want)
 	}
-	if got := formatTaskTokenUsage(runtime.mainTaskUsage); got != "+2.5ki +650o (+1.6kcached)" {
+	if got := formatTaskTokenUsage(runtime.mainTaskUsage); got != "+2.5ki +650o (+65.00% cache)" {
 		t.Fatalf("modeline token usage = %q", got)
 	}
 
@@ -435,7 +435,7 @@ func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
 	if runtime.mainTaskUsage != want {
 		t.Fatalf("task progress counted usage twice: %#v", runtime.mainTaskUsage)
 	}
-	if line := formatActivity(runtime.activity[0], runtime.activity[0].started); !strings.Contains(line, "+100i +50o (+25cached) · 3 tools") {
+	if line := formatActivity(runtime.activity[0], runtime.activity[0].started); !strings.Contains(line, "+100i +50o (+25.00% cache) · 3 tools") {
 		t.Fatalf("progress line = %q", line)
 	}
 }

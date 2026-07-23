@@ -182,8 +182,8 @@ func formatTaskTokenUsage(usage chatview.TaskUsage) string {
 		return "-"
 	}
 	part := fmt.Sprintf("+%si +%so", formatTokenCount(usage.InputTokens), formatTokenCount(usage.OutputTokens))
-	if usage.CachedTokens > 0 {
-		part += fmt.Sprintf(" (+%scached)", formatTokenCount(usage.CachedTokens))
+	if usage.CachedTokens > 0 && usage.InputTokens > 0 {
+		part += fmt.Sprintf(" (+%.2f%% cache)", float64(usage.CachedTokens)/float64(usage.InputTokens)*100)
 	}
 	return part
 }
