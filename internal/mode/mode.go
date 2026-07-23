@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
+	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 const (
@@ -77,8 +78,8 @@ type builtin struct {
 	profile agent.Profile
 }
 
-func (m builtin) ID() string                     { return m.profile.ID }
-func (m builtin) Profile() agent.Profile         { return m.profile }
+func (m builtin) ID() string                       { return m.profile.ID }
+func (m builtin) Profile() agent.Profile           { return m.profile }
 func (builtin) OnTurnComplete() TurnCompleteResult { return TurnCompleteResult{} }
 
 // planMode extends builtin with a turn-complete dialog that lets the user
@@ -89,8 +90,8 @@ type planMode struct {
 
 func (planMode) OnTurnComplete() TurnCompleteResult {
 	return TurnCompleteResult{Dialog: &TurnCompleteDialog{
-		Prompt:            "Plan complete: ",
-		Context:           []string{"Review the plan before implementation."},
+		Prompt:  "Plan complete: ",
+		Context: []string{"Review the plan before implementation."},
 		Choices: []DialogChoice{
 			{Value: "yes", Description: "Implement the approved plan", Aliases: []string{"y"}, Action: ChoiceAction{Agent: BuildID, Prompt: "Implement the approved plan."}},
 			{Value: "no", Description: "Stop after planning", Aliases: []string{"n"}},
@@ -104,8 +105,8 @@ func (planMode) OnTurnComplete() TurnCompleteResult {
 
 func Builtins() []Mode {
 	return []Mode{
-		builtin{profile: agent.Profile{ID: BuildID, Prompt: "You are Parrot's build mode. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64, RecursionLimit: 3}},
-		planMode{builtin: builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and produce an implementation plan.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true}}},
+		builtin{profile: agent.Profile{ID: BuildID, Prompt: "You are Parrot's build mode. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64, RecursionLimit: 3, Status: status.Static{ProviderKey: "profile:build-mode", Text: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."}}},
+		planMode{builtin: builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and produce an implementation plan.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true, Status: status.Static{ProviderKey: "profile:plan-mode", Text: "Plan mode: inspect the project and produce an implementation plan. Read-only mode is enforced by the runtime."}}}},
 	}
 }
 

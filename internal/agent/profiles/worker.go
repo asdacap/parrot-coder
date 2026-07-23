@@ -1,5 +1,7 @@
 package profiles
 
+import "github.com/amirulashraf/parrot-coder/internal/status"
+
 const WorkerID = "worker"
 
 const workerPrompt = `You are Parrot's worker agent. Execute the assigned implementation or production task and verify your work.
@@ -13,5 +15,6 @@ func Worker() Profile {
 		HardRules:      []string{"Keep tool side effects within the authorized workspace."},
 		MaxTurns:       64,
 		RecursionLimit: 3,
+		Status:         status.Static{ProviderKey: "profile:worker", Text: "Worker profile: execute delegated work within the assigned ownership boundaries and verify it."},
 	}
 }

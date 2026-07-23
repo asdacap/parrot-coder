@@ -84,7 +84,7 @@ func TestSubagentsIncludeExplorerWorkerAndDedicatedReviewProfiles(t *testing.T) 
 		if profileErr != nil {
 			t.Fatal(profileErr)
 		}
-		if profile.ReadOnly != test.readOnly || profile.Prompt == "" || profile.MaxTurns <= 0 {
+		if profile.ReadOnly != test.readOnly || profile.Prompt == "" || profile.MaxTurns <= 0 || profile.Status == nil {
 			t.Fatalf("%s profile = %#v", test.id, profile)
 		}
 	}

@@ -44,6 +44,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
+	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
@@ -468,6 +469,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	monitors := monitor.NewService(processes, subagents, sessions)
 	result.monitors = monitors
 	tools := tool.NewRegistry()
+	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{})
+	if err != nil {
+		return nil, fmt.Errorf("app: status registry: %w", err)
+	}
 	agentLookup := func(id string) (bool, error) {
 		profile, err := profileResolver.GetProfile(id)
 		return profile.ReadOnly, err
@@ -476,7 +481,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		Changes: changes, Processes: processes, Monitor: monitors, Tasks: monitors, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		Subagents: subagents, Agents: agentLookup,
-		ConfigDir: paths.Config,
+		ConfigDir: paths.Config, Status: statusRegistry,
 	}); err != nil {
 		return nil, fmt.Errorf("app: register built-in tools: %w", err)
 	}
@@ -488,7 +493,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
 	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
-		AgentPrompt: "You are Parrot Coder, a local coding agent.",
+		AgentPrompt:        "You are Parrot Coder, a local coding agent.",
 		ToolSystemGuidance: toolSystemGuidance,
 		Skills:             skillMetadata(skills),
 		Subagents:          subagentIDs,
