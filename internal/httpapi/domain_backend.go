@@ -149,8 +149,17 @@ func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSess
 	if err != nil {
 		return v1.Session{}, err
 	}
-	item, err := b.Sessions.CreateSelected(ctx, session.CreateParams{ProjectID: request.ProjectID, ProjectRoot: b.ProjectRoot, Title: request.Title}, selection)
-	return sessionDTO(item), err
+	item, err := b.Sessions.CreateSelected(ctx, session.CreateParams{ParentSessionID: request.ParentSessionID, ProjectID: request.ProjectID, ProjectRoot: b.ProjectRoot, Title: request.Title}, selection)
+	if errors.Is(err, session.ErrNotFound) {
+		return v1.Session{}, ErrNotFound
+	}
+	if errors.Is(err, session.ErrParentProjectMismatch) {
+		return v1.Session{}, ErrInvalid
+	}
+	if err != nil {
+		return v1.Session{}, err
+	}
+	return sessionDTO(item), nil
 }
 
 func (b *DomainBackend) requestSelection(agentID, modeID, modelID string, variant *string) (session.Selection, error) {
@@ -761,7 +770,7 @@ func replyMatchesChoices(choices []v1.PermissionChoice, reply v1.PermissionReply
 }
 
 func sessionDTO(item session.Session) v1.Session {
-	return v1.Session{ID: item.ID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	return v1.Session{ID: item.ID, ParentSessionID: item.ParentSessionID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 }
 
 func selectionDTO(item session.Session) v1.SessionSelection {

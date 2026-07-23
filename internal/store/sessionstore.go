@@ -34,19 +34,20 @@ var ErrForeignHost = errors.New("store: session belongs to another host")
 // projection: the session database remains the source of truth, and Meta can be
 // rebuilt from it.
 type Meta struct {
-	Version     int    `json:"version"`
-	ID          string `json:"id"`
-	ProjectID   string `json:"project_id"`
-	ProjectRoot string `json:"project_root"`
-	Title       string `json:"title"`
-	Agent       string `json:"agent"`
-	Provider    string `json:"provider"`
-	Model       string `json:"model"`
-	Variant     string `json:"variant"`
-	CreatedAt   string `json:"created_at"`
-	UpdatedAt   string `json:"updated_at"`
-	HostKey     string `json:"host_key"`
-	PID         int    `json:"pid"`
+	Version         int    `json:"version"`
+	ID              string `json:"id"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	ProjectID       string `json:"project_id"`
+	ProjectRoot     string `json:"project_root"`
+	Title           string `json:"title"`
+	Agent           string `json:"agent"`
+	Provider        string `json:"provider"`
+	Model           string `json:"model"`
+	Variant         string `json:"variant"`
+	CreatedAt       string `json:"created_at"`
+	UpdatedAt       string `json:"updated_at"`
+	HostKey         string `json:"host_key"`
+	PID             int    `json:"pid"`
 }
 
 // SessionsRoot is the directory holding every session directory.

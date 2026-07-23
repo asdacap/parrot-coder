@@ -1006,9 +1006,9 @@ func TestPublishSubagentLifecycleEmitsFlatTaskEvents(t *testing.T) {
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
 
-	publishSubagentLifecycle(live, subagent.LifecycleEvent{Kind: subagent.LifecycleStart, Task: subagent.Task{ID: "task_1", ParentSession: "parent", Agent: "explore"}})
+	publishSubagentLifecycle(live, subagent.LifecycleEvent{Kind: subagent.LifecycleStart, Task: subagent.Task{ID: "task_1", SessionID: "child", ParentSession: "parent", Agent: "explore"}})
 	started := decodeTaskEvent(t, <-parentEvents)
-	if started.TaskID != "task_1" || started.ParentTaskID != "task_main" || started.Kind != "agent" || started.Agent != "explore" {
+	if started.TaskID != "task_1" || started.SessionID != "child" || started.ParentSessionID != "parent" || started.Kind != "agent" || started.Agent != "explore" {
 		t.Fatalf("start = %#v", started)
 	}
 

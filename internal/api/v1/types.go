@@ -37,16 +37,17 @@ type RuntimeSession struct {
 }
 
 type Session struct {
-	ID        string    `json:"id"`
-	ProjectID string    `json:"project_id,omitempty"`
-	Title     string    `json:"title"`
-	Agent     string    `json:"agent,omitempty"`
-	Mode      string    `json:"mode,omitempty"`
-	Provider  string    `json:"provider,omitempty"`
-	Model     string    `json:"model,omitempty"`
-	Variant   string    `json:"variant,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID              string    `json:"id"`
+	ParentSessionID string    `json:"parent_session_id,omitempty"`
+	ProjectID       string    `json:"project_id,omitempty"`
+	Title           string    `json:"title"`
+	Agent           string    `json:"agent,omitempty"`
+	Mode            string    `json:"mode,omitempty"`
+	Provider        string    `json:"provider,omitempty"`
+	Model           string    `json:"model,omitempty"`
+	Variant         string    `json:"variant,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 type SessionList struct {
@@ -55,12 +56,13 @@ type SessionList struct {
 }
 
 type CreateSessionRequest struct {
-	ProjectID string  `json:"project_id,omitempty"`
-	Title     string  `json:"title,omitempty"`
-	Agent     string  `json:"agent,omitempty"`
-	Mode      string  `json:"mode,omitempty"`
-	Model     string  `json:"model,omitempty"`
-	Variant   *string `json:"variant,omitempty"`
+	ParentSessionID string  `json:"parent_session_id,omitempty"`
+	ProjectID       string  `json:"project_id,omitempty"`
+	Title           string  `json:"title,omitempty"`
+	Agent           string  `json:"agent,omitempty"`
+	Mode            string  `json:"mode,omitempty"`
+	Model           string  `json:"model,omitempty"`
+	Variant         *string `json:"variant,omitempty"`
 }
 
 type ClaimSessionRequest struct {
@@ -293,9 +295,9 @@ type AgentList struct {
 }
 
 type Mode struct {
-	ID       string          `json:"id"`
-	ReadOnly bool            `json:"read_only"`
-	MaxTurns int             `json:"max_turns"`
+	ID       string `json:"id"`
+	ReadOnly bool   `json:"read_only"`
+	MaxTurns int    `json:"max_turns"`
 	// TurnComplete is the JSON-serialized mode.TurnCompleteResult that
 	// declares the mode's turn-complete behavior. nil/empty means no special
 	// action. It is opaque to the wire layer; the producer and consumer both

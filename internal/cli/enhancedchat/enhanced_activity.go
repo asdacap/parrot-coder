@@ -28,7 +28,7 @@ func (r *enhancedChatRuntime) activityFrames(now time.Time, columns int) []termi
 	var frames []terminal.LiveFrame
 	if tracker := r.subagents.Tracker(); tracker != nil {
 		for _, task := range tracker.Tasks() {
-			frames = append(frames, terminal.LiveFrame{TaskID: task.TaskID, ParentTaskID: task.ParentTaskID})
+			frames = append(frames, terminal.LiveFrame{TaskID: task.TaskID, SessionID: task.SessionID, ParentSessionID: task.ParentSessionID})
 		}
 	}
 	visible := make([]enhancedActivityItem, 0, len(r.activity))
@@ -53,7 +53,7 @@ func (r *enhancedChatRuntime) activityFrames(now time.Time, columns int) []termi
 			statusByTask[taskID] = len(frames)
 		}
 		frames = append(frames, terminal.LiveFrame{
-			TaskID: taskID, ParentTaskID: item.parentTaskID, MainStatus: item.mainStatus,
+			TaskID: taskID, SessionID: item.sessionID, ParentSessionID: item.parentSessionID, MainStatus: item.mainStatus,
 			StyledActivity: []terminal.StyledText{styledActivity(item, now, columns)},
 		})
 	}

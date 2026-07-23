@@ -127,7 +127,8 @@ type queuedChatInput struct {
 type enhancedActivityItem struct {
 	id               string
 	taskID           string
-	parentTaskID     string
+	sessionID        string
+	parentSessionID  string
 	mainStatus       bool
 	messageID        string
 	label            string

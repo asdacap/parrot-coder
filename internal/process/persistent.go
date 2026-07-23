@@ -41,7 +41,6 @@ type PersistentRequest struct {
 	Cwd             string
 	Env             map[string]string
 	SessionID       string
-	ParentTaskID    string
 	Yield           time.Duration
 	MaxOutputTokens *int
 	TTY             bool
@@ -81,11 +80,12 @@ type PersistentCompletion struct {
 	WaitError error
 }
 
-// PersistentTask identifies an active managed process and when it started.
+// PersistentTask identifies an active managed process, its owning session, and
+// when it started.
 type PersistentTask struct {
-	ID           string
-	ParentTaskID string
-	StartedAt    time.Time
+	ID        string
+	SessionID string
+	StartedAt time.Time
 }
 
 // PersistentObserver holds a stable reference to a managed process. It remains
@@ -122,8 +122,7 @@ func (o *PersistentObserver) Wait(ctx context.Context) (PersistentCompletion, er
 
 type persistentProcess struct {
 	id           string
-	owner        string
-	parentTaskID string
+	sessionID    string
 	command      *exec.Cmd
 	stdin        io.WriteCloser
 	reader       io.ReadCloser
@@ -235,7 +234,7 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 	command := exec.Command(program, arguments...)
 	command.Dir, command.Env = resolved, environment
 	item := &persistentProcess{
-		id: processID, owner: request.SessionID, parentTaskID: request.ParentTaskID, command: command, tty: request.TTY,
+		id: processID, sessionID: request.SessionID, command: command, tty: request.TTY,
 		started: time.Now(), lastUsed: time.Now(), output: newHeadTailBuffer(persistentOutputBytes),
 		managedOutput: managedOutput,
 		notify:        make(chan struct{}, 1), finished: make(chan struct{}), readerDone: make(chan struct{}),
@@ -263,7 +262,7 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 		r.removePersistent(item)
 	} else {
 		if r.config.Tasks != nil {
-			if err := r.config.Tasks.Register(&managedShellTask{runner: r, process: item}, func(caller string) bool { return caller == item.owner }); err != nil {
+			if err := r.config.Tasks.Register(&managedShellTask{runner: r, process: item}, func(caller string) bool { return caller == item.sessionID }); err != nil {
 				r.removePersistent(item)
 				r.terminatePersistent(item)
 				return PersistentResult{}, err
@@ -283,7 +282,7 @@ func (r *Runner) announcePersistent(item *persistentProcess) {
 	item.announced = true
 	started := item.started
 	item.mu.Unlock()
-	r.emitPersistent(PersistentEvent{Kind: PersistentEventStart, SessionID: item.owner, TaskID: item.id, ParentTaskID: item.parentTaskID, StartedAt: started})
+	r.emitPersistent(PersistentEvent{Kind: PersistentEventStart, SessionID: item.sessionID, TaskID: item.id, StartedAt: started})
 	select {
 	case <-item.finished:
 		item.mu.Lock()
@@ -300,7 +299,7 @@ func (r *Runner) announcePersistent(item *persistentProcess) {
 }
 
 func finishedPersistentEvent(item *persistentProcess, exitCode *int, waitErr error) PersistentEvent {
-	event := PersistentEvent{Kind: PersistentEventFinished, SessionID: item.owner, TaskID: item.id, ParentTaskID: item.parentTaskID, StartedAt: item.started, ExitCode: exitCode}
+	event := PersistentEvent{Kind: PersistentEventFinished, SessionID: item.sessionID, TaskID: item.id, StartedAt: item.started, ExitCode: exitCode}
 	if waitErr != nil {
 		event.Error = waitErr.Error()
 	}
@@ -746,9 +745,9 @@ func (r *Runner) reserveProcessID(owner string) (string, *persistentProcess, err
 	}
 }
 
-func (r *Runner) reapFinishedLocked(owner string) {
+func (r *Runner) reapFinishedLocked(sessionID string) {
 	for id, item := range r.processes {
-		if owner != "" && item.owner != owner {
+		if sessionID != "" && item.sessionID != sessionID {
 			continue
 		}
 		select {
@@ -777,11 +776,11 @@ func (r *Runner) storePersistent(item *persistentProcess) bool {
 	return true
 }
 
-func (r *Runner) lookupPersistent(owner, id string) *persistentProcess {
+func (r *Runner) lookupPersistent(sessionID, id string) *persistentProcess {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	item := r.processes[id]
-	if item == nil || item.owner != owner {
+	if item == nil || item.sessionID != sessionID {
 		return nil
 	}
 	return item
@@ -830,18 +829,18 @@ func (r *Runner) terminatePersistent(item *persistentProcess) {
 
 // ListActivePersistent returns active managed processes owned by one Parrot
 // session, ordered by start time and then ID.
-func (r *Runner) ListActivePersistent(owner string) []PersistentTask {
+func (r *Runner) ListActivePersistent(sessionID string) []PersistentTask {
 	r.mu.RLock()
 	tasks := make([]PersistentTask, 0)
 	for _, item := range r.processes {
-		if item.owner != owner {
+		if item.sessionID != sessionID {
 			continue
 		}
 		select {
 		case <-item.finished:
 			continue
 		default:
-			tasks = append(tasks, PersistentTask{ID: item.id, ParentTaskID: item.parentTaskID, StartedAt: item.started})
+			tasks = append(tasks, PersistentTask{ID: item.id, SessionID: item.sessionID, StartedAt: item.started})
 		}
 	}
 	r.mu.RUnlock()
@@ -856,10 +855,10 @@ func (r *Runner) ListActivePersistent(owner string) []PersistentTask {
 
 // InterruptPersistent claims and terminates one active retained process owned
 // by a Parrot session.
-func (r *Runner) InterruptPersistent(owner, processID string) (PersistentTask, error) {
+func (r *Runner) InterruptPersistent(sessionID, processID string) (PersistentTask, error) {
 	r.mu.Lock()
 	item := r.processes[processID]
-	if item == nil || item.owner != owner {
+	if item == nil || item.sessionID != sessionID {
 		r.mu.Unlock()
 		return PersistentTask{}, fmt.Errorf("process: unknown process id %q", processID)
 	}
@@ -876,7 +875,7 @@ func (r *Runner) InterruptPersistent(owner, processID string) (PersistentTask, e
 		r.config.Tasks.Unregister(item.id)
 	}
 	r.terminatePersistent(item)
-	return PersistentTask{ID: item.id, ParentTaskID: item.parentTaskID, StartedAt: item.started}, nil
+	return PersistentTask{ID: item.id, SessionID: item.sessionID, StartedAt: item.started}, nil
 }
 
 type managedShellTask struct {
@@ -895,7 +894,7 @@ func (t *managedShellTask) Snapshot() managedtask.Snapshot {
 		}
 	default:
 	}
-	snapshot := managedtask.Snapshot{ID: t.process.id, ParentTaskID: t.process.parentTaskID, Kind: managedtask.KindShell, Status: status, StartedAt: t.process.started}
+	snapshot := managedtask.Snapshot{ID: t.process.id, SessionID: t.process.sessionID, Kind: managedtask.KindShell, Status: status, StartedAt: t.process.started}
 	t.process.mu.Unlock()
 	return snapshot
 }
@@ -913,7 +912,7 @@ func (t *managedShellTask) Wait(ctx context.Context) (managedtask.Completion, er
 }
 
 func (t *managedShellTask) Interrupt(ctx context.Context) (managedtask.Snapshot, error) {
-	item, err := t.runner.InterruptPersistent(t.process.owner, t.process.id)
+	item, err := t.runner.InterruptPersistent(t.process.sessionID, t.process.id)
 	if err != nil {
 		return managedtask.Snapshot{}, err
 	}
@@ -922,7 +921,7 @@ func (t *managedShellTask) Interrupt(ctx context.Context) (managedtask.Snapshot,
 	case <-ctx.Done():
 		return managedtask.Snapshot{}, ctx.Err()
 	}
-	return managedtask.Snapshot{ID: item.ID, ParentTaskID: item.ParentTaskID, Kind: managedtask.KindShell, Status: "canceled", StartedAt: item.StartedAt}, nil
+	return managedtask.Snapshot{ID: item.ID, SessionID: item.SessionID, Kind: managedtask.KindShell, Status: "canceled", StartedAt: item.StartedAt}, nil
 }
 
 // InterruptSession terminates retained processes owned by one Parrot session.
@@ -983,7 +982,7 @@ func (r *Runner) takeSessionProcesses(sessionID string, deleteGrants bool) []*pe
 	defer r.mu.Unlock()
 	var items []*persistentProcess
 	for id, item := range r.processes {
-		if item.owner == sessionID {
+		if item.sessionID == sessionID {
 			items = append(items, item)
 			delete(r.processes, id)
 			delete(r.reservedIDs, id)

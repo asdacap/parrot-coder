@@ -52,6 +52,16 @@ func TestAdoptLegacySplitsSessionsAndSetsFileAside(t *testing.T) {
 	state := t.TempDir()
 	ctx := context.Background()
 	path := seedLegacy(t, state, "ses_1", "ses_2")
+	legacy, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := legacy.SQL().ExecContext(ctx, `UPDATE session SET parent_session_id='ses_1' WHERE id='ses_2'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := legacy.Close(); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := AdoptLegacy(ctx, state, path); err != nil {
 		t.Fatal(err)
@@ -72,17 +82,25 @@ func TestAdoptLegacySplitsSessionsAndSetsFileAside(t *testing.T) {
 		if meta.HostKey != "" {
 			t.Fatalf("adoption stamped a host key on %s", meta.ID)
 		}
+		wantParent := ""
+		if meta.ID == "ses_2" {
+			wantParent = "ses_1"
+		}
+		if meta.ParentSessionID != wantParent {
+			t.Fatalf("session %s parent = %q, want %q", meta.ID, meta.ParentSessionID, wantParent)
+		}
 		db, err := OpenSession(ctx, DatabasePath(state, meta.ID))
 		if err != nil {
 			t.Fatal(err)
 		}
 		var events, next int
-		if err := db.SQL().QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM event), (SELECT next_sequence FROM event_sequence)`).Scan(&events, &next); err != nil {
+		var parent string
+		if err := db.SQL().QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM event), (SELECT next_sequence FROM event_sequence), (SELECT parent_session_id FROM session)`).Scan(&events, &next, &parent); err != nil {
 			t.Fatal(err)
 		}
 		db.Close()
-		if events != 1 || next != 1 {
-			t.Fatalf("session %s carried %d events, next=%d", meta.ID, events, next)
+		if events != 1 || next != 1 || parent != wantParent {
+			t.Fatalf("session %s carried %d events, next=%d, parent=%q", meta.ID, events, next, parent)
 		}
 	}
 

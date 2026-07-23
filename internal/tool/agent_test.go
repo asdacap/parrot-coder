@@ -21,10 +21,11 @@ func newReusableAgentExecutor() *reusableAgentExecutor {
 	return &reusableAgentExecutor{runs: make(chan subagent.Execution, 4), releases: make(map[string]chan string), sends: make(chan string, 4)}
 }
 
+func (e *reusableAgentExecutor) Prepare(_ context.Context, execution subagent.Execution) (string, error) {
+	return "session-" + execution.TaskID, nil
+}
+
 func (e *reusableAgentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
-	if execution.SessionID == "" {
-		execution.RegisterSession("session-" + execution.TaskID)
-	}
 	release := make(chan string, 1)
 	e.mu.Lock()
 	e.releases[execution.TaskID] = release

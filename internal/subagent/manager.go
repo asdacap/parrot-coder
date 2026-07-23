@@ -58,20 +58,25 @@ type Progress struct {
 // Execution is the complete executor contract. Lineage contains ancestor agent
 // names, from the root toward the immediate parent.
 type Execution struct {
-	TaskID          string
-	SessionID       string
-	ParentSession   string
-	RootSession     string
-	ParentTaskID    string
-	Lineage         []string
-	Turn            int
-	Request         Request
-	ReportProgress  func(Progress)
-	RegisterSession func(string)
+	TaskID         string
+	SessionID      string
+	ParentSession  string
+	RootSession    string
+	Lineage        []string
+	Turn           int
+	Request        Request
+	ReportProgress func(Progress)
 }
 
 type Executor interface {
 	Execute(context.Context, Execution) (string, error)
+}
+
+// Preparer synchronously creates or obtains the child session used by Spawn.
+// Execute is not called, and lifecycle events are not emitted, until Prepare
+// returns a nonempty session ID.
+type Preparer interface {
+	Prepare(context.Context, Execution) (string, error)
 }
 
 // MessageSender admits a steer message without starting a new turn.
@@ -126,7 +131,6 @@ type Task struct {
 	SessionID     string
 	ParentSession string
 	RootSession   string
-	ParentTaskID  string
 	Agent         string
 	Model         string
 	Name          string
@@ -145,14 +149,11 @@ type Task struct {
 }
 
 type taskState struct {
-	task           Task
-	request        Request
-	turn           *turnState
-	registered     chan struct{}
-	registeredDone bool
-	discard        bool
-	cancel         context.CancelFunc
-	op             sync.Mutex
+	task    Task
+	request Request
+	turn    *turnState
+	cancel  context.CancelFunc
+	op      sync.Mutex
 }
 
 type turnState struct {
@@ -201,33 +202,49 @@ func NewManager(executor Executor, config Config) *Manager {
 }
 
 // Launch reserves concurrency immediately and starts the execution
-// asynchronously. Lineage is validated and copied before this method returns.
+// asynchronously. It is a low-level entry point: parentSession is also used as
+// the execution's owning session. Spawn should be used when a distinct child
+// session must be prepared.
 func (m *Manager) Launch(parentSession string, lineage []string, request Request) (string, error) {
+	if err := m.validate(parentSession, lineage, request); err != nil {
+		return "", err
+	}
+	id, err := taskID()
+	if err != nil {
+		return "", err
+	}
+	return m.launch(id, parentSession, parentSession, lineage, request, false)
+}
+
+func (m *Manager) validate(parentSession string, lineage []string, request Request) error {
 	if m == nil || m.executor == nil || strings.TrimSpace(parentSession) == "" || strings.TrimSpace(request.Prompt) == "" || !validAgent(request.Agent) {
-		return "", ErrInvalid
+		return ErrInvalid
 	}
 	if len(request.Prompt) > m.config.MaxPromptBytes {
-		return "", ErrRequestLimit
+		return ErrRequestLimit
 	}
 	if len(lineage)+1 > m.config.MaxDepth {
-		return "", ErrDepth
+		return ErrDepth
 	}
 	targetIdentity := m.agentIdentity(request.Agent)
 	recursions := 1
 	for _, ancestor := range lineage {
 		if !validAgent(ancestor) {
-			return "", ErrInvalid
+			return ErrInvalid
 		}
 		if m.agentIdentity(ancestor) == targetIdentity {
 			recursions++
 		}
 	}
 	if recursions > m.agentRecursionLimit(targetIdentity) {
-		return "", ErrRecursion
+		return ErrRecursion
 	}
-	id, err := taskID()
-	if err != nil {
-		return "", err
+	return nil
+}
+
+func (m *Manager) launch(id, sessionID, parentSession string, lineage []string, request Request, bindSession bool) (string, error) {
+	if strings.TrimSpace(id) == "" || strings.TrimSpace(sessionID) == "" {
+		return "", ErrInvalid
 	}
 	lineage = append([]string(nil), lineage...)
 	now := time.Now().UTC()
@@ -253,14 +270,17 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 		name = sanitizeName(request.Agent + "-" + generated)
 	}
 	name = m.uniqueNameLocked(name)
-	rootSession, parentTaskID := parentSession, managedtask.MainTaskID
+	rootSession := parentSession
 	if parent := m.bySession[parentSession]; parent != nil {
-		rootSession, parentTaskID = parent.task.RootSession, parent.task.ID
+		rootSession = parent.task.RootSession
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	request.Name = name
-	state := &taskState{task: Task{ID: id, ParentSession: parentSession, RootSession: rootSession, ParentTaskID: parentTaskID, Agent: request.Agent, Model: request.Model, Name: name, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, registered: make(chan struct{}), cancel: cancel}
+	state := &taskState{task: Task{ID: id, SessionID: sessionID, ParentSession: parentSession, RootSession: rootSession, Agent: request.Agent, Model: request.Model, Name: name, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, cancel: cancel}
 	m.tasks[id] = state
+	if bindSession {
+		m.bySession[sessionID] = state
+	}
 	m.running++
 	m.byParent[parentSession]++
 	m.workers.Add(1)
@@ -272,6 +292,9 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 			cancel()
 			m.mu.Lock()
 			delete(m.tasks, id)
+			if bindSession {
+				delete(m.bySession, sessionID)
+			}
 			m.running--
 			m.byParent[parentSession]--
 			m.workers.Done()
@@ -324,92 +347,47 @@ func (m *Manager) agentRecursionLimit(id string) int {
 	return 3
 }
 
-// Spawn derives durable ancestry from the caller session and waits only until
-// the executor has established the reusable child session.
+// Spawn derives durable ancestry from the caller session, synchronously
+// prepares the child session, and only then registers and launches the task.
 func (m *Manager) Spawn(ctx context.Context, parentSession, callerAgent string, request Request) (string, error) {
+	if m == nil || m.executor == nil {
+		return "", ErrInvalid
+	}
+	preparer, ok := m.executor.(Preparer)
+	if !ok {
+		return "", errors.New("subagent: executor does not support session preparation")
+	}
 	lineage := []string{callerAgent}
+	rootSession := parentSession
 	m.mu.Lock()
 	if parent := m.bySession[parentSession]; parent != nil {
 		lineage = append(append([]string(nil), parent.task.Lineage...), parent.task.Agent)
+		rootSession = parent.task.RootSession
 	}
 	m.mu.Unlock()
-	id, err := m.Launch(parentSession, lineage, request)
+	if err := m.validate(parentSession, lineage, request); err != nil {
+		return "", err
+	}
+	id, err := taskID()
 	if err != nil {
 		return "", err
 	}
-	m.mu.Lock()
-	state := m.tasks[id]
-	registered := state.registered
-	m.mu.Unlock()
-	select {
-	case <-registered:
-		return m.finishSpawn(parentSession, id, state)
-	case <-ctx.Done():
-		m.mu.Lock()
-		if state.registeredDone {
-			m.mu.Unlock()
-			return m.finishSpawn(parentSession, id, state)
-		}
-		if state.cancel != nil {
-			state.cancel()
-		}
-		state.discard = true
-		m.mu.Unlock()
-		return "", ctx.Err()
-	}
-}
-
-func (m *Manager) finishSpawn(parentSession, id string, state *taskState) (string, error) {
-	task, err := m.Status(parentSession, id)
+	prepared := Execution{TaskID: id, ParentSession: parentSession, RootSession: rootSession, Lineage: append([]string(nil), lineage...), Turn: 1, Request: request}
+	sessionID, err := preparer.Prepare(ctx, prepared)
 	if err != nil {
 		return "", err
 	}
-	if task.SessionID != "" {
-		return id, nil
+	if strings.TrimSpace(sessionID) == "" {
+		return "", errors.New("subagent: preparer returned an empty child session")
 	}
-	m.discard(state)
-	if task.Error == "" {
-		return "", errors.New("subagent: executor did not register a child session")
-	}
-	return "", errors.New(task.Error)
-}
-
-func (m *Manager) discard(state *taskState) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.tasks[state.task.ID] != state {
-		return
-	}
-	for _, child := range m.tasks {
-		if child.task.ParentTaskID == state.task.ID {
-			return
-		}
-	}
-	delete(m.tasks, state.task.ID)
-	delete(m.bySession, state.task.SessionID)
-	if m.config.Tasks != nil {
-		m.config.Tasks.Unregister(state.task.ID)
-	}
+	return m.launch(id, sessionID, parentSession, lineage, request, true)
 }
 
 func (m *Manager) run(ctx context.Context, state *taskState) {
 	turn := state.task.Turn
 	report := func(progress Progress) { m.reportProgress(state, turn, progress) }
-	register := func(sessionID string) {
-		if sessionID == "" {
-			return
-		}
-		m.mu.Lock()
-		if state.task.SessionID == "" {
-			state.task.SessionID = sessionID
-			m.bySession[sessionID] = state
-		}
-		m.closeRegisteredLocked(state)
-		working := LifecycleEvent{Kind: LifecycleWorking, Task: cloneTask(state.task)}
-		m.mu.Unlock()
-		m.emit(working)
-	}
-	execution := Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentTaskID: state.task.ParentTaskID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: report, RegisterSession: register}
+	m.emit(LifecycleEvent{Kind: LifecycleWorking, Task: cloneTask(state.task)})
+	execution := Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: report}
 	output, executeErr := m.executor.Execute(ctx, execution)
 	state.op.Lock()
 	status := StatusSucceeded
@@ -441,14 +419,6 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 		delete(m.byParent, state.task.ParentSession)
 	}
 	state.cancel()
-	m.closeRegisteredLocked(state)
-	if state.discard {
-		delete(m.tasks, state.task.ID)
-		delete(m.bySession, state.task.SessionID)
-		if m.config.Tasks != nil {
-			m.config.Tasks.Unregister(state.task.ID)
-		}
-	}
 	snapshot := cloneTask(state.task)
 	state.turn.result = snapshot
 	callback := m.config.OnProgress
@@ -608,7 +578,6 @@ func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, err
 	m.workers.Add(1)
 	task := cloneTask(state.task)
 	m.mu.Unlock()
-	m.emit(LifecycleEvent{Kind: LifecycleWorking, Task: task})
 	go m.run(ctx, state)
 	return task, nil
 }
@@ -700,7 +669,7 @@ func (m *Manager) Forget(parentSession, id string) error {
 		return errors.New("subagent: cannot forget a running task")
 	}
 	for _, child := range m.tasks {
-		if child.task.ParentTaskID == id {
+		if child.task.ParentSession == state.task.SessionID {
 			return errors.New("subagent: cannot forget an agent with retained children")
 		}
 	}
@@ -756,7 +725,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 func (m *Manager) executionLocked(state *taskState) Execution {
 	turn := state.task.Turn
-	return Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentTaskID: state.task.ParentTaskID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: func(progress Progress) { m.reportProgress(state, turn, progress) }}
+	return Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: func(progress Progress) { m.reportProgress(state, turn, progress) }}
 }
 
 func (m *Manager) isVisible(callerSession string, target *taskState) bool {
@@ -770,19 +739,12 @@ func (m *Manager) visibleLocked(callerSession string, target *taskState) bool {
 	if caller == nil {
 		return target.task.RootSession == callerSession
 	}
-	for current := target; current != nil; current = m.tasks[current.task.ParentTaskID] {
-		if current.task.ParentTaskID == caller.task.ID {
+	for current := target; current != nil; current = m.bySession[current.task.ParentSession] {
+		if current.task.ParentSession == caller.task.SessionID {
 			return true
 		}
 	}
 	return false
-}
-
-func (m *Manager) closeRegisteredLocked(state *taskState) {
-	if !state.registeredDone {
-		close(state.registered)
-		state.registeredDone = true
-	}
 }
 
 type managedAgentTask struct {
@@ -816,7 +778,7 @@ func (t *managedAgentTask) Interrupt(ctx context.Context) (managedtask.Snapshot,
 }
 
 func agentSnapshot(item Task) managedtask.Snapshot {
-	return managedtask.Snapshot{ID: item.ID, ParentTaskID: item.ParentTaskID, Kind: managedtask.KindAgent, Status: string(item.Status), StartedAt: item.StartedAt, Agent: item.Agent, Turn: item.Turn, Depth: item.Depth}
+	return managedtask.Snapshot{ID: item.ID, SessionID: item.SessionID, Kind: managedtask.KindAgent, Status: string(item.Status), StartedAt: item.StartedAt, Agent: item.Agent, Turn: item.Turn, Depth: item.Depth}
 }
 
 func cloneTask(task Task) Task {

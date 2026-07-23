@@ -291,7 +291,8 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 				continue
 			}
 			r.activity[i].taskID = report.taskID
-			r.activity[i].parentTaskID = report.parentTaskID
+			r.activity[i].sessionID = report.sessionID
+			r.activity[i].parentSessionID = report.parentSessionID
 			r.activity[i].mainStatus = report.mainStatus
 			r.activity[i].rendered = text
 			r.activity[i].style = report.style
@@ -299,7 +300,7 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 			break
 		}
 		if !found {
-			r.activity = append(r.activity, enhancedActivityItem{id: report.id, taskID: report.taskID, parentTaskID: report.parentTaskID, mainStatus: report.mainStatus, rendered: text, style: report.style, status: "running", started: time.Now()})
+			r.activity = append(r.activity, enhancedActivityItem{id: report.id, taskID: report.taskID, sessionID: report.sessionID, parentSessionID: report.parentSessionID, mainStatus: report.mainStatus, rendered: text, style: report.style, status: "running", started: time.Now()})
 		}
 	}
 	return nil

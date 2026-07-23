@@ -35,33 +35,33 @@ func TestLiveRendererOrdersTaskFramesPostOrder(t *testing.T) {
 		{
 			name: "nested children before statuses",
 			frames: []LiveFrame{
-				{TaskID: "root", MainStatus: true, StyledActivity: []StyledText{{Text: "root status"}}, Prompt: PromptState{Prefix: "$ "}},
-				{TaskID: "child", ParentTaskID: "root", MainStatus: true, StyledActivity: []StyledText{{Text: "child status"}}},
-				{TaskID: "grandchild", ParentTaskID: "child", StyledActivity: []StyledText{{Text: "grandchild work"}}},
+				{TaskID: "root", SessionID: "session-root", MainStatus: true, StyledActivity: []StyledText{{Text: "root status"}}, Prompt: PromptState{Prefix: "$ "}},
+				{TaskID: "child", SessionID: "session-child", ParentSessionID: "session-root", MainStatus: true, StyledActivity: []StyledText{{Text: "child status"}}},
+				{TaskID: "grandchild", SessionID: "session-grandchild", ParentSessionID: "session-child", StyledActivity: []StyledText{{Text: "grandchild work"}}},
 			},
 			want: "grandchild work\nchild status\nroot status\n$ \n",
 		},
 		{
 			name: "orphan remains visible",
 			frames: []LiveFrame{
-				{TaskID: "orphan", ParentTaskID: "missing", StyledActivity: []StyledText{{Text: "orphan work"}}},
-				{TaskID: "root", MainStatus: true, Prompt: PromptState{Prefix: "$ "}},
+				{TaskID: "orphan", SessionID: "session-orphan", ParentSessionID: "session-missing", StyledActivity: []StyledText{{Text: "orphan work"}}},
+				{TaskID: "root", SessionID: "session-root", MainStatus: true, Prompt: PromptState{Prefix: "$ "}},
 			},
 			want: "orphan work\n$ \n",
 		},
 		{
 			name: "cycle rejected",
 			frames: []LiveFrame{
-				{TaskID: "one", ParentTaskID: "two"},
-				{TaskID: "two", ParentTaskID: "one"},
+				{TaskID: "one", SessionID: "session-one", ParentSessionID: "session-two"},
+				{TaskID: "two", SessionID: "session-two", ParentSessionID: "session-one"},
 			},
 			class: "frame_task_cycle",
 		},
 		{
 			name: "duplicate status rejected",
 			frames: []LiveFrame{
-				{TaskID: "root", MainStatus: true},
-				{TaskID: "root", MainStatus: true},
+				{TaskID: "root", SessionID: "session-root", MainStatus: true},
+				{TaskID: "root", SessionID: "session-root", MainStatus: true},
 			},
 			class: "frame_status_conflict",
 		},

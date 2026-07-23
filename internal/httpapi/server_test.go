@@ -256,6 +256,29 @@ func TestSelectedCreationIsValidatedAndAtomic(t *testing.T) {
 	}
 }
 
+func TestChildCreationMapsAndValidatesParent(t *testing.T) {
+	backend, sessions := newSelectionBackend(t)
+	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
+	ctx := context.Background()
+	parent, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{ProjectID: "project", Title: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{ParentSessionID: parent.ID, ProjectID: "project", Title: "child"})
+	if err != nil || child.ParentSessionID != parent.ID {
+		t.Fatalf("CreateSession child = %#v, %v", child, err)
+	}
+	loaded, err := sessions.Get(ctx, child.ID)
+	if err != nil || loaded.ParentSessionID != parent.ID {
+		t.Fatalf("stored child = %#v, %v", loaded, err)
+	}
+	_, err = apiClient.CreateSession(ctx, v1.CreateSessionRequest{ParentSessionID: "ses_missing", ProjectID: "project"})
+	assertAPIProblem(t, err, http.StatusNotFound, "session_not_found")
+	_, err = apiClient.CreateSession(ctx, v1.CreateSessionRequest{ParentSessionID: parent.ID, ProjectID: "other"})
+	assertAPIProblem(t, err, http.StatusBadRequest, "invalid_request")
+}
+
 func TestDefaultCreationAndTypedPartialSelectionUpdate(t *testing.T) {
 	backend, _ := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}

@@ -30,7 +30,8 @@ func TestPresentationResolvesFriendlyTaskNames(t *testing.T) {
 
 	tracker := NewTaskTracker()
 	tracker.Presentation = presentations
-	if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "task_named", ParentTaskID: "task_main", Kind: "agent", Agent: "review", Name: "review-kind-ibex"}), false); err != nil {
+	startMainTask(tracker)
+	if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "task_named", SessionID: "session-named", ParentSessionID: "session-main", Kind: "agent", Agent: "review", Name: "review-kind-ibex"}), false); err != nil {
 		t.Fatal(err)
 	}
 	reports, err := tracker.Apply(taskDelta("task_named", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "working"}), false)
@@ -70,7 +71,7 @@ func TestTaskPrefixIncludesAgentNameAndLeadsWithActivityIcon(t *testing.T) {
 func TestTaskToolOutputDeltaLeadsWithActivityIcon(t *testing.T) {
 	tracker := NewTaskTracker()
 	_, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
-		TaskID: "task-explorer", ParentTaskID: "task_main", Kind: "agent", Agent: "explorer", Name: "ui-hierarchy",
+		TaskID: "task-explorer", SessionID: "session-explorer", Kind: "agent", Agent: "explorer", Name: "ui-hierarchy",
 	}), false)
 	if err != nil {
 		t.Fatal(err)
@@ -110,7 +111,15 @@ func TestTaskActivityLabelsUseTaskID(t *testing.T) {
 
 func taskLifecycleEvent(eventType string, event v1.TaskEvent) v1.Event {
 	data, _ := json.Marshal(event)
-	return v1.Event{Type: eventType, TaskID: event.TaskID, Data: data}
+	streamSessionID := event.ParentSessionID
+	if streamSessionID == "" {
+		streamSessionID = event.SessionID
+	}
+	return v1.Event{Type: eventType, SessionID: streamSessionID, TaskID: event.TaskID, Data: data}
+}
+
+func startMainTask(tracker *TaskTracker) {
+	_, _ = tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "task_main", SessionID: "session-main", Kind: "main"}), false)
 }
 
 func taskDelta(taskID string, delta v1.MessagePartDelta) v1.Event {
@@ -120,10 +129,11 @@ func taskDelta(taskID string, delta v1.MessagePartDelta) v1.Event {
 
 func TestTaskTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	tracker := NewTaskTracker()
+	startMainTask(tracker)
 	for _, start := range []v1.TaskEvent{
-		{TaskID: "task-z", ParentTaskID: "task_main", Kind: "agent", Agent: "review", Name: "review-z"},
-		{TaskID: "task-child", ParentTaskID: "task-z", Kind: "agent", Agent: "explore"},
-		{TaskID: "task-a", ParentTaskID: "task_main", Kind: "agent", Agent: "worker"},
+		{TaskID: "task-z", SessionID: "session-z", ParentSessionID: "session-main", Kind: "agent", Agent: "review", Name: "review-z"},
+		{TaskID: "task-child", SessionID: "session-child", ParentSessionID: "session-z", Kind: "agent", Agent: "explore"},
+		{TaskID: "task-a", SessionID: "session-a", ParentSessionID: "session-main", Kind: "agent", Agent: "worker"},
 	} {
 		if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, start), false); err != nil {
 			t.Fatal(err)
@@ -134,10 +144,10 @@ func TestTaskTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	}
 
 	wantTasks := []TaskInfo{
-		{TaskID: "task_main", Kind: "main"},
-		{TaskID: "task-a", ParentTaskID: "task_main", Kind: "agent", Agent: "worker", Status: "idle"},
-		{TaskID: "task-z", ParentTaskID: "task_main", Kind: "agent", Agent: "review", Name: "review-z", Status: "working"},
-		{TaskID: "task-child", ParentTaskID: "task-z", Kind: "agent", Agent: "explore", Status: "working"},
+		{TaskID: "task_main", SessionID: "session-main", Kind: "main", Status: "working"},
+		{TaskID: "task-a", SessionID: "session-a", ParentSessionID: "session-main", Kind: "agent", Agent: "worker", Status: "idle"},
+		{TaskID: "task-z", SessionID: "session-z", ParentSessionID: "session-main", Kind: "agent", Agent: "review", Name: "review-z", Status: "working"},
+		{TaskID: "task-child", SessionID: "session-child", ParentSessionID: "session-z", Kind: "agent", Agent: "explore", Status: "working"},
 	}
 	if got := tracker.Tasks(); !reflect.DeepEqual(got, wantTasks) {
 		t.Fatalf("Tasks() = %#v, want %#v", got, wantTasks)
@@ -153,7 +163,7 @@ func TestTaskTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	if err != nil || len(reports) != 1 {
 		t.Fatalf("content reports = %#v, %v", reports, err)
 	}
-	if report := reports[0]; report.TaskID != "task-child" || report.ParentTaskID != "task-z" || report.MainStatus {
+	if report := reports[0]; report.TaskID != "task-child" || report.SessionID != "session-child" || report.ParentSessionID != "session-z" || report.MainStatus {
 		t.Fatalf("content report metadata = %#v", report)
 	}
 
@@ -162,13 +172,14 @@ func TestTaskTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	if err != nil || len(reports) != 1 {
 		t.Fatalf("progress reports = %#v, %v", reports, err)
 	}
-	if report := reports[0]; report.TaskID != "task-child" || report.ParentTaskID != "task-z" || !report.MainStatus {
+	if report := reports[0]; report.TaskID != "task-child" || report.SessionID != "session-child" || report.ParentSessionID != "session-z" || !report.MainStatus {
 		t.Fatalf("progress report metadata = %#v", report)
 	}
 }
 
 func TestTaskTrackerDefersProgressUntilDescendantsFinish(t *testing.T) {
 	tracker := NewTaskTracker()
+	startMainTask(tracker)
 	apply := func(event v1.Event) []TaskReport {
 		reports, err := tracker.Apply(event, false)
 		if err != nil {
@@ -181,10 +192,10 @@ func TestTaskTrackerDefersProgressUntilDescendantsFinish(t *testing.T) {
 		return v1.Event{Type: v1.EventTaskProgress, TaskID: taskID, Data: data}
 	}
 
-	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "parent", ParentTaskID: "task_main", Kind: "agent", Agent: "explore", Name: "parent"}))
+	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "parent", SessionID: "session-parent", ParentSessionID: "session-main", Kind: "agent", Agent: "explore", Name: "parent"}))
 	apply(progress("parent", "running", 100, 2))
-	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "child", ParentTaskID: "parent", Kind: "agent", Agent: "explore", Name: "child"}))
-	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "grandchild", ParentTaskID: "child", Kind: "agent", Agent: "explore", Name: "grandchild"}))
+	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "child", SessionID: "session-child", ParentSessionID: "session-parent", Kind: "agent", Agent: "explore", Name: "child"}))
+	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "grandchild", SessionID: "session-grandchild", ParentSessionID: "session-child", Kind: "agent", Agent: "explore", Name: "grandchild"}))
 
 	reports := apply(progress("parent", "succeeded", 125, 3))
 	if len(reports) != 1 || reports[0].Terminal || !strings.Contains(reports[0].Line, "⠋ [explore:parent] agent: explore · 125 tokens · 3 tools · 1 active task") {
@@ -208,6 +219,7 @@ func TestTaskTrackerDefersProgressUntilDescendantsFinish(t *testing.T) {
 
 func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	tracker := NewTaskTracker()
+	startMainTask(tracker)
 
 	// Content for a task which never started is an unknown task error, shown
 	// once no matter how many events reference the unknown id.
@@ -230,11 +242,11 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 
 	// A start with an unknown parent registers the task and reports the
 	// missing parent; the orphan still renders its own content.
-	reports, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "task-orphan", ParentTaskID: "task-missing", Kind: "agent", Agent: "explore"}), false)
+	reports, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "task-orphan", SessionID: "session-orphan", ParentSessionID: "session-missing", Kind: "agent", Agent: "explore"}), false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || reports[0].Line != "✗ unknown task task-missing (parent of task-orphan)" {
+	if len(reports) != 1 || reports[0].Line != "✗ unknown task session-missing (parent session of session-orphan)" {
 		t.Fatalf("orphan parent reports = %#v", reports)
 	}
 	reports, err = tracker.Apply(taskDelta("task-orphan", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "orphan work"}), false)
@@ -248,8 +260,8 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	// Depth comes from the parent chain the tracker builds, not from the
 	// events themselves.
 	for _, start := range []v1.TaskEvent{
-		{TaskID: "task-parent", ParentTaskID: "task_main", Kind: "agent", Agent: "build"},
-		{TaskID: "task-child", ParentTaskID: "task-parent", Kind: "agent", Agent: "review"},
+		{TaskID: "task-parent", SessionID: "session-parent", ParentSessionID: "session-main", Kind: "agent", Agent: "build"},
+		{TaskID: "task-child", SessionID: "session-child", ParentSessionID: "session-parent", Kind: "agent", Agent: "review"},
 	} {
 		if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, start), false); err != nil {
 			t.Fatal(err)

@@ -448,11 +448,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return managedtask.MainTaskID
 	})
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
-		parent := item.ParentTaskID
-		if parent == "" {
-			parent = managedtask.MainTaskID
-		}
-		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, ParentTaskID: parent, Kind: string(managedtask.KindShell), Error: item.Error}
+		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Kind: string(managedtask.KindShell), Error: item.Error}
 		eventType := managedtask.EventStart
 		if item.Kind == process.PersistentEventFinished {
 			eventType = managedtask.EventFinished
@@ -1197,18 +1193,19 @@ type appSubagentExecutor struct {
 	live             *event.Broker
 }
 
+func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Execution) (string, error) {
+	child, err := e.createSubagentSession(ctx, execution)
+	if err != nil {
+		return "", err
+	}
+	return child.ID, nil
+}
+
 func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
 	if e.agentSessions == nil {
 		return "", errors.New("app: subagent agentSessions is unavailable")
 	}
 	childSession := execution.SessionID
-	if childSession == "" {
-		child, err := e.createSubagentSession(ctx, execution)
-		if err != nil {
-			return "", err
-		}
-		childSession = child.ID
-	}
 	messages, err := e.sessions.ListMessages(ctx, childSession)
 	if err != nil {
 		return "", err
@@ -1221,9 +1218,6 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	defer stopEvents()
 	if _, err := e.admit(ctx, childSession, execution.Request.Prompt); err != nil {
 		return "", err
-	}
-	if execution.SessionID == "" && execution.RegisterSession != nil {
-		execution.RegisterSession(childSession)
 	}
 	if err := e.agentSessions.Resume(ctx, childSession); err != nil {
 		if ctx.Err() != nil {
@@ -1283,7 +1277,7 @@ func (e *appSubagentExecutor) createSubagentSession(ctx context.Context, executi
 		}
 	}
 	title := "Subtask " + execution.Request.Name + " [" + execution.Request.Agent + "]"
-	return e.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: parent.ProjectID, ProjectRoot: parent.ProjectRoot, Title: title}, selection)
+	return e.sessions.CreateSelected(ctx, session.CreateParams{ParentSessionID: parent.ID, ProjectID: parent.ProjectID, ProjectRoot: parent.ProjectRoot, Title: title}, selection)
 }
 
 func (e *appSubagentExecutor) admit(ctx context.Context, childSession, content string) (string, error) {
@@ -1455,10 +1449,7 @@ func (c *managedTaskController) Wait(ctx context.Context, callerSession, id stri
 
 func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) {
 	task := item.Task
-	payload := v1.TaskEvent{TaskID: task.ID, SessionID: task.SessionID, ParentTaskID: task.ParentTaskID, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
-	if payload.ParentTaskID == "" {
-		payload.ParentTaskID = managedtask.MainTaskID
-	}
+	payload := v1.TaskEvent{TaskID: task.ID, SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
 	eventType := ""
 	switch item.Kind {
 	case subagent.LifecycleStart:

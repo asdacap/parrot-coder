@@ -16,11 +16,12 @@ import (
 )
 
 var (
-	ErrNotFound            = errors.New("session: not found")
-	ErrInvalidDelivery     = errors.New("session: delivery must be steer or queue")
-	ErrIdempotencyConflict = errors.New("session: message ID was already admitted with different content or delivery")
-	ErrSelectionRequired   = errors.New("session: agent, provider, and model are required")
-	errAlreadyAdmitted     = errors.New("session: input already admitted")
+	ErrNotFound              = errors.New("session: not found")
+	ErrInvalidDelivery       = errors.New("session: delivery must be steer or queue")
+	ErrIdempotencyConflict   = errors.New("session: message ID was already admitted with different content or delivery")
+	ErrSelectionRequired     = errors.New("session: agent, provider, and model are required")
+	ErrParentProjectMismatch = errors.New("session: parent belongs to a different project")
+	errAlreadyAdmitted       = errors.New("session: input already admitted")
 )
 
 type Delivery string
@@ -31,22 +32,24 @@ const (
 )
 
 type Session struct {
-	ID          string
-	ProjectID   string
-	ProjectRoot string
-	Title       string
-	Agent       string
-	Provider    string
-	Model       string
-	Variant     string
-	CreatedAt   time.Time
-	UpdatedAt   time.Time
+	ID              string
+	ParentSessionID string
+	ProjectID       string
+	ProjectRoot     string
+	Title           string
+	Agent           string
+	Provider        string
+	Model           string
+	Variant         string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 type CreateParams struct {
-	ProjectID   string
-	ProjectRoot string
-	Title       string
+	ParentSessionID string
+	ProjectID       string
+	ProjectRoot     string
+	Title           string
 }
 
 type InteractiveOwner struct {
@@ -132,6 +135,9 @@ func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selec
 }
 
 func (s *Service) create(ctx context.Context, params CreateParams, selection Selection) (Session, error) {
+	if err := s.validateParent(params); err != nil {
+		return Session{}, err
+	}
 	sessionID, err := id.New("ses")
 	if err != nil {
 		return Session{}, fmt.Errorf("session: generate ID: %w", err)
@@ -142,7 +148,7 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 	}
 	now := time.Now().UTC()
 	result := Session{
-		ID: sessionID, ProjectID: params.ProjectID, ProjectRoot: params.ProjectRoot, Title: params.Title,
+		ID: sessionID, ParentSessionID: params.ParentSessionID, ProjectID: params.ProjectID, ProjectRoot: params.ProjectRoot, Title: params.Title,
 		Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: selection.Variant,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -160,11 +166,32 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 	return result, nil
 }
 
+func (s *Service) validateParent(params CreateParams) error {
+	if params.ParentSessionID == "" {
+		return nil
+	}
+	// Parent and child have separate databases, so this relationship cannot use
+	// a cross-database foreign key or be validated in the child's transaction.
+	// The published metadata is the durable cross-session index and can also be
+	// read when another host owns the parent database.
+	meta, err := store.ReadMeta(s.sessions.State(), params.ParentSessionID)
+	if errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("session: parent: %w", ErrNotFound)
+	}
+	if err != nil {
+		return fmt.Errorf("session: read parent: %w", err)
+	}
+	if meta.ProjectID != params.ProjectID {
+		return ErrParentProjectMismatch
+	}
+	return nil
+}
+
 func insertSession(ctx context.Context, tx *sql.Tx, item Session) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO session(id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		item.ID, item.ProjectID, item.ProjectRoot, item.Title,
+		INSERT INTO session(id, parent_session_id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		item.ID, item.ParentSessionID, item.ProjectID, item.ProjectRoot, item.Title,
 		item.Agent, item.Provider, item.Model, item.Variant,
 		formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
 	if err != nil {
@@ -178,18 +205,19 @@ func insertSession(ctx context.Context, tx *sql.Tx, item Session) error {
 // a database it cannot lock.
 func (s *Service) publish(item Session) error {
 	return store.WriteMeta(s.sessions.State(), store.Meta{
-		ID:          item.ID,
-		ProjectID:   item.ProjectID,
-		ProjectRoot: item.ProjectRoot,
-		Title:       item.Title,
-		Agent:       item.Agent,
-		Provider:    item.Provider,
-		Model:       item.Model,
-		Variant:     item.Variant,
-		CreatedAt:   formatTime(item.CreatedAt),
-		UpdatedAt:   formatTime(item.UpdatedAt),
-		HostKey:     s.sessions.HostKey(),
-		PID:         s.pid,
+		ID:              item.ID,
+		ParentSessionID: item.ParentSessionID,
+		ProjectID:       item.ProjectID,
+		ProjectRoot:     item.ProjectRoot,
+		Title:           item.Title,
+		Agent:           item.Agent,
+		Provider:        item.Provider,
+		Model:           item.Model,
+		Variant:         item.Variant,
+		CreatedAt:       formatTime(item.CreatedAt),
+		UpdatedAt:       formatTime(item.UpdatedAt),
+		HostKey:         s.sessions.HostKey(),
+		PID:             s.pid,
 	})
 }
 
@@ -288,7 +316,7 @@ func (s *Service) Get(ctx context.Context, sessionID string) (Session, error) {
 		return Session{}, err
 	}
 	return scanSession(db.SQL().QueryRowContext(ctx, `
-		SELECT id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
+		SELECT id, parent_session_id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
         FROM session WHERE id = ?`, sessionID))
 }
 
@@ -615,7 +643,7 @@ func sessionFromMeta(meta store.Meta) (Session, error) {
 		return Session{}, err
 	}
 	return Session{
-		ID: meta.ID, ProjectID: meta.ProjectID, ProjectRoot: meta.ProjectRoot, Title: meta.Title,
+		ID: meta.ID, ParentSessionID: meta.ParentSessionID, ProjectID: meta.ProjectID, ProjectRoot: meta.ProjectRoot, Title: meta.Title,
 		Agent: meta.Agent, Provider: meta.Provider, Model: meta.Model, Variant: meta.Variant,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}, nil
@@ -624,7 +652,7 @@ func sessionFromMeta(meta store.Meta) (Session, error) {
 func scanSession(row rowScanner) (Session, error) {
 	var item Session
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.ProjectID, &item.ProjectRoot, &item.Title, &item.Agent, &item.Provider, &item.Model, &item.Variant, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.ParentSessionID, &item.ProjectID, &item.ProjectRoot, &item.Title, &item.Agent, &item.Provider, &item.Model, &item.Variant, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return Session{}, ErrNotFound
 		}

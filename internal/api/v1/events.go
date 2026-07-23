@@ -79,20 +79,20 @@ type ToolOutputDelta struct {
 	Delta      string `json:"delta"`
 }
 
-// TaskEvent is the flat lifecycle record every task emits on its session's
-// event stream. A task belongs to one session and may have a parent task;
-// clients rebuild the task tree from ParentTaskID rather than from nested
-// event envelopes. SessionID is empty on task.start when a subagent task has
-// not bound its child session yet. Status and Error are set on task.finished.
+// TaskEvent is the flat lifecycle record every task emits. Every task belongs
+// directly to SessionID; ParentSessionID links that session into the hierarchy.
+// The event envelope may name an ancestor stream when descendant activity is
+// forwarded, while these fields retain the task's actual ownership. Status and
+// Error are set on task.finished.
 type TaskEvent struct {
-	TaskID       string `json:"task_id"`
-	SessionID    string `json:"session_id,omitempty"`
-	ParentTaskID string `json:"parent_task_id,omitempty"`
-	Kind         string `json:"kind"`
-	Agent        string `json:"agent,omitempty"`
-	Name         string `json:"name,omitempty"`
-	Status       string `json:"status,omitempty"`
-	Error        string `json:"error,omitempty"`
+	TaskID          string `json:"task_id"`
+	SessionID       string `json:"session_id"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	Kind            string `json:"kind"`
+	Agent           string `json:"agent,omitempty"`
+	Name            string `json:"name,omitempty"`
+	Status          string `json:"status,omitempty"`
+	Error           string `json:"error,omitempty"`
 }
 
 type SessionStatus struct {

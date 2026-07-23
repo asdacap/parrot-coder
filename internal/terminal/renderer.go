@@ -109,17 +109,19 @@ func MutedText(text string) StyledText {
 }
 
 // LiveFrame describes one task-scoped portion of the redrawable region.
-// TaskID and ParentTaskID form a flat task tree when passed to Frames.
+// SessionID and ParentSessionID form a flat session tree when passed to Frames;
+// TaskID remains the frame grouping key.
 // MainStatus marks the frame that contains the task's primary status; child
 // tasks are rendered before that frame. Frame accepts the zero-value metadata
 // for compatibility with callers rendering one isolated composite frame.
 type LiveFrame struct {
-	TaskID        string
-	ParentTaskID  string
-	MainStatus    bool
-	MessagePrefix string
-	Message       string
-	Context       []string
+	TaskID          string
+	SessionID       string
+	ParentSessionID string
+	MainStatus      bool
+	MessagePrefix   string
+	Message         string
+	Context         []string
 	// PromptContext is rendered in full immediately before Prompt. Unlike
 	// Context, it is not part of the bounded upper live arena. This is for
 	// decision-critical context that must remain visible beside its selector.
@@ -352,13 +354,17 @@ func orderLiveFrames(frames []LiveFrame) ([]LiveFrame, error) {
 		if frame.TaskID == "" {
 			return nil, errFrameTaskIDEmpty
 		}
-		task := tasks[frame.TaskID]
+		key := frame.SessionID
+		if key == "" {
+			key = frame.TaskID
+		}
+		task := tasks[key]
 		if task == nil {
-			task = &taskFrames{parent: frame.ParentTaskID}
-			tasks[frame.TaskID] = task
-			order = append(order, frame.TaskID)
+			task = &taskFrames{parent: frame.ParentSessionID}
+			tasks[key] = task
+			order = append(order, key)
 		} else if task.parent == "" {
-			task.parent = frame.ParentTaskID
+			task.parent = frame.ParentSessionID
 		}
 		if frame.MainStatus {
 			if task.status != nil {
@@ -442,7 +448,8 @@ func mergeLiveFrames(frames []LiveFrame) LiveFrame {
 	}
 	frame := frames[chrome]
 	merged.TaskID = frame.TaskID
-	merged.ParentTaskID = frame.ParentTaskID
+	merged.SessionID = frame.SessionID
+	merged.ParentSessionID = frame.ParentSessionID
 	merged.MainStatus = true
 	merged.PromptContext = frame.PromptContext
 	merged.InputLeft = frame.InputLeft

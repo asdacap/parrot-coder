@@ -49,7 +49,7 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 	var updated Session
 	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		current, err := scanSession(tx.QueryRowContext(ctx, `
-			SELECT id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
+			SELECT id, parent_session_id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
 			FROM session WHERE id = ?`, sessionID))
 		if err != nil {
 			return nil, nil, err

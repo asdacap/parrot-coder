@@ -577,8 +577,9 @@ func TestPersistentIDsActiveListingAndTargetedInterruptionAreOwnerScoped(t *test
 	owned := runner.ListActivePersistent("owner")
 	other := runner.ListActivePersistent("other")
 	if len(owned) != 2 || owned[0].ID != *results[0].ProcessID || owned[1].ID != *results[1].ProcessID ||
+		owned[0].SessionID != "owner" || owned[1].SessionID != "owner" ||
 		owned[0].StartedAt.Before(startedAfter) || owned[1].StartedAt.Before(owned[0].StartedAt) ||
-		len(other) != 1 || other[0].ID != *results[2].ProcessID || len(runner.ListActivePersistent("unknown")) != 0 {
+		len(other) != 1 || other[0].ID != *results[2].ProcessID || other[0].SessionID != "other" || len(runner.ListActivePersistent("unknown")) != 0 {
 		t.Fatalf("active tasks: owner=%#v other=%#v", owned, other)
 	}
 	if _, err := runner.InterruptPersistent("other", owned[0].ID); err == nil || !strings.Contains(err.Error(), "unknown process") {

@@ -10,15 +10,15 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func TestMigration006WithSnapshotDataUpgradesThrough007AndReopens(t *testing.T) {
+func TestMigration006WithSnapshotDataUpgradesThrough008AndReopens(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "parrot.db")
 	migrations, err := loadMigrations(legacyMigrations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 7 {
-		t.Fatalf("migration count = %d, want 7", len(migrations))
+	if len(migrations) != 8 {
+		t.Fatalf("migration count = %d, want 8", len(migrations))
 	}
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -54,7 +54,7 @@ func TestMigration006WithSnapshotDataUpgradesThrough007AndReopens(t *testing.T) 
 		t.Fatal(err)
 	}
 	var count int
-	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM _parrot_migration`).Scan(&count); err != nil || count != 7 {
+	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM _parrot_migration`).Scan(&count); err != nil || count != 8 {
 		t.Fatalf("migration count after upgrade = %d, %v", count, err)
 	}
 	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'snapshot_%'`).Scan(&count); err != nil || count != 0 {

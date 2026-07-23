@@ -171,7 +171,7 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 	}
 	result, err := runner.RunPersistent(ctx, process.PersistentRequest{
 		Shell: input.ResolvedShell, Command: input.Command, Cwd: input.ResolvedWorkdir, Env: input.Env,
-		SessionID: call.SessionID, ParentTaskID: call.TaskID, Yield: time.Duration(input.YieldTimeMS) * time.Millisecond,
+		SessionID: call.SessionID, Yield: time.Duration(input.YieldTimeMS) * time.Millisecond,
 		MaxOutputTokens: input.MaxOutputTokens, TTY: input.TTY, Output: call.Output,
 		Unrestricted:    input.SandboxPermissions == "disable_sandbox",
 		SecurityProfile: call.SecurityProfile,

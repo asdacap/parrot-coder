@@ -30,14 +30,14 @@ const (
 )
 
 type Snapshot struct {
-	ID           string    `json:"task_id"`
-	ParentTaskID string    `json:"parent_task_id,omitempty"`
-	Kind         Kind      `json:"kind"`
-	Status       string    `json:"status"`
-	StartedAt    time.Time `json:"started_at,omitempty"`
-	Agent        string    `json:"agent,omitempty"`
-	Turn         int       `json:"turn,omitempty"`
-	Depth        int       `json:"depth,omitempty"`
+	ID        string    `json:"task_id"`
+	SessionID string    `json:"session_id"`
+	Kind      Kind      `json:"kind"`
+	Status    string    `json:"status"`
+	StartedAt time.Time `json:"started_at,omitempty"`
+	Agent     string    `json:"agent,omitempty"`
+	Turn      int       `json:"turn,omitempty"`
+	Depth     int       `json:"depth,omitempty"`
 }
 
 // Active is retained as an alias for callers which only consume task metadata.
@@ -81,10 +81,14 @@ type Manager struct {
 func NewManager() *Manager { return &Manager{tasks: make(map[string]entry)} }
 
 func (m *Manager) Register(item Task, visible Visibility) error {
-	if m == nil || item == nil || item.Snapshot().ID == "" || visible == nil {
+	if m == nil || item == nil || visible == nil {
 		return errors.New("task: task and visibility are required")
 	}
-	id := item.Snapshot().ID
+	snapshot := item.Snapshot()
+	if snapshot.ID == "" || snapshot.SessionID == "" {
+		return errors.New("task: task ID and session ID are required")
+	}
+	id := snapshot.ID
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if _, ok := m.tasks[id]; ok {

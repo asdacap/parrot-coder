@@ -48,6 +48,47 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	}
 }
 
+func TestParentSessionPersistsAndRequiresSameProject(t *testing.T) {
+	ctx := context.Background()
+	state := t.TempDir()
+	registry := store.NewRegistry(state, "host-test")
+	service := session.NewService(registry, event.NewRepository(registry))
+	parent, err := service.Create(ctx, session.CreateParams{ProjectID: "project", Title: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := service.Create(ctx, session.CreateParams{ParentSessionID: parent.ID, ProjectID: "project", Title: "child"})
+	if err != nil || child.ParentSessionID != parent.ID {
+		t.Fatalf("Create child = %#v, %v", child, err)
+	}
+	if _, err := service.Create(ctx, session.CreateParams{ParentSessionID: "ses_missing", ProjectID: "project"}); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("missing parent error = %v", err)
+	}
+	if _, err := service.Create(ctx, session.CreateParams{ParentSessionID: parent.ID, ProjectID: "other"}); !errors.Is(err, session.ErrParentProjectMismatch) {
+		t.Fatalf("different-project parent error = %v", err)
+	}
+	if err := registry.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	registry = store.NewRegistry(state, "host-test")
+	defer registry.Close()
+	service = session.NewService(registry, event.NewRepository(registry))
+	loaded, err := service.Get(ctx, child.ID)
+	if err != nil || loaded.ParentSessionID != parent.ID {
+		t.Fatalf("reopened child = %#v, %v", loaded, err)
+	}
+	listed, err := service.List(ctx)
+	if err != nil || len(listed) != 2 {
+		t.Fatalf("List = %#v, %v", listed, err)
+	}
+	for _, item := range listed {
+		if item.ID == child.ID && item.ParentSessionID != parent.ID {
+			t.Fatalf("listed child = %#v", item)
+		}
+	}
+}
+
 func TestCreateSelectedPersistsCompleteInitialSelection(t *testing.T) {
 	ctx, _, _, service, _ := newService(t)
 	created, err := service.CreateSelected(ctx, session.CreateParams{Title: "selected"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})

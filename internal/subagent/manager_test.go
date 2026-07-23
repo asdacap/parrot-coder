@@ -15,6 +15,19 @@ func (f executorFunc) Execute(ctx context.Context, execution Execution) (string,
 	return f(ctx, execution)
 }
 
+type preparedExecutor struct {
+	prepare func(context.Context, Execution) (string, error)
+	execute func(context.Context, Execution) (string, error)
+}
+
+func (e preparedExecutor) Prepare(ctx context.Context, execution Execution) (string, error) {
+	return e.prepare(ctx, execution)
+}
+
+func (e preparedExecutor) Execute(ctx context.Context, execution Execution) (string, error) {
+	return e.execute(ctx, execution)
+}
+
 func TestFriendlyNames(t *testing.T) {
 	executions := make(chan Execution, 4)
 	manager := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {
@@ -251,10 +264,11 @@ func newReusableExecutor() *reusableExecutor {
 	return &reusableExecutor{runs: make(chan Execution, 8), releases: make(map[string]chan string), sends: make(chan string, 8)}
 }
 
+func (e *reusableExecutor) Prepare(_ context.Context, execution Execution) (string, error) {
+	return "session-" + execution.TaskID, nil
+}
+
 func (e *reusableExecutor) Execute(ctx context.Context, execution Execution) (string, error) {
-	if execution.SessionID == "" {
-		execution.RegisterSession("session-" + execution.TaskID)
-	}
 	e.mu.Lock()
 	release := make(chan string, 1)
 	e.releases[execution.TaskID] = release
@@ -291,7 +305,7 @@ func TestReusableAgentLifecycleOwnershipObservationAndActiveListing(t *testing.T
 		t.Fatal(err)
 	}
 	first := <-executor.runs
-	if first.SessionID != "" || first.Turn != 1 || first.Request.Prompt != "first" {
+	if first.SessionID != "session-"+first.TaskID || first.Turn != 1 || first.Request.Prompt != "first" {
 		t.Fatalf("first execution = %#v", first)
 	}
 	task, err := manager.Status("root", id)
@@ -449,10 +463,12 @@ func TestLaunchEnforcesPerAgentRecursionLimits(t *testing.T) {
 		})
 	}
 
-	derived := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {
-		execution.RegisterSession("session-" + execution.TaskID)
-		return "", nil
-	}), Config{})
+	derived := NewManager(preparedExecutor{
+		prepare: func(_ context.Context, execution Execution) (string, error) {
+			return "session-" + execution.TaskID, nil
+		},
+		execute: func(context.Context, Execution) (string, error) { return "", nil },
+	}, Config{})
 	parentSession := "root"
 	for range 2 {
 		id, err := derived.Spawn(context.Background(), parentSession, "build", Request{Prompt: "recurse", Agent: "build"})
@@ -476,8 +492,14 @@ func TestSpawnFailureAndCancellationDoNotRetainUnreachableAgents(t *testing.T) {
 		executor Executor
 		cancel   bool
 	}{
-		{name: "failure", executor: executorFunc(func(context.Context, Execution) (string, error) { return "", errors.New("create failed") })},
-		{name: "cancellation", cancel: true, executor: executorFunc(func(ctx context.Context, _ Execution) (string, error) { <-ctx.Done(); return "", ctx.Err() })},
+		{name: "failure", executor: preparedExecutor{
+			prepare: func(context.Context, Execution) (string, error) { return "", errors.New("create failed") },
+			execute: func(context.Context, Execution) (string, error) { return "", nil },
+		}},
+		{name: "cancellation", cancel: true, executor: preparedExecutor{
+			prepare: func(ctx context.Context, _ Execution) (string, error) { <-ctx.Done(); return "", ctx.Err() },
+			execute: func(context.Context, Execution) (string, error) { return "", nil },
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			manager := NewManager(test.executor, Config{})

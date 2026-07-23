@@ -101,7 +101,7 @@ func TestWaitTaskRejectsInvalidRequestsAndPropagatesCancellation(t *testing.T) {
 func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	started := time.Date(2026, time.July, 19, 1, 2, 3, 0, time.UTC)
 	controller := &recordingTaskController{interrupted: managedtask.Active{
-		ID: "proc_test", Kind: managedtask.KindShell, Status: "canceled", StartedAt: started,
+		ID: "proc_test", SessionID: "session", Kind: managedtask.KindShell, Status: "canceled", StartedAt: started,
 	}}
 	list := &TaskTool{Kind: "task_list_active", Controller: controller}
 	plan, err := list.Plan(context.Background(), json.RawMessage(`{}`), CallContext{SessionID: "session"})
@@ -125,7 +125,7 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != `{"task_id":"proc_test","kind":"shell","status":"canceled","started_at":"2026-07-19T01:02:03Z"}` {
+	if result.Text != `{"task_id":"proc_test","session_id":"session","kind":"shell","status":"canceled","started_at":"2026-07-19T01:02:03Z"}` {
 		t.Fatalf("interrupt = %s", result.Text)
 	}
 }

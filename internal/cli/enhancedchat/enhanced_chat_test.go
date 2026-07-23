@@ -440,10 +440,17 @@ func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
 	}
 }
 
-// taskStart builds the flat task.start event introducing one task into the
-// UI's task tree. Every other event for the task carries only its task_id.
+// UI's session tree. Every other event for the task carries only its task_id.
 func taskStart(taskID, parentTaskID, agent string, name ...string) v1.Event {
-	event := v1.TaskEvent{TaskID: taskID, ParentTaskID: parentTaskID, Kind: "agent", Agent: agent}
+	parentSessionID := "session-" + parentTaskID
+	if parentTaskID == "task_main" {
+		parentSessionID = ""
+	}
+	return taskStartInSession(taskID, parentSessionID, agent, name...)
+}
+
+func taskStartInSession(taskID, parentSessionID, agent string, name ...string) v1.Event {
+	event := v1.TaskEvent{TaskID: taskID, SessionID: "session-" + taskID, ParentSessionID: parentSessionID, Kind: "agent", Agent: agent}
 	if len(name) > 0 {
 		event.Name = name[0]
 	}
@@ -505,7 +512,10 @@ func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	)
 	// A grandchild renders two levels deep because the UI walks the parent
 	// chain it tracks, not because an event envelope carries a depth.
-	if err := runtime.handleEvent(taskStart("task-parent", "task_main", "build")); err != nil {
+	if err := runtime.handleEvent(taskStartInSession("task_main", "", "")); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.handleEvent(taskStartInSession("task-parent", "session-task_main", "build")); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.handleEvent(taskStart("task-review", "task-parent", "review", "ui-hierarchy")); err != nil {
@@ -548,7 +558,7 @@ func TestEnhancedMonitorLabelUsesFriendlyTaskName(t *testing.T) {
 		knownMessages: map[string]bool{},
 	}
 	started, _ := json.Marshal(v1.TaskEvent{
-		TaskID: "task-review", ParentTaskID: "task_main", Kind: "agent", Agent: "review", Name: "review-kind-ibex",
+		TaskID: "task-review", SessionID: "task-review", Kind: "agent", Agent: "review", Name: "review-kind-ibex",
 	})
 	if err := runtime.handleEvent(taskContent("task-review", v1.EventTaskStart, started)); err != nil {
 		t.Fatal(err)
