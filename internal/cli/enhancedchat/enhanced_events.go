@@ -36,7 +36,7 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		r.turnCompleteID = ""
 		// Task ids are unique per tree, but the old session's task tree is
 		// meaningless to the new one. Rebuild it rather than carry stale nodes.
-		r.subagents = taskStreamTracker{}
+		r.resetTaskTracker()
 		r.knownMessages = make(map[string]bool, len(messages.Items))
 		r.unsyncedMessages = make(map[string]bool)
 		for _, item := range messages.Items {
@@ -113,6 +113,12 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		}
 	}()
 	return r.reconcileRuntime()
+}
+
+// resetTaskTracker keeps the connected server's shared presentation state so
+// task names learned by a new tree are also available to tool activity labels.
+func (r *enhancedChatRuntime) resetTaskTracker() {
+	r.subagents = taskStreamTracker{presentation: r.presentation()}
 }
 
 func (r *enhancedChatRuntime) markActiveAssistantsUnsynced(messages v1.MessageList) {
@@ -217,6 +223,9 @@ func (r *enhancedChatRuntime) refreshMainTaskUsage() {
 }
 
 func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
+	if r.subagents.Tracker() == nil {
+		r.subagents.presentation = r.presentation()
+	}
 	thinking := r.shell != nil && r.shell.options.thinking
 	reports, err := r.subagents.describe(item, thinking)
 	if err != nil {
