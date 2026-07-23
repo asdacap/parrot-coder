@@ -333,11 +333,21 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		case selectionErr == nil:
 			if _, restoredModel, resolveErr := providerRegistry.Resolve(selected.Provider, selected.Model); resolveErr == nil && (selected.Variant == "" || modelHasVariant(restoredModel, selected.Variant)) {
 				providerID, modelID = selected.Provider, selected.Model
-				defaultSelection.Provider, defaultSelection.Model, defaultSelection.Variant = providerID, modelID, selected.Variant
-				result.DefaultSelection.Provider, result.DefaultSelection.Model, result.DefaultSelection.Variant = providerID, modelID, selected.Variant
+				defaultSelection = session.Selection{Agent: agentID, Provider: providerID, Model: modelID, Variant: selected.Variant}
+				result.DefaultSelection = v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID, Variant: selected.Variant}
 			}
 		case !errors.Is(selectionErr, session.ErrNotFound):
 			return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
+		}
+	} else if providerID != "" {
+		// Model is configured; restore the variant from the latest session
+		// when the configured model matches.
+		selected, selectionErr := sessions.LatestSelection(ctx, info.ID)
+		if selectionErr == nil && selected.Provider == providerID && selected.Model == modelID && selected.Variant != "" {
+			if _, restoredModel, resolveErr := providerRegistry.Resolve(providerID, modelID); resolveErr == nil && modelHasVariant(restoredModel, selected.Variant) {
+				defaultSelection.Variant = selected.Variant
+				result.DefaultSelection.Variant = selected.Variant
+			}
 		}
 	}
 	todos := session.NewTodoService(sessionStore, repository)

@@ -360,6 +360,47 @@ func TestOpenRestoresLatestProjectModelSelection(t *testing.T) {
 	}
 }
 
+func TestOpenRestoresVariantWhenModelMatches(t *testing.T) {
+	root := t.TempDir()
+	paths := appdirs.Overrides{
+		Home: root, ConfigHome: filepath.Join(root, "config"), DataHome: filepath.Join(root, "data"),
+		StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache"),
+	}
+	// First, open without a model to create a session with a variant.
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := runtime.Client.Models(context.Background())
+	if err != nil || len(models.Items) == 0 {
+		t.Fatalf("Models = %#v, %v", models, err)
+	}
+	model := models.Items[0]
+	variant := "high"
+	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
+		ProjectID: runtime.Project.ID, Title: "variant", Agent: "build", Model: model.Provider + "/" + model.ID, Variant: &variant,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Reopen with the model explicitly configured; variant should still be restored.
+	modelArg := model.Provider + "/" + model.ID
+	reopened, err := Open(context.Background(), Options{CWD: root, Paths: paths, Model: modelArg, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.DefaultSelection.Variant != variant {
+		t.Fatalf("restored variant = %q, want %q", reopened.DefaultSelection.Variant, variant)
+	}
+	if reopened.DefaultSelection.Provider != model.Provider || reopened.DefaultSelection.Model != model.ID {
+		t.Fatalf("restored model = %s/%s, want %s/%s", reopened.DefaultSelection.Provider, reopened.DefaultSelection.Model, model.Provider, model.ID)
+	}
+}
+
 func assertAppProblem(t *testing.T, err error, code string) {
 	t.Helper()
 	var apiErr *client.APIError
