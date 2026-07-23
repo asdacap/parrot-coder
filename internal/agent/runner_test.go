@@ -824,7 +824,9 @@ func TestRunnerCancellationDuringProviderStreamDropsUnexecutedToolCalls(t *testi
 
 type preparedProfileResolver struct{ base Profile }
 
-func (r preparedProfileResolver) GetProfile(string) (Profile, error) { return r.base, nil }
+func (preparedProfileResolver) GetProfile(string) (Profile, error) {
+	return Profile{}, errors.New("GetProfile called before PrepareTurn")
+}
 func (r preparedProfileResolver) PrepareTurn(string, string) (Profile, error) {
 	profile := r.base
 	profile.WritePaths = []string{"/tmp/plan.md"}
@@ -841,7 +843,7 @@ func (t *profileCaptureTool) Execute(_ context.Context, _ tool.Plan, call tool.C
 	return tool.Result{Text: "ok", ModelText: "ok"}, nil
 }
 
-func TestRunnerKeepsPreparedProfileAcrossToolContinuations(t *testing.T) {
+func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *testing.T) {
 	capture := &profileCaptureTool{fakeTool: fakeTool{id: "capture"}}
 	fake := &fakeProvider{stream: func(index int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		if index < 2 {

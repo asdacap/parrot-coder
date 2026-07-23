@@ -201,17 +201,15 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			return err
 		}
 		if turn == 0 {
-			profile, err = r.config.Profiles.GetProfile(selected.Agent)
-			if err != nil {
-				return err
-			}
 			if preparer, ok := r.config.Profiles.(interface {
 				PrepareTurn(string, string) (Profile, error)
 			}); ok {
 				profile, err = preparer.PrepareTurn(selected.Agent, r.id)
-				if err != nil {
-					return err
-				}
+			} else {
+				profile, err = r.config.Profiles.GetProfile(selected.Agent)
+			}
+			if err != nil {
+				return err
 			}
 		}
 		providerClient, model, err := r.config.Providers.Resolve(selected.Provider, selected.Model)
