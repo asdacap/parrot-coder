@@ -50,6 +50,7 @@ type TurnComplete struct {
 }
 
 type TurnCompleteDialog struct {
+	Markdown     string
 	Prompt       string
 	Context      []string
 	Choices      []terminal.Candidate

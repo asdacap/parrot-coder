@@ -378,9 +378,13 @@ type effortSwitchAPI struct {
 
 type agentModeAPI struct {
 	apiClient
-	agents  v1.AgentList
-	modes   v1.ModeList
-	updates []v1.UpdateSessionSelectionRequest
+	agents            v1.AgentList
+	modes             v1.ModeList
+	completion        v1.TurnCompletion
+	completionErr     error
+	completionSession string
+	completionMessage string
+	updates           []v1.UpdateSessionSelectionRequest
 }
 
 type catalogOnlyAPI struct {
@@ -411,9 +415,48 @@ func (a *agentModeAPI) Agents(context.Context) (v1.AgentList, error) { return a.
 
 func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error) { return a.modes, nil }
 
+func (a *agentModeAPI) TurnCompletion(_ context.Context, sessionID, messageID string) (v1.TurnCompletion, error) {
+	a.completionSession = sessionID
+	a.completionMessage = messageID
+	return a.completion, a.completionErr
+}
+
 func (a *agentModeAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
 	a.updates = append(a.updates, request)
 	return v1.SessionSelection{Agent: request.Agent}, nil
+}
+
+func TestPlanTurnCompleteUsesWrittenArtifact(t *testing.T) {
+	result := mode.TurnCompleteResult{Dialog: &mode.TurnCompleteDialog{Markdown: "# Written plan\n\n- change code", Prompt: "Plan complete: "}}
+	raw, err := json.Marshal(result)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name       string
+		completion v1.TurnCompletion
+		err        error
+		wantPlan   string
+		wantError  bool
+	}{
+		{name: "artifact", completion: v1.TurnCompletion{TurnComplete: raw}, wantPlan: result.Dialog.Markdown},
+		{name: "empty result is authoritative"},
+		{name: "retrieval error", err: errors.New("artifact unavailable"), wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := &agentModeAPI{modes: testModeList(t), completion: test.completion, completionErr: test.err}
+			var output bytes.Buffer
+			shell := &chatShell{ctx: context.Background(), api: api, stderr: &output}
+
+			dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.PlanID, Session: v1.Session{ID: "session"}, MessageID: "message"})
+			if (dialog != nil) != (test.wantPlan != "") || dialog != nil && dialog.Markdown != test.wantPlan || api.completionSession != "session" || api.completionMessage != "message" {
+				t.Fatalf("dialog=%#v completion request=%q/%q", dialog, api.completionSession, api.completionMessage)
+			}
+			if strings.Contains(output.String(), "artifact unavailable") != test.wantError {
+				t.Fatalf("error output = %q", output.String())
+			}
+		})
+	}
 }
 
 func TestPlanTurnCompletePolicy(t *testing.T) {
