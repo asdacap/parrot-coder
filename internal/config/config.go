@@ -488,10 +488,24 @@ model: ""
 #     # Milliseconds to wait for responses; zero uses default.
 #     timeout_ms: 15000
 
-# Ordered sandbox rules applied after base workspace mounts. Each rule
-# has a path and an action: allow_write, deny_read, allow_read, or
-# deny_write. Later rules override earlier ones. Requires global
-# configuration.
+# Ordered sandbox rules applied after the built-in mounts below.
+# Each rule has a path and an action: allow_write, deny_read,
+# allow_read, or deny_write. Later rules override earlier ones.
+# Requires global configuration.
+#
+# Built-in rules (applied first, in order):
+#   /                             allow_read    (entire host filesystem)
+#   /dev                          sandbox tmpfs (empty /dev)
+#   /dev/null                     allow_write   (writable null)
+#   /dev/zero,random,urandom,...  allow_read    (host devices)
+#   /proc                         sandbox procfs
+#   {session temp dir} -> /tmp    allow_write   (private writable)
+#   {workspace root}              allow_write   (always writable)
+#   {session grants}              allow_write   (from request_write_permission)
+#   {linked git common dir}       allow_write   (worktree support)
+#   {workspace}/.parrot           deny_write    (protected metadata)
+#   {workspace}/parrot.yaml       deny_write    (protected metadata)
+#
 # sandbox_rules:
 #   - path: /absolute/path/to/dir
 #     rule: allow_write
@@ -625,10 +639,24 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 #     # Milliseconds to wait for responses; zero uses default.
 #     timeout_ms: 15000
 
-# Ordered sandbox rules applied after base workspace mounts. Each rule
-# has a path and an action: allow_write, deny_read, allow_read, or
-# deny_write. Later rules override earlier ones. Requires global
-# configuration.
+# Ordered sandbox rules applied after the built-in mounts below.
+# Each rule has a path and an action: allow_write, deny_read,
+# allow_read, or deny_write. Later rules override earlier ones.
+# Requires global configuration.
+#
+# Built-in rules (applied first, in order):
+#   /                             allow_read    (entire host filesystem)
+#   /dev                          sandbox tmpfs (empty /dev)
+#   /dev/null                     allow_write   (writable null)
+#   /dev/zero,random,urandom,...  allow_read    (host devices)
+#   /proc                         sandbox procfs
+#   {session temp dir} -> /tmp    allow_write   (private writable)
+#   {workspace root}              allow_write   (always writable)
+#   {session grants}              allow_write   (from request_write_permission)
+#   {linked git common dir}       allow_write   (worktree support)
+#   {workspace}/.parrot           deny_write    (protected metadata)
+#   {workspace}/parrot.yaml       deny_write    (protected metadata)
+#
 # sandbox_rules:
 #   - path: /absolute/path/to/dir
 #     rule: allow_write
