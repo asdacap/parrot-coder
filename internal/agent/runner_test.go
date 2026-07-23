@@ -405,7 +405,14 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "final"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h = newRunnerHarness(t, fake, nil, item)
-	h.runner.config.Status = statusObserver("transient status")
+	observations := 0
+	h.runner.config.Status = statusObserverFunc(func() string {
+		observations++
+		if observations == 1 {
+			return "Active tasks: none"
+		}
+		return "Active tasks:\n- proc_test (shell, running)"
+	})
 	h.admit(t, "user", "run tool", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -423,9 +430,10 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 	if len(requests) != 2 {
 		t.Fatalf("provider turns = %d", len(requests))
 	}
+	wantStatus := []string{"Active tasks: none", "Active tasks:\n- proc_test (shell, running)"}
 	for index, request := range requests {
-		if !strings.HasSuffix(request.Instructions, "\n\ntransient status") {
-			t.Errorf("request %d lost status instructions: %q", index, request.Instructions)
+		if !strings.HasSuffix(request.Instructions, "\n\n"+wantStatus[index]) {
+			t.Errorf("request %d status instructions = %q, want suffix %q", index, request.Instructions, wantStatus[index])
 		}
 	}
 }
@@ -434,6 +442,12 @@ type statusObserver string
 
 func (s statusObserver) Observe(context.Context, statusinfo.Query, statusinfo.Provider) (string, error) {
 	return string(s), nil
+}
+
+type statusObserverFunc func() string
+
+func (observe statusObserverFunc) Observe(context.Context, statusinfo.Query, statusinfo.Provider) (string, error) {
+	return observe(), nil
 }
 
 func TestRunnerBoundsConcurrentToolsAndSettlesAllBeforeContinuation(t *testing.T) {

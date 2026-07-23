@@ -210,7 +210,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				statusPending, statusPrompt = true, ""
 			}
 		}
-		if statusPending && statusPrompt == "" {
+		if statusPending {
 			statusPrompt, err = r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, profile.Status)
 			if err != nil {
 				return err

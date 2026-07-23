@@ -5,7 +5,14 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/task"
 )
+
+type activeTaskListerFunc func(string) []task.Active
+
+func (list activeTaskListerFunc) ListActive(sessionID string) []task.Active { return list(sessionID) }
 
 type providerFunc struct {
 	key string
@@ -47,6 +54,47 @@ func TestRegistryComposesDynamicStatus(t *testing.T) {
 	failure, _ := NewRegistry(providerFunc{key: "runtime:failure", fn: func(Query) (Observation, error) { return Observation{}, errors.New("failed") }})
 	if _, err := failure.Observe(context.Background(), query, nil); err == nil || !strings.Contains(err.Error(), "runtime:failure") {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestActiveTasksStatus(t *testing.T) {
+	startedAt := time.Date(2026, time.July, 23, 12, 34, 56, 0, time.UTC)
+	tests := []struct {
+		name   string
+		active []task.Active
+		want   string
+	}{
+		{name: "none", want: "Active tasks: none"},
+		{
+			name: "stable concise list",
+			active: []task.Active{
+				{ID: "task_z", SessionID: "other-session", Kind: task.KindAgent, Status: "pending", StartedAt: startedAt, Agent: "worker", Turn: 3, Depth: 2},
+				{ID: "proc_a", SessionID: "other-session", Kind: task.KindShell, Status: "running", StartedAt: startedAt},
+			},
+			want: "Active tasks:\n- proc_a (shell, running)\n- task_z (agent, pending, agent: worker, turn: 3, depth: 2)",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var gotSession string
+			provider := NewActiveTasks(activeTaskListerFunc(func(sessionID string) []task.Active {
+				gotSession = sessionID
+				return test.active
+			}))
+			observation, err := provider.Observe(context.Background(), Query{SessionID: "session"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if provider.Key() != "runtime:tasks" {
+				t.Fatalf("key = %q", provider.Key())
+			}
+			if gotSession != "session" {
+				t.Fatalf("ListActive session = %q", gotSession)
+			}
+			if !observation.Available || observation.Text != test.want {
+				t.Fatalf("observation = %#v, want text %q", observation, test.want)
+			}
+		})
 	}
 }
 
