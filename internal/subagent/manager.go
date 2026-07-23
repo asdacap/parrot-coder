@@ -180,12 +180,6 @@ type Manager struct {
 }
 
 func NewManager(executor Executor, config Config) *Manager {
-	if config.MaxConcurrent <= 0 {
-		config.MaxConcurrent = 8
-	}
-	if config.MaxConcurrentPerParent <= 0 {
-		config.MaxConcurrentPerParent = 4
-	}
 	if config.MaxDepth <= 0 {
 		config.MaxDepth = 4
 	}

@@ -53,7 +53,7 @@ func (e *reusableAgentExecutor) release(id, output string) {
 
 func TestAgentToolsReusableLifecycle(t *testing.T) {
 	executor := newReusableAgentExecutor()
-	manager := subagent.NewManager(executor, subagent.Config{})
+	manager := subagent.NewManager(executor, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4})
 	lookup := func(id string) (bool, error) { return id != "build", nil }
 	tools := make(map[string]Tool)
 	for _, item := range NewAgentTools(manager, lookup) {

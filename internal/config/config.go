@@ -28,8 +28,15 @@ type Config struct {
 	Providers      map[string]Provider `json:"providers,omitempty"`
 	MCP            map[string]MCP      `json:"mcp,omitempty"`
 	WebFetch       WebFetch            `json:"web_fetch,omitempty"`
+	Subagents      Subagents           `json:"subagents,omitempty"`
 	ToolBlacklist  []string            `json:"tool_blacklist,omitempty"`
 	SandboxRules   []SandboxRule       `json:"sandbox_rules,omitempty"`
+}
+
+// Subagents controls the number of child-agent turns that may run at once.
+type Subagents struct {
+	MaxConcurrent          int `json:"max_concurrent"`
+	MaxConcurrentPerParent int `json:"max_concurrent_per_parent"`
 }
 
 // SandboxRule is one ordered filesystem rule applied to the sandbox. Rule
@@ -216,8 +223,13 @@ func Load(options Options) (Result, error) {
 		}
 		sources = []Source{{Path: absPath, Kind: SourceGlobal}}
 	}
+	defaults, err := Parse([]byte(predefinedConfigYAML))
+	if err != nil {
+		return Result{}, fmt.Errorf("parse predefined config: %w", err)
+	}
 	merged := make(map[string]any)
 	provenance := make(map[string]string)
+	mergeObject(merged, defaults, "", PredefinedFileName, provenance)
 	for _, source := range sources {
 		data, err := readBoundedFile(source.Path, maxConfigBytes)
 		if err != nil {
@@ -250,12 +262,28 @@ func Load(options Options) (Result, error) {
 	if typed.MCP == nil {
 		typed.MCP = make(map[string]MCP)
 	}
+	if err := validateSubagents(typed.Subagents); err != nil {
+		return Result{}, err
+	}
 	if options.ConfigDir != "" {
 		if err := WritePredefinedConfig(filepath.Join(options.ConfigDir, PredefinedFileName)); err != nil {
 			return Result{}, fmt.Errorf("write predefined config: %w", err)
 		}
 	}
 	return Result{Config: typed, Sources: sources, Provenance: provenance}, nil
+}
+
+func validateSubagents(value Subagents) error {
+	if value.MaxConcurrent <= 0 {
+		return errors.New("subagents.max_concurrent must be greater than zero")
+	}
+	if value.MaxConcurrentPerParent <= 0 {
+		return errors.New("subagents.max_concurrent_per_parent must be greater than zero")
+	}
+	if value.MaxConcurrentPerParent > value.MaxConcurrent {
+		return errors.New("subagents.max_concurrent_per_parent must not exceed subagents.max_concurrent")
+	}
+	return nil
 }
 
 func readBoundedFile(path string, max int64) ([]byte, error) {
@@ -385,6 +413,13 @@ variant: ""
 # tool_blacklist:
 #   - web_fetch
 
+# Child-agent concurrency limits.
+subagents:
+  # Maximum child-agent turns running across the process.
+  max_concurrent: 8
+  # Maximum child-agent turns running for one parent session.
+  max_concurrent_per_parent: 4
+
 # OpenAI-compatible providers and their model catalogs.
 # providers:
 #   provider:
@@ -511,6 +546,13 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
 #   - web_fetch
+
+# Child-agent concurrency limits. Defaults are defined in predefined_config.yaml.
+# subagents:
+#   # Maximum child-agent turns running across the process.
+#   max_concurrent: 8
+#   # Maximum child-agent turns running for one parent session.
+#   max_concurrent_per_parent: 4
 
 # OpenAI-compatible providers and their model catalogs.
 # providers:

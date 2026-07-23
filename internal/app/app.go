@@ -422,7 +422,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
 	subagentExecutor := &appSubagentExecutor{projectID: info.ID, defaultSelection: defaultSelection, events: live}
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
-	subagents := subagent.NewManager(subagentExecutor, subagent.Config{AgentIdentity: func(id string) string {
+	subagents := subagent.NewManager(subagentExecutor, subagent.Config{MaxConcurrent: loaded.Config.Subagents.MaxConcurrent, MaxConcurrentPerParent: loaded.Config.Subagents.MaxConcurrentPerParent, AgentIdentity: func(id string) string {
 		profile, resolveErr := profileResolver.GetProfile(id)
 		if resolveErr != nil {
 			return id

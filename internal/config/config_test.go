@@ -154,6 +154,64 @@ tool_blacklist:
 	}
 }
 
+func TestLoadSubagentDefaultsMergeAndValidation(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	project := filepath.Join(root, "project")
+	global := filepath.Join(configDir, FileName)
+	projectFile := filepath.Join(project, FileName)
+	writeFile(t, global, `subagents:
+  max_concurrent: 12
+`)
+	writeFile(t, projectFile, `subagents:
+  max_concurrent_per_parent: 6
+`)
+
+	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.Subagents.MaxConcurrent != 12 || result.Config.Subagents.MaxConcurrentPerParent != 6 {
+		t.Fatalf("Subagents = %#v", result.Config.Subagents)
+	}
+	if result.Provenance["subagents.max_concurrent"] != global || result.Provenance["subagents.max_concurrent_per_parent"] != projectFile {
+		t.Fatalf("provenance = %#v", result.Provenance)
+	}
+
+	for _, test := range []struct {
+		name   string
+		config string
+		want   string
+	}{
+		{name: "non-positive global", config: "subagents:\n  max_concurrent: 0\n", want: "subagents.max_concurrent must be greater than zero"},
+		{name: "non-positive per parent", config: "subagents:\n  max_concurrent_per_parent: -1\n", want: "subagents.max_concurrent_per_parent must be greater than zero"},
+		{name: "per parent exceeds global", config: "subagents:\n  max_concurrent: 2\n  max_concurrent_per_parent: 3\n", want: "must not exceed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			caseRoot := t.TempDir()
+			writeFile(t, filepath.Join(caseRoot, FileName), test.config)
+			_, err := Load(Options{ProjectRoot: caseRoot, CWD: caseRoot})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadSubagentDefaults(t *testing.T) {
+	root := t.TempDir()
+	result, err := Load(Options{ProjectRoot: root, CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.Subagents.MaxConcurrent != 8 || result.Config.Subagents.MaxConcurrentPerParent != 4 {
+		t.Fatalf("Subagents = %#v", result.Config.Subagents)
+	}
+	if result.Provenance["subagents.max_concurrent"] != PredefinedFileName || result.Provenance["subagents.max_concurrent_per_parent"] != PredefinedFileName {
+		t.Fatalf("provenance = %#v", result.Provenance)
+	}
+}
+
 func TestLoadToolIntegrationMapsMergeAndDecode(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
@@ -322,6 +380,7 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 	for _, comment := range []string{
 		"Parrot Coder configuration file.",
 		"Default model selected as provider/model.",
+		"Child-agent concurrency limits.",
 		"OpenAI-compatible providers and their model catalogs.",
 		"Provider adapter type: 'compatible' or 'openai-compatible'.",
 		"API protocol: 'responses' or 'chat-completions'.",
