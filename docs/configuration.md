@@ -272,13 +272,11 @@ workspace. `explore` is accepted as an alias of `explorer`.
 
 ### Review subagent
 
-Parrot includes a built-in `review` worker and a parent-callable `review` tool.
-The tool accepts a review prompt and an optional model override, launches an
-isolated child session, waits for it, and returns its final findings to the
-parent agent. The worker is defect-first and runtime-enforced read-only; it has
-repository inspection tools, plus a bounded read-only `git_diff` tool,
-but no mutation, shell, network, or nested delegation tools. It is a
-child-agent-only profile, not a selectable foreground mode.
+Parrot includes a built-in `review` worker. Start it with `agent_spawn` and use
+`monitor` to wait for its final findings. The worker is defect-first and
+runtime-enforced read-only; it has repository inspection tools, plus a bounded
+read-only `git_diff` tool, but no mutation, shell, network, or nested delegation
+tools. It is a child-agent-only profile, not a selectable foreground mode.
 
 ## Commands
 

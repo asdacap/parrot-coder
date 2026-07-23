@@ -26,7 +26,7 @@ func TestRegisterBuiltinsDefinitions(t *testing.T) {
 	definitions := registry.Definitions()
 	want := []string{
 		"agent_send", "agent_spawn", "apply_patch", "create_goal", "edit", "exec_command", "get_goal", "git_diff", "glob", "grep", "monitor",
-		"question", "read", "read_output", "request_write_permission", "review", "set_config", "shell", "skill", "task_interrupt", "task_list_active", "todoread", "todowrite", "unrestricted_shell", "update_goal", "web_fetch", "write_stdin",
+		"question", "read", "read_output", "request_write_permission", "set_config", "shell", "skill", "task_interrupt", "task_list_active", "todoread", "todowrite", "unrestricted_shell", "update_goal", "web_fetch", "write_stdin",
 	}
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions = %#v", definitions)

@@ -71,7 +71,6 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewSetConfigTool(services.ConfigDir),
 	}
 	items = append(items, NewTaskTools(services.Tasks)...)
-	items = append(items, NewReviewTool(services.Subagents, services.Agents))
 	items = append(items, NewAgentTools(services.Subagents, services.Agents)...)
 
 	definitions := append([]mcp.ToolDefinition(nil), services.MCPTools...)

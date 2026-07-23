@@ -15,7 +15,6 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
-	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -113,72 +112,6 @@ func TestWebFetchToolFetchAndRevalidation(t *testing.T) {
 	planned.Data = data
 	if _, err := item.Execute(context.Background(), planned, CallContext{}); err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("revalidation error = %v", err)
-	}
-}
-
-type subagentExecutorFunc func(context.Context, subagent.Execution) (string, error)
-
-func (f subagentExecutorFunc) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
-	if execution.SessionID == "" && execution.RegisterSession != nil {
-		execution.RegisterSession("session-" + execution.TaskID)
-	}
-	return f(ctx, execution)
-}
-
-func TestReviewToolLaunchesFixedReadOnlyReviewerAndReturnsFindings(t *testing.T) {
-	var captured subagent.Execution
-	manager := subagent.NewManager(subagentExecutorFunc(func(_ context.Context, execution subagent.Execution) (string, error) {
-		captured = execution
-		return "[P1] Fix the regression — source.go:12", nil
-	}), subagent.Config{})
-	lookup := func(id string) (bool, error) {
-		switch id {
-		case "build":
-			return false, nil
-		case "review":
-			return true, nil
-		default:
-			return false, errors.New("unknown agent")
-		}
-	}
-	item := NewReviewTool(manager, lookup)
-	call := CallContext{SessionID: "parent", Agent: "build", ToolCallID: "call-review"}
-	plan, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":"Review the current diff","model":"provider/reviewer"}`), call)
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := item.Execute(context.Background(), plan, call)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Text != "[P1] Fix the regression — source.go:12" {
-		t.Fatalf("review output = %q", result.Text)
-	}
-	if captured.Request.Agent != "review" || captured.Request.Prompt != "Review the current diff" || captured.Request.Model != "provider/reviewer" || captured.Request.ToolCallID != "call-review" {
-		t.Fatalf("review execution = %#v", captured)
-	}
-	if captured.ParentSession != "parent" || len(captured.Lineage) != 1 || captured.Lineage[0] != "build" {
-		t.Fatalf("review lineage = %#v", captured)
-	}
-	if result.Metadata["agent"] != "review" || result.Metadata["status"] != subagent.StatusSucceeded {
-		t.Fatalf("review metadata = %#v", result.Metadata)
-	}
-	if tasks := manager.List("parent"); len(tasks) != 0 {
-		t.Fatalf("completed review was retained: %#v", tasks)
-	}
-}
-
-func TestReviewToolRejectsMissingPromptAndWritableReviewer(t *testing.T) {
-	manager := subagent.NewManager(subagentExecutorFunc(func(context.Context, subagent.Execution) (string, error) {
-		return "", nil
-	}), subagent.Config{})
-	call := CallContext{SessionID: "parent", Agent: "build"}
-	item := NewReviewTool(manager, func(id string) (bool, error) { return id != "review", nil })
-	if _, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":""}`), call); err == nil {
-		t.Fatal("empty review prompt was accepted")
-	}
-	if _, err := item.Plan(context.Background(), json.RawMessage(`{"prompt":"review it"}`), call); err == nil || !strings.Contains(err.Error(), "must be read-only") {
-		t.Fatalf("writable reviewer error = %v", err)
 	}
 }
 

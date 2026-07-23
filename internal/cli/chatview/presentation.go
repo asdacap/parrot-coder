@@ -237,7 +237,7 @@ func (p Presentations) Subagent(name string) bool {
 
 func legacySubagent(name string) bool {
 	switch name {
-	case "agent_spawn", "agent_send", "monitor", "review":
+	case "agent_spawn", "agent_send", "monitor":
 		return true
 	default:
 		return false
