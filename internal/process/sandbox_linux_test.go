@@ -146,11 +146,11 @@ func TestLinuxSandboxDoesNotShadowPrivateTmp(t *testing.T) {
 	t.Setenv("PATH", bin)
 	root := t.TempDir()
 	implementation := linuxSandbox{workspace: root}
-	if _, _, err := implementation.command("/bin/sh", "true", "/tmp", &sandboxProfile{readPaths: []string{"/"}, writePaths: nil, denyWrite: nil}, t.TempDir()); err == nil {
+	if _, _, err := implementation.command("/bin/sh", "true", "/tmp", &sandboxProfile{}, t.TempDir()); err == nil {
 		t.Fatal("host /tmp accepted as working directory")
 	}
 	temporaryDirectory := t.TempDir()
-	profile := &sandboxProfile{readPaths: []string{"/"}, writePaths: nil, denyWrite: nil}
+	profile := &sandboxProfile{}
 	_, args, err := implementation.command("/bin/sh", "true", "/", profile, temporaryDirectory)
 	if err != nil {
 		t.Fatal(err)
@@ -174,17 +174,20 @@ func TestLinuxSandboxDoesNotShadowPrivateTmp(t *testing.T) {
 }
 
 // testProfile builds a sandboxProfile for testing the linux sandbox.
-func testProfile(workspaceRoot, tempDir string, extraWritePaths []string, cwd string) security.SecurityProfile {
+func testProfile(workspaceRoot, tempDir string, extraPaths []string, cwd string) security.SecurityProfile {
 	writePaths := []string{workspaceRoot, tempDir}
-	writePaths = append(writePaths, extraWritePaths...)
+	writePaths = append(writePaths, extraPaths...)
 	if commonDir, ok := linkedGitCommonDirectory(workspaceRoot); ok {
 		writePaths = append(writePaths, commonDir)
 	}
-	return &sandboxProfile{
-		readPaths:  []string{"/"},
-		writePaths: writePaths,
-		denyWrite:  protectedWorkspacePaths(workspaceRoot, cwd),
+	rules := make([]security.Rule, 0, len(writePaths)+4)
+	for _, path := range writePaths {
+		rules = append(rules, security.Rule{Path: path, Action: security.ActionAllowWrite})
 	}
+	for _, path := range protectedWorkspacePaths(workspaceRoot, cwd) {
+		rules = append(rules, security.Rule{Path: path, Action: security.ActionDenyWrite})
+	}
+	return &sandboxProfile{rules: rules}
 }
 
 func containsSequence(values, sequence []string) bool {
@@ -222,30 +225,24 @@ func TestLinuxSandboxAppliesOrderedRules(t *testing.T) {
 	externalCwd := t.TempDir()
 
 	implementation := linuxSandbox{workspace: root}
-	profile := &sandboxProfile{
-		readPaths:  []string{"/"},
-		writePaths: []string{root, temporaryDirectory},
-		denyWrite:  nil,
-		rules: []security.Rule{
-			{Path: "/opt/data", Action: security.ActionAllowWrite},
-			{Path: "/secret", Action: security.ActionDenyRead},
-			{Path: "/readonly", Action: security.ActionAllowRead},
-			{Path: "/var/log", Action: security.ActionDenyWrite},
-		},
-	}
+	profile := &sandboxProfile{rules: []security.Rule{
+		{Path: root, Action: security.ActionAllowWrite},
+		{Path: temporaryDirectory, Action: security.ActionAllowWrite},
+		{Path: "/opt/data", Action: security.ActionAllowWrite},
+		{Path: "/secret", Action: security.ActionDenyRead},
+		{Path: "/readonly", Action: security.ActionAllowRead},
+		{Path: "/var/log", Action: security.ActionDenyWrite},
+	}}
 	_, args, err := implementation.command("/bin/sh", "true", externalCwd, profile, temporaryDirectory)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Rules must appear after the base write-path and deny-write mounts.
-	denyWriteEnd := indexSequence(args, []string{"--ro-bind", root, root})
-	if denyWriteEnd < 0 {
-		denyWriteEnd = indexSequence(args, []string{"--bind", root, root})
-	}
+	// Rules must retain their profile order.
+	baseWriteEnd := indexSequence(args, []string{"--bind", temporaryDirectory, temporaryDirectory})
 	ruleStart := indexSequence(args, []string{"--bind", "/opt/data", "/opt/data"})
-	if ruleStart < 0 || ruleStart < denyWriteEnd {
-		t.Fatalf("allow_write rule not applied after base mounts: %q", args)
+	if ruleStart < 0 || ruleStart < baseWriteEnd {
+		t.Fatalf("allow_write rule not applied after runtime rules: %q", args)
 	}
 	if !containsSequence(args, []string{"--bind", "/opt/data", "/opt/data"}) {
 		t.Fatalf("allow_write rule missing --bind: %q", args)

@@ -3,6 +3,8 @@ package mode
 import (
 	"os"
 	"testing"
+
+	"github.com/amirulashraf/parrot-coder/internal/security"
 )
 
 func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
@@ -31,10 +33,10 @@ func TestPlanPrepareTurnCreatesWritableEmptyArtifactAndClearsRevisions(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profile.WritePaths) != 1 {
-		t.Fatalf("write paths = %#v", profile.WritePaths)
+	if len(profile.SandboxRules) != 1 || profile.SandboxRules[0].Action != security.ActionAllowWrite {
+		t.Fatalf("sandbox rules = %#v", profile.SandboxRules)
 	}
-	path := profile.WritePaths[0]
+	path := profile.SandboxRules[0].Path
 	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
 		t.Fatalf("initial plan artifact = %#v, %v", info, err)
 	}
@@ -48,8 +50,8 @@ func TestPlanPrepareTurnCreatesWritableEmptyArtifactAndClearsRevisions(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(revised.WritePaths) != 1 || revised.WritePaths[0] != path {
-		t.Fatalf("revised write paths = %#v, want %q", revised.WritePaths, path)
+	if len(revised.SandboxRules) != 1 || revised.SandboxRules[0] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
+		t.Fatalf("revised sandbox rules = %#v, want allow_write %q", revised.SandboxRules, path)
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
 		t.Fatalf("revised plan artifact = %#v, %v", info, err)

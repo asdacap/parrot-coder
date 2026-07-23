@@ -18,6 +18,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/store"
@@ -829,7 +830,7 @@ func (preparedProfileResolver) GetProfile(string) (Profile, error) {
 }
 func (r preparedProfileResolver) PrepareTurn(string, string) (Profile, error) {
 	profile := r.base
-	profile.WritePaths = []string{"/tmp/plan.md"}
+	profile.SandboxRules = []security.Rule{{Path: "/tmp/plan.md", Action: security.ActionAllowWrite}}
 	return profile, nil
 }
 
@@ -839,7 +840,11 @@ type profileCaptureTool struct {
 }
 
 func (t *profileCaptureTool) Execute(_ context.Context, _ tool.Plan, call tool.CallContext) (tool.Result, error) {
-	t.paths = call.SecurityProfile.AllowWritePaths()
+	for _, rule := range call.SecurityProfile.Rules() {
+		if rule.Action == security.ActionAllowWrite {
+			t.paths = append(t.paths, rule.Path)
+		}
+	}
 	return tool.Result{Text: "ok", ModelText: "ok"}, nil
 }
 
@@ -861,7 +866,7 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 		t.Fatal(err)
 	}
 	if len(capture.paths) != 1 || capture.paths[0] != "/tmp/plan.md" {
-		t.Fatalf("continuation write paths = %#v", capture.paths)
+		t.Fatalf("continuation allow_write rules = %#v", capture.paths)
 	}
 }
 

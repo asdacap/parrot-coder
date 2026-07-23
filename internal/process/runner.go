@@ -381,7 +381,7 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		}
 		defer releaseTemporaryDirectory()
 		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
-		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved, temporaryDirectory)
+		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved)
 		if buildErr != nil {
 			return fail(buildErr)
 		}
@@ -588,28 +588,20 @@ func unsafeEnvironmentName(name string) bool {
 }
 
 // buildProfile constructs a concrete security.SecurityProfile for a sandboxed
-// command by combining the request's profile with session-enriched paths.
-func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd, tempDir string) (security.SecurityProfile, error) {
+// command by combining the request's profile with session-enriched rules.
+func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd string) (security.SecurityProfile, error) {
 	workspaceRoot := r.config.Workspace.Root()
 
-	var baseReadPaths, baseWritePaths, baseDenyWritePaths []string
+	var profileRules []security.Rule
 	var readOnly bool
 	if profile != nil {
-		baseReadPaths = profile.AllowReadPaths()
-		baseWritePaths = profile.AllowWritePaths()
-		baseDenyWritePaths = profile.DenyWritePaths()
+		profileRules = profile.Rules()
 		readOnly = profile.IsReadOnly()
 	}
 
-	readPaths := baseReadPaths
-	if len(readPaths) == 0 {
-		readPaths = []string{"/"}
-	}
-
-	writePaths := make([]string, 0, len(baseWritePaths)+4)
-	writePaths = append(writePaths, baseWritePaths...)
+	rules := make([]security.Rule, 0, len(profileRules)+len(r.config.SandboxRules)+8)
 	if !readOnly {
-		writePaths = append(writePaths, workspaceRoot)
+		writePaths := []string{workspaceRoot}
 		granted, err := r.writableForSession(sessionID)
 		if err != nil {
 			return nil, err
@@ -618,23 +610,31 @@ func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd, 
 		if commonDir, ok := linkedGitCommonDirectory(workspaceRoot); ok {
 			writePaths = append(writePaths, commonDir)
 		}
+		for _, path := range writePaths {
+			rules = append(rules, security.Rule{Path: path, Action: security.ActionAllowWrite})
+		}
+	}
+	rules = append(rules, profileRules...)
+	for _, path := range protectedWorkspacePaths(workspaceRoot, cwd) {
+		rules = append(rules, security.Rule{Path: path, Action: security.ActionDenyWrite})
 	}
 
-	denyWrite := make([]string, 0, len(baseDenyWritePaths)+4)
-	denyWrite = append(denyWrite, baseDenyWritePaths...)
-	denyWrite = append(denyWrite, protectedWorkspacePaths(workspaceRoot, cwd)...)
-
-	rules := r.config.SandboxRules
+	configuredRules := r.config.SandboxRules
 	if readOnly {
-		rules = rulesForReadOnlyProfile(rules, baseWritePaths)
+		configuredRules = rulesForReadOnlyProfile(configuredRules, allowWriteRulePaths(profileRules))
 	}
-	return &sandboxProfile{
-		readOnly:   readOnly,
-		readPaths:  readPaths,
-		writePaths: writePaths,
-		denyWrite:  denyWrite,
-		rules:      rules,
-	}, nil
+	rules = append(rules, configuredRules...)
+	return &sandboxProfile{readOnly: readOnly, rules: rules}, nil
+}
+
+func allowWriteRulePaths(rules []security.Rule) []string {
+	paths := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Action == security.ActionAllowWrite {
+			paths = append(paths, rule.Path)
+		}
+	}
+	return paths
 }
 
 // rulesForReadOnlyProfile keeps configured rules from widening a read-only

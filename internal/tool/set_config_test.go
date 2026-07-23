@@ -302,8 +302,5 @@ func TestSetConfigTool_Integration_ExecuteRemove(t *testing.T) {
 // readOnlyProfile implements SecurityProfile for testing.
 type readOnlyProfile struct{}
 
-func (readOnlyProfile) IsReadOnly() bool          { return true }
-func (readOnlyProfile) AllowReadPaths() []string  { return nil }
-func (readOnlyProfile) AllowWritePaths() []string { return nil }
-func (readOnlyProfile) DenyWritePaths() []string  { return nil }
-func (readOnlyProfile) Rules() []security.Rule    { return nil }
+func (readOnlyProfile) IsReadOnly() bool       { return true }
+func (readOnlyProfile) Rules() []security.Rule { return nil }
