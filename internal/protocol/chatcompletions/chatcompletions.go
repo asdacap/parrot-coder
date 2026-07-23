@@ -141,13 +141,13 @@ func (p *Parser) Next(ctx context.Context) (protocol.Event, error) {
 				continue
 			}
 			if errors.Is(err, io.EOF) {
-				return protocol.Event{}, errors.New("chatcompletions: stream ended without a terminal event")
+				return protocol.Event{}, errors.New("chatcompletions: unexpected provider EOF (stream ended without a terminal event)")
 			}
 			return protocol.Event{}, err
 		}
 		if record.Data == "[DONE]" {
 			if p.finish == nil && !p.terminal {
-				return protocol.Event{}, errors.New("chatcompletions: stream ended without a terminal event")
+				return protocol.Event{}, errors.New("chatcompletions: provider stream completed without a terminal event")
 			}
 			if p.finish != nil {
 				p.pending = append(p.pending, *p.finish)

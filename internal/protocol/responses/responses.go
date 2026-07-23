@@ -137,12 +137,12 @@ func (p *Parser) Next(ctx context.Context) (protocol.Event, error) {
 		record, err := p.decoder.Next(ctx)
 		if err != nil {
 			if errors.Is(err, io.EOF) {
-				return protocol.Event{}, errors.New("responses: stream ended without a terminal event")
+				return protocol.Event{}, errors.New("responses: unexpected provider EOF (stream ended without a terminal event)")
 			}
 			return protocol.Event{}, err
 		}
 		if record.Data == "[DONE]" {
-			return protocol.Event{}, errors.New("responses: stream ended without a terminal event")
+			return protocol.Event{}, errors.New("responses: provider stream completed without a terminal event")
 		}
 		if err := p.consume([]byte(record.Data)); err != nil {
 			return protocol.Event{}, err
