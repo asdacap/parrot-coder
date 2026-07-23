@@ -513,11 +513,12 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.compactions = compactionRepository
 	reporter := statusReporter{live: live, subagents: subagents, started: &sync.Map{}}
+	pathErrorAdvisor := tool.NewPathErrorAdvisor(ws.Root(), tool.NewCommandPathContentSearcher())
 	agentSessions, err := agent.NewAgentSessionRepository(ctx, agent.AgentSessionConfig{
 		Sessions: sessions, Contexts: contexts, Profiles: profileResolver, Providers: providerRegistry,
 		ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
-			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
+			return tool.Executor{Snapshot: snapshot, Permissions: permissions, ErrorAdvisor: pathErrorAdvisor}
 		},
 		Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
 			return live.TaskIDFor(sessionID, managedtask.MainTaskID)

@@ -75,6 +75,16 @@ func (*GrepTool) DescribeRequest(raw json.RawMessage) (string, error) {
 func (*GrepTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"],"additionalProperties":false}`)
 }
+func (*GrepTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
+	var input grepInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return ErrorAdvice{}, err
+	}
+	if input.Path == "" {
+		input.Path = "."
+	}
+	return ErrorAdvice{Paths: []ErrorAdvicePath{{Path: input.Path}}}, nil
+}
 
 type grepInput struct {
 	Pattern string `json:"pattern"`
@@ -175,7 +185,10 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		requestedPath = "."
 	}
 	revalidated, err := call.Workspace.ResolveReadOnly(requestedPath)
-	if err != nil || revalidated != p.Root {
+	if err != nil {
+		return Result{}, err
+	}
+	if revalidated != p.Root {
 		return Result{}, errors.New("grep root changed after planning")
 	}
 	ctx, cancel := context.WithTimeout(ctx, t.Config.Timeout)

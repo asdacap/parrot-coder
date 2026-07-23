@@ -218,6 +218,7 @@ type Authorizer interface {
 type Executor struct {
 	Snapshot       Snapshot
 	Permissions    Authorizer
+	ErrorAdvisor   ErrorAdvisor
 	MaxInputBytes  int
 	MaxOutputBytes int
 }
@@ -267,7 +268,7 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	}
 	p, err := t.Plan(ctx, raw, call)
 	if err != nil {
-		return Result{}, err
+		return Result{}, e.advise(ctx, err, raw, t)
 	}
 	if p.ToolID != id {
 		return Result{}, errors.New("plan tool ID mismatch")
@@ -305,7 +306,7 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	}
 	result, err = t.Execute(ctx, p, call)
 	if err != nil {
-		return Result{}, err
+		return Result{}, e.advise(ctx, err, raw, t)
 	}
 	max := e.MaxOutputBytes
 	if max <= 0 {
@@ -350,6 +351,21 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 		)
 	}
 	return result, nil
+}
+
+func (e Executor) advise(ctx context.Context, err error, raw json.RawMessage, target Tool) error {
+	if e.ErrorAdvisor == nil {
+		return err
+	}
+	provider, ok := target.(ErrorAdviceProvider)
+	if !ok {
+		return err
+	}
+	advice, adviceErr := provider.ErrorAdvice(raw)
+	if adviceErr != nil {
+		return err
+	}
+	return e.ErrorAdvisor.Advise(ctx, err, advice)
 }
 
 func boundedText(text string, max int) string {

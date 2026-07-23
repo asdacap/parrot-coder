@@ -61,6 +61,13 @@ func (*ReadTool) DescribeRequest(raw json.RawMessage) (string, error) {
 func (*ReadTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"],"additionalProperties":false}`)
 }
+func (*ReadTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
+	var input readInput
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return ErrorAdvice{}, err
+	}
+	return ErrorAdvice{Paths: []ErrorAdvicePath{{Path: input.Path}}}, nil
+}
 
 type readInput struct {
 	Path   string `json:"path"`
@@ -91,7 +98,10 @@ func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 
 	p := plan.Data.(readPlan)
 	revalidated, err := call.Workspace.ResolveReadOnly(p.Input.Path)
-	if err != nil || revalidated != p.Path {
+	if err != nil {
+		return Result{}, err
+	}
+	if revalidated != p.Path {
 		return Result{}, errors.New("path changed after planning")
 	}
 	info, err := os.Stat(p.Path)

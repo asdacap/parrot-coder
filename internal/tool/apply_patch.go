@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/amirulashraf/parrot-coder/internal/change"
 )
@@ -38,6 +39,45 @@ func (*ApplyPatchTool) DescribeRequest(raw json.RawMessage) (string, error) {
 }
 func (*ApplyPatchTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string","description":"The patch text, written in the format named by the format field."},"format":{"type":"string","enum":["aider","unified"],"description":"Edit syntax of patchText, defaulting to aider. \"aider\": one or more SEARCH/REPLACE blocks, each a workspace-relative file path on its own line, then <<<<<<< SEARCH, the exact lines to replace, =======, the replacement lines, and >>>>>>> REPLACE; repeat blocks under the same path for several edits to one file, and leave the SEARCH section empty to create a new file. \"unified\": git diff text with --- and +++ headers and @@ hunks; a /dev/null source creates the file and a /dev/null target deletes it, and renames are rejected."}},"required":["patchText"],"additionalProperties":false}`)
+}
+func (*ApplyPatchTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
+	var input struct {
+		PatchText string `json:"patchText"`
+	}
+	if err := json.Unmarshal(raw, &input); err != nil {
+		return ErrorAdvice{}, err
+	}
+	format, err := patchFormat(raw)
+	if err != nil {
+		return ErrorAdvice{}, err
+	}
+	var patch change.Patch
+	switch format {
+	case change.PatchFormatAider:
+		patch, err = change.ParsePatch(input.PatchText)
+	case change.PatchFormatUnified:
+		patch, err = change.ParseUnifiedDiff(input.PatchText)
+	}
+	if err != nil {
+		return ErrorAdvice{}, err
+	}
+	advice := ErrorAdvice{Paths: make([]ErrorAdvicePath, 0, len(patch.Operations))}
+	for _, operation := range patch.Operations {
+		path := ErrorAdvicePath{Path: operation.Path}
+		for _, hunk := range operation.Hunks {
+			var lines []string
+			for _, line := range hunk.Lines {
+				if line.Kind == '-' {
+					lines = append(lines, line.Text)
+				}
+			}
+			if len(lines) > 0 {
+				path.ExactContents = append(path.ExactContents, strings.Join(lines, "\n"))
+			}
+		}
+		advice.Paths = append(advice.Paths, path)
+	}
+	return advice, nil
 }
 
 // patchFormat reads the optional format field, defaulting to aider so existing
