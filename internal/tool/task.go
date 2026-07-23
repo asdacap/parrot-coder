@@ -171,8 +171,11 @@ func (t *WaitTaskTool) Execute(ctx context.Context, plan Plan, call CallContext)
 		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(input.YieldAfterMS)*time.Millisecond)
 		defer cancel()
 	}
+	started := time.Now()
 	item, err := t.Controller.Wait(waitCtx, call.SessionID, input.TaskID)
+	item.ElapsedMS = time.Since(started).Milliseconds()
 	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+		item.Yielded = true
 		return taskWaitResult(item), nil
 	}
 	if err != nil {

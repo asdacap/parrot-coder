@@ -144,10 +144,12 @@ func (m *Manager) ListActive(callerSession string) []Snapshot {
 // Result describes the state observed by a task wait. Output is populated for
 // agent tasks; shell output remains available through the process tools.
 type Result struct {
-	ID       string `json:"task_id"`
-	Kind     Kind   `json:"kind"`
-	Status   string `json:"status"`
-	ExitCode *int   `json:"exit_code,omitempty"`
-	Output   string `json:"output,omitempty"`
-	Error    string `json:"error,omitempty"`
+	ID        string `json:"task_id"`
+	Kind      Kind   `json:"kind"`
+	Status    string `json:"status"`
+	Yielded   bool   `json:"yielded,omitempty"`
+	ElapsedMS int64  `json:"elapsed_ms"`
+	ExitCode  *int   `json:"exit_code,omitempty"`
+	Output    string `json:"output,omitempty"`
+	Error     string `json:"error,omitempty"`
 }

@@ -28,10 +28,36 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 type appDrainerFunc func(context.Context, string) error
+
+type waitingManagedTask struct{ snapshot managedtask.Snapshot }
+
+func (t waitingManagedTask) Snapshot() managedtask.Snapshot { return t.snapshot }
+func (waitingManagedTask) Wait(ctx context.Context) (managedtask.Completion, error) {
+	<-ctx.Done()
+	return managedtask.Completion{}, ctx.Err()
+}
+func (t waitingManagedTask) Interrupt(context.Context) (managedtask.Snapshot, error) {
+	return t.snapshot, nil
+}
+
+func TestManagedTaskControllerPreservesTaskStateWhenWaitIsCanceled(t *testing.T) {
+	tasks := managedtask.NewManager()
+	snapshot := managedtask.Snapshot{ID: "task_agent", SessionID: "session", Kind: managedtask.KindAgent, Status: "running"}
+	if err := tasks.Register(waitingManagedTask{snapshot: snapshot}, func(caller string) bool { return caller == "session" }); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result, err := (&managedTaskController{tasks: tasks}).Wait(ctx, "session", snapshot.ID)
+	if !errors.Is(err, context.Canceled) || result.ID != snapshot.ID || result.Kind != snapshot.Kind || result.Status != snapshot.Status {
+		t.Fatalf("Wait() = %#v, %v", result, err)
+	}
+}
 
 func TestAgentRecursionLimitPolicy(t *testing.T) {
 	modes, err := mode.NewRegistry()

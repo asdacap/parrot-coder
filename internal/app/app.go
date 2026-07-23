@@ -1372,6 +1372,10 @@ func (c *managedTaskController) Wait(ctx context.Context, callerSession, id stri
 	}
 	completion, err := item.Wait(ctx)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			snapshot := item.Snapshot()
+			return managedtask.Result{ID: snapshot.ID, Kind: snapshot.Kind, Status: snapshot.Status}, err
+		}
 		return managedtask.Result{}, err
 	}
 	return managedtask.Result{ID: completion.Task.ID, Kind: completion.Task.Kind, Status: completion.Task.Status, ExitCode: completion.ExitCode, Output: completion.Output, Error: completion.Error}, nil
