@@ -483,12 +483,11 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if len(loaded.Config.ToolBlacklist) > 0 {
 		toolSnapshot = toolSnapshot.Without(loaded.Config.ToolBlacklist)
 	}
-	guidance, _ := json.Marshal(toolSnapshot.Definitions())
 	toolSystemGuidance := toolSnapshot.SystemPromptGuidance()
 	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
 	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
-		AgentPrompt: "You are Parrot Coder, a local coding agent.", ToolGuidance: string(guidance),
+		AgentPrompt: "You are Parrot Coder, a local coding agent.",
 		ToolSystemGuidance: toolSystemGuidance,
 		Skills:             skillMetadata(skills),
 		Subagents:          subagentIDs,

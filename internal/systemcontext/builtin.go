@@ -144,7 +144,6 @@ func (s FileSource) Observe(context.Context) (Observation, error) {
 
 type BuiltinOptions struct {
 	AgentPrompt                   string
-	ToolGuidance                  string
 	ToolSystemGuidance            string
 	Skills                        string
 	ConfigDir                     string
@@ -171,9 +170,6 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 	}
 	if options.Skills != "" {
 		sources = append(sources, StaticSource{"runtime:skills", options.Skills})
-	}
-	if options.ToolGuidance != "" {
-		sources = append(sources, StaticSource{"runtime:tool-guidance", options.ToolGuidance})
 	}
 	if options.ToolSystemGuidance != "" {
 		sources = append(sources, StaticSource{"runtime:tool-system-guidance", options.ToolSystemGuidance})
