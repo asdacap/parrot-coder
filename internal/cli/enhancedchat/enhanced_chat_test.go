@@ -514,11 +514,21 @@ func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	if len(runtime.activity) != 3 {
 		t.Fatalf("activity = %#v", runtime.activity)
 	}
-	if got := formatActivity(runtime.activity[1], runtime.activity[1].started); got != "    [review] ○ response: checking" {
-		t.Fatalf("subagent activity = %q", got)
+	var subagent, agent string
+	for _, item := range runtime.activity {
+		formatted := formatActivity(item, item.started)
+		if item.taskID == "task-review" {
+			subagent = formatted
+		}
+		if item.id == "call-agent" {
+			agent = formatted
+		}
 	}
-	if got := formatActivity(runtime.activity[2], runtime.activity[2].started); !strings.Contains(got, "Working: agent · review") {
-		t.Fatalf("agent activity = %q", got)
+	if subagent != "    [review] ○ response: checking" {
+		t.Fatalf("subagent activity = %q", subagent)
+	}
+	if !strings.Contains(agent, "Working: agent · review") {
+		t.Fatalf("agent activity = %q", agent)
 	}
 }
 

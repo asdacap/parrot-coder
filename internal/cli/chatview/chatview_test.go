@@ -2,6 +2,7 @@ package chatview
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -64,6 +65,55 @@ func taskLifecycleEvent(eventType string, event v1.TaskEvent) v1.Event {
 func taskDelta(taskID string, delta v1.MessagePartDelta) v1.Event {
 	data, _ := json.Marshal(delta)
 	return v1.Event{Type: v1.EventMessagePartDelta, TaskID: taskID, Data: data}
+}
+
+func TestTaskTrackerProjectsTreeAndReportOwners(t *testing.T) {
+	tracker := NewTaskTracker()
+	for _, start := range []v1.TaskEvent{
+		{TaskID: "task-z", ParentTaskID: "task_main", Kind: "agent", Agent: "review", Name: "review-z"},
+		{TaskID: "task-child", ParentTaskID: "task-z", Kind: "agent", Agent: "explore"},
+		{TaskID: "task-a", ParentTaskID: "task_main", Kind: "agent", Agent: "worker"},
+	} {
+		if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, start), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskIdle, v1.TaskEvent{TaskID: "task-a"}), false); err != nil {
+		t.Fatal(err)
+	}
+
+	wantTasks := []TaskInfo{
+		{TaskID: "task_main", Kind: "main"},
+		{TaskID: "task-a", ParentTaskID: "task_main", Kind: "agent", Agent: "worker", Status: "idle"},
+		{TaskID: "task-z", ParentTaskID: "task_main", Kind: "agent", Agent: "review", Name: "review-z", Status: "working"},
+		{TaskID: "task-child", ParentTaskID: "task-z", Kind: "agent", Agent: "explore", Status: "working"},
+	}
+	if got := tracker.Tasks(); !reflect.DeepEqual(got, wantTasks) {
+		t.Fatalf("Tasks() = %#v, want %#v", got, wantTasks)
+	}
+	// The returned slice is a snapshot, not mutable tracker state.
+	tasks := tracker.Tasks()
+	tasks[1].Status = "changed"
+	if got := tracker.Tasks()[1].Status; got != "idle" {
+		t.Fatalf("mutating Tasks result changed tracker status to %q", got)
+	}
+
+	reports, err := tracker.Apply(taskDelta("task-child", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "work"}), false)
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("content reports = %#v, %v", reports, err)
+	}
+	if report := reports[0]; report.TaskID != "task-child" || report.ParentTaskID != "task-z" || report.MainStatus {
+		t.Fatalf("content report metadata = %#v", report)
+	}
+
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-child", ToolCallID: "call", Agent: "explore", Status: "running"})
+	reports, err = tracker.Apply(v1.Event{Type: v1.EventTaskProgress, TaskID: "task-child", Data: data}, false)
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("progress reports = %#v, %v", reports, err)
+	}
+	if report := reports[0]; report.TaskID != "task-child" || report.ParentTaskID != "task-z" || !report.MainStatus {
+		t.Fatalf("progress report metadata = %#v", report)
+	}
 }
 
 func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {

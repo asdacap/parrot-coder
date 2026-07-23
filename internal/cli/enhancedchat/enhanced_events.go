@@ -281,31 +281,19 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 			if r.activity[i].id != report.id {
 				continue
 			}
+			r.activity[i].taskID = report.taskID
+			r.activity[i].parentTaskID = report.parentTaskID
+			r.activity[i].mainStatus = report.mainStatus
 			r.activity[i].rendered = text
 			r.activity[i].style = report.style
 			found = true
 			break
 		}
 		if !found {
-			r.insertSubagentActivity(enhancedActivityItem{id: report.id, rendered: text, style: report.style, status: "running", started: time.Now()})
+			r.activity = append(r.activity, enhancedActivityItem{id: report.id, taskID: report.taskID, parentTaskID: report.parentTaskID, mainStatus: report.mainStatus, rendered: text, style: report.style, status: "running", started: time.Now()})
 		}
 	}
 	return nil
-}
-
-func (r *enhancedChatRuntime) insertSubagentActivity(item enhancedActivityItem) {
-	presentation := r.presentation()
-	for i := range r.activity {
-		// Nest the child task beneath the row which spawned or addresses it.
-		if !presentation.Subagent(r.activity[i].toolName) {
-			continue
-		}
-		r.activity = append(r.activity, enhancedActivityItem{})
-		copy(r.activity[i+1:], r.activity[i:])
-		r.activity[i] = item
-		return
-	}
-	r.activity = append(r.activity, item)
 }
 
 func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
