@@ -40,6 +40,11 @@ type SessionRuntime interface {
 	SettleTool(context.Context, string, string, string, string, string) error
 	AppendMessage(context.Context, string, protocol.Message) (session.Message, error)
 	RepairActive(context.Context, string) error
+	StatusPromptPending(context.Context, string) (bool, error)
+}
+
+type StatusObserver interface {
+	Observe(context.Context, statusinfo.Query, statusinfo.Provider) (string, error)
 }
 
 type ContextRuntime interface {
@@ -103,6 +108,7 @@ type AgentSessionConfig struct {
 	Live               LivePublisher
 	Compactor          Compactor
 	Goals              *session.GoalService
+	Status             StatusObserver
 	MaxConcurrentTools int
 	CleanupTimeout     time.Duration
 	// ToolPanicLogger, when set, receives diagnostics for a tool call whose
@@ -151,6 +157,8 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 	if err := r.config.Sessions.RepairActive(ctx, r.id); err != nil {
 		return err
 	}
+	statusPending := false
+	statusPrompt := ""
 	turn := 0
 	for {
 		if err := ctx.Err(); err != nil {
@@ -196,6 +204,21 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if err != nil {
 			return err
 		}
+		if r.config.Status != nil {
+			pending, err := r.config.Sessions.StatusPromptPending(ctx, r.id)
+			if err != nil {
+				return err
+			}
+			if pending {
+				statusPending, statusPrompt = true, ""
+			}
+		}
+		if statusPending && statusPrompt == "" {
+			statusPrompt, err = r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, profile.Status)
+			if err != nil {
+				return err
+			}
+		}
 		providerClient, model, err := r.config.Providers.Resolve(selected.Provider, selected.Model)
 		if err != nil {
 			return err
@@ -231,7 +254,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		snapshot := r.config.ToolSnapshot()
 		definitions := toolDefinitions(snapshot)
 		turn++
-		instructions := runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
+		instructions := runnerInstructions(epoch.Baseline, profile, statusPrompt, turn >= profile.MaxTurns)
 		if turn >= profile.MaxTurns {
 			definitions = nil
 		}
@@ -252,7 +275,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				if err != nil {
 					return err
 				}
-				instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
+				instructions = runnerInstructions(epoch.Baseline, profile, statusPrompt, turn >= profile.MaxTurns)
 			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
@@ -296,7 +319,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
-			request.Instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
+			request.Instructions = runnerInstructions(epoch.Baseline, profile, statusPrompt, turn >= profile.MaxTurns)
 			request.Messages = history
 			calls, finish, err = r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 			if err != nil {
@@ -332,6 +355,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if len(queued) == 0 {
 				return nil
 			}
+			statusPending, statusPrompt = false, ""
 			continue
 		}
 		return nil
@@ -557,13 +581,14 @@ func overflowMessage(message string) bool {
 	return false
 }
 
-func runnerInstructions(baseline string, profile Profile, final bool) string {
-	instructions := baseline
-	if instructions != "" {
-		instructions += "\n\n"
+func runnerInstructions(baseline string, profile Profile, statusPrompt string, final bool) string {
+	sections := make([]string, 0, 3)
+	for _, section := range []string{baseline, profileInstructions(profile, final), statusPrompt} {
+		if section != "" {
+			sections = append(sections, section)
+		}
 	}
-	instructions += profileInstructions(profile, final)
-	return instructions
+	return strings.Join(sections, "\n\n")
 }
 
 func profileInstructions(profile Profile, final bool) string {

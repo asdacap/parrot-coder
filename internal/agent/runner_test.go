@@ -18,6 +18,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
@@ -64,6 +65,50 @@ func (s *sliceStream) Next(context.Context) (protocol.Event, error) {
 func (*sliceStream) Close() error { return nil }
 
 func events(items ...protocol.Event) provider.Stream { return &sliceStream{events: items} }
+
+func TestRunnerInjectsComposedStatusOnlyWhenPending(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "done"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	profiles := []Profile{
+		{ID: "build", Prompt: "build prompt", MaxTurns: 10, Status: statusinfo.Static{ProviderKey: "profile:mode", Text: "Build mode status"}},
+		{ID: "plan", Prompt: "plan prompt", MaxTurns: 10, Status: statusinfo.Static{ProviderKey: "profile:mode", Text: "Plan mode status"}},
+	}
+	h := newRunnerHarness(t, fake, profiles)
+	registry, err := statusinfo.NewRegistry(statusinfo.Selection{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.runner.config.Status = registry
+	for _, text := range []string{"first", "second"} {
+		h.admit(t, text, text, session.DeliverySteer)
+		if err := h.runner.drainOnce(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := h.sessions.UpdateSelection(context.Background(), h.sessionID, session.SelectionPatch{Agent: "plan"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h.admit(t, "user", "third", session.DeliverySteer)
+	if err := h.runner.drainOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := fake.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	want := []string{
+		"baseline\n\nbuild prompt\n\nBuild mode status\n\nActive profile: build\nModel: fake/model",
+		"baseline\n\nbuild prompt",
+		"baseline\n\nplan prompt\n\nPlan mode status\n\nActive profile: plan\nModel: fake/model",
+	}
+	for index := range requests {
+		if requests[index].Instructions != want[index] {
+			t.Errorf("request %d instructions = %q, want %q", index, requests[index].Instructions, want[index])
+		}
+	}
+}
 
 // recordingPublisher captures everything the runner puts on the live stream.
 type recordingPublisher struct {
@@ -422,6 +467,7 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "final"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h = newRunnerHarness(t, fake, nil, item)
+	h.runner.config.Status = statusObserver("transient status")
 	h.admit(t, "user", "run tool", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -435,9 +481,21 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 	if status != "success" || result != "tool output" {
 		t.Fatalf("tool state = %q, %q", status, result)
 	}
-	if len(fake.Requests()) != 2 {
-		t.Fatalf("provider turns = %d", len(fake.Requests()))
+	requests := fake.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider turns = %d", len(requests))
 	}
+	for index, request := range requests {
+		if !strings.HasSuffix(request.Instructions, "\n\ntransient status") {
+			t.Errorf("request %d lost status instructions: %q", index, request.Instructions)
+		}
+	}
+}
+
+type statusObserver string
+
+func (s statusObserver) Observe(context.Context, statusinfo.Query, statusinfo.Provider) (string, error) {
+	return string(s), nil
 }
 
 func TestRunnerBoundsConcurrentToolsAndSettlesAllBeforeContinuation(t *testing.T) {
@@ -772,6 +830,7 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
+	h.runner.config.Status = statusObserver("retry status")
 	compactor := &fakeCompactor{compact: func(request compaction.Request) (compaction.Result, error) {
 		if request.Force {
 			return compaction.Result{Status: "complete", RecordID: "cmpr_retry"}, nil
@@ -783,8 +842,14 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(fake.Requests()) != 2 || len(compactor.requests) != 2 || !compactor.requests[1].Force {
-		t.Fatalf("provider=%d compactor=%#v", len(fake.Requests()), compactor.requests)
+	requests := fake.Requests()
+	if len(requests) != 2 || len(compactor.requests) != 2 || !compactor.requests[1].Force {
+		t.Fatalf("provider=%d compactor=%#v", len(requests), compactor.requests)
+	}
+	for index, request := range requests {
+		if !strings.HasSuffix(request.Instructions, "\n\nretry status") {
+			t.Errorf("request %d lost status instructions: %q", index, request.Instructions)
+		}
 	}
 	events, err := h.repository.List(context.Background(), h.sessionID, -1, 100)
 	if err != nil {

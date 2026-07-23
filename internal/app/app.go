@@ -528,7 +528,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 				return task.ID
 			}
 			return managedtask.MainTaskID
-		}, Live: live, Compactor: compactionService, Goals: goals,
+		}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
 		ToolPanicLogger: toolPanicLogger(),
 	}, reporter)
 	if err != nil {
