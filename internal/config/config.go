@@ -23,6 +23,7 @@ const (
 
 // Config is the typed configuration consumed by later application phases.
 type Config struct {
+	Prompt         string              `json:"prompt,omitempty"`
 	DefaultModel   string              `json:"model,omitempty"`
 	DefaultVariant string              `json:"variant,omitempty"`
 	Providers      map[string]Provider `json:"providers,omitempty"`
@@ -416,6 +417,12 @@ const predefinedConfigYAML = `# Predefined configuration reference.
 # fields with their default values. The agent reads this file to determine
 # default configuration values.
 
+# Base agent prompt included in the system context.
+prompt: |-
+  You are Parrot Coder, a local coding agent.
+
+  Do not duplicate work with agent_spawn. If an agent is already handling the work and is still running, wait for it to finish instead of spawning another agent for the same work.
+
 # Default model selected as provider/model.
 model: ""
 # Default model variant (the reasoning effort name exposed by the model).
@@ -549,6 +556,11 @@ func WritePredefinedConfig(path string) error {
 
 const defaultConfigYAML = `# Parrot Coder configuration file.
 # Uncomment and edit the sections below to configure Parrot.
+
+# Base agent prompt included in the system context. An override replaces the
+# complete predefined prompt rather than appending to it.
+# prompt: |-
+#   You are Parrot Coder, a local coding agent.
 
 # Default model selected as provider/model.
 # model: provider/model

@@ -139,8 +139,9 @@ source snapshots, and a history cutoff. Context sources are sampled only at a
 safe provider-turn boundary. Changes become durable chronological system
 messages. Completed compaction starts a new epoch.
 
-Initial context sources are the agent prompt, date, platform, working directory,
-project metadata, `AGENTS.md` files, available skills, and tool guidance.
+Initial context sources are the merged configuration's base agent prompt, date,
+platform, working directory, project metadata, `AGENTS.md` files, available
+skills, and tool guidance.
 
 ## Extension Boundaries
 

@@ -213,6 +213,52 @@ func TestLoadSubagentDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadPromptDefaultsAndOverrides(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		globalPrompt   string
+		projectPrompt  string
+		wantPrompt     string
+		wantProvenance string
+	}{
+		{name: "predefined", wantProvenance: PredefinedFileName},
+		{name: "global replaces predefined", globalPrompt: "global prompt", wantPrompt: "global prompt"},
+		{name: "project replaces global", globalPrompt: "global prompt", projectPrompt: "project prompt", wantPrompt: "project prompt"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			configDir := filepath.Join(root, "config")
+			project := filepath.Join(root, "project")
+			wantProvenance := test.wantProvenance
+			if test.globalPrompt != "" {
+				wantProvenance = filepath.Join(configDir, FileName)
+				writeFile(t, wantProvenance, "prompt: "+test.globalPrompt)
+			}
+			if test.projectPrompt != "" {
+				wantProvenance = filepath.Join(project, ".parrot", FileName)
+				writeFile(t, wantProvenance, "prompt: "+test.projectPrompt)
+			}
+
+			result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.wantPrompt == "" {
+				for _, text := range []string{"You are Parrot Coder", "agent_spawn", "still running", "wait for it"} {
+					if !strings.Contains(result.Config.Prompt, text) {
+						t.Fatalf("predefined prompt missing %q: %q", text, result.Config.Prompt)
+					}
+				}
+			} else if result.Config.Prompt != test.wantPrompt {
+				t.Fatalf("Prompt = %q, want exact replacement %q", result.Config.Prompt, test.wantPrompt)
+			}
+			if result.Provenance["prompt"] != wantProvenance {
+				t.Fatalf("prompt provenance = %q, want %q", result.Provenance["prompt"], wantProvenance)
+			}
+		})
+	}
+}
+
 func TestLoadToolIntegrationMapsMergeAndDecode(t *testing.T) {
 	root := t.TempDir()
 	configDir := filepath.Join(root, "config")
@@ -380,6 +426,8 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 	output := string(data)
 	for _, comment := range []string{
 		"Parrot Coder configuration file.",
+		"Base agent prompt included in the system context.",
+		"prompt: |-",
 		"Default model selected as provider/model.",
 		"Child-agent concurrency limits.",
 		"OpenAI-compatible providers and their model catalogs.",
