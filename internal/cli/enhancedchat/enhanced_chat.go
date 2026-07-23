@@ -145,6 +145,7 @@ type enhancedActivityItem struct {
 	started          time.Time
 	ended            time.Time
 	terminal         bool
+	hidden           bool
 	reasoning        bool
 	reasoningSummary bool
 	block            string

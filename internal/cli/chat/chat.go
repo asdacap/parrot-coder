@@ -564,6 +564,7 @@ type streamToolReport struct {
 	label    string
 	block    string
 	terminal bool
+	hidden   bool
 	style    terminal.TextStyle
 }
 
@@ -587,7 +588,7 @@ func (t *streamToolTracker) output(item *v1.ToolOutputDelta) streamToolReport {
 }
 
 func streamToolReportFromView(report chatview.StreamToolReport) streamToolReport {
-	return streamToolReport{line: report.Line, label: report.Label, block: report.Block, terminal: report.Terminal, style: report.Style}
+	return streamToolReport{line: report.Line, label: report.Label, block: report.Block, terminal: report.Terminal, hidden: report.Hidden, style: report.Style}
 }
 
 type taskReport struct {
@@ -701,6 +702,9 @@ func writeStreamToolOutput(options streamOptions, tracker *streamToolTracker, it
 
 func writeStreamToolEvent(options streamOptions, tracker *streamToolTracker, item v1.Event) error {
 	report := tracker.describeReport(item)
+	if report.hidden {
+		return nil
+	}
 	if options.renderer != nil {
 		styled := terminal.StyledText{Text: report.line, Style: report.style}
 		if !report.terminal {

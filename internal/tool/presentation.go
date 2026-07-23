@@ -28,6 +28,16 @@ type Presentation struct {
 	// tool's own request description, for tools whose description would echo a
 	// redacted value.
 	LabelInPermission bool `json:"label_in_permission,omitempty"`
+	// CompletedInput renders selected input fields as a permanent block only
+	// after the invocation reaches a terminal state. TerminalOnly also suppresses
+	// the transient pending/running row.
+	CompletedInput CompletedInputSpec `json:"completed_input,omitempty"`
+}
+
+// CompletedInputSpec describes an input block retained in the transcript.
+type CompletedInputSpec struct {
+	Fields       []string `json:"fields,omitempty"`
+	TerminalOnly bool     `json:"terminal_only,omitempty"`
 }
 
 // LabelSpec selects a labelling strategy. The zero value selects LabelFields,

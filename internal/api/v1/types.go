@@ -314,14 +314,20 @@ type ModeList struct {
 // It mirrors tool.Presentation; a client which does not recognise a field
 // simply falls back to generic rendering.
 type ToolPresentation struct {
-	Label             ToolLabel `json:"label,omitempty"`
-	Redact            []string  `json:"redact,omitempty"`
-	Muted             bool      `json:"muted,omitempty"`
-	Result            string    `json:"result,omitempty"`
-	Output            string    `json:"output,omitempty"`
-	Subagent          bool      `json:"subagent,omitempty"`
-	Modeline          bool      `json:"modeline,omitempty"`
-	LabelInPermission bool      `json:"label_in_permission,omitempty"`
+	Label             ToolLabel          `json:"label,omitempty"`
+	Redact            []string           `json:"redact,omitempty"`
+	Muted             bool               `json:"muted,omitempty"`
+	Result            string             `json:"result,omitempty"`
+	Output            string             `json:"output,omitempty"`
+	Subagent          bool               `json:"subagent,omitempty"`
+	Modeline          bool               `json:"modeline,omitempty"`
+	LabelInPermission bool               `json:"label_in_permission,omitempty"`
+	CompletedInput    ToolCompletedInput `json:"completed_input,omitempty"`
+}
+
+type ToolCompletedInput struct {
+	Fields       []string `json:"fields,omitempty"`
+	TerminalOnly bool     `json:"terminal_only,omitempty"`
 }
 
 type ToolLabel struct {

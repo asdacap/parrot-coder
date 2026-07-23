@@ -260,15 +260,21 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 		if report.block != "" {
 			text += "\n" + report.block
 		}
-		if report.terminal {
+		if report.skip {
 			for i := 0; i < len(r.activity); i++ {
 				if r.activity[i].id == report.id {
 					r.activity = append(r.activity[:i], r.activity[i+1:]...)
 					break
 				}
 			}
-			if report.skip {
-				continue
+			continue
+		}
+		if report.terminal {
+			for i := 0; i < len(r.activity); i++ {
+				if r.activity[i].id == report.id {
+					r.activity = append(r.activity[:i], r.activity[i+1:]...)
+					break
+				}
 			}
 			if r.shell == nil || r.shell.renderer == nil {
 				continue

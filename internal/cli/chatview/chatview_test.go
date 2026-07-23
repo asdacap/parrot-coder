@@ -9,6 +9,33 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 )
 
+func TestCompletedInputPresentation(t *testing.T) {
+	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "spawn", Presentation: v1.ToolPresentation{CompletedInput: v1.ToolCompletedInput{
+			Fields: []string{"name", "agent", "model", "prompt"}, TerminalOnly: true,
+		}},
+	}}})
+
+	if !presentations.TerminalOnly("spawn") {
+		t.Fatal("spawn presentation should suppress transient rows")
+	}
+	input := map[string]any{"prompt": "first line\nsecond line", "agent": "review", "model": "", "name": "review-task"}
+	want := "name: review-task\nagent: review\nprompt: |-\n  first line\n  second line"
+	if got := presentations.CompletedInputBlock("spawn", input); got != want {
+		t.Fatalf("completed input block = %q, want %q", got, want)
+	}
+
+	tracker := StreamToolTracker{Presentation: presentations}
+	pending := tracker.DescribeReport(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"call","name":"spawn","input":{"name":"review-task","agent":"review","model":"","prompt":"first line\nsecond line"}}`)})
+	if !pending.Hidden || pending.Terminal {
+		t.Fatalf("pending report = %#v", pending)
+	}
+	success := tracker.DescribeReport(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"call","name":"spawn"}`)})
+	if success.Hidden || !success.Terminal || success.Block != want {
+		t.Fatalf("success report = %#v", success)
+	}
+}
+
 func TestPresentationResolvesFriendlyTaskNames(t *testing.T) {
 	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "control", Presentation: v1.ToolPresentation{Label: v1.ToolLabel{Fields: []v1.ToolLabelPart{{Names: []string{"task_id"}, TaskName: true}}}},

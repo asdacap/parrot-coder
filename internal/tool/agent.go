@@ -37,8 +37,11 @@ func (t *AgentTool) Presentation() Presentation {
 	presentation := Presentation{Subagent: true}
 	if t.Kind == agentSpawnID {
 		presentation.Label = LabelSpec{Fields: []LabelField{
-			{Names: []string{"name", "agent"}}, {Names: []string{"prompt"}},
+			{Names: []string{"name", "agent"}},
 		}}
+		presentation.CompletedInput = CompletedInputSpec{
+			Fields: []string{"name", "agent", "model", "prompt"}, TerminalOnly: true,
+		}
 		return presentation
 	}
 	presentation.Label = LabelSpec{Fields: []LabelField{

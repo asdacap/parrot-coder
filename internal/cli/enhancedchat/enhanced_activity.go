@@ -33,7 +33,7 @@ func (r *enhancedChatRuntime) activityFrames(now time.Time, columns int) []termi
 	}
 	visible := make([]enhancedActivityItem, 0, len(r.activity))
 	for _, item := range r.activity {
-		if !r.isModelineActivity(item) {
+		if !item.hidden && !r.isModelineActivity(item) {
 			visible = append(visible, item)
 		}
 	}
@@ -80,7 +80,7 @@ func (r *enhancedChatRuntime) styledActivityRows(now time.Time, columns int) []t
 	}
 	visible := make([]enhancedActivityItem, 0, len(r.activity))
 	for _, item := range r.activity {
-		if r.isModelineActivity(item) {
+		if item.hidden || r.isModelineActivity(item) {
 			continue
 		}
 		visible = append(visible, item)

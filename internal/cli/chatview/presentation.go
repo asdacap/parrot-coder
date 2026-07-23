@@ -1,12 +1,14 @@
 package chatview
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"strings"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
+	"go.yaml.in/yaml/v3"
 )
 
 // Label strategies, mirroring tool.LabelKind. They name a rendering approach
@@ -238,6 +240,49 @@ func (p Presentations) Subagent(name string) bool {
 // Modeline reports whether a running top-level invocation belongs in the
 // transient modeline status rather than in the activity rows.
 func (p Presentations) Modeline(name string) bool { return p.For(name).Modeline }
+
+// TerminalOnly reports whether a tool suppresses its transient activity row.
+func (p Presentations) TerminalOnly(name string) bool {
+	return p.For(name).CompletedInput.TerminalOnly
+}
+
+// CompletedInputBlock formats selected non-empty fields in declared order.
+func (p Presentations) CompletedInputBlock(name string, input map[string]any) string {
+	fields := p.For(name).CompletedInput.Fields
+	if len(fields) == 0 || input == nil {
+		return ""
+	}
+	mapping := &yaml.Node{Kind: yaml.MappingNode}
+	for _, field := range fields {
+		value, exists := input[field]
+		if !exists {
+			continue
+		}
+		if text, ok := value.(string); ok && strings.TrimSpace(text) == "" {
+			continue
+		}
+		key := &yaml.Node{Kind: yaml.ScalarNode, Value: field}
+		var node yaml.Node
+		if node.Encode(value) != nil {
+			continue
+		}
+		if node.Kind == yaml.ScalarNode && strings.Contains(node.Value, "\n") {
+			node.Style = yaml.LiteralStyle
+		}
+		mapping.Content = append(mapping.Content, key, &node)
+	}
+	if len(mapping.Content) == 0 {
+		return ""
+	}
+	var formatted bytes.Buffer
+	encoder := yaml.NewEncoder(&formatted)
+	encoder.SetIndent(2)
+	if encoder.Encode(mapping) != nil {
+		return ""
+	}
+	_ = encoder.Close()
+	return strings.TrimSuffix(formatted.String(), "\n")
+}
 
 func legacySubagent(name string) bool {
 	switch name {

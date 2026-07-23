@@ -75,6 +75,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 				r.activity[i].output = shellOutputTail{}
 			}
 		}
+		r.activity[i].hidden = !terminalEvent && presentation.TerminalOnly(r.activity[i].toolName)
 		if status == "failure" || status == "interrupted" {
 			r.activity[i].style = terminal.TextStyleDefault
 		} else {
@@ -132,6 +133,13 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		}
 	}
 	if terminalEvent {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				if block := presentation.CompletedInputBlock(r.activity[i].toolName, r.activity[i].input); block != "" {
+					r.activity[i].block = block
+				}
+			}
+		}
 		for i := range r.activity {
 			if r.activity[i].id == callID && presentation.Output(r.activity[i].toolName) == chatview.ToolOutputTail {
 				output := toolActivityOutputTail(item.Data)

@@ -559,6 +559,7 @@ type StreamToolReport struct {
 	Label    string
 	Block    string
 	Terminal bool
+	Hidden   bool
 	Style    terminal.TextStyle
 }
 
@@ -1140,7 +1141,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if report.Block != "" {
 			block = prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
 		}
-		return []TaskReport{{ID: scope + "tool:" + callID, Line: prefixTaskActivity(prefix, line), Block: block, Terminal: report.Terminal, EmitPlain: true, Style: report.Style}}, nil
+		return []TaskReport{{ID: scope + "tool:" + callID, Line: prefixTaskActivity(prefix, line), Block: block, Terminal: report.Terminal, EmitPlain: true, Skip: report.Hidden, Style: report.Style}}, nil
 	case v1.EventToolOutputDelta:
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}
@@ -1378,6 +1379,11 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	} else if status == "failure" && call.input != nil {
 		block = TruncateToolBlock(FormatFailedToolRequest(call.input), MaxToolBlockLines)
 	}
+	if terminalEvent {
+		if inputBlock := t.Presentation.CompletedInputBlock(call.name, call.input); inputBlock != "" {
+			block = inputBlock
+		}
+	}
 	if terminalEvent && call.stream == ToolOutputTail {
 		output := ToolActivityOutputTail(item.Data)
 		if output == "" {
@@ -1409,7 +1415,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	}
 	return StreamToolReport{
 		Line: StreamToolStatus(status, errorText), Label: t.Presentation.Label(call.name, call.input), Block: block,
-		Terminal: terminalEvent, Style: style,
+		Terminal: terminalEvent, Hidden: !terminalEvent && t.Presentation.TerminalOnly(call.name), Style: style,
 	}
 }
 
