@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -47,110 +46,30 @@ func workspaceToolHarness(t *testing.T) (context.Context, *workspace.Workspace, 
 	return ctx, ws, change.NewService(change.Config{})
 }
 
-func TestEditReviewHashAndCommitIntegration(t *testing.T) {
-	ctx, ws, changes := workspaceToolHarness(t)
-	path := filepath.Join(ws.Root(), "file")
-	before := []byte("before\n")
-	if err := os.WriteFile(path, before, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","new":"after"}`)
-	edit := NewEditTool(changes)
-	planned, err := edit.Plan(ctx, raw, CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	// A workspace edit is confined by the sandbox, so it is never prompted; the
-	// review still records the exact diff and preimage hash.
-	if len(planned.Permissions) != 0 {
-		t.Fatalf("edit requested approval: %#v", planned.Permissions)
-	}
-	if !strings.Contains(string(planned.Review), `"diff"`) || !strings.Contains(string(planned.Review), change.SHA256(before)) {
-		t.Fatalf("review lacks exact diff/hash: %s", planned.Review)
-	}
-
-	registry := NewRegistry()
-	if err := registry.Register(edit); err != nil {
-		t.Fatal(err)
-	}
-	authorizer := &recordingAuthorizer{}
-	executor := Executor{Snapshot: registry.Materialize(), Permissions: authorizer}
-	result, err := executor.Execute(ctx, "edit", raw, CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if result.Metadata["files"] != 1 || authorizer.calls != 0 {
-		t.Fatalf("result/authorizations = %#v / %d", result, authorizer.calls)
-	}
-	if !strings.HasSuffix(result.Text, "sha256: "+change.SHA256([]byte("after"))+"\n") {
-		t.Fatalf("edit result lacks after sha256: %q", result.Text)
-	}
-	if described, err := edit.DescribeRequest(planned.CanonicalInput); err != nil || described != `Edit workspace file "file"` {
-		t.Fatalf("describe = %q, %v", described, err)
-	}
-	if !strings.Contains(result.Text, "--- a/file") || !strings.Contains(result.Text, "+++ b/file") ||
-		!strings.Contains(result.Text, "-before") || !strings.Contains(result.Text, "+after") {
-		t.Fatalf("edit result lacks before/after diff: %q", result.Text)
-	}
-	data, _ := os.ReadFile(path)
-	if string(data) != "after" {
-		t.Fatalf("committed file = %q", data)
-	}
-}
-
-func TestEditRevalidatesBeforeMutating(t *testing.T) {
-	ctx, ws, changes := workspaceToolHarness(t)
-	path := filepath.Join(ws.Root(), "file")
-	before := []byte("before")
-	if err := os.WriteFile(path, before, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","new":"after"}`)
-	edit := NewEditTool(changes)
-	planned, err := edit.Plan(ctx, raw, CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(path, []byte("changed after planning"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := edit.Execute(ctx, planned, CallContext{Workspace: ws}); !errors.Is(err, change.ErrStale) {
-		t.Fatalf("stale execution error = %v", err)
-	}
-	data, _ := os.ReadFile(path)
-	if string(data) != "changed after planning" {
-		t.Fatalf("stale execution overwrote file: %q", data)
-	}
-}
-
-func TestReadReturnsSHA256ForFilesAndRoundTripsIntoEdit(t *testing.T) {
-	ctx, ws, changes := workspaceToolHarness(t)
+func TestReadReturnsSHA256OnlyForFiles(t *testing.T) {
+	ctx, ws, _ := workspaceToolHarness(t)
 	before := []byte("line one\nline two\n")
 	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	registry := NewRegistry()
-	for _, tool := range []Tool{NewReadTool(ReadConfig{}), NewEditTool(changes)} {
-		if err := registry.Register(tool); err != nil {
-			t.Fatal(err)
-		}
-	}
-	executor := Executor{Snapshot: registry.Materialize(), Permissions: &recordingAuthorizer{}}
-
-	partial, err := executor.Execute(ctx, "read", json.RawMessage(`{"path":"file","limit":1}`), CallContext{Workspace: ws})
+	read := NewReadTool(ReadConfig{})
+	partial, err := read.Plan(ctx, json.RawMessage(`{"path":"file","limit":1}`), CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasSuffix(partial.Text, "sha256: "+change.SHA256(before)+"\n") {
-		t.Fatalf("partial read lacks whole-file sha256: %q", partial.Text)
+	result, err := read.Execute(ctx, partial, CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(result.Text, "sha256: "+change.SHA256(before)+"\n") {
+		t.Fatalf("partial read lacks whole-file sha256: %q", result.Text)
 	}
 
-	raw := json.RawMessage(`{"path":"file","expected_sha256":"` + change.SHA256(before) + `","new":"after"}`)
-	if _, err := executor.Execute(ctx, "edit", raw, CallContext{Workspace: ws}); err != nil {
-		t.Fatalf("read-hash edit round trip: %v", err)
+	listingPlan, err := read.Plan(ctx, json.RawMessage(`{"path":"."}`), CallContext{Workspace: ws})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	listing, err := executor.Execute(ctx, "read", json.RawMessage(`{"path":"."}`), CallContext{Workspace: ws})
+	listing, err := read.Execute(ctx, listingPlan, CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,85 +137,6 @@ func TestWritePermissionRejectsWorkspacePath(t *testing.T) {
 	_, err := NewWritePermissionTool(nil).Plan(context.Background(), json.RawMessage(`{"path":"`+path+`"}`), CallContext{Workspace: ws, SessionID: "session"})
 	if err == nil || !strings.Contains(err.Error(), "workspace paths are already writable") {
 		t.Fatalf("error = %v", err)
-	}
-}
-
-func TestUnrestrictedShellRequiresPermission(t *testing.T) {
-	_, ws, _ := workspaceToolHarness(t)
-	planned, err := NewUnrestrictedShellTool(nil).Plan(context.Background(), json.RawMessage(`{"shell":"/bin/sh","command":"true"}`), CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(planned.Permissions) != 1 || planned.Permissions[0].ToolID != "unrestricted_shell" {
-		t.Fatalf("permission = %#v", planned.Permissions)
-	}
-}
-
-func TestShellReviewOmitsEnvironmentValues(t *testing.T) {
-	_, ws, _ := workspaceToolHarness(t)
-	raw := json.RawMessage(`{"shell":"/bin/sh","command":"printf ok","env":{"API_TOKEN":"top-secret"}}`)
-	tool := NewShellTool(nil)
-	planned, err := tool.Plan(context.Background(), raw, CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	review := string(planned.Review)
-	if strings.Contains(review, "top-secret") || !strings.Contains(review, "API_TOKEN") || !strings.Contains(review, "inside the OS sandbox") {
-		t.Fatalf("unsafe or incomplete review: %s", review)
-	}
-	// The sandboxed variant is confined, so it plans no approval.
-	if len(planned.Permissions) != 0 {
-		t.Fatalf("sandboxed shell requested approval: %#v", planned.Permissions)
-	}
-	description, err := tool.DescribeRequest(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(description, "top-secret") || !strings.Contains(description, "printf ok") || !strings.Contains(description, "API_TOKEN") || !strings.Contains(description, "Run shell command") {
-		t.Fatalf("unsafe or incomplete request description: %q", description)
-	}
-	unrestrictedDescription, err := NewUnrestrictedShellTool(nil).DescribeRequest(raw)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(unrestrictedDescription, "without the OS sandbox") || !strings.Contains(unrestrictedDescription, "full local authority") {
-		t.Fatalf("unrestricted description = %q", unrestrictedDescription)
-	}
-}
-
-func TestShellDefaultsShellAndWorkingDirectory(t *testing.T) {
-	_, ws, _ := workspaceToolHarness(t)
-	t.Setenv("SHELL", "/bin/sh")
-	planned, err := NewShellTool(nil).Plan(context.Background(), json.RawMessage(`{"command":"printf ok"}`), CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := planned.Data.(shellInput)
-	if input.Shell != "/bin/sh" || input.Cwd != ws.Root() || input.ResolvedCwd != ws.Root() {
-		t.Fatalf("defaults = %#v", input)
-	}
-	schema := string(NewShellTool(nil).JSONSchema())
-	if strings.Contains(schema, `"required":["shell"`) || !strings.Contains(schema, `"required":["command"]`) {
-		t.Fatalf("shell should be optional in schema: %s", schema)
-	}
-}
-
-func TestShellAllowsExternalWorkingDirectory(t *testing.T) {
-	_, ws, _ := workspaceToolHarness(t)
-	external := t.TempDir()
-	external, err := filepath.EvalSymlinks(external)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, tool := range []*ShellTool{NewShellTool(nil), NewUnrestrictedShellTool(nil)} {
-		planned, err := tool.Plan(context.Background(), json.RawMessage(fmt.Sprintf(`{"command":"pwd","cwd":%q}`, external)), CallContext{Workspace: ws})
-		if err != nil {
-			t.Fatalf("%s: %v", tool.ID(), err)
-		}
-		input := planned.Data.(shellInput)
-		if input.Cwd != external || input.ResolvedCwd != external {
-			t.Fatalf("%s cwd = %q, resolved = %q", tool.ID(), input.Cwd, input.ResolvedCwd)
-		}
 	}
 }
 

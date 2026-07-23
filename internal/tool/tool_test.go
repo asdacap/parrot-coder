@@ -15,7 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/amirulashraf/parrot-coder/internal/change"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
@@ -470,8 +469,8 @@ func toolHarness(t *testing.T) (*workspace.Workspace, Executor, CallContext) {
 // Approval is reserved for operations the sandbox cannot contain. Every other
 // tool plans no permission request at all, so it is never prompted.
 func TestOnlySandboxEscapingToolsRequestApproval(t *testing.T) {
-	_, ws, changes := workspaceToolHarness(t)
-	call := CallContext{Workspace: ws, Changes: changes, SessionID: "s"}
+	_, ws, _ := workspaceToolHarness(t)
+	call := CallContext{Workspace: ws, SessionID: "s"}
 	content := []byte("hello\n")
 	if err := os.WriteFile(filepath.Join(ws.Root(), "a.txt"), content, 0o600); err != nil {
 		t.Fatal(err)
@@ -487,11 +486,8 @@ func TestOnlySandboxEscapingToolsRequestApproval(t *testing.T) {
 		{name: "read", tool: NewReadTool(ReadConfig{}), input: `{"path":"a.txt"}`},
 		{name: "grep", tool: NewGrepTool(GrepConfig{}), input: `{"pattern":"hello"}`},
 		{name: "glob", tool: NewGlobTool(GlobConfig{}), input: `{"pattern":"*.txt"}`},
-		{name: "edit", tool: NewEditTool(changes), input: `{"path":"a.txt","expected_sha256":"` + change.SHA256(content) + `","new":"world"}`},
-		{name: "shell", tool: NewShellTool(nil), input: `{"shell":"/bin/sh","command":"true"}`},
 		{name: "exec_command sandboxed", tool: NewExecCommandTool(nil), input: `{"cmd":"true","shell":"/bin/sh"}`},
 
-		{name: "unrestricted_shell", tool: NewUnrestrictedShellTool(nil), input: `{"shell":"/bin/sh","command":"true"}`, want: 1},
 		{name: "exec_command unsandboxed", tool: NewExecCommandTool(nil), input: `{"cmd":"true","shell":"/bin/sh","sandbox_permissions":"disable_sandbox","justification":"needs the host"}`, want: 1},
 		{name: "set_config", tool: NewSetConfigTool(t.TempDir()), input: `{"key":"model","value":"openai/gpt-4","operation":"set"}`, want: 1},
 		{name: "request_write_permission", tool: NewWritePermissionTool(nil), input: `{"path":"` + grantable + `"}`, want: 1},
@@ -631,9 +627,9 @@ func (t guidanceTestTool) SystemPromptGuidance() string { return t.guidance }
 
 func TestSnapshotSystemPromptGuidanceCollectsNonEmpty(t *testing.T) {
 	for _, test := range []struct {
-		name     string
-		tools    []Tool
-		want     string
+		name  string
+		tools []Tool
+		want  string
 	}{
 		{
 			name:  "only silent tools return empty",

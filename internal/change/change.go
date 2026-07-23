@@ -38,13 +38,6 @@ func NewService(config Config) *Service {
 	return &Service{config: config}
 }
 
-type Edit struct {
-	Path           string `json:"path"`
-	ExpectedSHA256 string `json:"expected_sha256"`
-	New            string `json:"new"`
-	Create         bool   `json:"create"`
-}
-
 type FileState struct {
 	Path          string
 	Exists        bool
@@ -91,62 +84,6 @@ func (p Plan) After() []FileState {
 func SHA256(data []byte) string {
 	sum := sha256.Sum256(data)
 	return hex.EncodeToString(sum[:])
-}
-
-func (s *Service) PlanEdit(ctx context.Context, ws *workspace.Workspace, edit Edit) (Plan, error) {
-	if err := ctx.Err(); err != nil {
-		return Plan{}, err
-	}
-	if ws == nil || edit.Path == "" {
-		return Plan{}, errors.New("change: workspace and path are required")
-	}
-	if edit.Create {
-		if edit.ExpectedSHA256 != "" {
-			return Plan{}, errors.New("change: creation must not include a preimage")
-		}
-		path, err := ws.ResolveCreate(edit.Path)
-		if err != nil {
-			return Plan{}, err
-		}
-		if _, err := os.Lstat(path); err == nil {
-			return Plan{}, errors.New("change: creation destination already exists")
-		} else if !errors.Is(err, os.ErrNotExist) {
-			return Plan{}, err
-		}
-		if err := requireExistingParent(path); err != nil {
-			return Plan{}, err
-		}
-		data := []byte(edit.New)
-		if int64(len(data)) > s.config.MaxFileBytes {
-			return Plan{}, errors.New("change: file byte limit exceeded")
-		}
-		before := absentState(path)
-		after := regularState(path, data, 0o600)
-		mutation := Mutation{edit.Path, path, before, after}
-		return Plan{Mutations: []Mutation{mutation}, Diff: unifiedDiff(ws.Root(), before, after)}, nil
-	}
-
-	path, err := ws.ResolveRead(edit.Path)
-	if err != nil {
-		return Plan{}, err
-	}
-	before, err := s.readState(path)
-	if err != nil {
-		return Plan{}, err
-	}
-	if before.SymlinkTarget != "" || !before.Mode.IsRegular() {
-		return Plan{}, errors.New("change: edits require a regular file")
-	}
-	if !validHash(edit.ExpectedSHA256) || edit.ExpectedSHA256 != before.SHA256 {
-		return Plan{}, ErrStale
-	}
-	data := []byte(edit.New)
-	if int64(len(data)) > s.config.MaxFileBytes {
-		return Plan{}, errors.New("change: file byte limit exceeded")
-	}
-	after := regularState(path, data, before.Mode)
-	mutation := Mutation{edit.Path, path, before, after}
-	return Plan{Mutations: []Mutation{mutation}, Diff: unifiedDiff(ws.Root(), before, after)}, nil
 }
 
 func (s *Service) readState(path string) (FileState, error) {

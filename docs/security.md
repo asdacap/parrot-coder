@@ -45,13 +45,13 @@ login, device login, refresh, text generation, and tool-call canaries.
 
 The operating-system sandbox is the enforcement boundary. Work it confines —
 canonical reads and searches, bounded `web_fetch` GET/HEAD requests, reviewed
-`edit`/`apply_patch` mutations, MCP tool calls, and sandboxed `shell` and
-`exec_command` execution — runs without a prompt.
+`apply_patch` mutations, MCP tool calls, and sandboxed `exec_command` execution —
+runs without a prompt.
 
 A prompt is raised only for operations the sandbox cannot contain:
 
-- `unrestricted_shell` and `exec_command` with `sandbox_permissions:
-  "disable_sandbox"`, which execute with the invoking user's local authority;
+- `exec_command` with `sandbox_permissions: "disable_sandbox"`, which executes
+  with the invoking user's local authority;
 - `request_write_permission`, which adds a write path to the sandbox;
 - `set_config`, which mutates persistent configuration.
 
@@ -74,8 +74,8 @@ presentation.
 
 ## Processes
 
-The default `shell` tool allows arbitrary process execution inside a mandatory
-platform sandbox. On Linux, Parrot uses Bubblewrap with a read-only host
+By default, `exec_command` allows process execution inside a mandatory platform
+sandbox. On Linux, Parrot uses Bubblewrap with a read-only host
 filesystem, a writable workspace and Git metadata, read-only existing Parrot
 metadata (`.parrot` and project `parrot.yaml` along the configuration path), a
 session-private `/tmp` shared across that session's shell commands, user and
@@ -84,14 +84,11 @@ common Git directories outside the workspace are writable. On macOS it applies
 equivalent filesystem
 write restrictions through the system `/usr/bin/sandbox-exec` and grants a
 session-private writable `TMPDIR`. Both backends retain host network access.
-Parrot fails shell execution when the platform sandbox is unavailable;
-permission approval does not bypass that tool's sandbox.
-
-The separate `unrestricted_shell` tool always requires approval. Once approved,
-it executes directly with the invoking user's
-local filesystem and process authority. It retains process timeouts, bounded
-output, cancellation, and deliberate environment construction, but it has no
-operating-system sandbox or workspace-bound working-directory restriction.
+Parrot fails process execution when the platform sandbox is unavailable.
+`exec_command` with `sandbox_permissions: "disable_sandbox"` always requires
+approval. Once approved, it executes directly with the invoking user's local
+filesystem and process authority while retaining process timeouts, bounded
+output, cancellation, and deliberate environment construction.
 
 The process runner also:
 
@@ -106,10 +103,10 @@ Sandboxed shell subprocesses may use any existing directory as their working
 directory and read host files that are readable by the invoking user, but can
 write only the workspace, its linked-worktree Git
 metadata, and private temporary area. Parrot metadata inside the workspace is
-read-only to shell commands; use reviewed structured tools for intended changes.
-Network destinations are not restricted. Unrestricted shell, configured
-formatter and MCP processes are trusted local execution and do not use the
-agent shell sandbox. Command parsing is never represented as a security boundary.
+read-only to sandboxed commands; use reviewed structured tools for intended changes.
+Network destinations are not restricted. Unsandboxed `exec_command`, configured
+formatter and MCP processes are trusted local execution and do not use the agent
+command sandbox. Command parsing is never represented as a security boundary.
 
 Configured `sandbox_rules` in global `parrot.yaml` apply ordered filesystem
 rules after the base mounts. Each rule maps a path to an action —

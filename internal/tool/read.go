@@ -45,7 +45,7 @@ func (*ReadTool) Presentation() Presentation {
 }
 
 func (*ReadTool) Description() string {
-	return "Read a bounded line range from a text file or list a directory. Relative paths resolve within the workspace. File reads include a content sha256 for use with edit's expected_sha256."
+	return "Read a bounded line range from a text file or list a directory. Relative paths resolve within the workspace. File reads include the whole-file content sha256."
 }
 func (*ReadTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input readInput

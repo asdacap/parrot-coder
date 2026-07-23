@@ -365,7 +365,7 @@ func ToolActivityLabel(name string, input map[string]any) string {
 	}
 
 	switch name {
-	case "read", "edit":
+	case "read":
 		add(firstString(input, "path", "file", "filePath"))
 	case "glob":
 		quoted(firstString(input, "pattern"))
@@ -380,8 +380,6 @@ func ToolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "id"))
 	case "apply_patch":
 		details = append(details, patchActivityTargets(firstString(input, "patchText", "patch"))...)
-	case "shell":
-		add(firstString(input, "command"))
 	case "exec_command":
 		add(firstString(input, "cmd"))
 	case "write_stdin":

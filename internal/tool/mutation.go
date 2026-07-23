@@ -7,6 +7,10 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/change"
 )
 
+type mutationPlan struct {
+	Change change.Plan
+}
+
 func mutationToolPlan(toolID string, raw json.RawMessage, planned change.Plan) (Plan, error) {
 	files := make([]map[string]any, len(planned.Mutations))
 	for i, mutation := range planned.Mutations {

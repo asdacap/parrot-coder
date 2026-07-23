@@ -209,7 +209,7 @@ func (p Presentations) Output(name string) string {
 // diff blocks, streamed tails and stdin redaction.
 func legacyResult(name string) string {
 	switch name {
-	case "edit":
+	case "apply_patch":
 		return ToolResultText
 	case "todowrite", "todo_write":
 		return ToolResultTodos
@@ -220,7 +220,7 @@ func legacyResult(name string) string {
 
 func legacyOutput(name string) string {
 	switch name {
-	case "shell", "exec_command":
+	case "exec_command":
 		return ToolOutputTail
 	case "write_stdin":
 		return ToolOutputNone

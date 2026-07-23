@@ -18,10 +18,7 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 		tool.NewGlobTool(tool.GlobConfig{}),
 		tool.NewGrepTool(tool.GrepConfig{}),
 		tool.NewReadOutputTool(0),
-		tool.NewEditTool(nil),
 		tool.NewApplyPatchTool(nil),
-		tool.NewShellTool(nil),
-		tool.NewUnrestrictedShellTool(nil),
 		tool.NewExecCommandTool(nil),
 		tool.NewWriteStdinTool(nil),
 		tool.NewTodoWriteTool(nil),
@@ -49,9 +46,6 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 		"questions": []any{map[string]any{"header": "Pick"}, map[string]any{"header": "Other"}},
 	}
 	for _, item := range list.Items {
-		if item.ID == "unrestricted_shell" {
-			continue // deliberately diverges; see the test below
-		}
 		t.Run(item.ID, func(t *testing.T) {
 			redacted := presentations.Redact(item.ID, input)
 			want := chatview.ToolActivityLabel(item.ID, chatview.RedactToolInputForDisplay(item.ID, input))
@@ -59,17 +53,6 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 				t.Fatalf("label = %q, want %q", got, want)
 			}
 		})
-	}
-
-	// The one intended divergence. The legacy switch had no unrestricted_shell
-	// case, so it fell through to the generic branch and labelled the call with
-	// whichever non-sensitive field sorted first, not the command being run.
-	input = map[string]any{"command": "rm -rf /tmp/x", "chars": "hello"}
-	if legacy := chatview.ToolActivityLabel("unrestricted_shell", input); legacy != "unrestricted_shell · chars=hello" {
-		t.Fatalf("legacy behaviour changed: %q", legacy)
-	}
-	if got := presentations.Label("unrestricted_shell", input); got != "unrestricted_shell · rm -rf /tmp/x" {
-		t.Fatalf("unrestricted_shell label = %q, want the command", got)
 	}
 }
 
@@ -93,7 +76,7 @@ func TestModelinePresentationSurvivesToolAPIProjection(t *testing.T) {
 func TestDeclaredRenderingMatchesLegacyAndFallsBack(t *testing.T) {
 	registry := tool.NewRegistry()
 	for _, item := range []tool.Tool{
-		tool.NewEditTool(nil), tool.NewTodoWriteTool(nil), tool.NewShellTool(nil),
+		tool.NewTodoWriteTool(nil),
 		tool.NewExecCommandTool(nil), tool.NewWriteStdinTool(nil), tool.NewReadTool(tool.ReadConfig{}),
 	} {
 		if err := registry.Register(item); err != nil {
@@ -108,9 +91,7 @@ func TestDeclaredRenderingMatchesLegacyAndFallsBack(t *testing.T) {
 	var empty chatview.Presentations
 
 	for _, test := range []struct{ id, result, output string }{
-		{id: "edit", result: "text"},
 		{id: "todowrite", result: "todos"},
-		{id: "shell", output: "tail"},
 		{id: "exec_command", output: "tail"},
 		{id: "write_stdin", output: "none"},
 		{id: "read"},
@@ -130,19 +111,5 @@ func TestDeclaredRenderingMatchesLegacyAndFallsBack(t *testing.T) {
 				t.Errorf("fallback output = %q, want %q", got, test.output)
 			}
 		})
-	}
-}
-
-// unrestricted_shell was absent from the CLI's tool-ID switch, so it rendered
-// with no command and no streamed tail. Declaring presentation on the type
-// covers both variants; this fences that fix.
-func TestUnrestrictedShellDeclaresSamePresentationAsShell(t *testing.T) {
-	sandboxed := tool.NewShellTool(nil).Presentation()
-	unrestricted := tool.NewUnrestrictedShellTool(nil).Presentation()
-	if unrestricted.Output != sandboxed.Output || unrestricted.Output != tool.OutputTail {
-		t.Fatalf("unrestricted output = %q, sandboxed = %q", unrestricted.Output, sandboxed.Output)
-	}
-	if len(unrestricted.Label.Fields) != len(sandboxed.Label.Fields) {
-		t.Fatalf("label fields differ: %#v vs %#v", unrestricted.Label, sandboxed.Label)
 	}
 }

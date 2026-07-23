@@ -56,9 +56,9 @@ Tagged releases contain pure-Go binaries for macOS and Linux on amd64 and
 arm64. Windows is not currently supported.
 
 Parrot expects `awk`, `bash`, `bwrap`, `curl`, `find`, `git`, `grep`, `jq`, `rg`,
-`sed`, `stat`, `tar`, and `xargs` to be available on `PATH` for Bash-based agent
-commands. It continues to start when one is absent, but prints a warning because
-shell tool calls that use the missing utility may fail. The utilities detected
+`sed`, `stat`, `tar`, and `xargs` to be available on `PATH` for agent commands.
+It continues to start when one is absent, but prints a warning because
+`exec_command` calls that use the missing utility may fail. The utilities detected
 at startup are also included in a dedicated agent system-context source. Parrot
 also detects optional development utilities, including common language
 toolchains, build systems, package managers, and developer tools such as `go`,
@@ -66,10 +66,10 @@ toolchains, build systems, package managers, and developer tools such as `go`,
 `python3`, `java`, `docker`, and `kubectl`. Available optional utilities are
 listed in agent context without warnings for tools that are absent.
 
-Agent shell commands are OS-sandboxed and run without a permission prompt: the
-sandbox is the boundary, so confined work is not asked about. The separate
-`unrestricted_shell` tool always requires permission and runs with the invoking
-user's local authority, without an OS sandbox. Linux requires Bubblewrap and
+`exec_command` runs in an OS sandbox without a permission prompt by default: the
+sandbox is the boundary, so confined work is not asked about. Setting
+`sandbox_permissions` to `disable_sandbox` always requires permission and runs
+with the invoking user's local authority. Linux requires Bubblewrap and
 unprivileged user namespaces; the Nix package and development shell include
 Bubblewrap. macOS uses the system Seatbelt executable. The host filesystem is
 read-only, the workspace and its Git metadata are writable except for existing
@@ -266,10 +266,10 @@ parrot help
 ```
 
 Prompt text may be supplied as one argument, piped on stdin, or both. Piped
-stdin is always prompt data. Reviewed `edit` and `apply_patch` operations inside
-the current workspace, bounded web fetches, MCP calls, and sandboxed shell
-commands run without a prompt; only `unrestricted_shell`, `exec_command` with
-`disable_sandbox`, `set_config`, and `request_write_permission` ask.
+stdin is always prompt data. Reviewed `apply_patch` operations inside the current
+workspace, bounded web fetches, MCP calls, and sandboxed `exec_command` calls run
+without a prompt; only `exec_command` with `disable_sandbox`, `set_config`, and
+`request_write_permission` ask.
 `--interactive-prompts` explicitly opens `/dev/tty` for permission and question
 replies; without it a prompt is denied. `serve` refuses non-loopback addresses because the HTTP API has no
 authentication layer.
