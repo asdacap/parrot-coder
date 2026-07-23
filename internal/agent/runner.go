@@ -96,6 +96,7 @@ type RunnerConfig struct {
 	Workspace          *workspace.Workspace
 	Outputs            *tool.OutputStore
 	Processes          *process.Runner
+	TaskIDFor          func(string) string
 	Live               LivePublisher
 	Compactor          Compactor
 	Goals              *session.GoalService
@@ -708,7 +709,11 @@ func (r *Runner) executeTools(ctx context.Context, selected session.Session, pro
 					logger(ctx, sessionID, call.call.Name, recovered, stack)
 				}
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusinfo.Query{SessionID: sessionID, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, StatusProvider: profile.Status}, onPanic)
+			taskID := ""
+			if r.config.TaskIDFor != nil {
+				taskID = r.config.TaskIDFor(sessionID)
+			}
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusinfo.Query{SessionID: sessionID, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, StatusProvider: profile.Status}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

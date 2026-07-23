@@ -383,7 +383,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	result.outputs = outputs
 	changes := change.NewService(change.Config{})
-	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs), SandboxRules: convertSandboxRules(loaded.Config.SandboxRules)})
+	tasks := managedtask.NewManager()
+	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs), Tasks: tasks, SandboxRules: convertSandboxRules(loaded.Config.SandboxRules)})
 	if err != nil {
 		return nil, fmt.Errorf("app: process: %w", err)
 	}
@@ -433,7 +434,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return 0
 		}
 		return profile.RecursionLimit
-	}, OnProgress: func(task subagent.Task) {
+	}, Tasks: tasks, OnProgress: func(task subagent.Task) {
 		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.ID, Data: data})
 	}, OnEvent: func(item subagent.LifecycleEvent) {
@@ -447,9 +448,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return managedtask.MainTaskID
 	})
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
-		parent := managedtask.MainTaskID
-		if task, ok := subagents.TaskForSession(item.SessionID); ok {
-			parent = task.ID
+		parent := item.ParentTaskID
+		if parent == "" {
+			parent = managedtask.MainTaskID
 		}
 		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, ParentTaskID: parent, Kind: string(managedtask.KindShell), Error: item.Error}
 		eventType := managedtask.EventStart
@@ -466,7 +467,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		data, _ := json.Marshal(payload)
 		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
 	})
-	monitors := monitor.NewService(processes, subagents, sessions)
+	monitors := monitor.NewService(processes, subagents, sessions, tasks)
 	result.monitors = monitors
 	tools := tool.NewRegistry()
 	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{})
@@ -478,7 +479,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return profile.ReadOnly, err
 	}
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
-		Changes: changes, Processes: processes, Monitor: monitors, Tasks: monitors, Todos: todos, Goals: goals, Questions: questions,
+		Changes: changes, Processes: processes, Monitor: monitors, Tasks: &managedTaskController{tasks: tasks}, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		Subagents: subagents, Agents: agentLookup,
 		ConfigDir: paths.Config, Status: statusRegistry,
@@ -526,7 +527,12 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
 			return tool.Executor{Snapshot: snapshot, Permissions: permissions}
 		},
-		Workspace: ws, Outputs: outputs, Processes: processes, Live: live, Compactor: compactionService, Goals: goals,
+		Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
+			if task, ok := subagents.TaskForSession(sessionID); ok {
+				return task.ID
+			}
+			return managedtask.MainTaskID
+		}, Live: live, Compactor: compactionService, Goals: goals,
 		ToolPanicLogger: toolPanicLogger(),
 	})
 	if err != nil {
@@ -1435,9 +1441,35 @@ func (e *appSubagentExecutor) forwardEvent(execution subagent.Execution, item v1
 
 // publishSubagentLifecycle publishes one flat task lifecycle event for an
 // agent task on its parent session's stream.
+type managedTaskController struct{ tasks *managedtask.Manager }
+
+func (c *managedTaskController) Interrupt(ctx context.Context, callerSession, id string) (managedtask.Active, error) {
+	item, err := c.tasks.Get(callerSession, id)
+	if err != nil {
+		return managedtask.Active{}, err
+	}
+	return item.Interrupt(ctx)
+}
+
+func (c *managedTaskController) ListActive(callerSession string) []managedtask.Active {
+	return c.tasks.ListActive(callerSession)
+}
+
+func (c *managedTaskController) Wait(ctx context.Context, callerSession, id string) (managedtask.Result, error) {
+	item, err := c.tasks.Get(callerSession, id)
+	if err != nil {
+		return managedtask.Result{}, err
+	}
+	completion, err := item.Wait(ctx)
+	if err != nil {
+		return managedtask.Result{}, err
+	}
+	return managedtask.Result{ID: completion.Task.ID, Kind: completion.Task.Kind, Status: completion.Task.Status, ExitCode: completion.ExitCode, Output: completion.Output, Error: completion.Error}, nil
+}
+
 func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) {
 	task := item.Task
-	payload := v1.TaskEvent{TaskID: task.ID, SessionID: task.SessionID, ParentTaskID: task.ParentAgentID, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
+	payload := v1.TaskEvent{TaskID: task.ID, SessionID: task.SessionID, ParentTaskID: task.ParentTaskID, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
 	if payload.ParentTaskID == "" {
 		payload.ParentTaskID = managedtask.MainTaskID
 	}
