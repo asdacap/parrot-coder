@@ -21,21 +21,24 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type CallContext struct {
-	Workspace  *workspace.Workspace
-	Outputs    *OutputStore
-	SessionID  string
-	Changes    *change.Service
-	Processes  *process.Runner
-	Todos      *session.TodoService
-	Questions  *question.Broker
-	Agent      string
-	ToolCallID string
-	Output     io.Writer
+	Workspace       *workspace.Workspace
+	Outputs         *OutputStore
+	SessionID       string
+	Changes         *change.Service
+	Processes       *process.Runner
+	Todos           *session.TodoService
+	Questions       *question.Broker
+	Agent           string
+	ToolCallID      string
+	Output          io.Writer
 	SecurityProfile security.SecurityProfile
+	StatusQuery     statusinfo.Query
+	StatusProvider  statusinfo.Provider
 }
 
 type Plan struct {

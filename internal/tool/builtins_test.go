@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/skill"
+	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
 )
@@ -14,11 +15,16 @@ func TestRegisterBuiltinsDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	registry := NewRegistry()
+	statuses, err := statusinfo.NewRegistry(statusinfo.Selection{})
+	if err != nil {
+		t.Fatal(err)
+	}
 	services := BuiltinServices{
 		Skills:    skills,
 		WebFetch:  webfetch.New(webfetch.Config{}),
 		Subagents: subagent.NewManager(nil, subagent.Config{}),
 		Agents:    func(string) (bool, error) { return true, nil },
+		Status:    statuses,
 	}
 	if err := RegisterBuiltins(registry, services); err != nil {
 		t.Fatal(err)
@@ -26,7 +32,7 @@ func TestRegisterBuiltinsDefinitions(t *testing.T) {
 	definitions := registry.Definitions()
 	want := []string{
 		"agent_send", "agent_spawn", "apply_patch", "create_goal", "edit", "exec_command", "get_goal", "git_diff", "glob", "grep", "monitor",
-		"question", "read", "read_output", "request_write_permission", "set_config", "shell", "skill", "task_interrupt", "task_list_active", "todoread", "todowrite", "unrestricted_shell", "update_goal", "web_fetch", "write_stdin",
+		"question", "read", "read_output", "request_write_permission", "set_config", "shell", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "unrestricted_shell", "update_goal", "web_fetch", "write_stdin",
 	}
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions = %#v", definitions)

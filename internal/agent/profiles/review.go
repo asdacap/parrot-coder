@@ -1,5 +1,7 @@
 package profiles
 
+import "github.com/amirulashraf/parrot-coder/internal/status"
+
 const ReviewID = "review"
 
 const reviewPrompt = `You are Parrot's code review agent. Perform a read-only, defect-first review of the requested change.
@@ -10,11 +12,12 @@ Return all actionable findings, ordered by severity. For each finding, include a
 
 func Review() Profile {
 	return Profile{
-		ID:     ReviewID,
-		Prompt: reviewPrompt,
-		HardRules:              []string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."},
-		MaxTurns:               32,
-		RecursionLimit:         3,
-		ReadOnly:               true,
+		ID:             ReviewID,
+		Prompt:         reviewPrompt,
+		HardRules:      []string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."},
+		MaxTurns:       32,
+		RecursionLimit: 3,
+		ReadOnly:       true,
+		Status:         status.Static{ProviderKey: "profile:review", Text: "Review profile: perform a defect-first code review. Read-only mode is enforced and review delegation is not permitted."},
 	}
 }

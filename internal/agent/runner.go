@@ -18,6 +18,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -295,7 +296,7 @@ func (r *Runner) Drain(ctx context.Context, sessionID string) (runErr error) {
 			if turn >= profile.MaxTurns {
 				return errors.New("agent: provider returned tools after max-turn tool omission")
 			}
-			if err := r.executeTools(ctx, sessionID, profile, snapshot, calls); err != nil {
+			if err := r.executeTools(ctx, selected, profile, snapshot, calls); err != nil {
 				return err
 			}
 			if r.config.Goals != nil {
@@ -677,7 +678,8 @@ func executeToolCall(ctx context.Context, executor tool.Executor, call completed
 	return executor.Execute(ctx, call.call.Name, json.RawMessage(call.call.Input), callContext)
 }
 
-func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Profile, snapshot tool.Snapshot, calls []completedCall) error {
+func (r *Runner) executeTools(ctx context.Context, selected session.Session, profile Profile, snapshot tool.Snapshot, calls []completedCall) error {
+	sessionID := selected.ID
 	executor := r.config.ToolExecutor(snapshot)
 	sem := make(chan struct{}, r.config.MaxConcurrentTools)
 	outcomes := make([]toolOutcome, len(calls))
@@ -706,7 +708,7 @@ func (r *Runner) executeTools(ctx context.Context, sessionID string, profile Pro
 					logger(ctx, sessionID, call.call.Name, recovered, stack)
 				}
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile()}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: sessionID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: sessionID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusinfo.Query{SessionID: sessionID, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, StatusProvider: profile.Status}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

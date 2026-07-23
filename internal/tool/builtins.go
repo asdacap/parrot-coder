@@ -11,6 +11,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
+	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
 )
@@ -34,6 +35,7 @@ type BuiltinServices struct {
 	Subagents *subagent.Manager
 	Agents    AgentLookup
 	ConfigDir string // Parrot config directory for writing global parrot.yaml
+	Status    *statusinfo.Registry
 }
 
 // RegisterBuiltins registers the complete built-in tool set. MCP and
@@ -42,7 +44,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 	if registry == nil {
 		return errors.New("tool: registry is required")
 	}
-	if services.Skills == nil || services.WebFetch == nil || services.Subagents == nil || services.Agents == nil {
+	if services.Skills == nil || services.WebFetch == nil || services.Subagents == nil || services.Agents == nil || services.Status == nil {
 		return errors.New("tool: built-in services are required")
 	}
 
@@ -69,6 +71,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewWebFetchTool(services.WebFetch),
 		NewGitDiffTool(),
 		NewSetConfigTool(services.ConfigDir),
+		NewStatusTool(services.Status),
 	}
 	items = append(items, NewTaskTools(services.Tasks)...)
 	items = append(items, NewAgentTools(services.Subagents, services.Agents)...)

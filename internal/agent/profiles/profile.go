@@ -2,6 +2,7 @@ package profiles
 
 import (
 	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 type Profile struct {
@@ -11,6 +12,7 @@ type Profile struct {
 	MaxTurns       int
 	RecursionLimit int
 	ReadOnly       bool
+	Status         status.Provider
 }
 
 // IsReadOnly reports whether the profile is read-only.
