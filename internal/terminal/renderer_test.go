@@ -25,6 +25,50 @@ func TestLiveRendererExactBytesAndClear(t *testing.T) {
 	}
 }
 
+func TestLiveRendererColorsLiveSurface(t *testing.T) {
+	tests := []struct {
+		name  string
+		color bool
+		rows  []string
+		want  string
+	}{
+		{
+			name:  "ordinary and empty rows",
+			color: true,
+			rows:  []string{"x", ""},
+			want: "\x1b[?25l" +
+				"\x1b[48;5;236m\x1b[2K\x1b[0m\x1b[38;5;252;48;5;236mx\x1b[0m\r\n" +
+				"\x1b[48;5;236m\x1b[2K\x1b[0m" +
+				"\x1b[?25h",
+		},
+		{
+			name:  "semantic foreground",
+			color: true,
+			rows:  []string{"✓ ok"},
+			want: "\x1b[?25l\x1b[48;5;236m\x1b[2K\x1b[0m" +
+				"\x1b[32;48;5;236m✓\x1b[0m\x1b[38;5;252;48;5;236m ok\x1b[0m\x1b[?25h",
+		},
+		{
+			name:  "color disabled",
+			color: false,
+			rows:  []string{"x"},
+			want:  "\x1b[?25l\x1b[2Kx\x1b[?25h",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: test.color, Columns: 4})
+			if err := renderer.Update(test.rows); err != nil {
+				t.Fatal(err)
+			}
+			if got := output.String(); got != test.want {
+				t.Fatalf("renderer bytes = %q; want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestLiveRendererOrdersTaskFramesPostOrder(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -352,8 +396,8 @@ func TestLiveRendererPromptRendersUserInputGreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, want := range []string{
-		"\x1b[36m$\x1b[0m \x1b[32mabcdef\x1b[0m",
-		"  \x1b[32mgh\x1b[0m",
+		"\x1b[36;48;5;236m$\x1b[0m\x1b[38;5;252;48;5;236m \x1b[0m\x1b[32;48;5;236mabcdef\x1b[0m",
+		"\x1b[38;5;252;48;5;236m  \x1b[0m\x1b[32;48;5;236mgh\x1b[0m",
 	} {
 		if got := output.String(); !strings.Contains(got, want) {
 			t.Fatalf("colored prompt = %q, want substring %q", got, want)
@@ -365,7 +409,7 @@ func TestLiveRendererPromptRendersUserInputGreen(t *testing.T) {
 	if err := renderer.Frame(LiveFrame{Prompt: PromptState{Prefix: "$ ", Text: "draft", Cursor: 5}}); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := output.String(), "\x1b[36m$\x1b[0m \x1b[32mdraft\x1b[0m"; !strings.Contains(got, want) {
+	if got, want := output.String(), "\x1b[36;48;5;236m$\x1b[0m\x1b[38;5;252;48;5;236m \x1b[0m\x1b[32;48;5;236mdraft\x1b[0m"; !strings.Contains(got, want) {
 		t.Fatalf("colored frame prompt = %q, want substring %q", got, want)
 	}
 
@@ -374,7 +418,7 @@ func TestLiveRendererPromptRendersUserInputGreen(t *testing.T) {
 	if err := renderer.Prompt(PromptState{Prefix: "$ ", Text: "error:", Cursor: 6}); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); !strings.Contains(got, "\x1b[32mer\x1b[0m") || strings.Contains(got, "\x1b[31m") {
+	if got := output.String(); !strings.Contains(got, "\x1b[32;48;5;236mer\x1b[0m") || strings.Contains(got, "\x1b[31") {
 		t.Fatalf("narrow prompt input did not remain green: %q", got)
 	}
 }
@@ -487,10 +531,10 @@ func TestLiveRendererAlignsRowsAboveModeline(t *testing.T) {
 		renderer.rows[3] != "● response" || !strings.HasPrefix(renderer.rows[4], "─ mode: build ") || renderer.rows[5] != "$ draft" {
 		t.Fatalf("live rows, modeline, and input are not aligned as expected: %#v", renderer.rows)
 	}
-	if got := output.String(); !strings.Contains(got, "\x1b[32m✓\x1b[0m activity") || !strings.Contains(got, "\x1b[38;5;195m● response\x1b[0m") {
+	if got := output.String(); !strings.Contains(got, "\x1b[32;48;5;236m✓\x1b[0m\x1b[38;5;252;48;5;236m activity\x1b[0m") || !strings.Contains(got, "\x1b[38;5;195;48;5;236m● response\x1b[0m") {
 		t.Fatalf("live rows lost semantic color: %q", got)
 	}
-	if got, modeline := output.String(), renderer.rows[4]; !strings.Contains(got, "\x1b[32m"+modeline+"\x1b[0m") {
+	if got, modeline := output.String(), renderer.rows[4]; !strings.Contains(got, "\x1b[32;48;5;236m"+modeline+"\x1b[0m") {
 		t.Fatalf("modeline was not green: %q", got)
 	}
 }
@@ -575,7 +619,7 @@ func TestLiveRendererStylesLiveAssistantAfterEmptyLine(t *testing.T) {
 			if len(renderer.rows) < 2 || renderer.rows[0] != "" || renderer.rows[1] != "- final answer" {
 				t.Fatalf("final assistant boundary = %#v, want empty line then answer", renderer.rows)
 			}
-			if got := output.String(); !strings.Contains(got, "\x1b[38;5;195m- final answer\x1b[0m") || strings.Contains(got, "─") {
+			if got := output.String(); !strings.Contains(got, "\x1b[38;5;195;48;5;236m- final answer\x1b[0m") || strings.Contains(got, "─") {
 				t.Fatalf("final assistant did not use its role colors after an empty line: %q", got)
 			}
 		})
