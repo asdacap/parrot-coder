@@ -275,6 +275,99 @@ func TestDefaultCreationAndTypedPartialSelectionUpdate(t *testing.T) {
 	}
 }
 
+type testDrainer interface {
+	Drain(context.Context, string) error
+}
+
+type testSessionController struct {
+	mu      sync.Mutex
+	drainer testDrainer
+	active  map[string]*testDrainState
+}
+
+type testDrainState struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	wake   bool
+	status agent.Status
+}
+
+func newTestSessionController(drainer testDrainer) *testSessionController {
+	return &testSessionController{drainer: drainer, active: make(map[string]*testDrainState)}
+}
+
+func (c *testSessionController) Wake(id string) {
+	c.mu.Lock()
+	if state := c.active[id]; state != nil {
+		state.wake = true
+		c.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	state := &testDrainState{cancel: cancel, done: make(chan struct{}), status: agent.StatusRunning}
+	c.active[id] = state
+	c.mu.Unlock()
+	go c.run(ctx, id, state)
+}
+
+func (c *testSessionController) run(ctx context.Context, id string, state *testDrainState) {
+	_ = c.drainer.Drain(ctx, id)
+	c.mu.Lock()
+	if state.wake {
+		nextCtx, cancel := context.WithCancel(context.Background())
+		next := &testDrainState{cancel: cancel, done: make(chan struct{}), status: agent.StatusRunning}
+		c.active[id] = next
+		close(state.done)
+		c.mu.Unlock()
+		go c.run(nextCtx, id, next)
+		return
+	}
+	delete(c.active, id)
+	close(state.done)
+	c.mu.Unlock()
+}
+
+func (c *testSessionController) Interrupt(ctx context.Context, id string) error {
+	c.mu.Lock()
+	state := c.active[id]
+	if state == nil {
+		c.mu.Unlock()
+		return nil
+	}
+	state.status = agent.StatusInterrupting
+	state.wake = false
+	state.cancel()
+	done := state.done
+	c.mu.Unlock()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (c *testSessionController) Status(id string) agent.Status {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if state := c.active[id]; state != nil {
+		return state.status
+	}
+	return agent.StatusIdle
+}
+
+func (c *testSessionController) Active() []agent.Active {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	items := make([]agent.Active, 0, len(c.active))
+	for id, state := range c.active {
+		items = append(items, agent.Active{SessionID: id, Status: state.status})
+	}
+	return items
+}
+
+func (c *testSessionController) Remove(string) error { return nil }
+
 type blockingDrainer struct {
 	started chan struct{}
 }
@@ -292,12 +385,12 @@ func TestSelectionRejectsActiveSession(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
 	started := make(chan struct{}, 1)
-	backend.Coordinator = agent.NewCoordinator(blockingDrainer{started: started})
+	backend.AgentSessions = newTestSessionController(blockingDrainer{started: started})
 	created, err := backend.CreateSession(context.Background(), v1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend.Coordinator.Wake(created.ID)
+	backend.AgentSessions.Wake(created.ID)
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -306,7 +399,7 @@ func TestSelectionRejectsActiveSession(t *testing.T) {
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_ = backend.Coordinator.Interrupt(ctx, created.ID)
+		_ = backend.AgentSessions.Interrupt(ctx, created.ID)
 	})
 
 	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
@@ -361,7 +454,7 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
 	drainer := &restartOnceDrainer{started: make(chan struct{}, 2), restarted: make(chan struct{}, 1)}
-	backend.Coordinator = agent.NewCoordinator(drainer)
+	backend.AgentSessions = newTestSessionController(drainer)
 
 	ctx := context.Background()
 	created, err := backend.CreateSession(ctx, v1.CreateSessionRequest{})
@@ -372,7 +465,7 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backend.Coordinator.Wake(created.ID)
+	backend.AgentSessions.Wake(created.ID)
 	select {
 	case <-drainer.started:
 	case <-time.After(time.Second):
@@ -390,14 +483,14 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("queued steer did not auto-resume the drain after interrupt")
 	}
-	waitForCondition(t, func() bool { return backend.Coordinator.Status(created.ID) == agent.StatusIdle })
+	waitForCondition(t, func() bool { return backend.AgentSessions.Status(created.ID) == agent.StatusIdle })
 }
 
 func TestInterruptDoesNotAutoResumeWithoutPendingInputs(t *testing.T) {
 	backend, _ := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
 	drainer := &restartOnceDrainer{started: make(chan struct{}, 2), restarted: make(chan struct{}, 1)}
-	backend.Coordinator = agent.NewCoordinator(drainer)
+	backend.AgentSessions = newTestSessionController(drainer)
 
 	ctx := context.Background()
 	created, err := backend.CreateSession(ctx, v1.CreateSessionRequest{})
@@ -405,7 +498,7 @@ func TestInterruptDoesNotAutoResumeWithoutPendingInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backend.Coordinator.Wake(created.ID)
+	backend.AgentSessions.Wake(created.ID)
 	select {
 	case <-drainer.started:
 	case <-time.After(time.Second):
@@ -423,7 +516,7 @@ func TestInterruptDoesNotAutoResumeWithoutPendingInputs(t *testing.T) {
 		t.Fatal("drain restarted without pending inputs")
 	case <-time.After(200 * time.Millisecond):
 	}
-	waitForCondition(t, func() bool { return backend.Coordinator.Status(created.ID) == agent.StatusIdle })
+	waitForCondition(t, func() bool { return backend.AgentSessions.Status(created.ID) == agent.StatusIdle })
 }
 
 func TestStrictJSONContentTypeAndLimit(t *testing.T) {

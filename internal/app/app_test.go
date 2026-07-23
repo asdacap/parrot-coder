@@ -73,18 +73,8 @@ func TestStatusDrainerPublishesOnlyLifecycleCompletion(t *testing.T) {
 	live := event.NewBroker()
 	events, unsubscribe := live.Subscribe("session", 2)
 	defer unsubscribe()
-	drainer := statusDrainer{
-		runner: appDrainerFunc(func(context.Context, string) error { return nil }),
-		live:   live,
-	}
-
-	if err := drainer.Drain(context.Background(), "session"); err != nil {
-		t.Fatal(err)
-	}
-	select {
-	case item := <-events:
-		t.Fatalf("Drain published completion event: %#v", item)
-	default:
+	drainer := statusReporter{
+		live: live,
 	}
 
 	drainer.LifecycleComplete("session", nil)
@@ -106,7 +96,7 @@ func TestStatusDrainerPublishesLifecycleError(t *testing.T) {
 	live := event.NewBroker()
 	events, unsubscribe := live.Subscribe("session", 1)
 	defer unsubscribe()
-	drainer := statusDrainer{runner: appDrainerFunc(func(context.Context, string) error { return nil }), live: live}
+	drainer := statusReporter{live: live}
 	drainer.LifecycleComplete("session", errors.New("failed"))
 
 	item := <-events

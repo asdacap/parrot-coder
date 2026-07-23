@@ -28,7 +28,7 @@ type DomainBackend struct {
 	Version            string
 	ProjectRoot        string
 	Sessions           *session.Service
-	Coordinator        *agent.Coordinator
+	AgentSessions      AgentSessionController
 	Agents             *agent.Registry
 	Modes              *mode.Registry
 	Providers          []provider.Provider
@@ -97,6 +97,14 @@ func goalDTO(goal session.Goal) v1.Goal {
 	return v1.Goal{ID: goal.ID, SessionID: goal.SessionID, Objective: goal.Objective, Status: string(goal.Status), TokenBudget: goal.TokenBudget, TokensUsed: goal.TokensUsed, RemainingTokens: goal.RemainingTokens(), ElapsedSeconds: goal.ElapsedSeconds, CreatedAt: goal.CreatedAt, UpdatedAt: goal.UpdatedAt}
 }
 
+type AgentSessionController interface {
+	Active() []agent.Active
+	Status(string) agent.Status
+	Wake(string)
+	Interrupt(context.Context, string) error
+	Remove(string) error
+}
+
 type ProcessLifecycle interface {
 	SuspendSession(context.Context, string) error
 	ResumeSession(string)
@@ -116,8 +124,8 @@ func (b *DomainBackend) CompactSession(ctx context.Context, id string) (v1.Compa
 
 func (b *DomainBackend) Runtime(context.Context) (v1.Runtime, error) {
 	out := v1.Runtime{Version: b.Version, Active: []v1.RuntimeSession{}}
-	if b.Coordinator != nil {
-		for _, item := range b.Coordinator.Active() {
+	if b.AgentSessions != nil {
+		for _, item := range b.AgentSessions.Active() {
 			out.Active = append(out.Active, v1.RuntimeSession{SessionID: item.SessionID, Status: string(item.Status)})
 		}
 	}
@@ -203,7 +211,7 @@ func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, r
 	if request.Agent == "" && request.Model == "" && request.Variant == nil {
 		return v1.SessionSelection{}, ErrInvalid
 	}
-	if b.Coordinator != nil && b.Coordinator.Status(id) != agent.StatusIdle {
+	if b.AgentSessions != nil && b.AgentSessions.Status(id) != agent.StatusIdle {
 		return v1.SessionSelection{}, ErrSessionActive
 	}
 	patch := session.SelectionPatch{
@@ -242,14 +250,19 @@ func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
 			defer b.Processes.ResumeSession(id)
 		}
 	}
-	if b.Coordinator != nil {
-		cleanupErr = errors.Join(cleanupErr, b.Coordinator.Interrupt(ctx, id))
+	if b.AgentSessions != nil {
+		cleanupErr = errors.Join(cleanupErr, b.AgentSessions.Interrupt(ctx, id))
 	}
 	if b.Processes != nil {
 		cleanupErr = errors.Join(cleanupErr, b.Processes.DeleteSession(id))
 	}
 	if cleanupErr != nil {
 		return cleanupErr
+	}
+	if b.AgentSessions != nil {
+		if err := b.AgentSessions.Remove(id); err != nil {
+			return err
+		}
 	}
 	err := b.Sessions.Delete(ctx, id)
 	if errors.Is(err, session.ErrNotFound) {
@@ -323,10 +336,10 @@ func (b *DomainBackend) AdmitPrompt(ctx context.Context, id string, request v1.P
 }
 
 func (b *DomainBackend) Wake(id string) {
-	if b.Coordinator == nil {
+	if b.AgentSessions == nil {
 		return
 	}
-	b.Coordinator.Wake(id)
+	b.AgentSessions.Wake(id)
 	if b.Live != nil {
 		data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 		b.Live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})
@@ -344,8 +357,8 @@ func (b *DomainBackend) Interrupt(ctx context.Context, id string) error {
 			defer b.Processes.ResumeSession(id)
 		}
 	}
-	if b.Coordinator != nil {
-		err = errors.Join(err, b.Coordinator.Interrupt(ctx, id))
+	if b.AgentSessions != nil {
+		err = errors.Join(err, b.AgentSessions.Interrupt(ctx, id))
 	}
 	if b.Processes != nil {
 		err = errors.Join(err, b.Processes.InterruptSession(id))
@@ -354,7 +367,7 @@ func (b *DomainBackend) Interrupt(ctx context.Context, id string) error {
 	// they are processed without the user re-prompting. A fresh context is used
 	// because the request context may have elapsed while waiting for the drain
 	// to unwind; Wake itself starts the new drain on a detached context.
-	if b.Coordinator != nil && b.Sessions != nil {
+	if b.AgentSessions != nil && b.Sessions != nil {
 		wakeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if pending, pendingErr := b.Sessions.HasPendingInputs(wakeCtx, id); pendingErr == nil && pending {

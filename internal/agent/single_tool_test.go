@@ -60,7 +60,7 @@ func TestRunnerSendsSingleToolResultAutomatically(t *testing.T) {
 				}
 			}
 			h.admit(t, "user", "run tool", test.delivery)
-			if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+			if err := h.runner.drainOnce(context.Background()); err != nil {
 				t.Fatal(err)
 			}
 			if turns := len(fake.Requests()); turns != 2 {
@@ -99,7 +99,7 @@ func TestRunnerSendsSingleToolResultWithoutDuplication(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil, item)
 	h.admit(t, "user", "run tool", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if turns := len(fake.Requests()); turns != 2 {
@@ -165,20 +165,21 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	}
 	snapshot := toolRegistry.Materialize()
 	contextRegistry, _ := systemcontext.NewRegistry(source)
-	runner, err := NewRunner(RunnerConfig{
-		Sessions:          sessions,
-		Contexts:          systemcontext.Manager{Registry: contextRegistry, Store: sessions},
-		Agents:            agents,
-		Providers:         providers,
-		ToolSnapshot:      func() tool.Snapshot { return snapshot },
-		ToolExecutor:      func(snapshot tool.Snapshot) tool.Executor { return tool.Executor{Snapshot: snapshot} },
-		Goals:             goals,
+	agentSessions, err := NewAgentSessionRepository(AgentSessionConfig{
+		Sessions:           sessions,
+		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
+		Agents:             agents,
+		Providers:          providers,
+		ToolSnapshot:       func() tool.Snapshot { return snapshot },
+		ToolExecutor:       func(snapshot tool.Snapshot) tool.Executor { return tool.Executor{Snapshot: snapshot} },
+		Goals:              goals,
 		MaxConcurrentTools: 2,
-		CleanupTimeout:    time.Second,
+		CleanupTimeout:     time.Second,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	runner := agentSessions.Get(created.ID).(*agentSession)
 	sessionDB, err := db.Session(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -219,7 +220,7 @@ func TestRunnerSendsSingleToolResultAfterContextReconcile(t *testing.T) {
 	source := &mutableSource{key: "agent:context", flipAt: 2}
 	h := newRunnerHarnessWithSource(t, fake, nil, source, item)
 	h.admit(t, "user", "run tool", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if turns := len(fake.Requests()); turns != 2 {

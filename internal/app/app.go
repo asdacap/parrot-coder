@@ -172,18 +172,18 @@ type App struct {
 	// no default model is configured.
 	DefaultSelection v1.SessionSelection
 
-	sessionStore *store.Registry
-	coordinator  *agent.Coordinator
-	subagents    *subagent.Manager
-	compactions  *compaction.Repository
-	outputs      *tool.OutputStore
-	processes    *process.Runner
-	monitors     *monitor.Service
-	mcp          *mcp.Manager
-	providers    *agent.ProviderRegistry
-	httpClient   *http.Client
-	closeOnce    sync.Once
-	closeErr     error
+	sessionStore  *store.Registry
+	agentSessions *agent.AgentSessionRepository
+	subagents     *subagent.Manager
+	compactions   *compaction.Repository
+	outputs       *tool.OutputStore
+	processes     *process.Runner
+	monitors      *monitor.Service
+	mcp           *mcp.Manager
+	providers     *agent.ProviderRegistry
+	httpClient    *http.Client
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 // Client is the typed application client used by local commands. It delegates
@@ -521,7 +521,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: compaction: %w", err)
 	}
 	result.compactions = compactionRepository
-	runner, err := agent.NewRunner(agent.RunnerConfig{
+	reporter := statusReporter{live: live, subagents: subagents, started: &sync.Map{}}
+	agentSessions, err := agent.NewAgentSessionRepository(agent.AgentSessionConfig{
 		Sessions: sessions, Contexts: contexts, Profiles: profileResolver, Providers: providerRegistry,
 		ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
 		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
@@ -534,23 +535,21 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return managedtask.MainTaskID
 		}, Live: live, Compactor: compactionService, Goals: goals,
 		ToolPanicLogger: toolPanicLogger(),
-	})
+	}, reporter)
 	if err != nil {
-		return nil, fmt.Errorf("app: runner: %w", err)
+		return nil, fmt.Errorf("app: agent sessions: %w", err)
 	}
-	drainer := statusDrainer{runner: runner, live: live, subagents: subagents, started: &sync.Map{}}
-	coordinator := agent.NewCoordinator(drainer, drainer)
-	monitors.SetWaker(coordinator)
-	subagentExecutor.coordinator = coordinator
-	result.coordinator = coordinator
+	monitors.SetWaker(agentSessions)
+	subagentExecutor.agentSessions = agentSessions
+	result.agentSessions = agentSessions
 	backend := &httpapi.DomainBackend{
-		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, Coordinator: coordinator, Agents: taskAgents, Modes: modes,
+		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, AgentSessions: agentSessions, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
 		Events: repository, Live: live, DefaultSelection: defaultSelection, Processes: monitors,
 		ProviderResolver: providerRegistry, Tools: toolSnapshot,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
-		for _, active := range coordinator.Active() {
+		for _, active := range agentSessions.Active() {
 			if active.SessionID == sessionID {
 				return v1.Compaction{}, httpapi.ErrConflict
 			}
@@ -591,7 +590,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			"status", record.Status, "duration_ms", record.Duration.Milliseconds(), "error_ref", record.ErrorRef,
 		)
 	})})
-	handler := resumeHandler{next: apiServer, sessions: sessions, coordinator: coordinator, live: live}
+	handler := resumeHandler{next: apiServer, sessions: sessions, agentSessions: agentSessions, live: live}
 	transport := inproc.New(handler)
 	typed, err := client.New("http://parrot.local", transport)
 	if err != nil {
@@ -711,13 +710,13 @@ func (a *App) Close() error {
 			a.closeErr = errors.Join(a.closeErr, a.subagents.Shutdown(ctx))
 			cancel()
 		}
-		if a.coordinator != nil {
-			active := a.coordinator.Active()
+		if a.agentSessions != nil {
+			active := a.agentSessions.Active()
 			activeSessions = len(active)
 			diagnostics.Event("app_close_started", "active_sessions", activeSessions)
 			for _, active := range active {
 				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				a.closeErr = errors.Join(a.closeErr, a.coordinator.Interrupt(ctx, active.SessionID))
+				a.closeErr = errors.Join(a.closeErr, a.agentSessions.Interrupt(ctx, active.SessionID))
 				cancel()
 			}
 		} else {
@@ -747,39 +746,26 @@ type compositionBackend struct {
 }
 
 func (b *compositionBackend) Wake(sessionID string) {
-	b.Coordinator.Wake(sessionID)
+	b.AgentSessions.Wake(sessionID)
 }
 
-type statusDrainer struct {
-	runner    agent.Drainer
+type statusReporter struct {
 	live      *event.Broker
 	subagents *subagent.Manager
 
 	// started records sessions whose main task already emitted task.start.
-	// It is a pointer so the coordinator's value copies share one registry.
+	// It is a pointer so the agentSessions's value copies share one registry.
 	started *sync.Map
 }
 
-func (d statusDrainer) PrepareContinuation(ctx context.Context, sessionID string) (bool, error) {
-	continuation, ok := d.runner.(agent.ContinuationDrainer)
-	if !ok {
-		return false, nil
-	}
-	return continuation.PrepareContinuation(ctx, sessionID)
-}
-
-func (d statusDrainer) Drain(ctx context.Context, sessionID string) error {
-	return d.runner.Drain(ctx, sessionID)
-}
-
-func (d statusDrainer) LifecycleStarted(sessionID string) {
+func (d statusReporter) LifecycleStarted(sessionID string) {
 	diagnostics.Event("session_run_started", "session_id", sessionID)
 	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
 	d.mainTaskStarted(sessionID)
 }
 
-func (d statusDrainer) LifecycleComplete(sessionID string, err error) {
+func (d statusReporter) LifecycleComplete(sessionID string, err error) {
 	status := v1.SessionStatus{Kind: "idle"}
 	if err == context.Canceled {
 		status.Kind = "interrupted"
@@ -804,7 +790,7 @@ func (d statusDrainer) LifecycleComplete(sessionID string, err error) {
 // mainTaskOwns reports whether sessionID's lifecycle belongs to the session's
 // own main task. A subagent child session's lifecycle belongs to the subagent
 // task instead, whose manager emits its task events.
-func (d statusDrainer) mainTaskOwns(sessionID string) bool {
+func (d statusReporter) mainTaskOwns(sessionID string) bool {
 	if d.subagents == nil {
 		return true
 	}
@@ -814,7 +800,7 @@ func (d statusDrainer) mainTaskOwns(sessionID string) bool {
 
 // mainTaskStarted emits the main task's flat start and working events. Start
 // is emitted once per session; every drain marks the main task as working.
-func (d statusDrainer) mainTaskStarted(sessionID string) {
+func (d statusReporter) mainTaskStarted(sessionID string) {
 	if !d.mainTaskOwns(sessionID) {
 		return
 	}
@@ -833,7 +819,7 @@ func (d statusDrainer) mainTaskStarted(sessionID string) {
 
 // mainTaskIdle emits the main task's flat idle event when a drain completes.
 // The main task never finishes while the session lives; it waits for input.
-func (d statusDrainer) mainTaskIdle(sessionID string, err error) {
+func (d statusReporter) mainTaskIdle(sessionID string, err error) {
 	if !d.mainTaskOwns(sessionID) {
 		return
 	}
@@ -852,10 +838,10 @@ func (p questionPrompter) Prompt(context.Context, question.Pending) (question.Re
 }
 
 type resumeHandler struct {
-	next        http.Handler
-	sessions    *session.Service
-	coordinator *agent.Coordinator
-	live        *event.Broker
+	next          http.Handler
+	sessions      *session.Service
+	agentSessions *agent.AgentSessionRepository
+	live          *event.Broker
 }
 
 func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -889,7 +875,7 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		h.coordinator.Wake(id)
+		h.agentSessions.Wake(id)
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -1204,7 +1190,7 @@ func skillMetadata(registry *skill.Registry) string {
 type appSubagentExecutor struct {
 	sessions         *session.Service
 	events           *event.Repository
-	coordinator      *agent.Coordinator
+	agentSessions    *agent.AgentSessionRepository
 	project          project.Info
 	providers        *agent.ProviderRegistry
 	defaultSelection session.Selection
@@ -1212,8 +1198,8 @@ type appSubagentExecutor struct {
 }
 
 func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
-	if e.coordinator == nil {
-		return "", errors.New("app: subagent coordinator is unavailable")
+	if e.agentSessions == nil {
+		return "", errors.New("app: subagent agentSessions is unavailable")
 	}
 	childSession := execution.SessionID
 	if childSession == "" {
@@ -1239,10 +1225,10 @@ func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Ex
 	if execution.SessionID == "" && execution.RegisterSession != nil {
 		execution.RegisterSession(childSession)
 	}
-	if err := e.coordinator.Resume(ctx, childSession); err != nil {
+	if err := e.agentSessions.Resume(ctx, childSession); err != nil {
 		if ctx.Err() != nil {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = e.coordinator.Interrupt(cleanup, childSession)
+			_ = e.agentSessions.Interrupt(cleanup, childSession)
 			cancel()
 		}
 		return "", err
@@ -1316,8 +1302,8 @@ func (e *appSubagentExecutor) Send(ctx context.Context, execution subagent.Execu
 		return "", errors.New("app: subagent session is unavailable")
 	}
 	messageID, err := e.admit(ctx, execution.SessionID, message)
-	if err == nil && e.coordinator != nil {
-		e.coordinator.Wake(execution.SessionID)
+	if err == nil && e.agentSessions != nil {
+		e.agentSessions.Wake(execution.SessionID)
 	}
 	return messageID, err
 }

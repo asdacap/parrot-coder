@@ -94,7 +94,7 @@ func TestRunnerPublishesPricedUsage(t *testing.T) {
 	h := newRunnerHarness(t, fake, nil)
 	h.runner.config.Live = live
 	h.admit(t, "user", "work", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	var published *protocol.Usage
@@ -192,7 +192,7 @@ type runnerHarness struct {
 	goals      *session.GoalService
 	repository *event.Repository
 	sessionID  string
-	runner     *Runner
+	runner     *agentSession
 }
 
 type fakeCompactor struct {
@@ -243,7 +243,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	}
 	snapshot := toolRegistry.Materialize()
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
-	runner, err := NewRunner(RunnerConfig{
+	agentSessions, err := NewAgentSessionRepository(AgentSessionConfig{
 		Sessions:           sessions,
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
 		Agents:             agents,
@@ -257,6 +257,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
+	runner := agentSessions.Get(created.ID).(*agentSession)
 	sessionDB, err := db.Session(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -288,7 +289,7 @@ func TestRunnerMarksActiveGoalOnStructuredUsageExhaustionOnly(t *testing.T) {
 				t.Fatal(err)
 			}
 			h.admit(t, "user", "work", session.DeliverySteer)
-			if err := h.runner.Drain(context.Background(), h.sessionID); err == nil {
+			if err := h.runner.drainOnce(context.Background()); err == nil {
 				t.Fatal("Drain succeeded")
 			}
 			goal, err := h.goals.Get(context.Background(), h.sessionID)
@@ -317,7 +318,7 @@ func TestRunnerPersistsStreamedFinalText(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	h.admit(t, "user", "question", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	messages, err := h.sessions.ListMessages(context.Background(), h.sessionID)
@@ -360,7 +361,7 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 	}}
 	h = newRunnerHarness(t, fake, nil, item)
 	h.admit(t, "user", "run tool", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -414,7 +415,7 @@ func TestRunnerBoundsConcurrentToolsAndSettlesAllBeforeContinuation(t *testing.T
 	h := newRunnerHarness(t, fake, nil, item)
 	h.admit(t, "user", "parallel", session.DeliverySteer)
 	done := make(chan error, 1)
-	go func() { done <- h.runner.Drain(context.Background(), h.sessionID) }()
+	go func() { done <- h.runner.drainOnce(context.Background()) }()
 	for i := 0; i < 2; i++ {
 		select {
 		case <-started:
@@ -456,7 +457,7 @@ func TestRunnerSteerDuringBlockedTurnPromotesOnNextTurnOnly(t *testing.T) {
 	h := newRunnerHarness(t, fake, nil, item)
 	h.admit(t, "initial", "initial", session.DeliverySteer)
 	done := make(chan error, 1)
-	go func() { done <- h.runner.Drain(context.Background(), h.sessionID) }()
+	go func() { done <- h.runner.drainOnce(context.Background()) }()
 	<-started
 	h.admit(t, "steer", "late steer", session.DeliverySteer)
 	close(release)
@@ -476,7 +477,7 @@ func TestRunnerQueueWaitsUntilCurrentContinuationIsIdle(t *testing.T) {
 	h := newRunnerHarness(t, fake, nil)
 	h.admit(t, "initial", "initial", session.DeliverySteer)
 	h.admit(t, "queued", "queued", session.DeliveryQueue)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	requests := fake.Requests()
@@ -496,7 +497,7 @@ func TestRunnerCancellationSettlesAssistantAndTools(t *testing.T) {
 		h.admit(t, "user", "cancel", session.DeliverySteer)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
-		go func() { done <- h.runner.Drain(ctx, h.sessionID) }()
+		go func() { done <- h.runner.drainOnce(ctx) }()
 		<-started
 		cancel()
 		if err := <-done; !errors.Is(err, context.Canceled) {
@@ -523,7 +524,7 @@ func TestRunnerCancellationSettlesAssistantAndTools(t *testing.T) {
 		h.admit(t, "user", "cancel tool", session.DeliverySteer)
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
-		go func() { done <- h.runner.Drain(ctx, h.sessionID) }()
+		go func() { done <- h.runner.drainOnce(ctx) }()
 		<-started
 		cancel()
 		if err := <-done; !errors.Is(err, context.Canceled) {
@@ -571,7 +572,7 @@ func TestRunnerCancellationPersistsToolOutputBeforeNextProviderTurn(t *testing.T
 	h.admit(t, "first", "run", session.DeliverySteer)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- h.runner.Drain(ctx, h.sessionID) }()
+	go func() { done <- h.runner.drainOnce(ctx) }()
 	<-started
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
@@ -579,7 +580,7 @@ func TestRunnerCancellationPersistsToolOutputBeforeNextProviderTurn(t *testing.T
 	}
 
 	h.admit(t, "second", "try something else", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatalf("resumed Drain error = %v", err)
 	}
 }
@@ -604,14 +605,14 @@ func TestRunnerCancellationDuringProviderStreamDropsUnexecutedToolCalls(t *testi
 	h.admit(t, "first", "read", session.DeliverySteer)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- h.runner.Drain(ctx, h.sessionID) }()
+	go func() { done <- h.runner.drainOnce(ctx) }()
 	<-started
 	cancel()
 	if err := <-done; !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled Drain error = %v", err)
 	}
 	h.admit(t, "second", "continue", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatalf("resumed Drain error = %v", err)
 	}
 }
@@ -631,7 +632,7 @@ func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, []Profile{Builtins()[1]}, mutation)
 	h.admit(t, "user", "plan", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if executed.Load() {
@@ -657,7 +658,7 @@ func TestRunnerMaxTurnsOmitsTools(t *testing.T) {
 	profile := Profile{ID: "one-turn", Prompt: "finish", MaxTurns: 1}
 	h := newRunnerHarness(t, fake, []Profile{profile}, item)
 	h.admit(t, "user", "finish", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.Requests()) != 1 {
@@ -674,7 +675,7 @@ func TestRunnerProviderErrorLeavesTerminalAssistant(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	h.admit(t, "user", "error", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err == nil {
+	if err := h.runner.drainOnce(context.Background()); err == nil {
 		t.Fatal("Drain succeeded")
 	}
 	messages, _ := h.sessions.ListMessages(context.Background(), h.sessionID)
@@ -693,7 +694,7 @@ func TestRunnerInvokesAutomaticCompactionWithCompleteRequestCost(t *testing.T) {
 	compactor := &fakeCompactor{}
 	h.runner.config.Compactor = compactor
 	h.admit(t, "user", "automatic", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(compactor.requests) != 1 || compactor.requests[0].Force || compactor.requests[0].ProviderID != "fake" || compactor.requests[0].Model.ID != "model" || len(compactor.requests[0].Tools) != 1 {
@@ -717,7 +718,7 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 	}}
 	h.runner.config.Compactor = compactor
 	h.admit(t, "user", "overflow", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.Requests()) != 2 || len(compactor.requests) != 2 || !compactor.requests[1].Force {
@@ -756,7 +757,7 @@ func TestRunnerRetriesMessageOnlyOverflowExactlyOnce(t *testing.T) {
 	}}
 	h.runner.config.Compactor = compactor
 	h.admit(t, "user", "overflow", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err != nil {
+	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	if len(fake.Requests()) != 2 || len(compactor.requests) != 2 || !compactor.requests[1].Force {
@@ -785,7 +786,7 @@ func TestRunnerDoesNotRetryUnknownProviderError(t *testing.T) {
 	compactor := &fakeCompactor{}
 	h.runner.config.Compactor = compactor
 	h.admit(t, "user", "unknown", session.DeliverySteer)
-	if err := h.runner.Drain(context.Background(), h.sessionID); err == nil {
+	if err := h.runner.drainOnce(context.Background()); err == nil {
 		t.Fatal("Drain succeeded")
 	}
 	if len(fake.Requests()) != 1 || len(compactor.requests) != 1 {
