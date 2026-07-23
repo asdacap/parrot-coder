@@ -586,6 +586,7 @@ type taskNode struct {
 	parentID string
 	kind     string
 	agent    string
+	name     string
 	status   string
 	orphan   bool
 
@@ -669,7 +670,11 @@ func (t *TaskTracker) depth(node *taskNode) int {
 }
 
 func (t *TaskTracker) prefix(node *taskNode) string {
-	return taskPrefix(t.depth(node), node.agent)
+	name := node.name
+	if name == "" {
+		name = node.agent
+	}
+	return taskPrefix(t.depth(node), name)
 }
 
 // unknownTask reports an event for a task the tracker never registered. The
@@ -1028,6 +1033,13 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 		if event.Agent != "" {
 			node.agent = event.Agent
 		}
+		if event.Name != "" {
+			node.name = event.Name
+			if t.Presentation.taskNames == nil {
+				t.Presentation.taskNames = make(map[string]string)
+			}
+			t.Presentation.taskNames[event.TaskID] = event.Name
+		}
 		node.status = "working"
 		if event.ParentTaskID != "" {
 			node.parentID = event.ParentTaskID
@@ -1112,6 +1124,9 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	}
 	if input != nil {
 		call.input = input
+	}
+	if result != "" {
+		call.input = t.Presentation.EnrichLabelInput(call.name, call.input, result)
 	}
 	if callID != "" {
 		t.calls[callID] = call

@@ -33,7 +33,7 @@ func (*MonitorTool) ID() string { return "monitor" }
 func (*MonitorTool) Presentation() Presentation {
 	return Presentation{
 		Subagent: true,
-		Label:    LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}}}},
+		Label:    LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}, TaskName: true}}},
 	}
 }
 

@@ -90,6 +90,7 @@ type TaskEvent struct {
 	ParentTaskID string `json:"parent_task_id,omitempty"`
 	Kind         string `json:"kind"`
 	Agent        string `json:"agent,omitempty"`
+	Name         string `json:"name,omitempty"`
 	Status       string `json:"status,omitempty"`
 	Error        string `json:"error,omitempty"`
 }

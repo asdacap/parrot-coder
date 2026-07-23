@@ -15,6 +15,54 @@ func (f executorFunc) Execute(ctx context.Context, execution Execution) (string,
 	return f(ctx, execution)
 }
 
+func TestFriendlyNames(t *testing.T) {
+	executions := make(chan Execution, 4)
+	manager := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {
+		executions <- execution
+		return "done", nil
+	}), Config{NameGenerator: func() string { return "Happy Otter" }})
+
+	ids := make([]string, 0, 3)
+	for _, request := range []Request{
+		{Prompt: "explicit", Agent: "worker", Name: "  API Review!! "},
+		{Prompt: "generated", Agent: "explorer"},
+		{Prompt: "duplicate", Agent: "worker", Name: "API Review"},
+	} {
+		id, err := manager.Launch("parent", nil, request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+
+	wantNames := []string{"api-review", "explorer-happy-otter", "api-review-2"}
+	for i, id := range ids {
+		task, err := manager.Await(context.Background(), "parent", id)
+		if err != nil || task.Name != wantNames[i] {
+			t.Fatalf("task %d = %#v, %v; want name %q", i, task, err, wantNames[i])
+		}
+	}
+	gotNames := make(map[string]string)
+	for range ids {
+		execution := <-executions
+		gotNames[execution.Request.Prompt] = execution.Request.Name
+	}
+	if gotNames["explicit"] != wantNames[0] || gotNames["generated"] != wantNames[1] || gotNames["duplicate"] != wantNames[2] {
+		t.Fatalf("execution names = %#v", gotNames)
+	}
+
+	following, err := manager.FollowUp("parent", ids[0], Request{Prompt: "again", Name: "ignored"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if following.Name != "api-review" {
+		t.Fatalf("follow-up name = %q", following.Name)
+	}
+	if task, err := manager.Await(context.Background(), "parent", ids[0]); err != nil || task.Name != "api-review" {
+		t.Fatalf("follow-up task = %#v, %v", task, err)
+	}
+}
+
 func TestLaunchConcurrencyAwaitAndStatus(t *testing.T) {
 	release := make(chan struct{})
 	started := make(chan Execution, 2)

@@ -8,6 +8,36 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 )
 
+func TestPresentationResolvesFriendlyTaskNames(t *testing.T) {
+	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "control", Presentation: v1.ToolPresentation{Label: v1.ToolLabel{Fields: []v1.ToolLabelPart{{Names: []string{"task_id"}, TaskName: true}}}},
+	}, {
+		ID: "spawn", Presentation: v1.ToolPresentation{Label: v1.ToolLabel{Fields: []v1.ToolLabelPart{{Names: []string{"name", "agent"}}}}},
+	}}})
+	presentations.taskNames["task_known"] = "review-happy-otter"
+
+	if got := presentations.Label("control", map[string]any{"task_id": "task_known"}); got != "control · review-happy-otter" {
+		t.Fatalf("known task label = %q", got)
+	}
+	if got := presentations.Label("control", map[string]any{"task_id": "task_unknown"}); got != "control · task_unknown" {
+		t.Fatalf("unknown task label = %q", got)
+	}
+	input := presentations.EnrichLabelInput("spawn", map[string]any{"agent": "review"}, `{"name":"review-kind-ibex"}`)
+	if got := presentations.Label("spawn", input); got != "spawn · review-kind-ibex" {
+		t.Fatalf("result-enriched spawn label = %q", got)
+	}
+
+	tracker := NewTaskTracker()
+	tracker.Presentation = presentations
+	if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "task_named", ParentTaskID: "task_main", Kind: "agent", Agent: "review", Name: "review-kind-ibex"}), false); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := tracker.Apply(taskDelta("task_named", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "working"}), false)
+	if err != nil || len(reports) != 1 || !strings.Contains(reports[0].Line, "[review-kind-ibex]") {
+		t.Fatalf("friendly task report = %#v, %v", reports, err)
+	}
+}
+
 func TestTaskActivityLabelsUseTaskID(t *testing.T) {
 	for _, test := range []struct {
 		name  string

@@ -1264,7 +1264,7 @@ func (e *appSubagentExecutor) createSubagentSession(ctx context.Context, executi
 			return session.Session{}, fmt.Errorf("app: subagent model: unknown model variant %q", selection.Variant)
 		}
 	}
-	title := "Subtask " + execution.TaskID + " [" + execution.Request.Agent + "]"
+	title := "Subtask " + execution.Request.Name + " [" + execution.Request.Agent + "]"
 	return e.sessions.CreateSelected(ctx, session.CreateParams{ProjectID: parent.ProjectID, ProjectRoot: parent.ProjectRoot, Title: title}, selection)
 }
 
@@ -1411,7 +1411,7 @@ func (e *appSubagentExecutor) forwardEvent(execution subagent.Execution, item v1
 // agent task on its parent session's stream.
 func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) {
 	task := item.Task
-	payload := v1.TaskEvent{TaskID: task.ID, SessionID: task.SessionID, ParentTaskID: task.ParentAgentID, Agent: task.Agent, Kind: string(managedtask.KindAgent)}
+	payload := v1.TaskEvent{TaskID: task.ID, SessionID: task.SessionID, ParentTaskID: task.ParentAgentID, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
 	if payload.ParentTaskID == "" {
 		payload.ParentTaskID = managedtask.MainTaskID
 	}

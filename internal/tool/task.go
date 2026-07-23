@@ -31,7 +31,7 @@ func (t *TaskTool) ID() string { return t.Kind }
 
 func (t *TaskTool) Presentation() Presentation {
 	if t.Kind == "task_interrupt" {
-		return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}}}}}
+		return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}, TaskName: true}}}}
 	}
 	return Presentation{}
 }

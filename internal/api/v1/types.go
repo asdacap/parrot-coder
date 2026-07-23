@@ -336,6 +336,7 @@ type ToolLabelPart struct {
 	Array    bool     `json:"array,omitempty"`
 	Item     []string `json:"item,omitempty"`
 	Overflow bool     `json:"overflow,omitempty"`
+	TaskName bool     `json:"task_name,omitempty"`
 }
 
 type Tool struct {

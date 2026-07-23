@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	petname "github.com/dustinkirkland/golang-petname"
 )
 
 var (
@@ -33,6 +35,7 @@ type Request struct {
 	Prompt     string
 	Agent      string
 	Model      string
+	Name       string
 	ToolCallID string
 }
 
@@ -84,6 +87,7 @@ type Config struct {
 	MaxResultBytes         int
 	AgentIdentity          func(string) string
 	AgentRecursionLimit    func(string) int
+	NameGenerator          func() string
 	OnProgress             func(Task)
 	OnEvent                func(LifecycleEvent)
 }
@@ -123,6 +127,7 @@ type Task struct {
 	ParentAgentID string
 	Agent         string
 	Model         string
+	Name          string
 	Lineage       []string
 	Depth         int
 	Turn          int
@@ -237,12 +242,22 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 		m.mu.Unlock()
 		return "", ErrConcurrency
 	}
+	name := sanitizeName(request.Name)
+	if name == "" {
+		generated := petname.Generate(2, "-")
+		if m.config.NameGenerator != nil {
+			generated = m.config.NameGenerator()
+		}
+		name = sanitizeName(request.Agent + "-" + generated)
+	}
+	name = m.uniqueNameLocked(name)
 	rootSession, parentAgentID := parentSession, ""
 	if parent := m.bySession[parentSession]; parent != nil {
 		rootSession, parentAgentID = parent.task.RootSession, parent.task.ID
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	state := &taskState{task: Task{ID: id, ParentSession: parentSession, RootSession: rootSession, ParentAgentID: parentAgentID, Agent: request.Agent, Model: request.Model, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, registered: make(chan struct{}), cancel: cancel}
+	request.Name = name
+	state := &taskState{task: Task{ID: id, ParentSession: parentSession, RootSession: rootSession, ParentAgentID: parentAgentID, Agent: request.Agent, Model: request.Model, Name: name, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, registered: make(chan struct{}), cancel: cancel}
 	m.tasks[id] = state
 	m.running++
 	m.byParent[parentSession]++
@@ -563,7 +578,7 @@ func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, err
 	state.task.ToolCallID = request.ToolCallID
 	state.task.Usage = Usage{}
 	state.task.ToolUses = 0
-	request.Agent, request.Model = state.task.Agent, state.task.Model
+	request.Agent, request.Model, request.Name = state.task.Agent, state.task.Model, state.task.Name
 	state.request = request
 	state.turn = &turnState{done: make(chan struct{})}
 	state.cancel = cancel
@@ -754,6 +769,38 @@ func taskError(task Task) error {
 	default:
 		return nil
 	}
+}
+
+func (m *Manager) uniqueNameLocked(name string) string {
+	base := name
+	for suffix := 2; ; suffix++ {
+		available := true
+		for _, state := range m.tasks {
+			if state.task.Name == name {
+				available = false
+				break
+			}
+		}
+		if available {
+			return name
+		}
+		name = fmt.Sprintf("%s-%d", base, suffix)
+	}
+}
+
+func sanitizeName(name string) string {
+	var result strings.Builder
+	hyphen := true
+	for _, char := range strings.ToLower(name) {
+		if char >= 'a' && char <= 'z' || char >= '0' && char <= '9' {
+			result.WriteRune(char)
+			hyphen = false
+		} else if !hyphen {
+			result.WriteByte('-')
+			hyphen = true
+		}
+	}
+	return strings.TrimSuffix(result.String(), "-")
 }
 
 func validAgent(agent string) bool {

@@ -53,6 +53,8 @@ type LabelField struct {
 	Array    bool     `json:"array,omitempty"`
 	Item     []string `json:"item,omitempty"`
 	Overflow bool     `json:"overflow,omitempty"`
+	// TaskName resolves a task ID to its human-facing name when one is known.
+	TaskName bool `json:"task_name,omitempty"`
 }
 
 // LabelKind names a rendering strategy rather than a tool, so that a tool with

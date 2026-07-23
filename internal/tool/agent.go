@@ -37,12 +37,12 @@ func (t *AgentTool) Presentation() Presentation {
 	presentation := Presentation{Subagent: true}
 	if t.Kind == agentSpawnID {
 		presentation.Label = LabelSpec{Fields: []LabelField{
-			{Names: []string{"agent"}}, {Names: []string{"prompt"}},
+			{Names: []string{"name", "agent"}}, {Names: []string{"prompt"}},
 		}}
 		return presentation
 	}
 	presentation.Label = LabelSpec{Fields: []LabelField{
-		{Names: []string{"task_id"}}, {Names: []string{"message"}},
+		{Names: []string{"task_id"}, TaskName: true}, {Names: []string{"message"}},
 	}}
 	return presentation
 }
@@ -75,7 +75,7 @@ func (t *AgentTool) DescribeRequest(raw json.RawMessage) (string, error) {
 func (t *AgentTool) JSONSchema() json.RawMessage {
 	switch t.Kind {
 	case agentSpawnID:
-		return json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"}},"required":["prompt","agent"],"additionalProperties":false}`)
+		return json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"name":{"type":"string","description":"Optional UI name. It is lowercased and sanitized to letters, digits, and hyphens; omitted or empty names are generated."}},"required":["prompt","agent"],"additionalProperties":false}`)
 	case agentSendID:
 		return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string"},"message":{"type":"string"}},"required":["task_id","message"],"additionalProperties":false}`)
 	default:
@@ -87,6 +87,7 @@ type agentInput struct {
 	Prompt  string `json:"prompt"`
 	Agent   string `json:"agent"`
 	Model   string `json:"model"`
+	Name    string `json:"name"`
 	TaskID  string `json:"task_id"`
 	Message string `json:"message"`
 }
@@ -157,7 +158,7 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	}
 	switch t.Kind {
 	case agentSpawnID:
-		id, err := t.Manager.Spawn(ctx, call.SessionID, call.Agent, subagent.Request{Prompt: input.Prompt, Agent: input.Agent, Model: input.Model, ToolCallID: call.ToolCallID})
+		id, err := t.Manager.Spawn(ctx, call.SessionID, call.Agent, subagent.Request{Prompt: input.Prompt, Agent: input.Agent, Model: input.Model, Name: input.Name, ToolCallID: call.ToolCallID})
 		if err != nil {
 			return Result{}, err
 		}
@@ -207,6 +208,7 @@ func agentMetadata(task subagent.Task) map[string]any {
 		"task_id": task.ID,
 		"kind":    "agent",
 		"agent":   task.Agent,
+		"name":    task.Name,
 		"status":  task.Status,
 		"turn":    task.Turn,
 		"depth":   task.Depth,

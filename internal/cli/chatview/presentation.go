@@ -36,7 +36,8 @@ const (
 // what a server predating the tools endpoint yields, and it is also the state
 // while a connection is being established.
 type Presentations struct {
-	byID map[string]v1.ToolPresentation
+	byID      map[string]v1.ToolPresentation
+	taskNames map[string]string
 }
 
 func NewPresentations(list v1.ToolList) Presentations {
@@ -44,7 +45,7 @@ func NewPresentations(list v1.ToolList) Presentations {
 	for _, item := range list.Items {
 		byID[item.ID] = item.Presentation
 	}
-	return Presentations{byID: byID}
+	return Presentations{byID: byID, taskNames: make(map[string]string)}
 }
 
 // For returns the declared presentation of a tool, or the empty presentation
@@ -66,6 +67,33 @@ func (p Presentations) Redact(name string, input map[string]any) map[string]any 
 func (p Presentations) Payload(data json.RawMessage) (string, string, map[string]any, string) {
 	callID, name, input, result := toolActivityRaw(data)
 	return callID, name, p.Redact(name, input), result
+}
+
+// EnrichLabelInput copies label fields returned by a tool into input. This lets
+// a tool report values that are allocated during execution, such as a generated
+// task name, without coupling the renderer to that tool's identity.
+func (p Presentations) EnrichLabelInput(name string, input map[string]any, result string) map[string]any {
+	if result == "" {
+		return input
+	}
+	var values map[string]any
+	if json.Unmarshal([]byte(result), &values) != nil {
+		return input
+	}
+	out := make(map[string]any, len(input)+len(values))
+	for key, value := range input {
+		out[key] = value
+	}
+	for _, field := range p.For(name).Label.Fields {
+		for _, key := range field.Names {
+			if _, exists := out[key]; !exists {
+				if value, ok := values[key]; ok {
+					out[key] = value
+				}
+			}
+		}
+	}
+	return out
 }
 
 // Label summarises an invocation from its input, following the strategy the
@@ -110,6 +138,11 @@ func (p Presentations) Label(name string, input map[string]any) string {
 				continue
 			}
 			value := firstString(input, field.Names...)
+			if field.TaskName {
+				if taskName := p.taskNames[value]; taskName != "" {
+					value = taskName
+				}
+			}
 			if value == "" {
 				value = field.Default
 			}

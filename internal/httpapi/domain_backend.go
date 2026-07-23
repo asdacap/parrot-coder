@@ -717,7 +717,7 @@ func toolPresentationDTO(presentation tool.Presentation) v1.ToolPresentation {
 	for _, field := range presentation.Label.Fields {
 		fields = append(fields, v1.ToolLabelPart{
 			Names: field.Names, Quote: field.Quote, Default: field.Default,
-			Array: field.Array, Item: field.Item, Overflow: field.Overflow,
+			Array: field.Array, Item: field.Item, Overflow: field.Overflow, TaskName: field.TaskName,
 		})
 	}
 	return v1.ToolPresentation{

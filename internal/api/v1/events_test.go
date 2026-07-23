@@ -52,8 +52,8 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 		},
 		{
 			name:  "task start",
-			event: v1.Event{Type: v1.EventTaskStart, TaskID: "task_1", Data: json.RawMessage(`{"task_id":"task_1","parent_task_id":"task_main","kind":"agent","agent":"explore"}`)},
-			want:  &v1.TaskEvent{TaskID: "task_1", ParentTaskID: "task_main", Kind: "agent", Agent: "explore"},
+			event: v1.Event{Type: v1.EventTaskStart, TaskID: "task_1", Data: json.RawMessage(`{"task_id":"task_1","parent_task_id":"task_main","kind":"agent","agent":"explore","name":"explore-happy-otter"}`)},
+			want:  &v1.TaskEvent{TaskID: "task_1", ParentTaskID: "task_main", Kind: "agent", Agent: "explore", Name: "explore-happy-otter"},
 		},
 		{
 			name:  "task finished",
