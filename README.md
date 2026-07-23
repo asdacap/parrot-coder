@@ -4,7 +4,7 @@ Parrot Coder is a local-first coding agent for macOS and Linux, implemented as
 a single Go binary. It provides scrollback-preserving terminal chat, durable SQLite
 sessions and event history, ChatGPT subscription OAuth, OpenAI-compatible
 providers, permission-bound tools, transactional file changes,
-session compaction, MCP, LSP, formatters, and bounded web fetching.
+session compaction, MCP, formatters, and bounded web fetching.
 
 Local CLI commands use the same versioned HTTP/SSE API as `parrot serve`, but
 invoke it in-process without opening a socket. Parrot does not use an alternate
@@ -374,14 +374,14 @@ similar event prevents cleanup, a later invocation records
 ## Security Model
 
 Provider output, model tool calls, project files, project configuration, MCP
-servers, language servers, formatters, and fetched web content are untrusted.
+servers, formatters, and fetched web content are untrusted.
 Parrot bounds network bodies and streams, rejects cross-origin authenticated
 provider redirects, pins validated DNS answers for each web-fetch host, strips
 terminal controls, and binds approvals to canonical inputs, resources, and
 operation hashes. File mutations revalidate canonical paths and preimage hashes,
 stage writes in destination directories, and roll back runtime commit failures.
 
-Permission to run an MCP server, LSP server, or formatter is permission to run
+Permission to run an MCP server or formatter is permission to run
 local code with the invoking user's authority. Parrot's shell sandbox cannot
 protect against another
 same-user process racing filesystem operations, and cannot guarantee exactly-once
@@ -390,7 +390,7 @@ rollback is best effort across process or machine failure; the SQLite event and
 projection transaction remains atomic.
 
 Project-scoped configuration cannot introduce provider endpoints or credential
-sources, MCP servers, LSP or formatter executables, or private web access. These
+sources, MCP servers, formatter executables, or private web access. These
 capabilities must be placed in the user's global config.
 
 See [SECURITY.md](SECURITY.md) and [docs/security.md](docs/security.md) for
@@ -406,7 +406,7 @@ reporting and detailed boundaries.
 - Compatible providers vary; malformed or unsupported streaming dialects fail
   closed rather than being guessed.
 - MCP supports configured stdio and HTTP transports, not arbitrary plugin code.
-- LSP and formatter commands must be absolute executable paths.
+- Formatter commands must be absolute executable paths.
 - Web fetch accepts bounded textual content only and blocks private destinations
   unless explicitly enabled.
 

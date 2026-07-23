@@ -11,10 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
-	"github.com/amirulashraf/parrot-coder/internal/lsp"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
@@ -115,73 +113,6 @@ func TestWebFetchToolFetchAndRevalidation(t *testing.T) {
 	planned.Data = data
 	if _, err := item.Execute(context.Background(), planned, CallContext{}); err == nil || !strings.Contains(err.Error(), "changed") {
 		t.Fatalf("revalidation error = %v", err)
-	}
-}
-
-type fakeLSPClient struct {
-	mu      sync.Mutex
-	opened  map[string]bool
-	lastPos lsp.Position
-}
-
-func (f *fakeLSPClient) DidOpen(_ context.Context, path, _, _ string) error {
-	f.mu.Lock()
-	f.opened[path] = true
-	f.mu.Unlock()
-	return nil
-}
-func (f *fakeLSPClient) DidChange(_ context.Context, path, _ string) error {
-	f.mu.Lock()
-	f.opened[path] = true
-	f.mu.Unlock()
-	return nil
-}
-func (f *fakeLSPClient) DocumentVersion(path string) (int, bool) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return 1, f.opened[path]
-}
-func (f *fakeLSPClient) Definition(_ context.Context, path string, position lsp.Position) ([]lsp.Location, error) {
-	f.lastPos = position
-	return []lsp.Location{{URI: lsp.DocumentURI("file://" + path)}}, nil
-}
-func (f *fakeLSPClient) References(context.Context, string, lsp.Position, bool) ([]lsp.Location, error) {
-	return nil, nil
-}
-func (f *fakeLSPClient) Hover(context.Context, string, lsp.Position) (*lsp.Hover, error) {
-	return &lsp.Hover{Contents: json.RawMessage(`"hover"`)}, nil
-}
-func (f *fakeLSPClient) DocumentSymbols(context.Context, string) ([]lsp.SymbolInformation, error) {
-	return nil, nil
-}
-func (f *fakeLSPClient) Symbols(context.Context, string) ([]lsp.SymbolInformation, error) {
-	return nil, nil
-}
-func (f *fakeLSPClient) Diagnostics(lsp.DocumentURI) []lsp.Diagnostic {
-	return []lsp.Diagnostic{{Message: "diagnostic"}}
-}
-
-func TestLSPWrapperOpensWorkspaceFileBeforeRead(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	ws, _ := workspace.New(root)
-	fake := &fakeLSPClient{opened: make(map[string]bool)}
-	tools := NewLSPTools(LSPToolConfig{Client: func(context.Context, string) (LSPClient, error) { return fake, nil }, Languages: map[string]map[string]string{"go": {".go": "go"}}})
-	var definition Tool
-	for _, item := range tools {
-		if item.ID() == "lsp_definition" {
-			definition = item
-		}
-	}
-	plan, err := definition.Plan(context.Background(), json.RawMessage(`{"server":"go","path":"main.go","line":2,"character":3}`), CallContext{Workspace: ws})
-	if err != nil {
-		t.Fatal(err)
-	}
-	result, err := definition.Execute(context.Background(), plan, CallContext{Workspace: ws})
-	if err != nil || !strings.Contains(result.Text, "file://") || fake.lastPos.Line != 2 || fake.lastPos.Character != 3 {
-		t.Fatalf("result = %#v, position = %#v, error = %v", result, fake.lastPos, err)
 	}
 }
 
@@ -296,4 +227,3 @@ func TestGitDiffToolReadsUncommittedChangesAndRejectsOptionRefs(t *testing.T) {
 		t.Fatal("option-like Git ref was accepted")
 	}
 }
-

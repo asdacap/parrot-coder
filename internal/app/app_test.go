@@ -467,13 +467,6 @@ func TestOpenDoesNotStartDisabledMCPAndNamesStartupFailure(t *testing.T) {
 	}
 }
 
-func TestConfigExecutableErrorNamesEntry(t *testing.T) {
-	_, _, err := buildLSPConfigs(map[string]config.LSP{"go": {Command: "gopls"}}, t.TempDir())
-	if err == nil || !strings.Contains(err.Error(), `LSP server "go" command must be an absolute executable path`) {
-		t.Fatalf("error = %v", err)
-	}
-}
-
 func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 	projectFile := filepath.Join(t.TempDir(), ".parrot", config.FileName)
 	for _, field := range []string{
@@ -481,7 +474,6 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 		"providers.local.api_key_env",
 		"providers.local.header_timeout_ms",
 		"mcp.server.command",
-		"lsp.go.command",
 		"web_fetch.allow_private",
 		"sandbox_rules.0.path",
 		"sandbox_rules.0.rule",

@@ -21,7 +21,7 @@ walks above that root.
 
 Project files are untrusted repository content. They may select `model` and
 override provider model metadata, but they cannot define provider endpoints or
-credential sources, MCP servers, LSP commands, formatters, or private web-fetch
+credential sources, MCP servers, formatters, or private web-fetch
 access. Those capability-bearing fields are accepted only from the global
 config file. This prevents opening a repository from starting local processes,
 making startup network calls, or redirecting an environment credential.
@@ -68,18 +68,6 @@ mcp:
     allow_insecure_localhost: false
     startup_timeout_ms: 15000
     call_timeout_ms: 30000
-lsp:
-  go:
-    command: /absolute/path/to/gopls
-    args:
-      - serve
-    env:
-      GOTOOLCHAIN: local
-    extensions:
-      - .go
-    languages:
-      .go: go
-    timeout_ms: 15000
 formatters:
   gofmt:
     extensions:
@@ -197,16 +185,6 @@ such as `LD_PRELOAD`, `DYLD_*`, `BASH_ENV`, and `NODE_OPTIONS` are rejected.
 HTTP header values are plaintext configuration, so use only non-secret values.
 All MCP fields require global configuration.
 
-### LSP
-
-Every LSP entry requires an absolute executable `command`. The workspace is the
-resolved project root. `extensions` may omit the leading dot; absent explicit
-`languages` entries derive the language ID from the extension. `languages`
-wins when both specify an extension. Timeout zero defaults to 15 seconds;
-negative values are invalid. Unsafe process-loader environment variables are
-rejected.
-All LSP fields require global configuration.
-
 ### Formatters
 
 Every formatter requires at least one extension and an argv-style `command`
@@ -298,7 +276,7 @@ Parrot includes a built-in `review` worker and a parent-callable `review` tool.
 The tool accepts a review prompt and an optional model override, launches an
 isolated child session, waits for it, and returns its final findings to the
 parent agent. The worker is defect-first and runtime-enforced read-only; it has
-repository inspection and LSP tools, plus a bounded read-only `git_diff` tool,
+repository inspection tools, plus a bounded read-only `git_diff` tool,
 but no mutation, shell, network, or nested delegation tools. It is a
 child-agent-only profile, not a selectable foreground mode.
 

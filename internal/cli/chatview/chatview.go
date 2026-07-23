@@ -414,10 +414,6 @@ func ToolActivityLabel(name string, input map[string]any) string {
 	case "monitor":
 		add(firstString(input, "task_id"))
 	default:
-		if strings.HasPrefix(name, "lsp_") {
-			add(firstString(input, "path", "query"))
-			break
-		}
 		keys := make([]string, 0, len(input))
 		for key := range input {
 			keys = append(keys, key)

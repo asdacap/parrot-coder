@@ -45,7 +45,7 @@ go test -race ./...
 go test -count=20 ./internal/event ./internal/session ./internal/agent \
   ./internal/change ./internal/process ./internal/httpapi \
   ./internal/transport/inproc ./internal/compaction ./internal/app \
-  ./internal/cli ./internal/mcp ./internal/lsp ./internal/webfetch
+  ./internal/cli ./internal/mcp ./internal/webfetch
 ```
 
 Tests use local fixtures and bounded subprocesses. A failure under `-race` is a
@@ -61,7 +61,6 @@ go test ./internal/change -run '^$' -fuzz '^FuzzParsePatch$' -fuzztime=10s
 go test ./internal/protocol/sse -run '^$' -fuzz '^FuzzDecoder$' -fuzztime=10s
 go test ./internal/config -run '^$' -fuzz '^FuzzParseYAML$' -fuzztime=10s
 go test ./internal/mcp -run '^$' -fuzz '^FuzzFramedReader$' -fuzztime=10s
-go test ./internal/lsp -run '^$' -fuzz '^FuzzReadFrame$' -fuzztime=10s
 go test ./internal/terminal -run '^$' -fuzz '^FuzzSanitize$' -fuzztime=10s
 ```
 

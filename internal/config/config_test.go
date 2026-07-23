@@ -162,17 +162,6 @@ func TestLoadToolIntegrationMapsMergeAndDecode(t *testing.T) {
       X-One: "1"
     startup_timeout_ms: 1000
     call_timeout_ms: 2000
-lsp:
-  go:
-    command: /usr/bin/false
-    args:
-      - serve
-    env:
-      A: B
-    extensions:
-      - .go
-    languages:
-      .go: go
 web_fetch:
   allow_private: true
 `)
@@ -180,9 +169,6 @@ web_fetch:
   docs:
     headers:
       X-Two: "2"
-lsp:
-  go:
-    timeout_ms: 3000
 `)
 	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
 	if err != nil {
@@ -191,10 +177,6 @@ lsp:
 	server := result.Config.MCP["docs"]
 	if server.Transport != "http" || !server.Enabled || server.StartupTimeoutMS != 1000 || server.CallTimeoutMS != 2000 || server.Headers["X-One"] != "1" || server.Headers["X-Two"] != "2" {
 		t.Fatalf("MCP = %#v", server)
-	}
-	language := result.Config.LSP["go"]
-	if language.Command != "/usr/bin/false" || language.TimeoutMS != 3000 || language.Languages[".go"] != "go" {
-		t.Fatalf("LSP = %#v", language)
 	}
 	if !result.Config.WebFetch.AllowPrivate {
 		t.Fatal("web_fetch.allow_private was not decoded")
@@ -215,9 +197,12 @@ web_fetch:
 	}
 	writeFile(t, filepath.Join(configDir, FileName), `snapshot:
   root: /legacy/journal
+lsp:
+  go:
+    command: /usr/bin/gopls
 `)
 	if _, err := Load(Options{ConfigDir: configDir, ProjectRoot: root, CWD: root}); err != nil {
-		t.Fatalf("Load rejected obsolete snapshot config: %v", err)
+		t.Fatalf("Load rejected obsolete config: %v", err)
 	}
 }
 
@@ -276,7 +261,7 @@ func TestLoadGeneratesDefaultConfigWhenMissing(t *testing.T) {
 	if result.Config.DefaultModel != "" {
 		t.Fatalf("DefaultModel = %q, want empty", result.Config.DefaultModel)
 	}
-	if len(result.Config.Providers) != 0 || len(result.Config.MCP) != 0 || len(result.Config.LSP) != 0 {
+	if len(result.Config.Providers) != 0 || len(result.Config.MCP) != 0 {
 		t.Fatalf("generated starter should be empty, got %#v", result.Config)
 	}
 	if result.Config.WebFetch.AllowPrivate {
@@ -336,7 +321,6 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 		"Provider adapter type: 'compatible' or 'openai-compatible'.",
 		"API protocol: 'responses' or 'chat-completions'.",
 		"Transport: 'stdio' or 'http'.",
-		"Absolute path to the language server executable.",
 		"Web fetch restrictions.",
 		"Allow fetching from private addresses; increases SSRF risk.",
 		"OpenRouter-style provider routing preferences, forwarded as the",

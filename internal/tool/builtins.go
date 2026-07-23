@@ -27,17 +27,16 @@ type BuiltinServices struct {
 	Goals     *session.GoalService
 	Questions *question.Broker
 
-	Skills     *skill.Registry
-	MCP        MCPCaller
-	MCPTools   []mcp.ToolDefinition
-	WebFetch   *webfetch.Service
-	LSP        LSPToolConfig
-	Subagents  *subagent.Manager
-	Agents     AgentLookup
-	ConfigDir  string // Parrot config directory for writing global parrot.yaml
+	Skills    *skill.Registry
+	MCP       MCPCaller
+	MCPTools  []mcp.ToolDefinition
+	WebFetch  *webfetch.Service
+	Subagents *subagent.Manager
+	Agents    AgentLookup
+	ConfigDir string // Parrot config directory for writing global parrot.yaml
 }
 
-// RegisterBuiltins registers the complete built-in tool set. LSP, MCP, and
+// RegisterBuiltins registers the complete built-in tool set. MCP and
 // subagent tools are added only when those integrations are configured.
 func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 	if registry == nil {
@@ -72,9 +71,6 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewSetConfigTool(services.ConfigDir),
 	}
 	items = append(items, NewTaskTools(services.Tasks)...)
-	if services.LSP.Client != nil {
-		items = append(items, NewLSPTools(services.LSP)...)
-	}
 	items = append(items, NewReviewTool(services.Subagents, services.Agents))
 	items = append(items, NewAgentTools(services.Subagents, services.Agents)...)
 
