@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/security"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -32,6 +33,7 @@ type Config struct {
 	MaxProcesses           int
 	MaxSessionProcesses    int
 	OnPersistentEvent      func(PersistentEvent)
+	Tasks                  *managedtask.Manager
 	SandboxRules           []security.Rule
 	sandbox                sandbox
 }
@@ -45,12 +47,13 @@ const (
 // PersistentEvent is one flat shell-task lifecycle emission. A shell task is a
 // persistent process which outlived the command that started it.
 type PersistentEvent struct {
-	Kind      string
-	SessionID string
-	TaskID    string
-	StartedAt time.Time
-	ExitCode  *int
-	Error     string
+	Kind         string
+	SessionID    string
+	TaskID       string
+	ParentTaskID string
+	StartedAt    time.Time
+	ExitCode     *int
+	Error        string
 }
 
 type StoredOutput struct {

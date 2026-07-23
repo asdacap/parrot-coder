@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	petname "github.com/dustinkirkland/golang-petname"
 )
 
@@ -61,7 +62,7 @@ type Execution struct {
 	SessionID       string
 	ParentSession   string
 	RootSession     string
-	ParentAgentID   string
+	ParentTaskID    string
 	Lineage         []string
 	Turn            int
 	Request         Request
@@ -90,6 +91,7 @@ type Config struct {
 	NameGenerator          func() string
 	OnProgress             func(Task)
 	OnEvent                func(LifecycleEvent)
+	Tasks                  *managedtask.Manager
 }
 
 // Lifecycle kinds a task reports as flat events on its parent session's
@@ -124,7 +126,7 @@ type Task struct {
 	SessionID     string
 	ParentSession string
 	RootSession   string
-	ParentAgentID string
+	ParentTaskID  string
 	Agent         string
 	Model         string
 	Name          string
@@ -251,19 +253,32 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 		name = sanitizeName(request.Agent + "-" + generated)
 	}
 	name = m.uniqueNameLocked(name)
-	rootSession, parentAgentID := parentSession, ""
+	rootSession, parentTaskID := parentSession, managedtask.MainTaskID
 	if parent := m.bySession[parentSession]; parent != nil {
-		rootSession, parentAgentID = parent.task.RootSession, parent.task.ID
+		rootSession, parentTaskID = parent.task.RootSession, parent.task.ID
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	request.Name = name
-	state := &taskState{task: Task{ID: id, ParentSession: parentSession, RootSession: rootSession, ParentAgentID: parentAgentID, Agent: request.Agent, Model: request.Model, Name: name, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, registered: make(chan struct{}), cancel: cancel}
+	state := &taskState{task: Task{ID: id, ParentSession: parentSession, RootSession: rootSession, ParentTaskID: parentTaskID, Agent: request.Agent, Model: request.Model, Name: name, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, registered: make(chan struct{}), cancel: cancel}
 	m.tasks[id] = state
 	m.running++
 	m.byParent[parentSession]++
 	m.workers.Add(1)
 	start := LifecycleEvent{Kind: LifecycleStart, Task: cloneTask(state.task)}
 	m.mu.Unlock()
+	if m.config.Tasks != nil {
+		item := &managedAgentTask{manager: m, state: state}
+		if err := m.config.Tasks.Register(item, func(caller string) bool { return m.isVisible(caller, state) }); err != nil {
+			cancel()
+			m.mu.Lock()
+			delete(m.tasks, id)
+			m.running--
+			m.byParent[parentSession]--
+			m.workers.Done()
+			m.mu.Unlock()
+			return "", err
+		}
+	}
 	m.emit(start)
 	go m.run(ctx, state)
 	return id, nil
@@ -366,12 +381,15 @@ func (m *Manager) discard(state *taskState) {
 		return
 	}
 	for _, child := range m.tasks {
-		if child.task.ParentAgentID == state.task.ID {
+		if child.task.ParentTaskID == state.task.ID {
 			return
 		}
 	}
 	delete(m.tasks, state.task.ID)
 	delete(m.bySession, state.task.SessionID)
+	if m.config.Tasks != nil {
+		m.config.Tasks.Unregister(state.task.ID)
+	}
 }
 
 func (m *Manager) run(ctx context.Context, state *taskState) {
@@ -391,7 +409,7 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 		m.mu.Unlock()
 		m.emit(working)
 	}
-	execution := Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentAgentID: state.task.ParentAgentID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: report, RegisterSession: register}
+	execution := Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentTaskID: state.task.ParentTaskID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: report, RegisterSession: register}
 	output, executeErr := m.executor.Execute(ctx, execution)
 	state.op.Lock()
 	status := StatusSucceeded
@@ -427,6 +445,9 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	if state.discard {
 		delete(m.tasks, state.task.ID)
 		delete(m.bySession, state.task.SessionID)
+		if m.config.Tasks != nil {
+			m.config.Tasks.Unregister(state.task.ID)
+		}
 	}
 	snapshot := cloneTask(state.task)
 	state.turn.result = snapshot
@@ -679,12 +700,15 @@ func (m *Manager) Forget(parentSession, id string) error {
 		return errors.New("subagent: cannot forget a running task")
 	}
 	for _, child := range m.tasks {
-		if child.task.ParentAgentID == id {
+		if child.task.ParentTaskID == id {
 			return errors.New("subagent: cannot forget an agent with retained children")
 		}
 	}
 	delete(m.tasks, id)
 	delete(m.bySession, state.task.SessionID)
+	if m.config.Tasks != nil {
+		m.config.Tasks.Unregister(id)
+	}
 	return nil
 }
 
@@ -732,7 +756,13 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 
 func (m *Manager) executionLocked(state *taskState) Execution {
 	turn := state.task.Turn
-	return Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentAgentID: state.task.ParentAgentID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: func(progress Progress) { m.reportProgress(state, turn, progress) }}
+	return Execution{TaskID: state.task.ID, SessionID: state.task.SessionID, ParentSession: state.task.ParentSession, RootSession: state.task.RootSession, ParentTaskID: state.task.ParentTaskID, Lineage: append([]string(nil), state.task.Lineage...), Turn: turn, Request: state.request, ReportProgress: func(progress Progress) { m.reportProgress(state, turn, progress) }}
+}
+
+func (m *Manager) isVisible(callerSession string, target *taskState) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.visibleLocked(callerSession, target)
 }
 
 func (m *Manager) visibleLocked(callerSession string, target *taskState) bool {
@@ -740,8 +770,8 @@ func (m *Manager) visibleLocked(callerSession string, target *taskState) bool {
 	if caller == nil {
 		return target.task.RootSession == callerSession
 	}
-	for current := target; current != nil; current = m.tasks[current.task.ParentAgentID] {
-		if current.task.ParentAgentID == caller.task.ID {
+	for current := target; current != nil; current = m.tasks[current.task.ParentTaskID] {
+		if current.task.ParentTaskID == caller.task.ID {
 			return true
 		}
 	}
@@ -753,6 +783,40 @@ func (m *Manager) closeRegisteredLocked(state *taskState) {
 		close(state.registered)
 		state.registeredDone = true
 	}
+}
+
+type managedAgentTask struct {
+	manager *Manager
+	state   *taskState
+}
+
+func (t *managedAgentTask) Snapshot() managedtask.Snapshot {
+	t.manager.mu.Lock()
+	item := cloneTask(t.state.task)
+	t.manager.mu.Unlock()
+	return agentSnapshot(item)
+}
+
+func (t *managedAgentTask) Wait(ctx context.Context) (managedtask.Completion, error) {
+	t.manager.mu.Lock()
+	turn := t.state.turn
+	t.manager.mu.Unlock()
+	select {
+	case <-turn.done:
+		result := cloneTask(turn.result)
+		return managedtask.Completion{Task: agentSnapshot(result), Output: result.Output, Error: result.Error}, nil
+	case <-ctx.Done():
+		return managedtask.Completion{}, ctx.Err()
+	}
+}
+
+func (t *managedAgentTask) Interrupt(ctx context.Context) (managedtask.Snapshot, error) {
+	item, err := t.manager.Interrupt(ctx, t.state.task.RootSession, t.state.task.ID)
+	return agentSnapshot(item), err
+}
+
+func agentSnapshot(item Task) managedtask.Snapshot {
+	return managedtask.Snapshot{ID: item.ID, ParentTaskID: item.ParentTaskID, Kind: managedtask.KindAgent, Status: string(item.Status), StartedAt: item.StartedAt, Agent: item.Agent, Turn: item.Turn, Depth: item.Depth}
 }
 
 func cloneTask(task Task) Task {

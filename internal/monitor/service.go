@@ -39,6 +39,7 @@ type activeMonitor struct {
 type Service struct {
 	processes *process.Runner
 	agents    *subagent.Manager
+	tasks     *managedtask.Manager
 	sessions  sessionAdmitter
 
 	mu     sync.Mutex
@@ -51,10 +52,14 @@ type Service struct {
 	wg     sync.WaitGroup
 }
 
-func NewService(processes *process.Runner, agents *subagent.Manager, sessions sessionAdmitter) *Service {
+func NewService(processes *process.Runner, agents *subagent.Manager, sessions sessionAdmitter, tasks ...*managedtask.Manager) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
+	var taskManager *managedtask.Manager
+	if len(tasks) > 0 {
+		taskManager = tasks[0]
+	}
 	return &Service{
-		processes: processes, agents: agents, sessions: sessions, ctx: ctx, cancel: cancel,
+		processes: processes, agents: agents, tasks: taskManager, sessions: sessions, ctx: ctx, cancel: cancel,
 		active: make(map[monitorKey]*activeMonitor), paused: make(map[string]int),
 	}
 }
@@ -153,6 +158,29 @@ func (s *Service) Wait(ctx context.Context, sessionID, taskID string) (managedta
 type taskWait func(context.Context) (string, error)
 
 func (s *Service) observe(sessionID, taskID string) (taskWait, error) {
+	if s.tasks != nil {
+		item, err := s.tasks.Get(sessionID, taskID)
+		if err != nil {
+			return nil, err
+		}
+		return func(ctx context.Context) (string, error) {
+			completion, err := item.Wait(ctx)
+			if err != nil {
+				return "", err
+			}
+			content := fmt.Sprintf("Task monitor notification: %s task %s finished with status %s.", completion.Task.Kind, completion.Task.ID, completion.Task.Status)
+			if completion.ExitCode != nil {
+				content = fmt.Sprintf("Task monitor notification: shell task %s exited with code %d.", completion.Task.ID, *completion.ExitCode)
+			}
+			if completion.Output != "" {
+				content += "\n\n" + completion.Output
+			}
+			if completion.Error != "" {
+				content += "\n\nError: " + completion.Error
+			}
+			return content, nil
+		}, nil
+	}
 	switch {
 	case strings.HasPrefix(taskID, "proc_"):
 		observer, err := s.processes.ObservePersistent(sessionID, taskID)
