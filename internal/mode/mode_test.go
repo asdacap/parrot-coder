@@ -2,6 +2,7 @@ package mode
 
 import (
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/security"
@@ -33,8 +34,8 @@ func TestPlanPrepareTurnCreatesWritableEmptyArtifactAndClearsRevisions(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profile.SandboxRules) != 1 || profile.SandboxRules[0].Action != security.ActionAllowWrite {
-		t.Fatalf("sandbox rules = %#v", profile.SandboxRules)
+	if len(profile.SandboxRules) != 1 || profile.SandboxRules[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt, "This mode is read-only except for the designated plan file.") {
+		t.Fatalf("plan profile = %#v", profile)
 	}
 	path := profile.SandboxRules[0].Path
 	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
