@@ -442,8 +442,12 @@ func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
 
 // taskStart builds the flat task.start event introducing one task into the
 // UI's task tree. Every other event for the task carries only its task_id.
-func taskStart(taskID, parentTaskID, agent string) v1.Event {
-	data, _ := json.Marshal(v1.TaskEvent{TaskID: taskID, ParentTaskID: parentTaskID, Kind: "agent", Agent: agent})
+func taskStart(taskID, parentTaskID, agent string, name ...string) v1.Event {
+	event := v1.TaskEvent{TaskID: taskID, ParentTaskID: parentTaskID, Kind: "agent", Agent: agent}
+	if len(name) > 0 {
+		event.Name = name[0]
+	}
+	data, _ := json.Marshal(event)
 	return v1.Event{Type: v1.EventTaskStart, TaskID: taskID, Data: data}
 }
 
@@ -504,7 +508,7 @@ func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	if err := runtime.handleEvent(taskStart("task-parent", "task_main", "build")); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.handleEvent(taskStart("task-review", "task-parent", "review")); err != nil {
+	if err := runtime.handleEvent(taskStart("task-review", "task-parent", "review", "ui-hierarchy")); err != nil {
 		t.Fatal(err)
 	}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "checking"})
@@ -524,7 +528,7 @@ func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 			agent = formatted
 		}
 	}
-	if subagent != "    [review] ○ response: checking" {
+	if subagent != "    ○ [review:ui-hierarchy] response: checking" {
 		t.Fatalf("subagent activity = %q", subagent)
 	}
 	if !strings.Contains(agent, "Working: agent · review") {

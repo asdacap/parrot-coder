@@ -640,15 +640,22 @@ func NewTaskTracker() *TaskTracker {
 	return tracker
 }
 
-func taskPrefix(depth int, name string) string {
+func taskPrefix(depth int, agent, name string) string {
 	if depth < 1 {
 		depth = 1
 	}
+	agent = strings.TrimSpace(agent)
 	name = strings.TrimSpace(name)
-	if name == "" {
-		name = "agent"
+	label := agent
+	if label == "" {
+		label = name
+	} else if name != "" {
+		label += ":" + name
 	}
-	return strings.Repeat("  ", depth) + "[" + name + "] "
+	if label == "" {
+		label = "agent"
+	}
+	return strings.Repeat("  ", depth) + "[" + label + "] "
 }
 
 func prefixTaskText(prefix, text string) string {
@@ -661,11 +668,11 @@ func prefixTaskText(prefix, text string) string {
 
 func prefixTaskActivity(prefix, text string) string {
 	lines := strings.Split(text, "\n")
-	icons := append([]string{"○", "◌", "✓", "✗", "■"}, SpinnerFrames...)
+	icons := append([]string{"○", "◌", "◐", "✓", "✗", "■"}, SpinnerFrames...)
 	for _, icon := range icons {
-		if rest, ok := strings.CutPrefix(lines[0], icon+" "); ok {
+		if rest, ok := strings.CutPrefix(strings.TrimLeft(lines[0], " "), icon+" "); ok {
 			indent := prefix[:len(prefix)-len(strings.TrimLeft(prefix, " "))]
-			lines[0] = indent + strings.TrimSpace(prefix) + " " + icon + " " + rest
+			lines[0] = indent + icon + " " + strings.TrimSpace(prefix) + " " + rest
 			for i := 1; i < len(lines); i++ {
 				lines[i] = prefix + lines[i]
 			}
@@ -694,11 +701,7 @@ func (t *TaskTracker) depth(node *taskNode) int {
 }
 
 func (t *TaskTracker) prefix(node *taskNode) string {
-	name := node.name
-	if name == "" {
-		name = node.agent
-	}
-	return taskPrefix(t.depth(node), name)
+	return taskPrefix(t.depth(node), node.agent, node.name)
 }
 
 // unknownTask reports an event for a task the tracker never registered. The

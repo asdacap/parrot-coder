@@ -34,8 +34,58 @@ func TestPresentationResolvesFriendlyTaskNames(t *testing.T) {
 		t.Fatal(err)
 	}
 	reports, err := tracker.Apply(taskDelta("task_named", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "working"}), false)
-	if err != nil || len(reports) != 1 || !strings.Contains(reports[0].Line, "[review-kind-ibex]") {
+	if err != nil || len(reports) != 1 || !strings.Contains(reports[0].Line, "○ [review:review-kind-ibex] response: working") {
 		t.Fatalf("friendly task report = %#v, %v", reports, err)
+	}
+}
+
+func TestTaskPrefixIncludesAgentNameAndLeadsWithActivityIcon(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		depth      int
+		agent      string
+		session    string
+		activity   string
+		wantPrefix string
+		want       string
+	}{
+		{name: "named tool", depth: 1, agent: "explorer", session: "ui-hierarchy", activity: "✓ read · internal/app/app.go", wantPrefix: "  [explorer:ui-hierarchy] ", want: "  ✓ [explorer:ui-hierarchy] read · internal/app/app.go"},
+		{name: "streaming tool", depth: 1, agent: "explorer", session: "ui-hierarchy", activity: "  ◐ Running exec_command", wantPrefix: "  [explorer:ui-hierarchy] ", want: "  ◐ [explorer:ui-hierarchy] Running exec_command"},
+		{name: "agent only", depth: 2, agent: "review", activity: "○ response: checking", wantPrefix: "    [review] ", want: "    ○ [review] response: checking"},
+		{name: "name only", depth: 1, session: "ui-hierarchy", activity: "⠋ Thought: inspecting", wantPrefix: "  [ui-hierarchy] ", want: "  ⠋ [ui-hierarchy] Thought: inspecting"},
+		{name: "generic fallback", depth: 0, activity: "status: idle", wantPrefix: "  [agent] ", want: "  [agent] status: idle"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			prefix := taskPrefix(test.depth, test.agent, test.session)
+			if prefix != test.wantPrefix {
+				t.Errorf("taskPrefix() = %q, want %q", prefix, test.wantPrefix)
+			}
+			if got := prefixTaskActivity(prefix, test.activity); got != test.want {
+				t.Errorf("prefixTaskActivity() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
+func TestTaskToolOutputDeltaLeadsWithActivityIcon(t *testing.T) {
+	tracker := NewTaskTracker()
+	_, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
+		TaskID: "task-explorer", ParentTaskID: "task_main", Kind: "agent", Agent: "explorer", Name: "ui-hierarchy",
+	}), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = tracker.Apply(v1.Event{
+		Type: "session.tool.running", TaskID: "task-explorer",
+		Data: json.RawMessage(`{"call_id":"call","name":"exec_command","input":{"cmd":"go test ./..."}}`),
+	}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "call", Delta: "ok"})
+	reports, err := tracker.Apply(v1.Event{Type: v1.EventToolOutputDelta, TaskID: "task-explorer", Data: data}, false)
+	if err != nil || len(reports) != 1 || reports[0].Line != "  ◐ [explorer:ui-hierarchy] Running exec_command · go test ./..." {
+		t.Fatalf("tool output report = %#v, %v", reports, err)
 	}
 }
 
@@ -137,7 +187,7 @@ func TestTaskTrackerDefersProgressUntilDescendantsFinish(t *testing.T) {
 	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "grandchild", ParentTaskID: "child", Kind: "agent", Agent: "explore", Name: "grandchild"}))
 
 	reports := apply(progress("parent", "succeeded", 125, 3))
-	if len(reports) != 1 || reports[0].Terminal || !strings.Contains(reports[0].Line, "⠋ agent: explore · 125 tokens · 3 tools · 1 active task") {
+	if len(reports) != 1 || reports[0].Terminal || !strings.Contains(reports[0].Line, "⠋ [explore:parent] agent: explore · 125 tokens · 3 tools · 1 active task") {
 		t.Fatalf("parent terminal progress with descendants = %#v", reports)
 	}
 	apply(taskLifecycleEvent(v1.EventTaskFinished, v1.TaskEvent{TaskID: "child", Status: "succeeded"}))
@@ -148,7 +198,7 @@ func TestTaskTrackerDefersProgressUntilDescendantsFinish(t *testing.T) {
 			parent = &reports[i]
 		}
 	}
-	if parent == nil || !parent.Terminal || !parent.EmitPlain || !strings.Contains(parent.Line, "✓ agent: explore · 125 tokens · 3 tools") {
+	if parent == nil || !parent.Terminal || !parent.EmitPlain || !strings.Contains(parent.Line, "✓ [explore:parent] agent: explore · 125 tokens · 3 tools") {
 		t.Fatalf("settled parent progress = %#v", reports)
 	}
 	if reports := apply(taskLifecycleEvent(v1.EventTaskIdle, v1.TaskEvent{TaskID: "grandchild"})); len(reports) != 0 {
@@ -191,7 +241,7 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || !strings.Contains(reports[0].Line, "[explore] ○ response: orphan work") {
+	if len(reports) != 1 || !strings.Contains(reports[0].Line, "○ [explore] response: orphan work") {
 		t.Fatalf("orphan content reports = %#v", reports)
 	}
 
@@ -209,7 +259,7 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || reports[0].Line != "    [review] ○ response: nested" {
+	if len(reports) != 1 || reports[0].Line != "    ○ [review] response: nested" {
 		t.Fatalf("nested content report = %#v", reports)
 	}
 
@@ -227,7 +277,7 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || !reports[0].Terminal || reports[0].Line != "    [review] ✗ failed: boom" {
+	if len(reports) != 1 || !reports[0].Terminal || reports[0].Line != "    ✗ [review] failed: boom" {
 		t.Fatalf("finished report = %#v", reports)
 	}
 
@@ -236,7 +286,7 @@ func TestTaskTrackerTracksTreeAndReportsUnknownTasks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 1 || !reports[0].Terminal || reports[0].Line != "    [review] ✓ completed" {
+	if len(reports) != 1 || !reports[0].Terminal || reports[0].Line != "    ✓ [review] completed" {
 		t.Fatalf("finished report = %#v", reports)
 	}
 }
