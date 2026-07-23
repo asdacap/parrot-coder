@@ -491,7 +491,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		ToolSystemGuidance: toolSystemGuidance,
 		Skills:             skillMetadata(skills),
 		Subagents:          subagentIDs,
-		ConfigDir:          paths.Config, ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
+		ConfigDir:          paths.Config, ConfigPath: filepath.Join(paths.Config, config.FileName), PredefinedConfigPath: filepath.Join(paths.Config, config.PredefinedFileName), ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
 		AvailableCLIUtilities: availableCLIUtilities, AvailableOptionalCLIUtilities: availableOptionalCLIUtilities,
 	})
 	if err != nil {
