@@ -39,20 +39,28 @@ func (s DateSource) Observe(context.Context) (Observation, error) {
 }
 
 type EnvironmentSource struct {
-	WorkingDirectory string
-	ProjectRoot      string
-	ProjectID        string
+	WorkingDirectory     string
+	ProjectRoot          string
+	ProjectID            string
+	ConfigPath           string
+	PredefinedConfigPath string
 }
 
 func (EnvironmentSource) Key() string { return "runtime:environment" }
 func (s EnvironmentSource) Observe(context.Context) (Observation, error) {
 	value := struct {
-		OS, Arch, WorkingDirectory, ProjectRoot, ProjectID string
-	}{runtime.GOOS, runtime.GOARCH, s.WorkingDirectory, s.ProjectRoot, s.ProjectID}
+		OS, Arch, WorkingDirectory, ProjectRoot, ProjectID, ConfigPath, PredefinedConfigPath string
+	}{runtime.GOOS, runtime.GOARCH, s.WorkingDirectory, s.ProjectRoot, s.ProjectID, s.ConfigPath, s.PredefinedConfigPath}
 	raw, _ := json.Marshal(value)
 	text := fmt.Sprintf("Platform: %s/%s\nWorking directory: %s\nProject root: %s", value.OS, value.Arch, value.WorkingDirectory, value.ProjectRoot)
 	if value.ProjectID != "" {
 		text += "\nProject ID: " + value.ProjectID
+	}
+	if value.ConfigPath != "" {
+		text += "\nConfig file: " + value.ConfigPath
+	}
+	if value.PredefinedConfigPath != "" {
+		text += "\nPredefined config path: " + value.PredefinedConfigPath
 	}
 	return Observation{Available: true, Value: raw, Baseline: text, Update: "Environment changed:\n" + text}, nil
 }
@@ -148,6 +156,8 @@ type BuiltinOptions struct {
 	ToolSystemGuidance            string
 	Skills                        string
 	ConfigDir                     string
+	ConfigPath                    string
+	PredefinedConfigPath          string
 	ProjectRoot                   string
 	WorkingDirectory              string
 	ProjectID                     string
@@ -165,7 +175,7 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 	sources := []Source{
 		StaticSource{"agent:prompt", options.AgentPrompt},
 		DateSource{options.Now},
-		EnvironmentSource{WorkingDirectory: cwd, ProjectRoot: root, ProjectID: options.ProjectID},
+		EnvironmentSource{WorkingDirectory: cwd, ProjectRoot: root, ProjectID: options.ProjectID, ConfigPath: options.ConfigPath, PredefinedConfigPath: options.PredefinedConfigPath},
 		CLIUtilitiesSource{Available: options.AvailableCLIUtilities},
 		OptionalCLIUtilitiesSource{Available: options.AvailableOptionalCLIUtilities},
 	}
