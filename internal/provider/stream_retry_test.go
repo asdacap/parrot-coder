@@ -153,6 +153,75 @@ func TestStreamWithRetry(t *testing.T) {
 	})
 }
 
+func TestStreamWithRetryHandlesStructuredOverloadEvents(t *testing.T) {
+	overload := protocol.Event{Type: protocol.EventProviderError, ProviderError: &protocol.ProviderError{
+		Type: "service_unavailable_error", Code: "server_is_overloaded", Message: "The service is temporarily overloaded",
+	}}
+	text := protocol.Event{Type: protocol.EventTextDelta, Text: "recovered"}
+
+	for _, bookkeeping := range []protocol.Event{
+		{Type: protocol.EventUsage, Usage: &protocol.Usage{InputTokens: 1}},
+		{Type: protocol.EventRouterMetadata, RouterMetadata: &protocol.RouterMetadata{ProviderName: "upstream"}},
+	} {
+		t.Run("discards failed "+string(bookkeeping.Type), func(t *testing.T) {
+			first := &scriptStream{steps: []scriptStep{{event: bookkeeping}, {event: overload}}}
+			client := &retryProvider{fn: func(call int) (Stream, error) {
+				if call == 1 {
+					return first, nil
+				}
+				return &scriptStream{steps: []scriptStep{{event: text}}}, nil
+			}}
+			var notices []RetryNotice
+			stream, err := streamWithRetry(context.Background(), client, protocol.Request{Model: "m"}, 0, func(notice RetryNotice) {
+				notices = append(notices, notice)
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			retrying := stream.(*retryStream)
+			retrying.overloadInitialDelay, retrying.overloadMaximumDelay = 0, 0
+			event, err := stream.Next(context.Background())
+			if err != nil || event.Text != text.Text || client.calls.Load() != 2 || !first.closed || len(notices) != 1 || notices[0].Attempt != 1 {
+				t.Fatalf("event = %#v, calls = %d, closed = %t, notices = %#v, err = %v", event, client.calls.Load(), first.closed, notices, err)
+			}
+		})
+	}
+
+	t.Run("shares the opening and streamed overload budget", func(t *testing.T) {
+		client := &retryProvider{fn: func(int) (Stream, error) {
+			return &scriptStream{steps: []scriptStep{{event: overload}}}, nil
+		}}
+		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		retrying := stream.(*retryStream)
+		retrying.overloadInitialDelay, retrying.overloadMaximumDelay = 0, 0
+		retrying.overloadBudget.attempts = overloadMaxRetries - 1
+		event, err := stream.Next(context.Background())
+		if err != nil || event.Type != protocol.EventProviderError || client.calls.Load() != 2 || retrying.overloadBudget.attempts != overloadMaxRetries {
+			t.Fatalf("event = %#v, calls = %d, attempts = %d, err = %v", event, client.calls.Load(), retrying.overloadBudget.attempts, err)
+		}
+	})
+
+	t.Run("does not retry after visible output", func(t *testing.T) {
+		client := &retryProvider{fn: func(int) (Stream, error) {
+			return &scriptStream{steps: []scriptStep{{event: text}, {event: overload}}}, nil
+		}}
+		stream, err := streamWithRetry(context.Background(), client, protocol.Request{}, 0, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := stream.Next(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		event, err := stream.Next(context.Background())
+		if err != nil || event.Type != protocol.EventProviderError || client.calls.Load() != 1 {
+			t.Fatalf("event = %#v, calls = %d, err = %v", event, client.calls.Load(), err)
+		}
+	})
+}
+
 func TestRetryableStreamError(t *testing.T) {
 	for _, testCase := range []struct {
 		name string
