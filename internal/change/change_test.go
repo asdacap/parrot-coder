@@ -76,7 +76,6 @@ func TestPatchAddUpdateAndStrictRejections(t *testing.T) {
 		"missing divider":      "file\n" + patchSearchMarker + "\na\n" + patchReplaceMarker,
 		"missing replace":      "file\n" + patchSearchMarker + "\na\n=======\nb",
 		"escaping path":        aiderBlock("../escape", "", "x"),
-		"absolute path":        aiderBlock("/etc/passwd", "", "x"),
 		"empty creation":       aiderBlock("empty", "", ""),
 		"creation then update": aiderBlock("file", "", "x") + aiderBlock("", "x", "y"),
 		"update then creation": aiderBlock("file", "x", "y") + aiderBlock("", "", "z"),
@@ -89,6 +88,70 @@ func TestPatchAddUpdateAndStrictRejections(t *testing.T) {
 	}
 	if _, err := service.PlanPatch(ctx, ws, aiderBlock("absent", "x", "y"), PatchFormatAider); err == nil {
 		t.Fatal("update of missing file accepted")
+	}
+	outside := filepath.Join(t.TempDir(), "external")
+	if err := os.WriteFile(outside, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	absolutePatch := aiderBlock(outside, "old", "new")
+	if _, err := service.PlanPatch(ctx, ws, absolutePatch, PatchFormatAider); !errors.Is(err, workspace.ErrOutsideRoot) {
+		t.Fatalf("ordinary workspace absolute path error = %v", err)
+	}
+	capability, err := workspace.NewExternalPath(outside)
+	if err != nil {
+		t.Fatal(err)
+	}
+	externalPlan, err := service.PlanPatch(ctx, ws.WithExternalPaths(capability), absolutePatch, PatchFormatAider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Commit(ctx, ws.WithExternalPaths(capability), externalPlan); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(outside); err != nil || string(got) != "new\n" {
+		t.Fatalf("external = %q, %v", got, err)
+	}
+
+	directory := t.TempDir()
+	directoryCapability, err := workspace.NewExternalPath(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(directory, "new", "file")
+	nestedPlan, err := service.PlanPatch(ctx, ws.WithExternalPaths(directoryCapability), aiderBlock(nested, "", "created"), PatchFormatAider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Commit(ctx, ws.WithExternalPaths(directoryCapability), nestedPlan); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(nested); err != nil || string(got) != "created\n" {
+		t.Fatalf("nested external = %q, %v", got, err)
+	}
+
+	target := filepath.Join(t.TempDir(), "target")
+	if err := os.WriteFile(target, []byte("untouched\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	swap := filepath.Join(directory, "swap")
+	if err := os.WriteFile(swap, []byte("before\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	swapPlan, err := service.PlanPatch(ctx, ws.WithExternalPaths(directoryCapability), aiderBlock(swap, "before", "after"), PatchFormatAider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(swap); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, swap); err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Commit(ctx, ws.WithExternalPaths(directoryCapability), swapPlan); !errors.Is(err, ErrStale) {
+		t.Fatalf("external symlink swap error = %v, want ErrStale", err)
+	}
+	if got, err := os.ReadFile(target); err != nil || string(got) != "untouched\n" {
+		t.Fatalf("symlink target = %q, %v", got, err)
 	}
 }
 

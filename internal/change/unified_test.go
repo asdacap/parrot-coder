@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 // The workspace every unified diff test starts from.
@@ -92,26 +94,53 @@ func TestUnifiedDiffPlanning(t *testing.T) {
 	}
 }
 
+func TestUnifiedDiffAbsolutePathRequiresCapability(t *testing.T) {
+	ws := testWorkspace(t)
+	external := filepath.Join(t.TempDir(), "external")
+	if err := os.WriteFile(external, []byte("old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	input := "--- " + external + "\n+++ " + external + "\n@@ -1 +1 @@\n-old\n+new\n"
+	service := NewService(Config{})
+	if _, err := service.PlanPatch(context.Background(), ws, input, PatchFormatUnified); !errors.Is(err, workspace.ErrOutsideRoot) {
+		t.Fatalf("ordinary workspace absolute path error = %v", err)
+	}
+	capability, err := workspace.NewExternalPath(external)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scoped := ws.WithExternalPaths(capability)
+	plan, err := service.PlanPatch(context.Background(), scoped, input, PatchFormatUnified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.Commit(context.Background(), scoped, plan); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.ReadFile(external); err != nil || string(got) != "new\n" {
+		t.Fatalf("external = %q, %v", got, err)
+	}
+}
+
 func TestUnifiedDiffRejections(t *testing.T) {
 	malformed := map[string]string{
-		"no file headers":             "just prose\n",
-		"missing target header":       "--- a/file\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"rename":                      "diff --git a/file b/moved\nrename from file\nrename to moved\n",
-		"copy":                        "diff --git a/file b/copied\ncopy from file\ncopy to copied\n",
-		"binary patch":                "diff --git a/file b/file\nGIT binary patch\n",
-		"mismatched paths":            "--- a/file\n+++ b/other\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"unprefixed hunk line":        "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n one\nrogue\n",
-		"malformed hunk header":       "--- a/file\n+++ b/file\n@@ nonsense @@\n-one\n+ONE\n",
-		"miscounted hunk header":      "--- a/file\n+++ b/file\n@@ -1,99 +1,99 @@\n one\n-two\n+TWO\n",
-		"hunk without lines":          "--- a/file\n+++ b/file\n@@ -0,0 +0,0 @@\n",
-		"escaping path":               "--- a/../escape\n+++ b/../escape\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"absolute path":               "--- /etc/passwd\n+++ /etc/passwd\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"quoted path":                 "--- \"a/sp ace\"\n+++ \"b/sp ace\"\n@@ -1 +1 @@\n-one\n+ONE\n",
-		"empty creation":              "--- /dev/null\n+++ b/added\n",
-		"creation with context":       "--- /dev/null\n+++ b/added\n@@ -1,2 +1,2 @@\n one\n+alpha\n",
-		"duplicate file":              "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one\n+ONE\n--- a/file\n+++ b/file\n@@ -2 +2 @@\n-two\n+TWO\n",
-		"nested paths":                "--- /dev/null\n+++ b/dir\n@@ -0,0 +1 @@\n+x\n--- /dev/null\n+++ b/dir/file\n@@ -0,0 +1 @@\n+y\n",
-		"NUL byte":                    "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one\n+O\x00E\n",
+		"no file headers":        "just prose\n",
+		"missing target header":  "--- a/file\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"rename":                 "diff --git a/file b/moved\nrename from file\nrename to moved\n",
+		"copy":                   "diff --git a/file b/copied\ncopy from file\ncopy to copied\n",
+		"binary patch":           "diff --git a/file b/file\nGIT binary patch\n",
+		"mismatched paths":       "--- a/file\n+++ b/other\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"unprefixed hunk line":   "--- a/file\n+++ b/file\n@@ -1,2 +1,2 @@\n one\nrogue\n",
+		"malformed hunk header":  "--- a/file\n+++ b/file\n@@ nonsense @@\n-one\n+ONE\n",
+		"miscounted hunk header": "--- a/file\n+++ b/file\n@@ -1,99 +1,99 @@\n one\n-two\n+TWO\n",
+		"hunk without lines":     "--- a/file\n+++ b/file\n@@ -0,0 +0,0 @@\n",
+		"escaping path":          "--- a/../escape\n+++ b/../escape\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"quoted path":            "--- \"a/sp ace\"\n+++ \"b/sp ace\"\n@@ -1 +1 @@\n-one\n+ONE\n",
+		"empty creation":         "--- /dev/null\n+++ b/added\n",
+		"creation with context":  "--- /dev/null\n+++ b/added\n@@ -1,2 +1,2 @@\n one\n+alpha\n",
+		"duplicate file":         "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one\n+ONE\n--- a/file\n+++ b/file\n@@ -2 +2 @@\n-two\n+TWO\n",
+		"nested paths":           "--- /dev/null\n+++ b/dir\n@@ -0,0 +1 @@\n+x\n--- /dev/null\n+++ b/dir/file\n@@ -0,0 +1 @@\n+y\n",
+		"NUL byte":               "--- a/file\n+++ b/file\n@@ -1 +1 @@\n-one\n+O\x00E\n",
 	}
 	for name, input := range malformed {
 		if _, err := ParseUnifiedDiff(input); !errors.Is(err, ErrInvalidPatch) {

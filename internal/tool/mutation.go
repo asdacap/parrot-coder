@@ -4,14 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+
 	"github.com/amirulashraf/parrot-coder/internal/change"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type mutationPlan struct {
-	Change change.Plan
+	Change    change.Plan
+	Workspace *workspace.Workspace
 }
 
-func mutationToolPlan(toolID string, raw json.RawMessage, planned change.Plan) (Plan, error) {
+func mutationToolPlan(toolID string, raw json.RawMessage, planned change.Plan, ws *workspace.Workspace) (Plan, error) {
 	files := make([]map[string]any, len(planned.Mutations))
 	for i, mutation := range planned.Mutations {
 		operation := "write"
@@ -26,7 +29,7 @@ func mutationToolPlan(toolID string, raw json.RawMessage, planned change.Plan) (
 	if err != nil {
 		return Plan{}, err
 	}
-	return NewPlan(toolID, raw, nil, review, mutationPlan{planned})
+	return NewPlan(toolID, raw, nil, review, mutationPlan{Change: planned, Workspace: ws})
 }
 
 func executeMutation(ctx context.Context, changes *change.Service, plan Plan, call CallContext) (Result, error) {
@@ -37,10 +40,10 @@ func executeMutation(ctx context.Context, changes *change.Service, plan Plan, ca
 		return Result{}, errors.New("mutation tool requires change and workspace services")
 	}
 	planned, ok := plan.Data.(mutationPlan)
-	if !ok {
+	if !ok || planned.Workspace == nil || planned.Workspace.Root() != call.Workspace.Root() {
 		return Result{}, errors.New("mutation tool received incompatible plan")
 	}
-	if err := changes.Commit(ctx, call.Workspace, planned.Change); err != nil {
+	if err := changes.Commit(ctx, planned.Workspace, planned.Change); err != nil {
 		return Result{}, err
 	}
 	return Result{Text: planned.Change.Diff, ModelText: modelText(planned.Change.Diff), Metadata: map[string]any{"files": len(planned.Change.Mutations)}}, nil

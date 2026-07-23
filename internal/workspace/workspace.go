@@ -16,7 +16,7 @@ var (
 )
 
 // ExternalRoot is an explicit capability for workspace-scoped operations on a
-// canonical root outside the workspace. Values can only be constructed by
+// canonical directory outside the workspace. Values can only be constructed by
 // NewExternalRoot.
 type ExternalRoot struct{ path string }
 
@@ -30,10 +30,40 @@ func NewExternalRoot(path string) (ExternalRoot, error) {
 
 func (r ExternalRoot) Path() string { return r.path }
 
+// ExternalPath is an explicit capability for an existing canonical file or
+// directory outside the workspace. File capabilities authorize only that exact
+// path; directory capabilities authorize descendants as well.
+type ExternalPath struct {
+	path      string
+	directory bool
+}
+
+func NewExternalPath(path string) (ExternalPath, error) {
+	if path == "" || strings.IndexByte(path, 0) >= 0 {
+		return ExternalPath{}, ErrInvalidPath
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return ExternalPath{}, err
+	}
+	resolved, err = filepath.Abs(resolved)
+	if err != nil {
+		return ExternalPath{}, err
+	}
+	info, err := os.Stat(resolved)
+	if err != nil {
+		return ExternalPath{}, err
+	}
+	return ExternalPath{path: filepath.Clean(resolved), directory: info.IsDir()}, nil
+}
+
+func (p ExternalPath) Path() string { return p.path }
+
 // Workspace is immutable after construction and safe for concurrent use.
 type Workspace struct {
-	root     string
-	external []string
+	root          string
+	external      []string
+	externalPaths []ExternalPath
 }
 
 func New(root string, external ...ExternalRoot) (*Workspace, error) {
@@ -52,6 +82,21 @@ func New(root string, external ...ExternalRoot) (*Workspace, error) {
 }
 
 func (w *Workspace) Root() string { return w.root }
+
+// WithExternalPaths returns a workspace view extended with narrow external
+// capabilities. The receiver is not modified.
+func (w *Workspace) WithExternalPaths(paths ...ExternalPath) *Workspace {
+	if w == nil || len(paths) == 0 {
+		return w
+	}
+	view := &Workspace{
+		root:          w.root,
+		external:      append([]string(nil), w.external...),
+		externalPaths: append([]ExternalPath(nil), w.externalPaths...),
+	}
+	view.externalPaths = append(view.externalPaths, paths...)
+	return view
+}
 
 // Contains reports whether path is within the canonical workspace root.
 // Explicit external root capabilities are not included.
@@ -161,6 +206,11 @@ func (w *Workspace) lexical(path string) (candidate, root string, err error) {
 		for _, allowed := range append([]string{w.root}, w.external...) {
 			if contains(allowed, candidate) {
 				return candidate, allowed, nil
+			}
+		}
+		for _, allowed := range w.externalPaths {
+			if candidate == allowed.path || allowed.directory && contains(allowed.path, candidate) {
+				return candidate, allowed.path, nil
 			}
 		}
 		return "", "", ErrOutsideRoot
