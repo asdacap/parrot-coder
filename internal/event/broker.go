@@ -8,44 +8,47 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 )
 
+// SessionHierarchy resolves a child session's direct parent and owning task.
+type SessionHierarchy interface {
+	ChildRelation(sessionID string) (parentSessionID, taskID string, ok bool)
+}
+
 // Broker is the application event boundary. It combines durable replay with
 // transient delivery and projects descendant activity onto ancestor streams.
 type Broker struct {
 	durable   *Repository
 	transient *TransientRepository
+	hierarchy SessionHierarchy
 
 	mu        sync.RWMutex
-	children  map[string]child
 	watching  map[string]*Subscription
 	observer  map[string]map[uint64]func(v1.Event)
 	taskIDFor func(string) string
 	next      uint64
 }
 
-type child struct {
-	parent string
-	taskID string
-}
-
-func NewBroker(durable *Repository, transient *TransientRepository) *Broker {
+func NewBroker(durable *Repository, transient *TransientRepository, hierarchy ...SessionHierarchy) *Broker {
 	if transient == nil {
 		transient = NewTransientRepository()
 	}
+	var sessions SessionHierarchy
+	if len(hierarchy) != 0 {
+		sessions = hierarchy[0]
+	}
 	return &Broker{
-		durable: durable, transient: transient, children: make(map[string]child),
+		durable: durable, transient: transient, hierarchy: sessions,
 		watching: make(map[string]*Subscription), observer: make(map[string]map[uint64]func(v1.Event)),
 	}
 }
 
-// RegisterChild links a child session to its direct parent. The relationship is
-// retained for the broker's lifetime so later turns use the same projection.
-func (b *Broker) RegisterChild(sessionID, parentSessionID, taskID string) {
-	if b == nil || sessionID == "" || parentSessionID == "" || sessionID == parentSessionID {
+// ObserveSession projects future durable events from sessionID onto its
+// ancestors. Observation is idempotent and lasts for the broker's lifetime.
+func (b *Broker) ObserveSession(sessionID string) {
+	if b == nil || b.durable == nil || sessionID == "" {
 		return
 	}
 	b.mu.Lock()
-	b.children[sessionID] = child{parent: parentSessionID, taskID: taskID}
-	if b.durable == nil || b.watching[sessionID] != nil {
+	if b.watching[sessionID] != nil {
 		b.mu.Unlock()
 		return
 	}
@@ -63,6 +66,12 @@ func (b *Broker) forwardDurable(sessionID string, subscription *Subscription) {
 	}
 }
 
+func (b *Broker) SetSessionHierarchy(hierarchy SessionHierarchy) {
+	b.mu.Lock()
+	b.hierarchy = hierarchy
+	b.mu.Unlock()
+}
+
 // SetTaskIDFor installs the fallback resolver for ordinary sessions.
 func (b *Broker) SetTaskIDFor(resolver func(string) string) {
 	b.mu.Lock()
@@ -74,11 +83,14 @@ func (b *Broker) SetTaskIDFor(resolver func(string) string) {
 // session. It is suitable for agent runner task attribution.
 func (b *Broker) TaskIDFor(sessionID, fallback string) string {
 	b.mu.RLock()
-	item, ok := b.children[sessionID]
+	hierarchy := b.hierarchy
 	resolver := b.taskIDFor
 	b.mu.RUnlock()
-	if ok && item.taskID != "" {
-		return item.taskID
+	if hierarchy != nil {
+		_, taskID, ok := hierarchy.ChildRelation(sessionID)
+		if ok && taskID != "" {
+			return taskID
+		}
 	}
 	if resolver != nil {
 		return resolver(sessionID)
@@ -160,23 +172,27 @@ func (b *Broker) project(item v1.Event) {
 	seen := map[string]bool{origin: true}
 	for {
 		b.mu.RLock()
-		relation, ok := b.children[origin]
+		hierarchy := b.hierarchy
 		b.mu.RUnlock()
-		if !ok || relation.parent == "" || seen[relation.parent] {
+		if hierarchy == nil {
+			return
+		}
+		parent, relationTaskID, ok := hierarchy.ChildRelation(origin)
+		if !ok || parent == "" || seen[parent] {
 			return
 		}
 		if taskID == "" {
-			taskID = relation.taskID
+			taskID = relationTaskID
 		}
-		seen[relation.parent] = true
+		seen[parent] = true
 		projected := item
 		projected.ID = ""
-		projected.SessionID = relation.parent
+		projected.SessionID = parent
 		projected.TaskID = taskID
 		projected.Sequence = nil
 		projected.CreatedAt = nil
 		b.transient.PublishEvent(projected)
-		origin = relation.parent
+		origin = parent
 	}
 }
 

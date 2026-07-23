@@ -84,6 +84,12 @@ type MessageSender interface {
 	Send(context.Context, Execution, string) (string, error)
 }
 
+type SessionHierarchy interface {
+	ChildRelation(sessionID string) (parentSessionID, taskID string, ok bool)
+	HasChildSessions(parentSessionID string) bool
+	ForgetChild(sessionID, taskID string) error
+}
+
 type Config struct {
 	MaxConcurrent          int
 	MaxConcurrentPerParent int
@@ -97,6 +103,7 @@ type Config struct {
 	OnProgress             func(Task)
 	OnEvent                func(LifecycleEvent)
 	Tasks                  *managedtask.Manager
+	Sessions               SessionHierarchy
 }
 
 // Lifecycle kinds a task reports as flat events on its parent session's
@@ -168,15 +175,14 @@ type Observer struct {
 }
 
 type Manager struct {
-	mu        sync.Mutex
-	executor  Executor
-	config    Config
-	tasks     map[string]*taskState
-	bySession map[string]*taskState
-	running   int
-	byParent  map[string]int
-	closed    bool
-	workers   sync.WaitGroup
+	mu       sync.Mutex
+	executor Executor
+	config   Config
+	tasks    map[string]*taskState
+	running  int
+	byParent map[string]int
+	closed   bool
+	workers  sync.WaitGroup
 }
 
 func NewManager(executor Executor, config Config) *Manager {
@@ -198,7 +204,7 @@ func NewManager(executor Executor, config Config) *Manager {
 	if config.MaxResultBytes <= 0 {
 		config.MaxResultBytes = 1 << 20
 	}
-	return &Manager{executor: executor, config: config, tasks: make(map[string]*taskState), bySession: make(map[string]*taskState), byParent: make(map[string]int)}
+	return &Manager{executor: executor, config: config, tasks: make(map[string]*taskState), byParent: make(map[string]int)}
 }
 
 // Launch reserves concurrency immediately and starts the execution
@@ -213,7 +219,7 @@ func (m *Manager) Launch(parentSession string, lineage []string, request Request
 	if err != nil {
 		return "", err
 	}
-	return m.launch(id, parentSession, parentSession, lineage, request, false)
+	return m.launch(id, parentSession, parentSession, lineage, request)
 }
 
 func (m *Manager) validate(parentSession string, lineage []string, request Request) error {
@@ -242,7 +248,7 @@ func (m *Manager) validate(parentSession string, lineage []string, request Reque
 	return nil
 }
 
-func (m *Manager) launch(id, sessionID, parentSession string, lineage []string, request Request, bindSession bool) (string, error) {
+func (m *Manager) launch(id, sessionID, parentSession string, lineage []string, request Request) (string, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(sessionID) == "" {
 		return "", ErrInvalid
 	}
@@ -271,16 +277,13 @@ func (m *Manager) launch(id, sessionID, parentSession string, lineage []string, 
 	}
 	name = m.uniqueNameLocked(name)
 	rootSession := parentSession
-	if parent := m.bySession[parentSession]; parent != nil {
+	if parent := m.taskForSessionLocked(parentSession); parent != nil {
 		rootSession = parent.task.RootSession
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	request.Name = name
 	state := &taskState{task: Task{ID: id, SessionID: sessionID, ParentSession: parentSession, RootSession: rootSession, Agent: request.Agent, Model: request.Model, Name: name, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, cancel: cancel}
 	m.tasks[id] = state
-	if bindSession {
-		m.bySession[sessionID] = state
-	}
 	m.running++
 	m.byParent[parentSession]++
 	m.workers.Add(1)
@@ -292,9 +295,6 @@ func (m *Manager) launch(id, sessionID, parentSession string, lineage []string, 
 			cancel()
 			m.mu.Lock()
 			delete(m.tasks, id)
-			if bindSession {
-				delete(m.bySession, sessionID)
-			}
 			m.running--
 			m.byParent[parentSession]--
 			m.workers.Done()
@@ -321,7 +321,7 @@ func (m *Manager) TaskForSession(sessionID string) (Task, bool) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	state := m.bySession[sessionID]
+	state := m.taskForSessionLocked(sessionID)
 	if state == nil {
 		return Task{}, false
 	}
@@ -360,7 +360,7 @@ func (m *Manager) Spawn(ctx context.Context, parentSession, callerAgent string, 
 	lineage := []string{callerAgent}
 	rootSession := parentSession
 	m.mu.Lock()
-	if parent := m.bySession[parentSession]; parent != nil {
+	if parent := m.taskForSessionLocked(parentSession); parent != nil {
 		lineage = append(append([]string(nil), parent.task.Lineage...), parent.task.Agent)
 		rootSession = parent.task.RootSession
 	}
@@ -380,7 +380,7 @@ func (m *Manager) Spawn(ctx context.Context, parentSession, callerAgent string, 
 	if strings.TrimSpace(sessionID) == "" {
 		return "", errors.New("subagent: preparer returned an empty child session")
 	}
-	return m.launch(id, sessionID, parentSession, lineage, request, true)
+	return m.launch(id, sessionID, parentSession, lineage, request)
 }
 
 func (m *Manager) run(ctx context.Context, state *taskState) {
@@ -668,13 +668,15 @@ func (m *Manager) Forget(parentSession, id string) error {
 	if state.task.Status == StatusRunning || state.task.Status == StatusPending {
 		return errors.New("subagent: cannot forget a running task")
 	}
-	for _, child := range m.tasks {
-		if child.task.ParentSession == state.task.SessionID {
-			return errors.New("subagent: cannot forget an agent with retained children")
+	if m.hasChildrenLocked(state.task.SessionID) {
+		return errors.New("subagent: cannot forget an agent with retained children")
+	}
+	if m.config.Sessions != nil {
+		if err := m.config.Sessions.ForgetChild(state.task.SessionID, id); err != nil {
+			return err
 		}
 	}
 	delete(m.tasks, id)
-	delete(m.bySession, state.task.SessionID)
 	if m.config.Tasks != nil {
 		m.config.Tasks.Unregister(id)
 	}
@@ -735,12 +737,42 @@ func (m *Manager) isVisible(callerSession string, target *taskState) bool {
 }
 
 func (m *Manager) visibleLocked(callerSession string, target *taskState) bool {
-	caller := m.bySession[callerSession]
+	caller := m.taskForSessionLocked(callerSession)
 	if caller == nil {
 		return target.task.RootSession == callerSession
 	}
-	for current := target; current != nil; current = m.bySession[current.task.ParentSession] {
+	for current := target; current != nil; current = m.taskForSessionLocked(current.task.ParentSession) {
 		if current.task.ParentSession == caller.task.SessionID {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *Manager) taskForSessionLocked(sessionID string) *taskState {
+	if m.config.Sessions != nil {
+		_, taskID, ok := m.config.Sessions.ChildRelation(sessionID)
+		if !ok {
+			return nil
+		}
+		return m.tasks[taskID]
+	}
+	// Managers used without an application session runtime retain no secondary
+	// index; derive the relationship from their operational task records.
+	for _, state := range m.tasks {
+		if state.task.SessionID == sessionID && state.task.SessionID != state.task.ParentSession {
+			return state
+		}
+	}
+	return nil
+}
+
+func (m *Manager) hasChildrenLocked(sessionID string) bool {
+	if m.config.Sessions != nil {
+		return m.config.Sessions.HasChildSessions(sessionID)
+	}
+	for _, state := range m.tasks {
+		if state.task.ParentSession == sessionID {
 			return true
 		}
 	}

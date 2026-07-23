@@ -434,7 +434,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return 0
 		}
 		return profile.RecursionLimit
-	}, Tasks: tasks, OnProgress: func(task subagent.Task) {
+	}, Tasks: tasks, Sessions: subagentExecutor, OnProgress: func(task subagent.Task) {
 		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.ID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.ID, Data: data})
 	}, OnEvent: func(item subagent.LifecycleEvent) {
@@ -529,6 +529,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	monitors.SetWaker(agentSessions)
 	subagentExecutor.agentSessions = agentSessions
+	live.SetSessionHierarchy(agentSessions)
+	agentSessions.AddChildCreatedObserver(childSessionObserver{live})
 	result.agentSessions = agentSessions
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, AgentSessions: agentSessions, Agents: taskAgents, Modes: modes,
@@ -1175,11 +1177,35 @@ func skillMetadata(registry *skill.Registry) string {
 	return output.String()
 }
 
+type childSessionObserver struct{ events *event.Broker }
+
+func (o childSessionObserver) ChildCreated(child agent.ChildSession) {
+	o.events.ObserveSession(child.SessionID)
+}
+
 type appSubagentExecutor struct {
 	agentSessions    *agent.AgentSessionRepository
 	projectID        string
 	defaultSelection session.Selection
 	events           *event.Broker
+}
+
+func (e *appSubagentExecutor) ChildRelation(sessionID string) (parentSessionID, taskID string, ok bool) {
+	if e.agentSessions == nil {
+		return "", "", false
+	}
+	return e.agentSessions.ChildRelation(sessionID)
+}
+
+func (e *appSubagentExecutor) HasChildSessions(parentSessionID string) bool {
+	return e.agentSessions != nil && e.agentSessions.HasChildSessions(parentSessionID)
+}
+
+func (e *appSubagentExecutor) ForgetChild(sessionID, taskID string) error {
+	if e.agentSessions == nil {
+		return nil
+	}
+	return e.agentSessions.ForgetChild(sessionID, taskID)
 }
 
 func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Execution) (string, error) {
@@ -1188,6 +1214,7 @@ func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Ex
 	}
 	child, err := e.agentSessions.CreateChild(ctx, agent.ChildSessionRequest{
 		ParentSessionID:  execution.ParentSession,
+		TaskID:           execution.TaskID,
 		ProjectID:        e.projectID,
 		Name:             execution.Request.Name,
 		Agent:            execution.Request.Agent,
@@ -1197,7 +1224,6 @@ func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Ex
 	if err != nil {
 		return "", err
 	}
-	e.events.RegisterChild(child.ID(), execution.ParentSession, execution.TaskID)
 	return child.ID(), nil
 }
 
