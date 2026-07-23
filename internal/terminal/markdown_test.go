@@ -52,13 +52,14 @@ func TestStyledMarkdownRendersInLiveAndCommittedActivity(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		render func(*LiveRenderer) error
+		styles []string
 	}{
 		{name: "live", render: func(renderer *LiveRenderer) error {
 			return renderer.Frame(LiveFrame{StyledActivity: []StyledText{activity}})
-		}},
+		}, styles: []string{"\x1b[1;36;48;5;236mChecking\x1b[0m", "\x1b[1;38;5;252;48;5;236mtests\x1b[0m"}},
 		{name: "committed", render: func(renderer *LiveRenderer) error {
 			return renderer.CommitStyled(activity)
-		}},
+		}, styles: []string{"\x1b[1;36mChecking\x1b[0m", "\x1b[1mtests\x1b[0m"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
@@ -70,8 +71,10 @@ func TestStyledMarkdownRendersInLiveAndCommittedActivity(t *testing.T) {
 			if !strings.Contains(plain, "✓ Checking") || !strings.Contains(plain, "  • tests · 2 tokens") || strings.Contains(plain, "# Checking") || strings.Contains(plain, "**") {
 				t.Fatalf("styled Markdown output = %q", plain)
 			}
-			if !strings.Contains(output.String(), "\x1b[1;36mChecking\x1b[0m") || !strings.Contains(output.String(), "\x1b[1mtests\x1b[0m") {
-				t.Fatalf("styled Markdown metadata was not rendered: %q", output.String())
+			for _, style := range test.styles {
+				if !strings.Contains(output.String(), style) {
+					t.Fatalf("styled Markdown metadata was not rendered: %q", output.String())
+				}
 			}
 		})
 	}

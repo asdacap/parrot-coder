@@ -12,9 +12,12 @@ import (
 )
 
 const (
-	defaultLiveRows  = 10
-	defaultInputRows = 12
-	defaultColumns   = 80
+	defaultLiveRows         = 10
+	defaultInputRows        = 12
+	defaultColumns          = 80
+	liveBackgroundANSI      = "48;5;236"
+	liveForegroundANSI      = "38;5;252"
+	liveMutedForegroundANSI = "38;5;245"
 )
 
 var (
@@ -90,6 +93,13 @@ const (
 	textStyleGreen
 	textStyleUserMessage
 	textStyleAssistantMessage
+)
+
+type surfaceStyle uint8
+
+const (
+	surfaceDefault surfaceStyle = iota
+	surfaceLive
 )
 
 // StyledText is terminal text with semantic renderer-owned presentation.
@@ -1196,9 +1206,17 @@ func (r *LiveRenderer) buildRedrawRich(output *strings.Builder, rows []string, s
 	}
 	count := max(physicalRowCount(r.rows, r.columns), len(rows))
 	for i := 0; i < count; i++ {
-		output.WriteString("\x1b[2K")
-		if i < len(rows) {
-			output.WriteString(r.decorateRich(rows[i], styleAt(styles, i), spansAt(spans, i)))
+		if i < len(rows) && r.color {
+			// EL paints erased cells with the active background, so the live
+			// surface extends across the complete terminal row without padding
+			// it to the auto-wrap boundary.
+			output.WriteString("\x1b[" + liveBackgroundANSI + "m\x1b[2K\x1b[0m")
+			output.WriteString(r.decorateRichOnSurface(rows[i], styleAt(styles, i), spansAt(spans, i), surfaceLive))
+		} else {
+			output.WriteString("\x1b[2K")
+			if i < len(rows) {
+				output.WriteString(r.decorateRich(rows[i], styleAt(styles, i), spansAt(spans, i)))
+			}
 		}
 		if i+1 < count {
 			output.WriteString("\r\n")
@@ -1212,7 +1230,7 @@ func (r *LiveRenderer) buildRedrawRich(output *strings.Builder, rows []string, s
 			output.WriteByte('\r')
 			moveUp(output, count-1-cursorRow)
 			prefix := prefixWidth(rows[cursorRow], cursorCol)
-			output.WriteString(r.decorateRich(prefix, styleAt(styles, cursorRow), clipTextSpans(spansAt(spans, cursorRow), len(prefix))))
+			output.WriteString(r.decorateRichOnSurface(prefix, styleAt(styles, cursorRow), clipTextSpans(spansAt(spans, cursorRow), len(prefix)), surfaceLive))
 		}
 	}
 	output.WriteString("\x1b[?25h")
@@ -1529,21 +1547,12 @@ func (r *LiveRenderer) decorate(row string) string {
 }
 
 func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
-	if !r.color || row == "" {
-		return row
-	}
-	color := func(code, value string) string { return "\x1b[" + code + "m" + value + "\x1b[0m" }
-	switch style {
-	case TextStyleMuted:
-		return color("90", row)
-	case textStyleWhite:
-		return color("37", row)
-	case textStyleGreen:
-		return color("32", row)
-	case textStyleUserMessage:
-		return ansiStyled(row, ansiStyle{color: "38;5;230"})
-	case textStyleAssistantMessage:
-		return ansiStyled(row, ansiStyle{color: "38;5;195"})
+	return r.decorateRich(row, style, nil)
+}
+
+func (r *LiveRenderer) decorateDefault(row string, base ansiStyle) string {
+	color := func(code, value string) string {
+		return ansiStyled(value, mergeANSIStyle(base, ansiStyle{color: code}))
 	}
 	switch {
 	case hasSpinnerPrefix(row):
@@ -1572,17 +1581,37 @@ func (r *LiveRenderer) decorateStyled(row string, style TextStyle) string {
 	case strings.HasPrefix(row, "> "):
 		return color("36", ">") + row[1:]
 	default:
-		return row
+		return ansiStyled(row, base)
 	}
 }
 
 func (r *LiveRenderer) decorateRich(row string, style TextStyle, spans []textSpan) string {
-	if !r.color || style != TextStyleDefault && style != textStyleAssistantMessage {
-		return r.decorateStyled(row, style)
+	return r.decorateRichOnSurface(row, style, spans, surfaceDefault)
+}
+
+func (r *LiveRenderer) decorateRichOnSurface(row string, style TextStyle, spans []textSpan, surface surfaceStyle) string {
+	if !r.color || row == "" {
+		return row
 	}
 	base := ansiStyle{}
-	if style == textStyleAssistantMessage {
-		base = ansiStyle{color: "38;5;195"}
+	if surface == surfaceLive {
+		base = ansiStyle{color: liveForegroundANSI, background: liveBackgroundANSI}
+	}
+	switch style {
+	case TextStyleMuted:
+		color := "90"
+		if surface == surfaceLive {
+			color = liveMutedForegroundANSI
+		}
+		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: color}))
+	case textStyleWhite:
+		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: "37"}))
+	case textStyleGreen:
+		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: "32"}))
+	case textStyleUserMessage:
+		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: "38;5;230"}))
+	case textStyleAssistantMessage:
+		base.color = "38;5;195"
 	}
 	var semantic []textSpan
 	if style == TextStyleDefault {
