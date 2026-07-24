@@ -487,28 +487,63 @@ func (s *Service) transitionTool(ctx context.Context, sessionID, callID, status,
 // interrupted compactions that other live processes, on other machines, were
 // still running.
 func (s *Service) RepairActive(ctx context.Context, sessionID string) error {
+	const reason = "process restarted"
 	data := json.RawMessage(`{"reason":"process restarted"}`)
 	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
-		var active int
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM session_message WHERE session_id=? AND status='active')
-			+ (SELECT COUNT(*) FROM session_tool_call WHERE session_id=? AND status IN ('pending','running'))
-			+ (SELECT COUNT(*) FROM compaction_attempt WHERE session_id=? AND status='active')`, sessionID, sessionID, sessionID).Scan(&active); err != nil {
+		type activeTool struct{ id, name string }
+		var tools []activeTool
+		rows, err := tx.QueryContext(ctx, `SELECT id,name FROM session_tool_call WHERE session_id=? AND status IN ('pending','running') ORDER BY sequence`, sessionID)
+		if err != nil {
 			return nil, nil, err
 		}
-		if active == 0 {
+		for rows.Next() {
+			var item activeTool
+			if err := rows.Scan(&item.id, &item.name); err != nil {
+				rows.Close()
+				return nil, nil, err
+			}
+			tools = append(tools, item)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, nil, err
+		}
+		if err := rows.Close(); err != nil {
+			return nil, nil, err
+		}
+		var otherActive int
+		if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM session_message WHERE session_id=? AND status='active')
+			+ (SELECT COUNT(*) FROM compaction_attempt WHERE session_id=? AND status='active')`, sessionID, sessionID).Scan(&otherActive); err != nil {
+			return nil, nil, err
+		}
+		if len(tools) == 0 && otherActive == 0 {
 			return nil, nil, nil
 		}
+
+		pending := make([]event.NewEvent, 0, len(tools)+1)
+		for _, item := range tools {
+			payload, _ := json.Marshal(map[string]string{"call_id": item.id, "tool_name": item.name, "status": "interrupted", "error": reason})
+			pending = append(pending, event.NewEvent{Type: "session.tool.interrupted", Data: payload})
+		}
+		pending = append(pending, event.NewEvent{Type: "session.runtime.repaired", Data: data})
 		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-			if _, err := tx.ExecContext(ctx, `UPDATE session_message SET status='interrupted',error_text='process restarted' WHERE session_id=? AND status='active'`, sessionID); err != nil {
+			if _, err := tx.ExecContext(ctx, `UPDATE session_message SET status='interrupted',error_text=? WHERE session_id=? AND status='active'`, reason, sessionID); err != nil {
 				return err
 			}
-			if _, err := tx.ExecContext(ctx, `UPDATE session_tool_call SET status='interrupted',error_text='process restarted',settled_sequence=?,settled_at=? WHERE session_id=? AND status IN ('pending','running')`, events[0].Sequence, formatTime(events[0].CreatedAt), sessionID); err != nil {
-				return err
+			for i, item := range tools {
+				result, err := tx.ExecContext(ctx, `UPDATE session_tool_call SET status='interrupted',error_text=?,settled_sequence=?,settled_at=? WHERE id=? AND session_id=? AND status IN ('pending','running')`, reason, events[i].Sequence, formatTime(events[i].CreatedAt), item.id, sessionID)
+				if err != nil {
+					return err
+				}
+				if affected, _ := result.RowsAffected(); affected != 1 {
+					return errors.New("session: active tool changed during repair")
+				}
 			}
-			_, err := tx.ExecContext(ctx, `UPDATE compaction_attempt SET status='interrupted',error_text='process restarted',finished_at=? WHERE session_id=? AND status='active'`, formatTime(events[0].CreatedAt), sessionID)
+			repaired := events[len(events)-1]
+			_, err := tx.ExecContext(ctx, `UPDATE compaction_attempt SET status='interrupted',error_text=?,finished_at=? WHERE session_id=? AND status='active'`, reason, formatTime(repaired.CreatedAt), sessionID)
 			return err
 		}
-		return []event.NewEvent{{Type: "session.runtime.repaired", Data: data}}, project, nil
+		return pending, project, nil
 	})
 	return err
 }

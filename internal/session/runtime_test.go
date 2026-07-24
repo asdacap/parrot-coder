@@ -249,11 +249,16 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := protocol.ToolCall{ID: "call", Name: "tool", Input: json.RawMessage(`{}`)}
-	if _, err := service.AddToolCall(ctx, created.ID, assistant.ID, call); err != nil {
-		t.Fatal(err)
+	calls := []protocol.ToolCall{
+		{ID: "pending-call", Name: "pending-tool", Input: json.RawMessage(`{}`)},
+		{ID: "running-call", Name: "running-tool", Input: json.RawMessage(`{}`)},
 	}
-	if err := service.StartTool(ctx, created.ID, call.ID); err != nil {
+	for _, call := range calls {
+		if _, err := service.AddToolCall(ctx, created.ID, assistant.ID, call); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := service.StartTool(ctx, created.ID, calls[1].ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -276,21 +281,31 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var toolStatus, toolError string
-	if err := sessionDB.SQL().QueryRowContext(ctx, `SELECT status,error_text FROM session_tool_call WHERE id='call'`).Scan(&toolStatus, &toolError); err != nil {
-		t.Fatal(err)
-	}
-	if toolStatus != "interrupted" || toolError != "process restarted" {
-		t.Fatalf("tool state = %q, %q", toolStatus, toolError)
+	for _, call := range calls {
+		var toolStatus, toolError string
+		if err := sessionDB.SQL().QueryRowContext(ctx, `SELECT status,error_text FROM session_tool_call WHERE id=?`, call.ID).Scan(&toolStatus, &toolError); err != nil {
+			t.Fatal(err)
+		}
+		if toolStatus != "interrupted" || toolError != "process restarted" {
+			t.Fatalf("tool %s state = %q, %q", call.ID, toolStatus, toolError)
+		}
 	}
 	eventsBefore, _ := repository.List(ctx, created.ID, -1, 100)
+	interrupted := make(map[string]map[string]string)
 	for _, item := range eventsBefore {
-		if item.Type != "session.tool.running" {
+		if item.Type != "session.tool.interrupted" {
 			continue
 		}
 		var payload map[string]string
-		if err := json.Unmarshal(item.Data, &payload); err != nil || payload["tool_name"] != "tool" {
-			t.Fatalf("running tool event lost its name: %s, %v", item.Data, err)
+		if err := json.Unmarshal(item.Data, &payload); err != nil {
+			t.Fatalf("decode interrupted tool event: %s, %v", item.Data, err)
+		}
+		interrupted[payload["call_id"]] = payload
+	}
+	for _, call := range calls {
+		payload := interrupted[call.ID]
+		if payload["tool_name"] != call.Name || payload["status"] != "interrupted" || payload["error"] != "process restarted" {
+			t.Fatalf("interrupted event for %s = %#v", call.ID, payload)
 		}
 	}
 	if err := service.RepairActive(ctx, created.ID); err != nil {
