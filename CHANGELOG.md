@@ -48,6 +48,12 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Added
 
+- Built-in `alibaba-token-plan` and `alibaba-coding-plan` provider presets for
+  the two Alibaba Cloud Model Studio subscriptions, so an `sk-sp-` key is all
+  either needs. The plans are isolated billing channels with separate endpoints
+  and catalogs, and neither key works against the other. The Token Plan preset
+  declares per-model reasoning efforts, because its endpoint rejects any level
+  the selected model does not serve.
 - The `openrouter` provider now accepts `provider_preferences` in `parrot.yaml`,
   forwarded verbatim as the top-level `provider` object of each request body to
   steer OpenRouter routing, fallback, sorting, and data-collection behavior.

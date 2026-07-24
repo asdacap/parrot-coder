@@ -184,6 +184,95 @@ var providerPresets = map[string]providerPreset{
 			"kimi-k2-0905-preview":  {Name: "Kimi K2 0905", Context: 262144, MaxTokens: 32768, Tools: true},
 		},
 	},
+	// alibaba-token-plan is the Alibaba Cloud Model Studio Token Plan (Team
+	// Edition). It speaks the chat-completions protocol and serves a small,
+	// frequently changing catalog from /models that reports nothing but model
+	// IDs, so the Models map supplies the context windows, output limits, and
+	// reasoning efforts the catalog cannot express. Model IDs carry no vendor
+	// prefix, so selection splits "alibaba-token-plan/<model-id>" cleanly on
+	// the first slash.
+	//
+	// Its keys start with sk-sp- and are not interchangeable with either a
+	// pay-as-you-go Model Studio key or an alibaba-coding-plan key: the three
+	// billing channels are isolated and each rejects the others' keys. The
+	// preset uses the Singapore endpoint; a Beijing account overrides base_url
+	// with https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1.
+	//
+	// The endpoint validates reasoning_effort per model and rejects any level
+	// the model does not serve, so each variant list names exactly the levels
+	// that model accepts. The catalog also lists wan2.7-image models, which the
+	// compatible-mode endpoint serves only for structured multimodal content
+	// and not as chat models; they are left undescribed rather than declared.
+	"alibaba-token-plan": {
+		Protocol:      "chat-completions",
+		BaseURL:       "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+		APIKeyEnv:     "ALIBABA_TOKEN_PLAN_API_KEY",
+		HeaderTimeout: 10 * time.Second,
+		Models: map[string]config.Model{
+			// qwen3.8-max-preview always thinks: it rejects the "none" effort
+			// its sibling models accept.
+			"qwen3.8-max-preview": {
+				Name: "Qwen3.8 Max Preview", Context: 1000000, MaxTokens: 131072, Tools: true, Reasoning: true,
+				Variants: effortVariants("max", "xhigh", "high", "medium", "low", "minimal"),
+			},
+			"qwen3.7-max": {
+				Name: "Qwen3.7 Max", Context: 1000000, MaxTokens: 131072, Tools: true, Reasoning: true,
+				Variants: effortVariants("xhigh", "high", "medium", "low", "minimal", "none"),
+			},
+			"qwen3.7-plus": {
+				Name: "Qwen3.7 Plus", Context: 1000000, MaxTokens: 65536, Tools: true, Reasoning: true,
+				Variants: effortVariants("xhigh", "high", "medium", "low", "minimal", "none"),
+			},
+			"qwen3.6-flash": {
+				Name: "Qwen3.6 Flash", Context: 1000000, MaxTokens: 65536, Tools: true, Reasoning: true,
+				Variants: effortVariants("xhigh", "high", "medium", "low", "minimal", "none"),
+			},
+			"glm-5.2": {
+				Name: "GLM 5.2", Context: 1048576, MaxTokens: 131072, Tools: true, Reasoning: true,
+				Variants: effortVariants("max", "xhigh", "high", "medium", "low", "minimal", "none"),
+			},
+			"deepseek-v4-pro": {
+				Name: "DeepSeek V4 Pro", Context: 1048576, MaxTokens: 384000, Tools: true, Reasoning: true,
+				Variants: effortVariants("max", "xhigh", "high", "medium", "low"),
+			},
+		},
+	},
+	// alibaba-coding-plan is the Alibaba Cloud Model Studio Coding Plan, a
+	// separate subscription from the Token Plan with its own sk-sp- key, its
+	// own endpoint, and its own catalog of coding models. It too serves an
+	// ID-only model list from /models, so the Models map carries the context
+	// windows the plan documents. Output limits and reasoning efforts are left
+	// out: the plan documents neither, and declaring an effort the endpoint
+	// rejects would break /effort rather than extend it.
+	"alibaba-coding-plan": {
+		Protocol:      "chat-completions",
+		BaseURL:       "https://coding-intl.dashscope.aliyuncs.com/v1",
+		APIKeyEnv:     "ALIBABA_CODING_PLAN_API_KEY",
+		HeaderTimeout: 10 * time.Second,
+		Models: map[string]config.Model{
+			"qwen3.7-plus":         {Name: "Qwen3.7 Plus", Context: 1000000, Tools: true},
+			"qwen3.6-plus":         {Name: "Qwen3.6 Plus", Context: 1000000, Tools: true},
+			"qwen3.5-plus":         {Name: "Qwen3.5 Plus", Context: 1000000, Tools: true},
+			"qwen3-coder-plus":     {Name: "Qwen3 Coder Plus", Context: 1000000, Tools: true},
+			"qwen3-coder-next":     {Name: "Qwen3 Coder Next", Context: 262144, Tools: true},
+			"qwen3-max-2026-01-23": {Name: "Qwen3 Max 2026-01-23", Context: 262144, Tools: true},
+			"kimi-k2.5":            {Name: "Kimi K2.5", Context: 262144, Tools: true},
+			"glm-5":                {Name: "GLM 5", Context: 202752, Tools: true},
+			"glm-4.7":              {Name: "GLM 4.7", Context: 202752, Tools: true},
+			"MiniMax-M2.5":         {Name: "MiniMax M2.5", Context: 196608, Tools: true},
+		},
+	},
+}
+
+// effortVariants names one reasoning variant per effort level, so /effort
+// exposes exactly the levels a model accepts and nothing the endpoint would
+// reject.
+func effortVariants(efforts ...string) map[string]config.Variant {
+	variants := make(map[string]config.Variant, len(efforts))
+	for _, effort := range efforts {
+		variants[effort] = config.Variant{ReasoningEffort: effort}
+	}
+	return variants
 }
 
 // PresetProviderIDs lists the provider IDs that carry built-in defaults, so a

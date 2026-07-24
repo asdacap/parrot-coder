@@ -197,6 +197,51 @@ cleanly on the first slash. Correct or extend any catalog metadata with a
 OpenCode Go now has a usage endpoint (`/zen/go/v1/usage`), so `parrot usage`
 shows the current subscription windows and credit balance.
 
+### Alibaba Cloud Model Studio
+
+Alibaba ships as two built-in provider presets, because its subscriptions are
+two isolated billing channels with two different keys — both of which look
+alike, starting with `sk-sp-`. A credential is all either one needs.
+
+**`alibaba-token-plan` — the Token Plan (Team Edition),** which serves the
+current flagship models (Qwen3.x, GLM, DeepSeek):
+
+```sh
+printf '%s' "$ALIBABA_TOKEN_PLAN_API_KEY" | parrot auth login alibaba-token-plan --api-key-stdin
+# Or simply export ALIBABA_TOKEN_PLAN_API_KEY before starting Parrot.
+
+parrot models
+parrot chat --model alibaba-token-plan/qwen3.7-plus
+```
+
+**`alibaba-coding-plan` — the Coding Plan,** a separate subscription serving a
+coding-focused catalog:
+
+```sh
+printf '%s' "$ALIBABA_CODING_PLAN_API_KEY" | parrot auth login alibaba-coding-plan --api-key-stdin
+parrot chat --model alibaba-coding-plan/qwen3-coder-plus
+```
+
+Pick the one matching the key you hold. The plans do not share endpoints: a
+Coding Plan key on the Token Plan endpoint fails with `401 invalid_api_key`,
+and a pay-as-you-go Model Studio key (`sk-`) works on neither. Neither plan
+exposes a usage route, so `parrot usage` reports nothing for either.
+
+Both presets speak the chat-completions protocol, and both endpoints serve a
+model list carrying nothing but IDs, so the presets supply the context windows,
+output limits, and reasoning efforts the catalog cannot express. Model IDs
+carry no vendor prefix, so selection splits `alibaba-token-plan/<model-id>`
+cleanly on the first slash. `/effort` offers the levels each model actually
+accepts — the endpoint validates `reasoning_effort` per model and rejects the
+rest. The Token Plan preset points at the Singapore region; for a Beijing
+account, override `base_url`:
+
+```yaml
+providers:
+  alibaba-token-plan:
+    base_url: https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1
+```
+
 ### Compatible Endpoint
 
 Create `~/.config/parrot/parrot.yaml`. Configuration stores the name of an

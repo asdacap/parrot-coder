@@ -97,6 +97,20 @@ func TestApplyProviderPresetFillsOnlyEmptyFields(t *testing.T) {
 			wantTimeoutMS: func() *int { value := 10000; return &value }(),
 		},
 		{
+			name: "alibaba-token-plan fills the Singapore compatible-mode endpoint", id: "alibaba-token-plan",
+			wantBaseURL:   "https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1",
+			wantProtocol:  "chat-completions",
+			wantAPIKeyEnv: "ALIBABA_TOKEN_PLAN_API_KEY",
+			wantTimeoutMS: func() *int { value := 10000; return &value }(),
+		},
+		{
+			name: "alibaba-coding-plan is a separate plan with its own endpoint", id: "alibaba-coding-plan",
+			wantBaseURL:   "https://coding-intl.dashscope.aliyuncs.com/v1",
+			wantProtocol:  "chat-completions",
+			wantAPIKeyEnv: "ALIBABA_CODING_PLAN_API_KEY",
+			wantTimeoutMS: func() *int { value := 10000; return &value }(),
+		},
+		{
 			name: "unknown providers are untouched", id: "whatever",
 			item:        config.Provider{BaseURL: "https://example.com/v1"},
 			wantBaseURL: "https://example.com/v1",
@@ -172,12 +186,37 @@ func TestBuildProvidersUsesPresetsForUnconfiguredProviders(t *testing.T) {
 	if findProvider(built, "openrouter") == nil {
 		t.Fatal("openrouter was not built from a stored credential alone")
 	}
-	built, err = BuildProviders(ctx, cfg, storeWithKeys(t, "opencode-go"), offlineClient())
-	if err != nil {
-		t.Fatal(err)
+	for _, id := range []string{"opencode-go", "alibaba-token-plan", "alibaba-coding-plan"} {
+		built, err = BuildProviders(ctx, cfg, storeWithKeys(t, id), offlineClient())
+		if err != nil {
+			t.Fatal(err)
+		}
+		if findProvider(built, id) == nil {
+			t.Fatalf("%s was not built from a stored credential alone", id)
+		}
 	}
-	if findProvider(built, "opencode-go") == nil {
-		t.Fatal("opencode-go was not built from a stored credential alone")
+}
+
+// The Alibaba endpoints validate reasoning_effort per model and reject any
+// level the model does not serve, so a preset variant must always carry the
+// effort its own name promises.
+func TestAlibabaPresetVariantsNameTheirOwnEffort(t *testing.T) {
+	for _, id := range []string{"alibaba-token-plan", "alibaba-coding-plan"} {
+		for modelID, model := range presetModelDefaults(id) {
+			if model.Context == 0 {
+				t.Errorf("%s/%s has no context window, so it cannot compact proactively", id, modelID)
+			}
+			for name, variant := range model.Variants {
+				if variant.ReasoningEffort != name {
+					t.Errorf("%s/%s variant %q sends effort %q", id, modelID, name, variant.ReasoningEffort)
+				}
+			}
+		}
+	}
+	// The Token Plan preview model always thinks: the endpoint rejects the
+	// "none" effort its sibling models accept.
+	if _, ok := presetModelDefaults("alibaba-token-plan")["qwen3.8-max-preview"].Variants["none"]; ok {
+		t.Fatal("qwen3.8-max-preview offers an effort its endpoint rejects")
 	}
 }
 

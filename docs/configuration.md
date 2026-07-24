@@ -148,6 +148,8 @@ enough to use them and no `providers` entry is required:
 | `kimi-api` | API key: `MOONSHOT_API_KEY` or `parrot auth login kimi-api --api-key-stdin` | `https://api.moonshot.ai/v1`, `chat-completions`, Kimi K2 metadata |
 | `openrouter` | API key: `OPENROUTER_API_KEY` or `parrot auth login openrouter --api-key-stdin` | `https://openrouter.ai/api/v1`, `chat-completions`, 10-second `header_timeout_ms`; model catalog comes from `/models` |
 | `opencode-go` | API key: `OPENCODE_GO_API_KEY` or `parrot auth login opencode-go --api-key-stdin` | `https://opencode.ai/zen/go/v1`, `chat-completions`, 10-second `header_timeout_ms`; model catalog comes from `/models` |
+| `alibaba-token-plan` | API key: `ALIBABA_TOKEN_PLAN_API_KEY` or `parrot auth login alibaba-token-plan --api-key-stdin` | `https://token-plan.ap-southeast-1.maas.aliyuncs.com/compatible-mode/v1`, `chat-completions`, 10-second `header_timeout_ms`; model catalog comes from `/models`, Qwen/GLM/DeepSeek metadata |
+| `alibaba-coding-plan` | API key: `ALIBABA_CODING_PLAN_API_KEY` or `parrot auth login alibaba-coding-plan --api-key-stdin` | `https://coding-intl.dashscope.aliyuncs.com/v1`, `chat-completions`, 10-second `header_timeout_ms`; model catalog comes from `/models`, Qwen/GLM/Kimi/MiniMax context windows |
 | `openai` | API key: your `api_key_env` or credential store entry | 10-second `header_timeout_ms` only; `base_url` is still required |
 
 The two Kimi providers are different products and take different keys.
@@ -157,6 +159,22 @@ plan, so `parrot usage` reports nothing for it — there is no balance route.
 that `parrot usage` does report. A subscription key used against `kimi-api`
 fails with an insufficient-balance error, because the plan does not fund the
 pay-as-you-go endpoint.
+
+The two Alibaba providers are likewise different products. Alibaba Cloud Model
+Studio isolates its billing channels: the **Token Plan** and the **Coding
+Plan** each issue their own `sk-sp-` key, and neither key works against the
+other's endpoint or against the pay-as-you-go `dashscope` endpoint. A mismatch
+returns `401 invalid_api_key`, or silently bills the pay-as-you-go channel.
+Neither plan exposes a usage route, so `parrot usage` reports nothing for
+either. The `alibaba-token-plan` preset points at the Singapore region; a
+Beijing account overrides `base_url` with
+`https://token-plan.cn-beijing.maas.aliyuncs.com/compatible-mode/v1`.
+
+Both Alibaba endpoints validate `reasoning_effort` per model and reject any
+level that model does not serve, so the `alibaba-token-plan` preset declares
+exactly the levels each model accepts — `none`, `minimal`, `low`, `medium`,
+`high`, `xhigh`, and `max` are supported in differing subsets. The Coding Plan
+documents no efforts, so its preset declares none.
 
 Presets are compiled in, not configuration, so a project-scope file cannot
 redirect a preset provider's connection fields. Adding a `providers` entry for a
