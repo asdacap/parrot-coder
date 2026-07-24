@@ -2040,6 +2040,12 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		result, err := compactor.Compact(s.ctx, id)
 		if err != nil {
 			s.commitError(err.Error())
+		} else if result.Status != "complete" {
+			reason := result.Reason
+			if reason == "" {
+				reason = "compaction did not complete"
+			}
+			s.commitError(reason)
 		} else {
 			s.commitStatus("✓ Compaction: " + result.Status)
 		}
@@ -2265,6 +2271,12 @@ func (s *chatShell) sessionAction(argument string) bool {
 		result, err := compactor.Compact(s.ctx, id)
 		if err != nil {
 			s.commitError(err.Error())
+		} else if result.Status != "complete" {
+			reason := result.Reason
+			if reason == "" {
+				reason = "compaction did not complete"
+			}
+			s.commitError(reason)
 		} else {
 			s.commitStatus("✓ Compaction: " + result.Status)
 		}

@@ -169,12 +169,13 @@ func (s *Service) plan(state State, request Request) (Plan, string) {
 		}
 	}
 	cut, ok := SafeCut(state.Messages, s.config.RecentMessages)
-	// A provider-confirmed overflow must prioritize making progress over the
-	// normal recent-history preference. The configured retention can itself be
-	// larger than the model's usable window (for example after several large
-	// tool results), which would otherwise make every forced retry skip forever.
+	// A forced compaction follows a provider-confirmed overflow (or an explicit
+	// user request), so it must prioritize making progress over the normal
+	// recent-history preference. Do not gate this fallback on our token estimate:
+	// the provider has already proved that estimate can be too low. This also
+	// applies after an earlier compaction, once enough new history has accumulated.
 	// SafeCut still preserves active messages and complete tool-call groups.
-	if !ok && request.Force && state.Epoch.HistoryCutoff == 0 && s.config.RecentMessages > 1 && (usable <= 0 || estimate.Total() >= usable) {
+	if !ok && request.Force && s.config.RecentMessages > 1 && len(state.Messages) > 2 {
 		cut, ok = SafeCut(state.Messages, 1)
 	}
 	if !ok {

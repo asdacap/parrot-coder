@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -115,20 +116,24 @@ func TestBudgetTriggerAndDeterministicHeuristic(t *testing.T) {
 }
 
 func TestForcedCompactionRelaxesRecentMessageRetention(t *testing.T) {
-	h := newHarness(t, "baseline", 6)
-	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-	service, err := NewService(h.repo, summary, fakeContext{value: FullContext{Baseline: "fresh", Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 6})
-	if err != nil {
-		t.Fatal(err)
-	}
+	for _, contextWindow := range []int{24, 1_000_000} {
+		t.Run(fmt.Sprintf("context_window_%d", contextWindow), func(t *testing.T) {
+			h := newHarness(t, "baseline", 6)
+			summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
+			service, err := NewService(h.repo, summary, fakeContext{value: FullContext{Baseline: "fresh", Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 6})
+			if err != nil {
+				t.Fatal(err)
+			}
 
-	result, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 24}})
-	if err != nil || result.Status != "skipped" || result.Reason != ErrNoSafeCut.Error() {
-		t.Fatalf("proactive result = %#v, err=%v", result, err)
-	}
-	result, err = service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 24}, Force: true})
-	if err != nil || result.Status != "complete" || len(summary.request.Messages) != 5 {
-		t.Fatalf("forced result = %#v, summarized=%d, err=%v", result, len(summary.request.Messages), err)
+			result, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: contextWindow}})
+			if err != nil || result.Status != "skipped" {
+				t.Fatalf("proactive result = %#v, err=%v", result, err)
+			}
+			result, err = service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: contextWindow}, Force: true})
+			if err != nil || result.Status != "complete" || len(summary.request.Messages) != 5 {
+				t.Fatalf("forced result = %#v, summarized=%d, err=%v", result, len(summary.request.Messages), err)
+			}
+		})
 	}
 }
 
