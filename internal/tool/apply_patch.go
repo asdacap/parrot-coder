@@ -27,7 +27,7 @@ func (*ApplyPatchTool) Presentation() Presentation {
 }
 
 func (*ApplyPatchTool) Description() string {
-	return "Apply reviewed workspace edits written as aider SEARCH/REPLACE blocks: a file path on its own line, then '<<<<<<< SEARCH', the exact existing lines, '=======', the replacement lines, and '>>>>>>> REPLACE'. An empty SEARCH section creates the file. Set format to \"unified\" to supply git-style unified diff text instead."
+	return "Apply reviewed workspace edits written as aider SEARCH/REPLACE blocks: a file path on its own line, then '<<<<<<< SEARCH', the exact existing lines, '=======', the replacement lines, and '>>>>>>> REPLACE'. An empty SEARCH section creates a missing file or matches an existing empty file. Set format to \"unified\" to supply git-style unified diff text instead."
 }
 func (*ApplyPatchTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	format, err := patchFormat(raw)
@@ -40,7 +40,7 @@ func (*ApplyPatchTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	return "Apply the reviewed workspace patch", nil
 }
 func (*ApplyPatchTool) JSONSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string","description":"The patch text, written in the format named by the format field."},"format":{"type":"string","enum":["aider","unified"],"description":"Edit syntax of patchText, defaulting to aider. \"aider\": one or more SEARCH/REPLACE blocks, each a workspace-relative or explicitly security-authorized absolute file path on its own line, then <<<<<<< SEARCH, the exact lines to replace, =======, the replacement lines, and >>>>>>> REPLACE; repeat blocks under the same path for several edits to one file, and leave the SEARCH section empty to create a new file. \"unified\": git diff text with --- and +++ headers and @@ hunks; a /dev/null source creates the file and a /dev/null target deletes it, and renames are rejected."}},"required":["patchText"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"patchText":{"type":"string","description":"The patch text, written in the format named by the format field."},"format":{"type":"string","enum":["aider","unified"],"description":"Edit syntax of patchText, defaulting to aider. \"aider\": one or more SEARCH/REPLACE blocks, each a workspace-relative or explicitly security-authorized absolute file path on its own line, then <<<<<<< SEARCH, the exact lines to replace, =======, the replacement lines, and >>>>>>> REPLACE; repeat blocks under the same path for several edits to one file, and leave the SEARCH section empty to create a missing file or match an existing empty file. \"unified\": git diff text with --- and +++ headers and @@ hunks; a /dev/null source creates the file and a /dev/null target deletes it, and renames are rejected."}},"required":["patchText"],"additionalProperties":false}`)
 }
 func (*ApplyPatchTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
 	var input struct {

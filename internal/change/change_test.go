@@ -22,7 +22,7 @@ func testWorkspace(t *testing.T) *workspace.Workspace {
 }
 
 // aiderBlock renders one SEARCH/REPLACE block. An empty path repeats the
-// previous block's file, and an empty search section creates the file.
+// previous block's file, and an empty search matches a missing or empty file.
 func aiderBlock(path, search, replace string) string {
 	block := ""
 	if path != "" {
@@ -88,6 +88,19 @@ func TestPatchAddUpdateAndStrictRejections(t *testing.T) {
 	}
 	if _, err := service.PlanPatch(ctx, ws, aiderBlock("absent", "x", "y"), PatchFormatAider); err == nil {
 		t.Fatal("update of missing file accepted")
+	}
+	if err := os.WriteFile(filepath.Join(ws.Root(), "empty"), nil, 0o640); err != nil {
+		t.Fatal(err)
+	}
+	emptyPlan, err := service.PlanPatch(ctx, ws, aiderBlock("empty", "", "filled"), PatchFormatAider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := emptyPlan.Mutations[0]; string(got.After.Data) != "filled\n" || got.After.Mode.Perm() != 0o640 {
+		t.Fatalf("empty file mutation = %#v", got)
+	}
+	if _, err := service.PlanPatch(ctx, ws, aiderBlock("update", "", "overwritten"), PatchFormatAider); !errors.Is(err, ErrConflict) {
+		t.Fatalf("non-empty file error = %v, want ErrConflict", err)
 	}
 	outside := filepath.Join(t.TempDir(), "external")
 	if err := os.WriteFile(outside, []byte("old\n"), 0o600); err != nil {
@@ -339,26 +352,6 @@ func TestPatchSyntaxTolerance(t *testing.T) {
 				t.Fatalf("after = %q, want %q", got, tc.want)
 			}
 		})
-	}
-}
-
-func TestPatchCreationOverwritesExistingFile(t *testing.T) {
-	ctx := context.Background()
-	ws := testWorkspace(t)
-	if err := os.WriteFile(filepath.Join(ws.Root(), "added"), []byte("old add\n"), 0o640); err != nil {
-		t.Fatal(err)
-	}
-	service := NewService(Config{})
-	plan, err := service.PlanPatch(ctx, ws, aiderBlock("added", "", "new add"), PatchFormatAider)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := service.Commit(ctx, ws, plan); err != nil {
-		t.Fatal(err)
-	}
-	data, err := os.ReadFile(filepath.Join(ws.Root(), "added"))
-	if err != nil || string(data) != "new add\n" {
-		t.Fatalf("added = %q, %v", data, err)
 	}
 }
 

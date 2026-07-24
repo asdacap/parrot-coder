@@ -59,7 +59,7 @@ const (
 // ParsePatch parses the aider SEARCH/REPLACE edit format: a file path line
 // followed by one or more <<<<<<< SEARCH / ======= / >>>>>>> REPLACE blocks.
 // Blocks apply to the most recent path line, and an empty SEARCH section
-// creates the file.
+// creates a missing file or matches an existing empty file.
 func ParsePatch(text string) (Patch, error) {
 	lines, err := patchLines(text)
 	if err != nil {
@@ -257,6 +257,9 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 			if before.Exists {
 				if before.SymlinkTarget != "" || !before.Mode.IsRegular() {
 					return Plan{}, errors.New("change: patches require regular files")
+				}
+				if len(before.Data) != 0 {
+					return Plan{}, fmt.Errorf("change: create %q: %w: empty SEARCH only matches an empty file", operation.Path, ErrConflict)
 				}
 				mode = before.Mode
 			}
