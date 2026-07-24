@@ -90,6 +90,14 @@ func TestBudgetTriggerAndDeterministicHeuristic(t *testing.T) {
 	if estimate.MeasuredTokens != 7 || estimate.HeuristicTokens == 0 {
 		t.Fatalf("mixed estimate = %#v", estimate)
 	}
+	providerEstimate := EstimateRequest("system", []Message{
+		{Role: protocol.RoleAssistant, Usage: protocol.Usage{InputTokens: 100_000, OutputTokens: 10, TotalTokens: 100_010}},
+		{Role: protocol.RoleAssistant, Usage: protocol.Usage{InputTokens: 369_000, OutputTokens: 700, TotalTokens: 369_700}},
+		{Role: protocol.RoleUser, Content: "suffix"},
+	}, nil)
+	if providerEstimate.Total() <= 369_000 || providerEstimate.Total() >= 469_000 {
+		t.Fatalf("provider context estimate = %#v", providerEstimate)
+	}
 	h := newHarness(t, "baseline", 6)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
 	service, err := NewService(h.repo, summary, fakeContext{value: FullContext{Baseline: "fresh", Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 2, TriggerFraction: .8})
@@ -103,6 +111,24 @@ func TestBudgetTriggerAndDeterministicHeuristic(t *testing.T) {
 	result, err = service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "small", ContextWindow: 24}})
 	if err != nil || result.Status != "complete" || summary.calls != 1 {
 		t.Fatalf("trigger result = %#v, calls=%d, err=%v", result, summary.calls, err)
+	}
+}
+
+func TestForcedCompactionRelaxesRecentMessageRetention(t *testing.T) {
+	h := newHarness(t, "baseline", 6)
+	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
+	service, err := NewService(h.repo, summary, fakeContext{value: FullContext{Baseline: "fresh", Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 6})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 24}})
+	if err != nil || result.Status != "skipped" || result.Reason != ErrNoSafeCut.Error() {
+		t.Fatalf("proactive result = %#v, err=%v", result, err)
+	}
+	result, err = service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 24}, Force: true})
+	if err != nil || result.Status != "complete" || len(summary.request.Messages) != 5 {
+		t.Fatalf("forced result = %#v, summarized=%d, err=%v", result, len(summary.request.Messages), err)
 	}
 }
 

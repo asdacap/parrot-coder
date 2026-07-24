@@ -42,11 +42,12 @@ type Plan struct {
 }
 
 type Estimate struct {
-	MeasuredTokens  int `json:"measured_tokens"`
-	HeuristicTokens int `json:"heuristic_tokens"`
+	MeasuredTokens        int `json:"measured_tokens"`
+	HeuristicTokens       int `json:"heuristic_tokens"`
+	ProviderContextTokens int `json:"provider_context_tokens"`
 }
 
-func (e Estimate) Total() int { return e.MeasuredTokens + e.HeuristicTokens }
+func (e Estimate) Total() int { return max(e.MeasuredTokens+e.HeuristicTokens, e.ProviderContextTokens) }
 
 type Request struct {
 	SessionID    string

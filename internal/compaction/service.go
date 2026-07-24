@@ -169,6 +169,14 @@ func (s *Service) plan(state State, request Request) (Plan, string) {
 		}
 	}
 	cut, ok := SafeCut(state.Messages, s.config.RecentMessages)
+	// A provider-confirmed overflow must prioritize making progress over the
+	// normal recent-history preference. The configured retention can itself be
+	// larger than the model's usable window (for example after several large
+	// tool results), which would otherwise make every forced retry skip forever.
+	// SafeCut still preserves active messages and complete tool-call groups.
+	if !ok && request.Force && state.Epoch.HistoryCutoff == 0 && s.config.RecentMessages > 1 && (usable <= 0 || estimate.Total() >= usable) {
+		cut, ok = SafeCut(state.Messages, 1)
+	}
 	if !ok {
 		return Plan{}, ErrNoSafeCut.Error()
 	}
@@ -198,21 +206,34 @@ func HeuristicTextTokens(text string) int {
 
 func EstimateRequest(instructions string, messages []Message, tools []protocol.ToolDefinition) Estimate {
 	estimate := Estimate{HeuristicTokens: HeuristicTextTokens(instructions) + 4}
+	providerContext, suffixTokens := 0, 0
 	for _, message := range messages {
+		raw, _ := json.Marshal(message.Parts)
+		heuristic := HeuristicTextTokens(message.Content) + HeuristicTextTokens(string(raw)) + 4
 		measured := 0
 		if message.Role == protocol.RoleAssistant {
 			measured = message.Usage.OutputTokens
 			if measured == 0 {
 				measured = message.Usage.TotalTokens
 			}
+			contextTokens := message.Usage.InputTokens
+			if contextTokens == 0 {
+				contextTokens = message.Usage.TotalTokens
+			}
+			if contextTokens > 0 {
+				providerContext, suffixTokens = contextTokens, 0
+			}
 		}
 		if measured > 0 {
 			estimate.MeasuredTokens += measured
 		} else {
-			raw, _ := json.Marshal(message.Parts)
-			estimate.HeuristicTokens += HeuristicTextTokens(message.Content) + HeuristicTextTokens(string(raw)) + 4
+			estimate.HeuristicTokens += heuristic
+		}
+		if providerContext > 0 {
+			suffixTokens += heuristic
 		}
 	}
+	estimate.ProviderContextTokens = providerContext + suffixTokens
 	for _, definition := range tools {
 		estimate.HeuristicTokens += HeuristicTextTokens(definition.Name) + HeuristicTextTokens(definition.Description) + HeuristicTextTokens(string(definition.InputSchema)) + 8
 	}
