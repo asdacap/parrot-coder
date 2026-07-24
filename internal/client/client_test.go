@@ -35,6 +35,109 @@ func TestAPIErrorPreservesProblem(t *testing.T) {
 	}
 }
 
+func TestInternalErrorsAreRetried(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts <= internalErrorRetries {
+			w.Header().Set("Content-Type", v1.MediaTypeProblem)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"type":"https://parrot.invalid/problems/internal-error","title":"Internal error","status":500,"detail":"failed","code":"internal_error","request_id":"req_test"}`)
+			return
+		}
+		w.Header().Set("Content-Type", v1.MediaTypeJSON)
+		_, _ = io.WriteString(w, `{"status":"ok"}`)
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, nil)
+	var delays []time.Duration
+	client.retryDelay = func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		return nil
+	}
+
+	result, err := client.Health(context.Background())
+	if err != nil || result.Status != "ok" || attempts != internalErrorRetries+1 {
+		t.Fatalf("health = %#v, attempts = %d, err = %v", result, attempts, err)
+	}
+	wantDelays := []time.Duration{internalErrorRetryDelay, 2 * internalErrorRetryDelay}
+	if len(delays) != len(wantDelays) || delays[0] != wantDelays[0] || delays[1] != wantDelays[1] {
+		t.Fatalf("delays = %v, want %v", delays, wantDelays)
+	}
+}
+
+func TestInternalErrorRetriesOnlyIdempotentRequests(t *testing.T) {
+	attempts := map[string]int{}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts[r.URL.Path]++
+		if strings.HasSuffix(r.URL.Path, "/prompts") && attempts[r.URL.Path] == 2 {
+			w.Header().Set("Content-Type", v1.MediaTypeJSON)
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = io.WriteString(w, `{"input_id":"in_test","message_id":"msg_test","delivery":"follow_up","status":"accepted","created":true}`)
+			return
+		}
+		w.Header().Set("Content-Type", v1.MediaTypeProblem)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = io.WriteString(w, `{"type":"https://parrot.invalid/problems/internal-error","title":"Internal error","status":500,"detail":"failed","code":"internal_error","request_id":"req_test"}`)
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, nil)
+	client.retryDelay = func(context.Context, time.Duration) error { return nil }
+
+	accepted, promptErr := client.Prompt(context.Background(), "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "follow_up"})
+	_, createErr := client.CreateSession(context.Background(), v1.CreateSessionRequest{})
+	if promptErr != nil || accepted.MessageID != "msg_test" || attempts["/api/v1/sessions/ses_test/prompts"] != 2 {
+		t.Fatalf("accepted = %#v, attempts = %v, err = %v", accepted, attempts, promptErr)
+	}
+	var apiError *APIError
+	if !errors.As(createErr, &apiError) || attempts["/api/v1/sessions"] != 1 {
+		t.Fatalf("create attempts = %v, error = %T %v", attempts, createErr, createErr)
+	}
+}
+
+func TestInternalErrorRetryStops(t *testing.T) {
+	t.Run("exhausted", func(t *testing.T) {
+		attempts := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			attempts++
+			w.Header().Set("Content-Type", v1.MediaTypeProblem)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"type":"https://parrot.invalid/problems/internal-error","title":"Internal error","status":500,"detail":"failed","code":"internal_error","request_id":"req_test"}`)
+		}))
+		defer server.Close()
+		client, _ := New(server.URL, nil)
+		client.retryDelay = func(context.Context, time.Duration) error { return nil }
+
+		_, err := client.Health(context.Background())
+		var apiError *APIError
+		if !errors.As(err, &apiError) || attempts != internalErrorRetries+1 {
+			t.Fatalf("attempts = %d, error = %T %v", attempts, err, err)
+		}
+	})
+
+	t.Run("context canceled", func(t *testing.T) {
+		attempts := 0
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			attempts++
+			w.Header().Set("Content-Type", v1.MediaTypeProblem)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"type":"https://parrot.invalid/problems/internal-error","title":"Internal error","status":500,"detail":"failed","code":"internal_error","request_id":"req_test"}`)
+		}))
+		defer server.Close()
+		client, _ := New(server.URL, nil)
+		ctx, cancel := context.WithCancel(context.Background())
+		client.retryDelay = func(context.Context, time.Duration) error {
+			cancel()
+			return ctx.Err()
+		}
+
+		_, err := client.Health(ctx)
+		if !errors.Is(err, context.Canceled) || attempts != 1 {
+			t.Fatalf("attempts = %d, error = %v", attempts, err)
+		}
+	})
+}
+
 func TestResponseLimit(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", v1.MediaTypeJSON)
@@ -89,6 +192,30 @@ func TestSSEDecoderMultilineHeartbeatAndEOF(t *testing.T) {
 	if _, err := decoder.Next(); !errors.Is(err, io.EOF) {
 		t.Fatalf("EOF error = %v", err)
 	}
+}
+
+func TestEventsRetriesInternalErrorDuringHandshake(t *testing.T) {
+	attempts := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		attempts++
+		if attempts == 1 {
+			w.Header().Set("Content-Type", v1.MediaTypeProblem)
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"type":"https://parrot.invalid/problems/internal-error","title":"Internal error","status":500,"detail":"failed","code":"internal_error","request_id":"req_test"}`)
+			return
+		}
+		w.Header().Set("Content-Type", v1.MediaTypeSSE)
+		_, _ = io.WriteString(w, "event: server.connected\ndata: {}\n\n")
+	}))
+	defer server.Close()
+	client, _ := New(server.URL, nil)
+	client.retryDelay = func(context.Context, time.Duration) error { return nil }
+
+	stream, err := client.Events(context.Background(), "ses_test", nil)
+	if err != nil || attempts != 2 {
+		t.Fatalf("stream = %v, attempts = %d, err = %v", stream, attempts, err)
+	}
+	_ = stream.Close()
 }
 
 func TestEventsCancellationAndNoReconnect(t *testing.T) {

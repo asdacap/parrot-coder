@@ -12,17 +12,23 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
+	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 )
 
-const defaultMaxResponseBytes int64 = 4 << 20
+const (
+	defaultMaxResponseBytes int64 = 4 << 20
+	internalErrorRetries          = 2
+	internalErrorRetryDelay       = 100 * time.Millisecond
+)
 
 type Client struct {
 	baseURL          *url.URL
 	http             *http.Client
 	MaxResponseBytes int64
 	MaxEventBytes    int
+	retryDelay       func(context.Context, time.Duration) error
 }
 
 type APIError struct {
@@ -44,7 +50,11 @@ func New(baseURL string, transport http.RoundTripper) (*Client, error) {
 	if transport == nil {
 		transport = http.DefaultTransport
 	}
-	return &Client{baseURL: parsed, http: &http.Client{Transport: transport}, MaxResponseBytes: defaultMaxResponseBytes, MaxEventBytes: 1 << 20}, nil
+	return &Client{
+		baseURL: parsed, http: &http.Client{Transport: transport},
+		MaxResponseBytes: defaultMaxResponseBytes, MaxEventBytes: 1 << 20,
+		retryDelay: waitForRetry,
+	}, nil
 }
 
 func (c *Client) Health(ctx context.Context) (v1.Health, error) {
@@ -147,7 +157,7 @@ func (c *Client) DeleteGoal(ctx context.Context, id string) error {
 // Prompt returns after durable admission (202), not model completion.
 func (c *Client) Prompt(ctx context.Context, id string, request v1.PromptRequest) (v1.PromptAccepted, error) {
 	var out v1.PromptAccepted
-	err := c.do(ctx, http.MethodPost, sessionPath(id)+"/prompts", request, http.StatusAccepted, &out)
+	err := c.doIdempotent(ctx, http.MethodPost, sessionPath(id)+"/prompts", request, http.StatusAccepted, &out)
 	return out, err
 }
 
@@ -237,41 +247,70 @@ func (c *Client) Events(ctx context.Context, sessionID string, after *int64) (*E
 	if after != nil {
 		path += "?after=" + strconv.FormatInt(*after, 10)
 	}
-	request, err := c.request(ctx, http.MethodGet, path, nil)
-	if err != nil {
-		return nil, err
+	for attempt := 0; ; attempt++ {
+		request, err := c.request(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		request.Header.Set("Accept", v1.MediaTypeSSE)
+		response, err := c.http.Do(request)
+		if err != nil {
+			return nil, err
+		}
+		if response.StatusCode != http.StatusOK {
+			err = c.responseError(response)
+			response.Body.Close()
+			if !isInternalError(err) || attempt >= internalErrorRetries {
+				return nil, err
+			}
+			if err := c.retryDelay(ctx, internalErrorRetryDelay*time.Duration(attempt+1)); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
+		if err != nil || mediaType != v1.MediaTypeSSE {
+			response.Body.Close()
+			return nil, errors.New("client: event response is not text/event-stream")
+		}
+		max := c.MaxEventBytes
+		if max <= 0 {
+			max = 1 << 20
+		}
+		return &EventStream{body: response.Body, decoder: NewSSEDecoder(response.Body, max)}, nil
 	}
-	request.Header.Set("Accept", v1.MediaTypeSSE)
-	response, err := c.http.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	if response.StatusCode != http.StatusOK {
-		defer response.Body.Close()
-		return nil, c.responseError(response)
-	}
-	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
-	if err != nil || mediaType != v1.MediaTypeSSE {
-		response.Body.Close()
-		return nil, errors.New("client: event response is not text/event-stream")
-	}
-	max := c.MaxEventBytes
-	if max <= 0 {
-		max = 1 << 20
-	}
-	return &EventStream{body: response.Body, decoder: NewSSEDecoder(response.Body, max)}, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path string, body any, expected int, target any) error {
-	request, err := c.request(ctx, method, path, body)
-	if err != nil {
-		return err
+	return c.doRequest(ctx, method, path, body, expected, target, retryableMethod(method))
+}
+
+func (c *Client) doIdempotent(ctx context.Context, method, path string, body any, expected int, target any) error {
+	return c.doRequest(ctx, method, path, body, expected, target, true)
+}
+
+func (c *Client) doRequest(ctx context.Context, method, path string, body any, expected int, target any, retryable bool) error {
+	for attempt := 0; ; attempt++ {
+		request, err := c.request(ctx, method, path, body)
+		if err != nil {
+			return err
+		}
+		response, err := c.http.Do(request)
+		if err != nil {
+			return err
+		}
+		err = c.decodeResponse(response, expected, target)
+		response.Body.Close()
+		if !retryable || !isInternalError(err) || attempt >= internalErrorRetries {
+			return err
+		}
+		if err := c.retryDelay(ctx, internalErrorRetryDelay*time.Duration(attempt+1)); err != nil {
+			return err
+		}
 	}
-	response, err := c.http.Do(request)
-	if err != nil {
-		return err
-	}
-	defer response.Body.Close()
+}
+
+func (c *Client) decodeResponse(response *http.Response, expected int, target any) error {
 	if response.StatusCode != expected {
 		return c.responseError(response)
 	}
@@ -295,6 +334,26 @@ func (c *Client) do(ctx context.Context, method, path string, body any, expected
 		return errors.New("client: trailing response data")
 	}
 	return nil
+}
+
+func retryableMethod(method string) bool {
+	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
+}
+
+func isInternalError(err error) bool {
+	var apiError *APIError
+	return errors.As(err, &apiError) && apiError.Problem.Status == http.StatusInternalServerError && apiError.Problem.Code == "internal_error"
+}
+
+func waitForRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func (c *Client) request(ctx context.Context, method, path string, body any) (*http.Request, error) {
