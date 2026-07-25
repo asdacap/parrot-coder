@@ -26,64 +26,82 @@ type ChildCreatedObserver interface {
 	ChildCreated(ChildSession)
 }
 
-// UserSession is the runtime aggregate for a user. It owns the repository of
-// agent runtimes participating in that user's session hierarchy.
-type UserSession struct {
+// UserSession is the runtime aggregate for a user. It owns the agent runtimes
+// participating in that user's session hierarchy.
+type UserSession interface {
+	CreateChild(context.Context, ChildSessionRequest) (AgentSession, error)
+	AddChildCreatedObserver(ChildCreatedObserver)
+	ChildRelation(sessionID string) (string, bool)
+	ChildSessions(parentSessionID string) []ChildSession
+	HasChildSessions(parentSessionID string) bool
+	ForgetChild(sessionID string) error
+	DiscardChild(context.Context, string) error
+	Get(sessionID string) AgentSession
+	Lookup(sessionID string) (AgentSession, bool)
+	Active() []Active
+	Interrupt(context.Context, string) error
+	Status(sessionID string) Status
+	Remove(sessionID string) error
+}
+
+type userSession struct {
 	repository *agentSessionRepository
 }
 
+var _ UserSession = (*userSession)(nil)
+
 // NewUserSession creates a user runtime with its own agent-session repository.
-func NewUserSession(ctx context.Context, config AgentSessionConfig, observers ...LifecycleObserver) (*UserSession, error) {
+func NewUserSession(ctx context.Context, config AgentSessionConfig, observers ...LifecycleObserver) (UserSession, error) {
 	repository, err := newAgentSessionRepository(ctx, config, observers...)
 	if err != nil {
 		return nil, err
 	}
-	return &UserSession{repository: repository}, nil
+	return &userSession{repository: repository}, nil
 }
 
-func (s *UserSession) CreateChild(ctx context.Context, request ChildSessionRequest) (AgentSession, error) {
+func (s *userSession) CreateChild(ctx context.Context, request ChildSessionRequest) (AgentSession, error) {
 	return s.repository.CreateChild(ctx, request)
 }
 
-func (s *UserSession) AddChildCreatedObserver(observer ChildCreatedObserver) {
+func (s *userSession) AddChildCreatedObserver(observer ChildCreatedObserver) {
 	s.repository.AddChildCreatedObserver(observer)
 }
 
-func (s *UserSession) ChildRelation(sessionID string) (string, bool) {
+func (s *userSession) ChildRelation(sessionID string) (string, bool) {
 	return s.repository.ChildRelation(sessionID)
 }
 
-func (s *UserSession) ChildSessions(parentSessionID string) []ChildSession {
+func (s *userSession) ChildSessions(parentSessionID string) []ChildSession {
 	return s.repository.ChildSessions(parentSessionID)
 }
 
-func (s *UserSession) HasChildSessions(parentSessionID string) bool {
+func (s *userSession) HasChildSessions(parentSessionID string) bool {
 	return s.repository.HasChildSessions(parentSessionID)
 }
 
-func (s *UserSession) ForgetChild(sessionID string) error {
+func (s *userSession) ForgetChild(sessionID string) error {
 	return s.repository.ForgetChild(sessionID)
 }
 
-func (s *UserSession) DiscardChild(ctx context.Context, sessionID string) error {
+func (s *userSession) DiscardChild(ctx context.Context, sessionID string) error {
 	return s.repository.DiscardChild(ctx, sessionID)
 }
 
-func (s *UserSession) Get(sessionID string) AgentSession { return s.repository.Get(sessionID) }
+func (s *userSession) Get(sessionID string) AgentSession { return s.repository.Get(sessionID) }
 
-func (s *UserSession) Lookup(sessionID string) (AgentSession, bool) {
+func (s *userSession) Lookup(sessionID string) (AgentSession, bool) {
 	return s.repository.Lookup(sessionID)
 }
 
-func (s *UserSession) Active() []Active { return s.repository.Active() }
+func (s *userSession) Active() []Active { return s.repository.Active() }
 
-func (s *UserSession) Interrupt(ctx context.Context, sessionID string) error {
+func (s *userSession) Interrupt(ctx context.Context, sessionID string) error {
 	return s.repository.Interrupt(ctx, sessionID)
 }
 
-func (s *UserSession) Status(sessionID string) Status { return s.repository.Status(sessionID) }
+func (s *userSession) Status(sessionID string) Status { return s.repository.Status(sessionID) }
 
-func (s *UserSession) Remove(sessionID string) error { return s.repository.Remove(sessionID) }
+func (s *userSession) Remove(sessionID string) error { return s.repository.Remove(sessionID) }
 
 // agentSessionRepository owns the one runtime AgentSession object associated
 // with each persisted session ID. Persistent state remains in SessionRuntime.

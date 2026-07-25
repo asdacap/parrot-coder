@@ -289,7 +289,7 @@ type runnerHarness struct {
 	sessions      *session.Service
 	goals         *session.GoalService
 	repository    *event.Repository
-	agentSessions *UserSession
+	agentSessions *userSession
 	sessionID     string
 	runner        *agentSession
 }
@@ -342,7 +342,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	}
 	snapshot := toolRegistry.Materialize()
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
-	agentSessions, err := NewUserSession(ctx, AgentSessionConfig{
+	createdAgentSessions, err := NewUserSession(ctx, AgentSessionConfig{
 		Sessions:           sessions,
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
 		Agents:             agents,
@@ -356,6 +356,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
+	agentSessions := createdAgentSessions.(*userSession)
 	runner := agentSessions.Get(created.ID).(*agentSession)
 	sessionDB, err := db.Session(ctx, created.ID)
 	if err != nil {
@@ -502,10 +503,11 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	childA := createChild(parent.ID, "child a")
 	nested := createChild(childA.ID, "nested")
 
-	restarted, err := NewUserSession(ctx, h.agentSessions.repository.config)
+	createdRestarted, err := NewUserSession(ctx, h.agentSessions.repository.config)
 	if err != nil {
 		t.Fatal(err)
 	}
+	restarted := createdRestarted.(*userSession)
 	if restarted.repository == nil || restarted.repository == h.agentSessions.repository {
 		t.Fatal("UserSession did not create its own agent session repository")
 	}

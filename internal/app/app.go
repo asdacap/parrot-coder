@@ -172,7 +172,7 @@ type App struct {
 	DefaultSelection v1.SessionSelection
 
 	sessionStore *store.Registry
-	userSession  *agent.UserSession
+	userSession  agent.UserSession
 	subagents    *subagent.Manager
 	compactions  *compaction.Repository
 	outputs      *tool.OutputStore
@@ -749,7 +749,7 @@ func (a *App) Close() error {
 	return a.closeErr
 }
 
-type agentSessionsAdapter struct{ sessions *agent.UserSession }
+type agentSessionsAdapter struct{ sessions agent.UserSession }
 
 func (a agentSessionsAdapter) Get(sessionID string) monitor.AgentSession {
 	return a.sessions.Get(sessionID)
@@ -854,7 +854,7 @@ func (p questionPrompter) Prompt(context.Context, question.Pending) (question.Re
 type resumeHandler struct {
 	next        http.Handler
 	sessions    *session.Service
-	userSession *agent.UserSession
+	userSession agent.UserSession
 	live        *event.Broker
 }
 
@@ -1208,7 +1208,7 @@ func (o childSessionObserver) ChildCreated(child agent.ChildSession) {
 }
 
 type appSubagentExecutor struct {
-	userSession      *agent.UserSession
+	userSession      agent.UserSession
 	projectID        string
 	defaultSelection session.Selection
 	events           *event.Broker
