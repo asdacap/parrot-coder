@@ -422,7 +422,7 @@ func ToolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "path", "file", "filePath"))
 	case "glob":
 		quoted(firstString(input, "pattern"))
-	case "grep":
+	case "rg":
 		quoted(firstString(input, "pattern"))
 		path := firstString(input, "path")
 		if path == "" {
@@ -1361,7 +1361,7 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 // so they remain visible without competing with actions that change state.
 func ToolActivityStyle(name string) terminal.TextStyle {
 	switch name {
-	case "read", "grep", "glob", "web_fetch":
+	case "read", "rg", "glob", "web_fetch":
 		return terminal.TextStyleMuted
 	default:
 		return terminal.TextStyleDefault

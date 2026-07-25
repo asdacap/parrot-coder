@@ -17,7 +17,7 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 	for _, item := range []tool.Tool{
 		tool.NewReadTool(tool.ReadConfig{}),
 		tool.NewGlobTool(tool.GlobConfig{}),
-		tool.NewGrepTool(tool.GrepConfig{}),
+		tool.NewRgTool(tool.RgConfig{}),
 		tool.NewReadOutputTool(0),
 		tool.NewApplyPatchTool(nil),
 		tool.NewExecCommandTool(nil),

@@ -759,7 +759,7 @@ func TestToolActivityStyleMutesReadOnlyRetrievalTools(t *testing.T) {
 		want terminal.TextStyle
 	}{
 		{name: "read", want: terminal.TextStyleMuted},
-		{name: "grep", want: terminal.TextStyleMuted},
+		{name: "rg", want: terminal.TextStyleMuted},
 		{name: "glob", want: terminal.TextStyleMuted},
 		{name: "web_fetch", want: terminal.TextStyleMuted},
 		{name: "exec_command", want: terminal.TextStyleDefault},
@@ -1083,8 +1083,8 @@ func TestToolActivityLabelDescribesInputs(t *testing.T) {
 	}{
 		{name: "read", input: map[string]any{"path": "README.md"}, want: "read · README.md"},
 		{name: "glob", input: map[string]any{"pattern": "**/*.go"}, want: `glob · "**/*.go"`},
-		{name: "grep", input: map[string]any{"pattern": "handleToolActivity", "path": "internal/cli"}, want: `grep · "handleToolActivity" · internal/cli`},
-		{name: "grep", input: map[string]any{"pattern": "TODO"}, want: `grep · "TODO" · .`},
+		{name: "rg", input: map[string]any{"pattern": "handleToolActivity", "path": "internal/cli"}, want: `rg · "handleToolActivity" · internal/cli`},
+		{name: "rg", input: map[string]any{"pattern": "TODO"}, want: `rg · "TODO" · .`},
 		{name: "skill", input: map[string]any{"name": "review"}, want: "skill · review"},
 		{name: "web_fetch", input: map[string]any{"url": "https://example.com/docs"}, want: "web_fetch · https://example.com/docs"},
 		{name: "todowrite", input: map[string]any{"todos": []any{map[string]any{}, map[string]any{}}}, want: "TODO · 2 items"},

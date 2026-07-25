@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -17,19 +18,29 @@ import (
 	"unicode/utf8"
 )
 
-type GrepConfig struct {
+type RgConfig struct {
 	MaxFiles     int
 	MaxMatches   int
 	MaxLineBytes int64
 	MaxVisited   int
 	Timeout      time.Duration
 }
-type GrepTool struct {
+type RgTool struct {
 	BasePresentation
-	Config GrepConfig
+	Config  RgConfig
+	command rgCommand
 }
 
-func NewGrepTool(c GrepConfig) *GrepTool {
+type rgCommand interface {
+	Available() bool
+	Search(context.Context, string, []string, rgInput, RgConfig) (Result, error)
+}
+
+type cliRgCommand struct {
+	path string
+}
+
+func NewRgTool(c RgConfig) *RgTool {
 	if c.MaxFiles <= 0 {
 		c.MaxFiles = 100000
 	}
@@ -45,10 +56,11 @@ func NewGrepTool(c GrepConfig) *GrepTool {
 	if c.Timeout <= 0 {
 		c.Timeout = 5 * time.Second
 	}
-	return &GrepTool{Config: c}
+	path, _ := exec.LookPath("rg")
+	return &RgTool{Config: c, command: cliRgCommand{path: path}}
 }
-func (*GrepTool) ID() string { return "grep" }
-func (*GrepTool) Presentation() Presentation {
+func (*RgTool) ID() string { return "rg" }
+func (*RgTool) Presentation() Presentation {
 	return Presentation{
 		Muted: true,
 		Label: LabelSpec{Fields: []LabelField{
@@ -58,11 +70,11 @@ func (*GrepTool) Presentation() Presentation {
 	}
 }
 
-func (*GrepTool) Description() string {
-	return "Search text files with Go RE2 regular expressions. Relative paths resolve within the workspace; include optionally filters files with a glob."
+func (*RgTool) Description() string {
+	return "Search text files with regular expressions. Relative paths resolve within the workspace; include optionally filters files with a glob. Uses the rg CLI when available and falls back to an internal Go RE2 search."
 }
-func (*GrepTool) DescribeRequest(raw json.RawMessage) (string, error) {
-	var input grepInput
+func (*RgTool) DescribeRequest(raw json.RawMessage) (string, error) {
+	var input rgInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", err
 	}
@@ -72,11 +84,11 @@ func (*GrepTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	}
 	return fmt.Sprintf("Search %q for pattern %q", path, input.Pattern), nil
 }
-func (*GrepTool) JSONSchema() json.RawMessage {
+func (*RgTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"include":{"type":"string","description":"Optional glob selecting files to search."}},"required":["pattern"],"additionalProperties":false}`)
 }
-func (*GrepTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
-	var input grepInput
+func (*RgTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
+	var input rgInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return ErrorAdvice{}, err
 	}
@@ -86,20 +98,20 @@ func (*GrepTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
 	return ErrorAdvice{Paths: []ErrorAdvicePath{{Path: input.Path}}}, nil
 }
 
-type grepInput struct {
+type rgInput struct {
 	Pattern string `json:"pattern"`
 	Path    string `json:"path"`
 	Include string `json:"include"`
 }
-type grepPlan struct {
-	Input       grepInput
+type rgPlan struct {
+	Input       rgInput
 	Root        string
 	Regex       *regexp.Regexp
 	Include     *regexp.Regexp
 	IncludeBase bool
 }
 
-func (p grepPlan) includes(path string) bool {
+func (p rgPlan) includes(path string) bool {
 	if p.Include == nil {
 		return true
 	}
@@ -110,7 +122,7 @@ func (p grepPlan) includes(path string) bool {
 	return p.Include.MatchString(candidate)
 }
 
-type grepLineReader struct {
+type rgLineReader struct {
 	ctx           context.Context
 	reader        *bufio.Reader
 	maxPrefix     int64
@@ -122,11 +134,11 @@ type grepLineReader struct {
 	err           error
 }
 
-func newGrepLineReader(ctx context.Context, reader *bufio.Reader, maxPrefix int64) *grepLineReader {
-	return &grepLineReader{ctx: ctx, reader: reader, maxPrefix: maxPrefix}
+func newRgLineReader(ctx context.Context, reader *bufio.Reader, maxPrefix int64) *rgLineReader {
+	return &rgLineReader{ctx: ctx, reader: reader, maxPrefix: maxPrefix}
 }
 
-func (r *grepLineReader) ReadRune() (rune, int, error) {
+func (r *rgLineReader) ReadRune() (rune, int, error) {
 	if r.done {
 		return 0, 0, io.EOF
 	}
@@ -158,7 +170,7 @@ func (r *grepLineReader) ReadRune() (rune, int, error) {
 	return value, size, nil
 }
 
-func (r *grepLineReader) drain() error {
+func (r *rgLineReader) drain() error {
 	for !r.done {
 		if _, _, err := r.ReadRune(); err != nil && err != io.EOF {
 			break
@@ -167,19 +179,23 @@ func (r *grepLineReader) drain() error {
 	return r.err
 }
 
-func (r *grepLineReader) truncated() bool { return r.prefixStopped || r.length > r.maxPrefix }
+func (r *rgLineReader) truncated() bool { return r.prefixStopped || r.length > r.maxPrefix }
 
-func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
+func (t *RgTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
 	if call.Workspace == nil {
 		return Plan{}, errors.New("workspace is required")
 	}
-	var input grepInput
+	var input rgInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	rx, err := regexp.Compile(input.Pattern)
-	if err != nil {
-		return Plan{}, err
+	var rx *regexp.Regexp
+	var err error
+	if t.command == nil || !t.command.Available() {
+		rx, err = regexp.Compile(input.Pattern)
+		if err != nil {
+			return Plan{}, err
+		}
 	}
 	var include *regexp.Regexp
 	if input.Include != "" {
@@ -196,7 +212,7 @@ func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err != nil {
 		return Plan{}, err
 	}
-	return NewPlan(t.ID(), raw, nil, nil, grepPlan{
+	return NewPlan(t.ID(), raw, nil, nil, rgPlan{
 		Input:       input,
 		Root:        root,
 		Regex:       rx,
@@ -204,9 +220,9 @@ func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 		IncludeBase: !strings.Contains(filepath.ToSlash(input.Include), "/"),
 	})
 }
-func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+func (t *RgTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 
-	p := plan.Data.(grepPlan)
+	p := plan.Data.(rgPlan)
 	requestedPath := p.Input.Path
 	if requestedPath == "" {
 		requestedPath = "."
@@ -216,7 +232,7 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		return Result{}, err
 	}
 	if revalidated != p.Root {
-		return Result{}, errors.New("grep root changed after planning")
+		return Result{}, errors.New("rg root changed after planning")
 	}
 	ctx, cancel := context.WithTimeout(ctx, t.Config.Timeout)
 	defer cancel()
@@ -240,7 +256,7 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 			}
 			visited++
 			if visited > t.Config.MaxVisited {
-				return errors.New("grep traversal limit exceeded")
+				return errors.New("rg traversal limit exceeded")
 			}
 			if d.Type().IsRegular() {
 				rel, e := filepath.Rel(p.Root, path)
@@ -251,7 +267,7 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 				if e == nil {
 					files = append(files, resolved)
 					if len(files) > t.Config.MaxFiles {
-						return errors.New("grep file limit exceeded")
+						return errors.New("rg file limit exceeded")
 					}
 				}
 			}
@@ -262,6 +278,13 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		}
 	}
 	sort.Strings(files)
+	if t.command != nil && t.command.Available() {
+		return t.command.Search(ctx, call.Workspace.Root(), files, p.Input, t.Config)
+	}
+	return t.searchInternal(ctx, files, p, call)
+}
+
+func (t *RgTool) searchInternal(ctx context.Context, files []string, p rgPlan, call CallContext) (Result, error) {
 	var out strings.Builder
 	matches := 0
 	truncated := false
@@ -287,7 +310,7 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		reader := bufio.NewReader(f)
 		lineNo := 0
 		for {
-			line := newGrepLineReader(ctx, reader, t.Config.MaxLineBytes)
+			line := newRgLineReader(ctx, reader, t.Config.MaxLineBytes)
 			matched := p.Regex.MatchReader(line)
 			if err := line.drain(); err != nil {
 				f.Close()
@@ -318,6 +341,101 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 			}
 		}
 		f.Close()
+	}
+	text := out.String()
+	metadata := map[string]any{"matches": matches, "files": len(files)}
+	if truncated {
+		metadata["truncated"] = true
+	}
+	return Result{Text: text, ModelText: modelText(text), Metadata: metadata}, nil
+}
+
+func (c cliRgCommand) Available() bool { return c.path != "" }
+
+const (
+	rgBatchFiles = 512
+	rgBatchBytes = 64 << 10
+)
+
+func (c cliRgCommand) Search(ctx context.Context, workspaceRoot string, files []string, input rgInput, config RgConfig) (Result, error) {
+	var out strings.Builder
+	matches := 0
+	truncated := false
+	for start := 0; start < len(files) && matches < config.MaxMatches; {
+		end := start
+		batchBytes := 0
+		for end < len(files) && end-start < rgBatchFiles && (end == start || batchBytes+len(files[end])+1 <= rgBatchBytes) {
+			batchBytes += len(files[end]) + 1
+			end++
+		}
+		args := []string{
+			"--no-config", "--line-number", "--no-heading", "--with-filename", "--color=never", "--no-messages", "--threads=1",
+			"--max-count", strconv.Itoa(config.MaxMatches - matches),
+			"--max-columns", strconv.FormatInt(config.MaxLineBytes, 10), "--max-columns-preview",
+			"--", input.Pattern,
+		}
+		args = append(args, files[start:end]...)
+		command := exec.CommandContext(ctx, c.path, args...)
+		command.Dir = workspaceRoot
+		stdout, err := command.StdoutPipe()
+		if err != nil {
+			return Result{}, fmt.Errorf("rg: %w", err)
+		}
+		if err := command.Start(); err != nil {
+			return Result{}, fmt.Errorf("rg: %w", err)
+		}
+		reader := bufio.NewReader(stdout)
+		reachedLimit := false
+		for {
+			rawLine, readErr := reader.ReadBytes('\n')
+			if len(rawLine) > 0 && rawLine[len(rawLine)-1] == '\n' {
+				rawLine = rawLine[:len(rawLine)-1]
+			}
+			if len(rawLine) > 0 && utf8.Valid(rawLine) {
+				line := string(rawLine)
+				if strings.HasSuffix(line, " [... omitted end of long line]") || strings.HasSuffix(line, "[Omitted long matching line]") {
+					truncated = true
+				}
+				for _, path := range files[start:end] {
+					prefix := path + ":"
+					if strings.HasPrefix(line, prefix) {
+						rel, relErr := filepath.Rel(workspaceRoot, path)
+						if relErr == nil {
+							line = filepath.ToSlash(rel) + ":" + strings.TrimPrefix(line, prefix)
+						}
+						break
+					}
+				}
+				out.WriteString(line)
+				out.WriteByte('\n')
+				matches++
+				if matches == config.MaxMatches {
+					truncated = true
+					reachedLimit = true
+					_ = command.Process.Kill()
+					break
+				}
+			}
+			if readErr != nil {
+				if readErr != io.EOF {
+					_ = command.Process.Kill()
+					_ = command.Wait()
+					return Result{}, readErr
+				}
+				break
+			}
+		}
+		waitErr := command.Wait()
+		if !reachedLimit && waitErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return Result{}, ctxErr
+			}
+			var exitError *exec.ExitError
+			if !errors.As(waitErr, &exitError) || exitError.ExitCode() != 1 {
+				return Result{}, fmt.Errorf("rg: %w", waitErr)
+			}
+		}
+		start = end
 	}
 	text := out.String()
 	metadata := map[string]any{"matches": matches, "files": len(files)}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -456,7 +457,9 @@ func toolHarness(t *testing.T) (*workspace.Workspace, Executor, CallContext) {
 		t.Fatal(err)
 	}
 	r := NewRegistry()
-	for _, item := range []Tool{NewReadTool(ReadConfig{MaxLines: 20, MaxBytes: 128, MaxEntries: 20}), NewGlobTool(GlobConfig{}), NewGrepTool(GrepConfig{MaxLineBytes: 128})} {
+	rg := NewRgTool(RgConfig{MaxLineBytes: 128})
+	rg.command = cliRgCommand{}
+	for _, item := range []Tool{NewReadTool(ReadConfig{MaxLines: 20, MaxBytes: 128, MaxEntries: 20}), NewGlobTool(GlobConfig{}), rg} {
 		if err := r.Register(item); err != nil {
 			t.Fatal(err)
 		}
@@ -484,7 +487,7 @@ func TestOnlySandboxEscapingToolsRequestApproval(t *testing.T) {
 		want  int
 	}{
 		{name: "read", tool: NewReadTool(ReadConfig{}), input: `{"path":"a.txt"}`},
-		{name: "grep", tool: NewGrepTool(GrepConfig{}), input: `{"pattern":"hello"}`},
+		{name: "rg", tool: NewRgTool(RgConfig{}), input: `{"pattern":"hello"}`},
 		{name: "glob", tool: NewGlobTool(GlobConfig{}), input: `{"pattern":"*.txt"}`},
 		{name: "exec_command sandboxed", tool: NewExecCommandTool(nil), input: `{"cmd":"true","shell":"/bin/sh"}`},
 
@@ -544,7 +547,7 @@ func TestReadBinaryHugeLineAndSymlinkSwap(t *testing.T) {
 	}
 }
 
-func TestReadAndGrepExplicitExternalPaths(t *testing.T) {
+func TestReadAndRgExplicitExternalPaths(t *testing.T) {
 	_, executor, call := toolHarness(t)
 	external := t.TempDir()
 	path := filepath.Join(external, "outside.txt")
@@ -552,25 +555,25 @@ func TestReadAndGrepExplicitExternalPaths(t *testing.T) {
 		t.Fatal(err)
 	}
 	readTool := NewReadTool(ReadConfig{})
-	grepTool := NewGrepTool(GrepConfig{})
+	rgTool := NewRgTool(RgConfig{})
 	readPlan, err := readTool.Plan(context.Background(), json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)), call)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grepPlan, err := grepTool.Plan(context.Background(), json.RawMessage(fmt.Sprintf(`{"pattern":"match","path":%q}`, external)), call)
+	rgPlan, err := rgTool.Plan(context.Background(), json.RawMessage(fmt.Sprintf(`{"pattern":"match","path":%q}`, external)), call)
 	if err != nil {
 		t.Fatal(err)
 	}
 	// An explicit external path is still a bounded read, so it is not prompted.
-	if len(readPlan.Permissions) != 0 || len(grepPlan.Permissions) != 0 {
-		t.Fatalf("external read requested approval: read = %d, grep = %d", len(readPlan.Permissions), len(grepPlan.Permissions))
+	if len(readPlan.Permissions) != 0 || len(rgPlan.Permissions) != 0 {
+		t.Fatalf("external read requested approval: read = %d, rg = %d", len(readPlan.Permissions), len(rgPlan.Permissions))
 	}
 
 	read, err := executor.Execute(context.Background(), "read", json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)), call)
 	if err != nil {
 		t.Fatal(err)
 	}
-	grep, err := executor.Execute(context.Background(), "grep", json.RawMessage(fmt.Sprintf(`{"pattern":"match","path":%q}`, external)), call)
+	grep, err := executor.Execute(context.Background(), "rg", json.RawMessage(fmt.Sprintf(`{"pattern":"match","path":%q}`, external)), call)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +582,7 @@ func TestReadAndGrepExplicitExternalPaths(t *testing.T) {
 	}
 }
 
-func TestGlobAndGrepDeterministicAndCancellation(t *testing.T) {
+func TestGlobAndRgDeterministicAndCancellation(t *testing.T) {
 	w, e, call := toolHarness(t)
 	for name, data := range map[string]string{"b.txt": "hit two\n", "a.txt": "hit one\n", ".hidden.txt": "hit hidden\n", "skip.bin": "x\x00hit\n"} {
 		if err := os.WriteFile(filepath.Join(w.Root(), name), []byte(data), 0o600); err != nil {
@@ -593,7 +596,7 @@ func TestGlobAndGrepDeterministicAndCancellation(t *testing.T) {
 	if glob.Text != ".hidden.txt\na.txt\nb.txt" {
 		t.Fatalf("glob order/content: %q", glob.Text)
 	}
-	grep, err := e.Execute(context.Background(), "grep", json.RawMessage(`{"pattern":"hit"}`), call)
+	grep, err := e.Execute(context.Background(), "rg", json.RawMessage(`{"pattern":"hit"}`), call)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -608,7 +611,7 @@ func TestGlobAndGrepDeterministicAndCancellation(t *testing.T) {
 	}
 }
 
-func TestGrepMatchesAndTruncatesOversizedLines(t *testing.T) {
+func TestRgMatchesAndTruncatesOversizedLines(t *testing.T) {
 	w, err := workspace.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -617,7 +620,8 @@ func TestGrepMatchesAndTruncatesOversizedLines(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(w.Root(), "oversized.txt"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	grep := NewGrepTool(GrepConfig{MaxLineBytes: 8})
+	grep := NewRgTool(RgConfig{MaxLineBytes: 8})
+	grep.command = cliRgCommand{}
 	call := CallContext{Workspace: w}
 	plan, err := grep.Plan(context.Background(), json.RawMessage(`{"pattern":"needle","path":"oversized.txt"}`), call)
 	if err != nil {
@@ -636,7 +640,7 @@ func TestGrepMatchesAndTruncatesOversizedLines(t *testing.T) {
 	}
 }
 
-func TestGrepIncludeFiltersCandidateFiles(t *testing.T) {
+func TestRgIncludeFiltersCandidateFiles(t *testing.T) {
 	w, e, call := toolHarness(t)
 	if err := os.Mkdir(filepath.Join(w.Root(), "nested"), 0o700); err != nil {
 		t.Fatal(err)
@@ -689,7 +693,7 @@ func TestGrepIncludeFiltersCandidateFiles(t *testing.T) {
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result, err := e.Execute(context.Background(), "grep", json.RawMessage(test.input), call)
+			result, err := e.Execute(context.Background(), "rg", json.RawMessage(test.input), call)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -699,7 +703,7 @@ func TestGrepIncludeFiltersCandidateFiles(t *testing.T) {
 		})
 	}
 
-	grep := NewGrepTool(GrepConfig{})
+	grep := NewRgTool(RgConfig{})
 	if !strings.Contains(string(grep.JSONSchema()), `"include"`) {
 		t.Fatalf("grep schema does not expose include: %s", grep.JSONSchema())
 	}
@@ -708,13 +712,91 @@ func TestGrepIncludeFiltersCandidateFiles(t *testing.T) {
 	}
 }
 
-func TestGrepDefaultLimits(t *testing.T) {
-	grep := NewGrepTool(GrepConfig{})
-	if grep.Config.MaxFiles != 100000 {
-		t.Fatalf("MaxFiles = %d, want 100000", grep.Config.MaxFiles)
+type fakeRgCommand struct {
+	available bool
+	called    bool
+}
+
+func (f *fakeRgCommand) Available() bool { return f.available }
+func (f *fakeRgCommand) Search(context.Context, string, []string, rgInput, RgConfig) (Result, error) {
+	f.called = true
+	return Result{Text: "cli\n", ModelText: "cli\n"}, nil
+}
+
+func TestRgPrefersAvailableCommandAndFallsBackInternally(t *testing.T) {
+	w, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
-	if grep.Config.MaxVisited != 1000000 {
-		t.Fatalf("MaxVisited = %d, want 1000000", grep.Config.MaxVisited)
+	if err := os.WriteFile(filepath.Join(w.Root(), "file.txt"), []byte("internal match\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	call := CallContext{Workspace: w}
+
+	for _, test := range []struct {
+		name      string
+		available bool
+		want      string
+		called    bool
+	}{
+		{name: "available command", available: true, want: "cli\n", called: true},
+		{name: "internal fallback", want: "file.txt:1:internal match\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			command := &fakeRgCommand{available: test.available}
+			tool := NewRgTool(RgConfig{})
+			tool.command = command
+			plan, err := tool.Plan(context.Background(), json.RawMessage(`{"pattern":"match"}`), call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := tool.Execute(context.Background(), plan, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Text != test.want || command.called != test.called {
+				t.Fatalf("result = %q, command called = %t; want %q, %t", result.Text, command.called, test.want, test.called)
+			}
+		})
+	}
+}
+
+func TestCliRgCommandSearch(t *testing.T) {
+	path, err := exec.LookPath("rg")
+	if err != nil {
+		t.Skip("rg CLI is unavailable")
+	}
+	root := t.TempDir()
+	first := filepath.Join(root, "a.txt")
+	second := filepath.Join(root, "b.txt")
+	if err := os.WriteFile(first, []byte("match one\nignore\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("match two and a long suffix\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	config := filepath.Join(t.TempDir(), "ripgrep.conf")
+	if err := os.WriteFile(config, []byte("--definitely-invalid-option\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("RIPGREP_CONFIG_PATH", config)
+
+	result, err := (cliRgCommand{path: path}).Search(context.Background(), root, []string{first, second}, rgInput{Pattern: "match"}, RgConfig{MaxMatches: 10, MaxLineBytes: 8})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Text != "a.txt:1:match on [... omitted end of long line]\nb.txt:1:match tw [... omitted end of long line]\n" || result.Metadata["matches"] != 2 || result.Metadata["truncated"] != true {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestRgDefaultLimits(t *testing.T) {
+	rg := NewRgTool(RgConfig{})
+	if rg.Config.MaxFiles != 100000 {
+		t.Fatalf("MaxFiles = %d, want 100000", rg.Config.MaxFiles)
+	}
+	if rg.Config.MaxVisited != 1000000 {
+		t.Fatalf("MaxVisited = %d, want 1000000", rg.Config.MaxVisited)
 	}
 }
 

@@ -112,7 +112,7 @@ func TestPathErrorAdvisorIntegratesWithWorkspacePathTools(t *testing.T) {
 		input json.RawMessage
 	}{
 		{name: "read", tool: NewReadTool(ReadConfig{}), input: json.RawMessage(`{"path":"old/config.go"}`)},
-		{name: "grep", tool: NewGrepTool(GrepConfig{}), input: json.RawMessage(`{"pattern":"package","path":"old/config.go"}`)},
+		{name: "rg", tool: NewRgTool(RgConfig{}), input: json.RawMessage(`{"pattern":"package","path":"old/config.go"}`)},
 		{name: "apply patch", tool: NewApplyPatchTool(change.NewService(change.Config{})), input: patchInput},
 	}
 	for _, test := range tests {
