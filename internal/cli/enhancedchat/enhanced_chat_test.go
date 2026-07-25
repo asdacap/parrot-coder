@@ -340,6 +340,160 @@ func TestEnhancedTurnCompleteChoicesSelectOrRequestFeedback(t *testing.T) {
 	}
 }
 
+func TestEnhancedModalNumericKeysImmediatelyActivateChoice(t *testing.T) {
+	for _, test := range []struct {
+		name            string
+		key             rune
+		setup           func(*testing.T) (*enhancedChatRuntime, func(*testing.T))
+		handle          func(*enhancedChatRuntime, terminal.Key) (bool, error)
+		outRangeHandled bool
+	}{
+		{
+			name: "permission",
+			setup: func(t *testing.T) (*enhancedChatRuntime, func(*testing.T)) {
+				api := &promptReplyAPI{}
+				runtime := numericChoiceTestRuntime(t, api, &enhancedModal{kind: "permission", permission: &v1.Permission{ID: "permission"}, choices: permissionChoices()})
+				return runtime, func(t *testing.T) {
+					if len(api.permissionReplies) != 1 || api.permissionReplies[0].Decision != "deny" {
+						t.Fatalf("permission replies = %#v", api.permissionReplies)
+					}
+				}
+			},
+			handle: (*enhancedChatRuntime).handlePermissionModalKey,
+		},
+		{
+			name: "permission custom row enters input",
+			key:  '3',
+			setup: func(t *testing.T) (*enhancedChatRuntime, func(*testing.T)) {
+				runtime := numericChoiceTestRuntime(t, &promptReplyAPI{}, &enhancedModal{kind: "permission", permission: &v1.Permission{}, choices: permissionChoices()})
+				return runtime, func(t *testing.T) {
+					if runtime.modal == nil || !runtime.modal.customInput || runtime.modal.prompt != "rejection reason: " || len(runtime.modal.choices) != 0 {
+						t.Fatalf("custom permission modal = %#v", runtime.modal)
+					}
+				}
+			},
+			handle: (*enhancedChatRuntime).handlePermissionModalKey,
+		},
+		{
+			name:            "question",
+			outRangeHandled: true,
+			setup: func(t *testing.T) (*enhancedChatRuntime, func(*testing.T)) {
+				api := &promptReplyAPI{}
+				request := &v1.QuestionRequest{ID: "request", Questions: []v1.Question{{ID: "question", Options: []v1.Option{{ID: "first"}, {ID: "second"}, {ID: "third"}}}}}
+				runtime := numericChoiceTestRuntime(t, api, &enhancedModal{kind: "question", question: request})
+				runtime.updateQuestionPrompt()
+				return runtime, func(t *testing.T) {
+					if len(api.questionReplies) != 1 || len(api.questionReplies[0].Answers) != 1 || api.questionReplies[0].Answers[0].OptionIDs[0] != "second" {
+						t.Fatalf("question replies = %#v", api.questionReplies)
+					}
+				}
+			},
+			handle: (*enhancedChatRuntime).handleQuestionModalKey,
+		},
+		{
+			name:            "multiple question submits highlighted and staged selections",
+			outRangeHandled: true,
+			setup: func(t *testing.T) (*enhancedChatRuntime, func(*testing.T)) {
+				api := &promptReplyAPI{}
+				request := &v1.QuestionRequest{ID: "request", Questions: []v1.Question{{ID: "question", Multiple: true, Options: []v1.Option{{ID: "first"}, {ID: "second"}, {ID: "third"}}}}}
+				runtime := numericChoiceTestRuntime(t, api, &enhancedModal{kind: "question", question: request})
+				runtime.updateQuestionPrompt()
+				runtime.modal.selectedOptions["first"] = true
+				return runtime, func(t *testing.T) {
+					answer := api.questionReplies[0].Answers[0]
+					if len(answer.OptionIDs) != 2 || answer.OptionIDs[0] != "first" || answer.OptionIDs[1] != "second" {
+						t.Fatalf("answer = %#v", answer)
+					}
+				}
+			},
+			handle: (*enhancedChatRuntime).handleQuestionModalKey,
+		},
+		{
+			name:            "custom question row enters input",
+			outRangeHandled: true,
+			setup: func(t *testing.T) (*enhancedChatRuntime, func(*testing.T)) {
+				request := &v1.QuestionRequest{Questions: []v1.Question{{Custom: true, Options: []v1.Option{{ID: "first"}}}}}
+				runtime := numericChoiceTestRuntime(t, &promptReplyAPI{}, &enhancedModal{kind: "question", question: request})
+				runtime.updateQuestionPrompt()
+				return runtime, func(t *testing.T) {
+					if runtime.modal == nil || !runtime.modal.customInput || runtime.modal.prompt != "custom answer: " || len(runtime.modal.choices) != 0 {
+						t.Fatalf("custom question modal = %#v", runtime.modal)
+					}
+				}
+			},
+			handle: (*enhancedChatRuntime).handleQuestionModalKey,
+		},
+		{
+			name:            "turn complete custom row enters input",
+			outRangeHandled: true,
+			setup: func(t *testing.T) (*enhancedChatRuntime, func(*testing.T)) {
+				dialog := &TurnCompleteDialog{CustomChoice: "feedback", CustomPrompt: "feedback: ", Choices: []terminal.Candidate{{Value: "first"}, {Value: "feedback"}}}
+				runtime := numericChoiceTestRuntime(t, &promptReplyAPI{}, &enhancedModal{kind: "turn_complete", turnComplete: dialog, choices: dialog.Choices})
+				return runtime, func(t *testing.T) {
+					if runtime.modal == nil || !runtime.modal.customInput || runtime.modal.prompt != "feedback: " || len(runtime.modal.choices) != 0 {
+						t.Fatalf("custom turn complete modal = %#v", runtime.modal)
+					}
+				}
+			},
+			handle: (*enhancedChatRuntime).handleTurnCompleteModalKey,
+		},
+		{
+			name:            "turn complete",
+			outRangeHandled: true,
+			setup: func(t *testing.T) (*enhancedChatRuntime, func(*testing.T)) {
+				var answer string
+				dialog := &TurnCompleteDialog{Choices: []terminal.Candidate{{Value: "first"}, {Value: "second"}}, Handle: func(value string) (TurnCompleteResult, error) { answer = value; return TurnCompleteResult{}, nil }}
+				runtime := numericChoiceTestRuntime(t, &promptReplyAPI{}, &enhancedModal{kind: "turn_complete", turnComplete: dialog, choices: dialog.Choices})
+				return runtime, func(t *testing.T) {
+					if answer != "second" || runtime.modal != nil {
+						t.Fatalf("answer=%q modal=%#v", answer, runtime.modal)
+					}
+				}
+			},
+			handle: (*enhancedChatRuntime).handleTurnCompleteModalKey,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runtime, verify := test.setup(t)
+			if handled, err := test.handle(runtime, terminal.Key{Kind: terminal.KeyRune, Rune: '9'}); err != nil || handled != test.outRangeHandled || runtime.modal == nil || runtime.modal.selected != 0 {
+				t.Fatalf("out-of-range digit: handled=%t err=%v modal=%#v", handled, err, runtime.modal)
+			}
+			key := test.key
+			if key == 0 {
+				key = '2'
+			}
+			if handled, err := test.handle(runtime, terminal.Key{Kind: terminal.KeyRune, Rune: key}); err != nil || !handled {
+				t.Fatalf("choice digit: handled=%t err=%v", handled, err)
+			}
+			verify(t)
+		})
+	}
+}
+
+func numericChoiceTestRuntime(t *testing.T, api apiClient, modal *enhancedModal) *enhancedChatRuntime {
+	t.Helper()
+	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	modal.state = state
+	return &enhancedChatRuntime{shell: &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session"}}, modal: modal}
+}
+
+func TestEnhancedModalChoiceLabelsAreNumberedForDisplayOnly(t *testing.T) {
+	choices := []terminal.Candidate{{Value: "yes", Description: "Allow"}, {Value: "no", Description: "Deny"}}
+	for range 8 {
+		choices = append(choices, terminal.Candidate{Value: "other"})
+	}
+	numbered := numberedModalChoices(choices)
+	if numbered[0].Value != "1. yes" || numbered[1].Value != "2. no" || numbered[8].Value != "9. other" || numbered[9].Value != "other" || numbered[0].Description != "Allow" {
+		t.Fatalf("numbered choices = %#v", numbered)
+	}
+	if choices[0].Value != "yes" || choices[1].Value != "no" {
+		t.Fatalf("semantic choices were changed: %#v", choices)
+	}
+}
+
 func TestEnhancedThinkingActivityShowsRunningTokenUsage(t *testing.T) {
 	runtime := &enhancedChatRuntime{knownMessages: map[string]bool{}}
 	runtime.startAssistantActivity("assistant")
@@ -1593,8 +1747,8 @@ func TestEnhancedPermissionModalSelectionStopsSpinnerAndReplies(t *testing.T) {
 		t.Fatalf("spinner rendered during permission modal: %q", frame)
 	}
 	if !strings.Contains(frame, "Run shell command: rm -rf build") ||
-		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "yes") ||
-		!strings.Contains(frame, "no") || !strings.Contains(frame, "reject with reason") {
+		!strings.Contains(frame, "permission decision:") || !strings.Contains(frame, "1. yes") ||
+		!strings.Contains(frame, "2. no") || !strings.Contains(frame, "3. reject with reason") {
 		t.Fatalf("permission choices missing from frame: %q", frame)
 	}
 	if contextIndex, selectorIndex := strings.Index(frame, "Run shell command: rm -rf build"), strings.Index(frame, "permission decision:"); contextIndex < 0 || selectorIndex <= contextIndex {

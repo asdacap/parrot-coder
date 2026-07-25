@@ -114,6 +114,25 @@ func permissionChoicesFor(item v1.Permission) []terminal.Candidate {
 	return candidates
 }
 
+func numberedModalChoices(choices []terminal.Candidate) []terminal.Candidate {
+	numbered := append([]terminal.Candidate(nil), choices...)
+	for i := range numbered {
+		if i == 9 {
+			break
+		}
+		numbered[i].Value = fmt.Sprintf("%d. %s", i+1, numbered[i].Value)
+	}
+	return numbered
+}
+
+func numericChoiceIndex(key terminal.Key, choices []terminal.Candidate) (int, bool) {
+	if key.Kind != terminal.KeyRune || key.Rune < '1' || key.Rune > '9' {
+		return 0, false
+	}
+	index := int(key.Rune - '1')
+	return index, index < len(choices)
+}
+
 func permissionReplyFromAnswer(value string) v1.PermissionReply {
 	answer := strings.ToLower(strings.TrimSpace(value))
 	reply := v1.PermissionReply{Decision: "deny"}
@@ -160,6 +179,10 @@ func (r *enhancedChatRuntime) handlePermissionModalKey(key terminal.Key) (bool, 
 		r.cancelModal()
 		return true, r.requestInterrupt()
 	case terminal.KeyRune:
+		if selected, ok := numericChoiceIndex(key, choices); ok {
+			r.modal.selected = selected
+			return r.handlePermissionModalKey(terminal.Key{Kind: terminal.KeyEnter})
+		}
 		switch strings.ToLower(string(key.Rune)) {
 		case "y":
 			return true, r.answerModal("yes")
@@ -185,6 +208,10 @@ func (r *enhancedChatRuntime) handleQuestionModalKey(key terminal.Key) (bool, er
 		r.modal.selected = (r.modal.selected + 1) % len(r.modal.choices)
 		return true, nil
 	case terminal.KeyRune:
+		if selected, ok := numericChoiceIndex(key, r.modal.choices); ok {
+			r.modal.selected = selected
+			return r.handleQuestionModalKey(terminal.Key{Kind: terminal.KeyEnter})
+		}
 		question := r.modal.question.Questions[r.modal.index]
 		if key.Rune != ' ' || !question.Multiple || r.modal.selected >= len(question.Options) {
 			return true, nil
@@ -236,6 +263,11 @@ func (r *enhancedChatRuntime) handleTurnCompleteModalKey(key terminal.Key) (bool
 		r.modal.selected = (r.modal.selected - 1 + len(r.modal.choices)) % len(r.modal.choices)
 	case terminal.KeyDown, terminal.KeyTab:
 		r.modal.selected = (r.modal.selected + 1) % len(r.modal.choices)
+	case terminal.KeyRune:
+		if selected, ok := numericChoiceIndex(key, r.modal.choices); ok {
+			r.modal.selected = selected
+			return r.handleTurnCompleteModalKey(terminal.Key{Kind: terminal.KeyEnter})
+		}
 	case terminal.KeyEnter, terminal.KeyNewline:
 		selected := min(max(r.modal.selected, 0), len(r.modal.choices)-1)
 		value := r.modal.choices[selected].Value

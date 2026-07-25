@@ -545,7 +545,7 @@ func (r *enhancedChatRuntime) render() error {
 		prompt = r.modal.state.PromptState()
 		prompt.Prefix = r.modal.prompt
 		if len(r.modal.choices) > 0 {
-			prompt.Completions = r.modal.choices
+			prompt.Completions = numberedModalChoices(r.modal.choices)
 			prompt.Selected = r.modal.selected
 		}
 		if len(r.modal.choices) > 0 {
