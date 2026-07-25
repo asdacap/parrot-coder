@@ -694,7 +694,7 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 }
 
 const (
-	outputTailLines     = 3
+	outputTailLines     = 10
 	outputTailLineBytes = 16 << 10
 )
 

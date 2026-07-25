@@ -370,24 +370,25 @@ func TestRunReportsBytesLostFromStartOfStoredOutput(t *testing.T) {
 	}
 }
 
-func TestOutputTailKeepsLastThreeLinesAndCarriageReturnReplacement(t *testing.T) {
+func TestOutputTailKeepsLastTenLinesAndCarriageReturnReplacement(t *testing.T) {
 	runner := testRunner(t, Config{MaxOutputBytes: 4})
 	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: `printf 'one\ntwo\n1%%\r2%%\rthree\nfour'`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "on\n... 20 bytes omitted ...\nur" || !result.Truncated || result.OutputTail != "two\nthree\nfour" {
+	if result.Output != "on\n... 20 bytes omitted ...\nur" || !result.Truncated || result.OutputTail != "one\ntwo\nthree\nfour" {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
-func TestOutputTailPreservesUTF8AcrossWrites(t *testing.T) {
+func TestOutputTailKeepsLastTenLinesAndPreservesUTF8AcrossWrites(t *testing.T) {
 	var tail lineTail
-	value := []byte("one\ntwo\n世界")
+	value := []byte("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\n世界")
 	tail.Write(value[:len(value)-1])
 	tail.Write(value[len(value)-1:])
-	if got := tail.String(); got != string(value) {
-		t.Fatalf("tail = %q", got)
+	want := "three\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\n世界"
+	if got := tail.String(); got != want {
+		t.Fatalf("tail = %q, want %q", got, want)
 	}
 }
 

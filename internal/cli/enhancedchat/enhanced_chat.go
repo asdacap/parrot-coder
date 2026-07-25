@@ -22,7 +22,7 @@ var errInvalidModalAnswer = errors.New("invalid modal answer")
 
 const (
 	maxToolBlockLines   = 10
-	maxShellOutputLines = 3
+	maxShellOutputLines = 10
 	maxShellOutputBytes = 16 << 10
 	permissionTimeout   = 2 * time.Minute
 )

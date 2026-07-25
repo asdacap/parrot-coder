@@ -9,6 +9,17 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 )
 
+func TestShellOutputTailKeepsLastTenLines(t *testing.T) {
+	var tail ShellOutputTail
+	for _, delta := range []string{"one\ntw", "o\nthree\nfour\nfive\nsix", "\nseven\neight\nnine\nten\neleven\ntwelve"} {
+		tail.Write(delta)
+	}
+	want := "three\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve"
+	if got := tail.String(); got != want {
+		t.Fatalf("shell output tail = %q, want %q", got, want)
+	}
+}
+
 func TestCompletedInputPresentation(t *testing.T) {
 	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "spawn", Presentation: v1.ToolPresentation{CompletedInput: v1.ToolCompletedInput{
