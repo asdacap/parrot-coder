@@ -91,7 +91,6 @@ const (
 	TextStyleDefault TextStyle = iota
 	// TextStyleMuted renders an informational row in ANSI bright black (grey).
 	TextStyleMuted
-	textStyleWhite
 	textStyleGreen
 	textStyleUserMessage
 	textStyleAssistantMessage
@@ -1077,17 +1076,6 @@ func (r *LiveRenderer) CommitDiffBlock(status StyledText, rawDiff string) error 
 	return r.commitRowsAsRich(content.rows, styles, content.spans, commitBlock)
 }
 
-// CommitDivider appends one permanent input-boundary rule.
-func (r *LiveRenderer) CommitDivider() error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.closed {
-		return errRendererClosed
-	}
-	r.syncColumns()
-	return r.commitRowsStyled([]string{strings.Repeat("─", max(1, r.columns-1))}, []TextStyle{textStyleWhite})
-}
-
 // Clear erases only the renderer-owned live region.
 func (r *LiveRenderer) Clear() error {
 	r.mu.Lock()
@@ -1651,8 +1639,6 @@ func (r *LiveRenderer) decorateRichOnSurface(row string, style TextStyle, spans 
 			color = liveMutedForegroundANSI
 		}
 		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: color}))
-	case textStyleWhite:
-		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: "37"}))
 	case textStyleGreen:
 		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: "32"}))
 	case textStyleUserMessage:

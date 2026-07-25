@@ -456,7 +456,6 @@ func (s *chatShell) runEnhanced(first string) int {
 					runtime.status = "agent is still working"
 				case action.Err != nil:
 					runtime.commitError(action.Err.Error())
-					_ = runtime.ensureInputBorder()
 					_ = state.Reset("")
 				case strings.TrimSpace(action.Value) != "":
 					outcome = runtime.handleInput(action.Value)
@@ -483,7 +482,6 @@ func (s *chatShell) runEnhanced(first string) int {
 				runtime.stopStream()
 			} else if err := runtime.handleEvent(result.event); err != nil {
 				runtime.commitError(err.Error())
-				_ = runtime.ensureInputBorder()
 				runtime.stopStream()
 			} else if result.event.Sequence != nil {
 				runtime.eventAfter = *result.event.Sequence

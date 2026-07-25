@@ -292,24 +292,6 @@ func TestLiveRendererStylesUserMessageAfterEmptyLine(t *testing.T) {
 	}
 }
 
-func TestLiveRendererInputBoundaryIsWhiteAndOrdinaryDividerIsDim(t *testing.T) {
-	var output bytes.Buffer
-	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 8})
-	if err := renderer.CommitDivider(); err != nil {
-		t.Fatal(err)
-	}
-	if err := renderer.CommitMessage("- ", "answer", true); err != nil {
-		t.Fatal(err)
-	}
-	got := output.String()
-	if !strings.Contains(got, "\x1b[37m───────\x1b[0m") {
-		t.Fatalf("input boundary was not white: %q", got)
-	}
-	if !strings.Contains(got, "\x1b[2;90m───────\x1b[0m") {
-		t.Fatalf("ordinary divider was not dim grey: %q", got)
-	}
-}
-
 func TestLiveRendererMutedReportStylesEveryWrappedRowAfterSanitization(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 8})

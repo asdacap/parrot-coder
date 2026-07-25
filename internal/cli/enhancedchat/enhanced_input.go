@@ -21,7 +21,6 @@ func (r *enhancedChatRuntime) handleInput(value string) enhancedInputOutcome {
 		if name == "/run" {
 			if arguments == "" {
 				r.commitError("run requires a prompt")
-				_ = r.ensureInputBorder()
 				return enhancedInputOutcome{}
 			}
 			value = arguments
@@ -31,19 +30,16 @@ func (r *enhancedChatRuntime) handleInput(value string) enhancedInputOutcome {
 			expansion, err := r.shell.commands.Expand(strings.TrimPrefix(name, "/"), arguments)
 			if err != nil {
 				r.commitError(fmt.Sprintf("unknown slash command %q: %v", name, err))
-				_ = r.ensureInputBorder()
 				return enhancedInputOutcome{}
 			}
 			if r.busy && !expansion.Subtask && (expansion.Agent != "" || expansion.Model != "") {
 				r.commitError("custom command changes model or agent while the session is active")
-				_ = r.ensureInputBorder()
 				return enhancedInputOutcome{}
 			}
 			if !r.busy && !expansion.Subtask {
 				if expansion.Agent != "" {
 					if err := r.shell.selectAgent(expansion.Agent); err != nil {
 						r.commitError(err.Error())
-						_ = r.ensureInputBorder()
 						return enhancedInputOutcome{}
 					}
 					r.borderCommitted = false
@@ -51,7 +47,6 @@ func (r *enhancedChatRuntime) handleInput(value string) enhancedInputOutcome {
 				if expansion.Model != "" {
 					if err := r.shell.selectModel(expansion.Model); err != nil {
 						r.commitError(err.Error())
-						_ = r.ensureInputBorder()
 						return enhancedInputOutcome{}
 					}
 					r.borderCommitted = false
@@ -67,7 +62,6 @@ func (r *enhancedChatRuntime) handleInput(value string) enhancedInputOutcome {
 	if err := r.submitPrompt(value); err != nil {
 		if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
 			r.commitError(err.Error())
-			_ = r.ensureInputBorder()
 		}
 		return enhancedInputOutcome{retain: true}
 	}
@@ -83,7 +77,6 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 	}
 	if r.busy && !safeBusySlash(name) {
 		r.commitError(name + " is unavailable while the agent is working")
-		_ = r.ensureInputBorder()
 		return enhancedInputOutcome{}
 	}
 	if name == "/resume" {
@@ -92,23 +85,19 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 			if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
 				r.commitError(err.Error())
 			}
-			_ = r.ensureInputBorder()
 			return enhancedInputOutcome{}
 		}
 		r.shell.setCurrent(item)
 		if err := r.ensureStream(item.ID); err != nil {
 			r.commitError(err.Error())
-			_ = r.ensureInputBorder()
 			return enhancedInputOutcome{}
 		}
 		if r.shell.config == nil || r.shell.config.ResumeSession == nil {
 			r.commitError("connected server does not support explicit resume")
-			_ = r.ensureInputBorder()
 			return enhancedInputOutcome{}
 		}
 		if err := r.shell.config.ResumeSession(item.ID); err != nil {
 			r.commitError(err.Error())
-			_ = r.ensureInputBorder()
 			return enhancedInputOutcome{}
 		}
 		r.busy = true
