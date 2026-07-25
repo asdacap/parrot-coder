@@ -292,7 +292,7 @@ func (p Presentations) CompletedInputBlock(name string, input map[string]any) st
 
 func legacySubagent(name string) bool {
 	switch name {
-	case "agent_spawn", "agent_send", "monitor", "wait_task":
+	case "agent_spawn", "agent_send", "wait_agent":
 		return true
 	default:
 		return false

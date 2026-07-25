@@ -705,16 +705,13 @@ func TestAgentToolsUseIsolatedChildSessionAndReturnOutput(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		switch {
-		case bytes.Contains(body, []byte("Task monitor notification")) && bytes.Contains(body, []byte("child output")):
+		case bytes.Contains(body, []byte("Agent task notification")) && bytes.Contains(body, []byte("child output")):
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent received child output\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		case bytes.Contains(body, []byte("function_call_output")) && parentContinuations.Add(1) == 1:
-			childSessionID := string(childSessionIDPattern.Find(body))
-			if childSessionID == "" {
+			if childSessionID := string(childSessionIDPattern.Find(body)); childSessionID == "" {
 				t.Errorf("spawn output omitted child session ID: %s", body)
 				return
 			}
-			arguments := fmt.Sprintf(`{"task_id":%q}`, childSessionID)
-			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_monitor\",\"type\":\"function_call\",\"call_id\":\"call_monitor\",\"name\":\"monitor\",\"arguments\":%q}}\n\n", arguments)
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 			close(releaseChild)
 		case bytes.Contains(body, []byte("function_call_output")):

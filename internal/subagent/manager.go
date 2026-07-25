@@ -112,6 +112,7 @@ type Config struct {
 	AgentRecursionLimit    func(string) int
 	NameGenerator          func() string
 	OnProgress             func(Task)
+	OnComplete             func(Task)
 	OnEvent                func(LifecycleEvent)
 	Tasks                  *managedtask.Manager
 	Sessions               SessionHierarchy
@@ -424,6 +425,7 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	snapshot := cloneTask(state.task)
 	state.turn.result = snapshot
 	callback := m.config.OnProgress
+	complete := m.config.OnComplete
 	finished := LifecycleEvent{Kind: LifecycleFinished, Task: snapshot}
 	done := state.turn.done
 	m.mu.Unlock()
@@ -432,6 +434,9 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	m.emit(finished)
 	if callback != nil {
 		callback(snapshot)
+	}
+	if complete != nil {
+		complete(snapshot)
 	}
 	state.op.Unlock()
 }

@@ -22,7 +22,6 @@ import (
 type BuiltinServices struct {
 	Changes   *change.Service
 	Processes *process.Runner
-	Monitor   AgentMonitor
 	Tasks     TaskController
 	Todos     *session.TodoService
 	Goals     *session.GoalService
@@ -57,7 +56,6 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewExecCommandTool(services.Processes),
 		NewWritePermissionTool(services.Processes),
 		NewWriteStdinTool(services.Processes),
-		NewMonitorTool(services.Monitor),
 		NewTodoReadTool(services.Todos),
 		NewTodoWriteTool(services.Todos),
 		NewGetGoalTool(services.Goals),

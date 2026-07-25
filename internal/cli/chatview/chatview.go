@@ -9,7 +9,6 @@ import (
 	"regexp"
 	"sort"
 	"strings"
-	"time"
 	"unicode"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
@@ -462,10 +461,10 @@ func ToolActivityLabel(name string, input map[string]any) string {
 	case "agent_send":
 		add(firstString(input, "session_id"))
 		add(firstString(input, "message"))
-	case "task_interrupt", "wait_task":
+	case "task_interrupt":
 		add(firstString(input, "task_id"))
-	case "monitor":
-		add(firstString(input, "task_id"))
+	case "wait_agent":
+		add(firstString(input, "session_id"))
 	default:
 		keys := make([]string, 0, len(input))
 		for key := range input {
@@ -918,7 +917,7 @@ func (t *TaskTracker) nodeCumulativeUsage(node *taskNode) TaskUsage {
 // to one of them and not to another.
 func IsTaskEvent(item v1.Event) bool {
 	switch item.Type {
-	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished, v1.EventMonitorStarted, v1.EventMonitorFinished:
+	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
 		return true
 	}
 	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
@@ -1046,9 +1045,6 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	node := t.known(taskID)
 	if node == nil {
 		return t.unknownTask(taskID, item.Type), nil
-	}
-	if item.Type == v1.EventMonitorStarted || item.Type == v1.EventMonitorFinished {
-		return t.monitorReport(node, item)
 	}
 	if taskID == managedtask.MainTaskID {
 		return nil, nil
@@ -1282,43 +1278,6 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	default:
 		return nil, nil
 	}
-}
-
-func (t *TaskTracker) monitorReport(node *taskNode, item v1.Event) ([]TaskReport, error) {
-	var event v1.MonitorEvent
-	if err := json.Unmarshal(item.Data, &event); err != nil {
-		return nil, err
-	}
-	id := node.id + ":monitor:" + event.ToolCallID
-	if event.ToolCallID == "" {
-		id = node.id + ":monitor:" + event.TaskID
-	}
-	body := "Monitoring task " + event.TaskID
-	terminalEvent := item.Type == v1.EventMonitorFinished
-	icon, style := SpinnerFrames[0], terminal.TextStyleMuted
-	if !terminalEvent && event.TimeoutMS > 0 {
-		body += " · timeout " + (time.Duration(event.TimeoutMS) * time.Millisecond).String()
-	}
-	if terminalEvent {
-		switch event.Status {
-		case "completed":
-			icon, body = "✓", "Monitoring task "+event.TaskID+" completed"
-		case "timed_out":
-			icon, body = "■", "Monitoring task "+event.TaskID+" timed out"
-		case "canceled":
-			icon, body = "■", "Monitoring task "+event.TaskID+" canceled"
-		default:
-			icon, body, style = "✗", "Monitoring task "+event.TaskID+" failed", terminal.TextStyleDefault
-		}
-		if detail := cleanActivityDetail(event.Error); detail != "" {
-			body += ": " + detail
-		}
-	}
-	line := EventLine(0, "", icon+" "+body)
-	if node.id != managedtask.MainTaskID {
-		line = t.eventLine(node, icon+" "+body)
-	}
-	return []TaskReport{{ID: id, Line: line, Terminal: terminalEvent, EmitPlain: terminalEvent, Style: style}}, nil
 }
 
 // applyLifecycle folds one task lifecycle event into the tree. task.start is

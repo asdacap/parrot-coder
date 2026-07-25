@@ -26,8 +26,6 @@ const (
 	EventTaskWorking          = "task.working"
 	EventTaskIdle             = "task.idle"
 	EventTaskFinished         = "task.finished"
-	EventMonitorStarted       = "monitor.started"
-	EventMonitorFinished      = "monitor.finished"
 	EventToolOutputDelta      = "tool.output.delta"
 )
 
@@ -79,14 +77,6 @@ type TaskProgress struct {
 type ToolOutputDelta struct {
 	ToolCallID string `json:"tool_call_id"`
 	Delta      string `json:"delta"`
-}
-
-type MonitorEvent struct {
-	ToolCallID string `json:"tool_call_id"`
-	TaskID     string `json:"task_id"`
-	TimeoutMS  int64  `json:"timeout_ms"`
-	Status     string `json:"status,omitempty"`
-	Error      string `json:"error,omitempty"`
 }
 
 // TaskEvent is the flat lifecycle record every task emits. Every task belongs
@@ -166,8 +156,6 @@ var EventManifest = []EventDefinition{
 	{Name: EventTaskWorking, Payload: "TaskEvent"},
 	{Name: EventTaskIdle, Payload: "TaskEvent"},
 	{Name: EventTaskFinished, Payload: "TaskEvent"},
-	{Name: EventMonitorStarted, Payload: "MonitorEvent"},
-	{Name: EventMonitorFinished, Payload: "MonitorEvent"},
 	{Name: EventToolOutputDelta, Payload: "ToolOutputDelta"},
 	{Name: "session.selection.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.initialized", Durable: true, Payload: "object"},
@@ -231,8 +219,6 @@ func DecodeEventData(event Event) (any, error) {
 		target = &TaskProgress{}
 	case EventTaskStart, EventTaskWorking, EventTaskIdle, EventTaskFinished:
 		target = &TaskEvent{}
-	case EventMonitorStarted, EventMonitorFinished:
-		target = &MonitorEvent{}
 	case EventToolOutputDelta:
 		target = &ToolOutputDelta{}
 	default:

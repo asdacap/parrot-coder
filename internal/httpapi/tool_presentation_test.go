@@ -26,7 +26,6 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 		tool.NewQuestionTool(nil),
 		tool.NewSkillTool(nil),
 		tool.NewWebFetchTool(nil),
-		tool.NewMonitorTool(nil),
 	} {
 		if err := registry.Register(item); err != nil {
 			t.Fatalf("register %s: %v", item.ID(), err)

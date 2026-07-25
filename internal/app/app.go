@@ -32,7 +32,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/httpapi"
 	"github.com/amirulashraf/parrot-coder/internal/mcp"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
-	"github.com/amirulashraf/parrot-coder/internal/monitor"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/processidentity"
@@ -171,18 +170,18 @@ type App struct {
 	// no default model is configured.
 	DefaultSelection v1.SessionSelection
 
-	sessionStore *store.Registry
-	userSession  agent.UserSession
-	subagents    *subagent.Manager
-	compactions  *compaction.Repository
-	outputs      *tool.OutputStore
-	processes    *process.Runner
-	monitors     *monitor.Service
-	mcp          *mcp.Manager
-	providers    *agent.ProviderRegistry
-	httpClient   *http.Client
-	closeOnce    sync.Once
-	closeErr     error
+	sessionStore  *store.Registry
+	userSession   agent.UserSession
+	subagents     *subagent.Manager
+	compactions   *compaction.Repository
+	outputs       *tool.OutputStore
+	processes     *process.Runner
+	notifications *subagent.CompletionNotifier
+	mcp           *mcp.Manager
+	providers     *agent.ProviderRegistry
+	httpClient    *http.Client
+	closeOnce     sync.Once
+	closeErr      error
 }
 
 // Client is the typed application client used by local commands. It delegates
@@ -422,6 +421,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
 	subagentExecutor := &appSubagentExecutor{projectID: info.ID, defaultSelection: defaultSelection, events: live}
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
+	notifications := subagent.NewCompletionNotifier()
+	result.notifications = notifications
 	subagents := subagent.NewManager(subagentExecutor, subagent.Config{MaxConcurrent: loaded.Config.Subagents.MaxConcurrent, MaxConcurrentPerParent: loaded.Config.Subagents.MaxConcurrentPerParent, MaxDepth: loaded.Config.Subagents.MaxDepth, AgentIdentity: func(id string) string {
 		profile, resolveErr := profileResolver.GetProfile(id)
 		if resolveErr != nil {
@@ -434,7 +435,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return 0
 		}
 		return profile.RecursionLimit
-	}, Tasks: tasks, Sessions: subagentExecutor, OnProgress: func(task subagent.Task) {
+	}, Tasks: tasks, Sessions: subagentExecutor, OnComplete: notifications.Notify, OnProgress: func(task subagent.Task) {
 		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
 	}, OnEvent: func(item subagent.LifecycleEvent) {
@@ -458,8 +459,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		data, _ := json.Marshal(payload)
 		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
 	})
-	monitors := monitor.NewService(tasks, live)
-	result.monitors = monitors
 	tools := tool.NewRegistry()
 	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks))
 	if err != nil {
@@ -470,7 +469,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return profile.ReadOnly, err
 	}
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
-		Changes: changes, Processes: processes, Monitor: monitors, Tasks: &managedTaskController{tasks: tasks}, Todos: todos, Goals: goals, Questions: questions,
+		Changes: changes, Processes: processes, Tasks: &managedTaskController{tasks: tasks}, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
 		Subagents: subagents, Agents: agentLookup,
 		ConfigDir: paths.Config, Status: statusRegistry,
@@ -529,7 +528,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
 	}
 	reporter.sessionFor = userSession.Get
-	monitors.SetAgentSessions(agentSessionsAdapter{userSession})
+	notifications.SetLookup(func(sessionID string) (subagent.NotificationSession, bool) {
+		session, ok := userSession.Lookup(sessionID)
+		return session, ok
+	})
 	processes.SetAgentSessions(processAgentSessionsAdapter{userSession})
 	subagentExecutor.userSession = userSession
 	live.SetSessionHierarchy(userSession)
@@ -538,7 +540,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, AgentSessions: userSession, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
-		Events: live, DefaultSelection: defaultSelection, Processes: processLifecycle{monitors: monitors, processes: processes},
+		Events: live, DefaultSelection: defaultSelection, Processes: processLifecycle{notifications: notifications, processes: processes},
 		ProviderResolver: providerRegistry, Tools: toolSnapshot,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
@@ -710,9 +712,9 @@ func (a *App) Close() error {
 	a.closeOnce.Do(func() {
 		started := time.Now()
 		activeSessions := 0
-		if a.monitors != nil {
+		if a.notifications != nil {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			a.closeErr = errors.Join(a.closeErr, a.monitors.Close(ctx))
+			a.closeErr = errors.Join(a.closeErr, a.notifications.Close(ctx))
 			cancel()
 		}
 		if a.subagents != nil {
@@ -752,15 +754,15 @@ func (a *App) Close() error {
 }
 
 type processLifecycle struct {
-	monitors  *monitor.Service
-	processes *process.Runner
+	notifications *subagent.CompletionNotifier
+	processes     *process.Runner
 }
 
 func (l processLifecycle) SuspendSession(ctx context.Context, sessionID string) error {
 	if err := l.processes.SuspendSession(ctx, sessionID); err != nil {
 		return err
 	}
-	if err := l.monitors.SuspendSession(ctx, sessionID); err != nil {
+	if err := l.notifications.SuspendSession(ctx, sessionID); err != nil {
 		l.processes.ResumeSession(sessionID)
 		return err
 	}
@@ -768,7 +770,7 @@ func (l processLifecycle) SuspendSession(ctx context.Context, sessionID string) 
 }
 
 func (l processLifecycle) ResumeSession(sessionID string) {
-	l.monitors.ResumeSession(sessionID)
+	l.notifications.ResumeSession(sessionID)
 	l.processes.ResumeSession(sessionID)
 }
 func (l processLifecycle) InterruptSession(sessionID string) error {
@@ -776,12 +778,6 @@ func (l processLifecycle) InterruptSession(sessionID string) error {
 }
 func (l processLifecycle) DeleteSession(sessionID string) error {
 	return l.processes.DeleteSession(sessionID)
-}
-
-type agentSessionsAdapter struct{ sessions agent.UserSession }
-
-func (a agentSessionsAdapter) Get(sessionID string) monitor.AgentSession {
-	return a.sessions.Get(sessionID)
 }
 
 type processAgentSessionsAdapter struct{ sessions agent.UserSession }

@@ -156,49 +156,6 @@ func TestTaskToolOutputDeltaLeadsWithActivityIcon(t *testing.T) {
 	}
 }
 
-func TestTaskTrackerRendersMonitorLifecycleForMainAndChildTasks(t *testing.T) {
-	tracker := NewTaskTracker()
-	startMainTask(tracker)
-	if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
-		TaskID: "task-child", SessionID: "task-child", ParentSessionID: "session-main", Kind: "agent", Agent: "review",
-	}), false); err != nil {
-		t.Fatal(err)
-	}
-
-	for _, test := range []struct {
-		name     string
-		taskID   string
-		prefix   string
-		wantLine string
-	}{
-		{name: "main", taskID: "", prefix: "task_main:", wantLine: "⠋ Monitoring task proc_main · timeout 1.5s"},
-		{name: "child", taskID: "task-child", prefix: "task-child:", wantLine: "  ⠋ [review] Monitoring task proc_main · timeout 1.5s"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			started, _ := json.Marshal(v1.MonitorEvent{ToolCallID: "call-shared", TaskID: "proc_main", TimeoutMS: 1500})
-			reports, err := tracker.Apply(v1.Event{Type: v1.EventMonitorStarted, TaskID: test.taskID, Data: started}, false)
-			if err != nil || len(reports) != 1 {
-				t.Fatalf("started reports = %#v, %v", reports, err)
-			}
-			if report := reports[0]; report.ID != test.prefix+"monitor:call-shared" || report.Line != test.wantLine || report.Terminal || report.EmitPlain {
-				t.Fatalf("started report = %#v", report)
-			}
-			if reports[0].ID == test.prefix+"tool:call-shared" {
-				t.Fatalf("monitor ID collided with tool ID: %q", reports[0].ID)
-			}
-
-			finished, _ := json.Marshal(v1.MonitorEvent{ToolCallID: "call-shared", TaskID: "proc_main", TimeoutMS: 1500, Status: "failed", Error: "wait failed"})
-			reports, err = tracker.Apply(v1.Event{Type: v1.EventMonitorFinished, TaskID: test.taskID, Data: finished}, false)
-			if err != nil || len(reports) != 1 {
-				t.Fatalf("finished reports = %#v, %v", reports, err)
-			}
-			if report := reports[0]; report.ID != test.prefix+"monitor:call-shared" || !report.Terminal || !report.EmitPlain || !strings.Contains(report.Line, "✗") || !strings.Contains(report.Line, "wait failed") {
-				t.Fatalf("finished report = %#v", report)
-			}
-		})
-	}
-}
-
 func TestTaskActivityLabelsUseTargetID(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -206,8 +163,7 @@ func TestTaskActivityLabelsUseTargetID(t *testing.T) {
 		want  string
 	}{
 		{name: "agent_send", input: map[string]any{"session_id": "session_agent", "message": "continue"}, want: "agent_send · session_agent · continue"},
-		{name: "monitor", input: map[string]any{"task_id": "task_agent"}, want: "monitor · task_agent"},
-		{name: "wait_task", input: map[string]any{"task_id": "task_agent"}, want: "wait_task · task_agent"},
+		{name: "wait_agent", input: map[string]any{"session_id": "task_agent"}, want: "wait_agent · task_agent"},
 		{name: "task_interrupt", input: map[string]any{"task_id": "task_agent"}, want: "task_interrupt · task_agent"},
 		{name: "task_list_active", input: map[string]any{}, want: "task_list_active"},
 		{name: "write_stdin", input: map[string]any{"task_id": "task_shell", "chars": "input"}, want: "write_stdin · task_shell · input"},

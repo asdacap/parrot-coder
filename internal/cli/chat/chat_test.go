@@ -123,7 +123,7 @@ func TestChatHelpListsCustomCommandsAndSubtaskUsesNormalPrompt(t *testing.T) {
 		t.Fatalf("help = %q, exit=%t, code=%d", stdout.String(), exit, code)
 	}
 	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explorer", Model: "local/model", Subtask: true})
-	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". agent_spawn returns a session_id. Call wait_task with that session_id as task_id, then relay its output.\n\nInspect this"
+	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". Completion is reported automatically. If you need to block for the result, call wait_agent with the returned session_id, then relay its output.\n\nInspect this"
 	if prompt != want {
 		t.Fatalf("subtask prompt = %q, want %q", prompt, want)
 	}
@@ -908,40 +908,6 @@ func TestStreamTaskEventSkipsEmptyCompletedResponse(t *testing.T) {
 	}
 	if output.Len() != 0 {
 		t.Fatalf("empty completed response output = %q", output.String())
-	}
-}
-
-func TestStreamMonitorLifecycleUpdatesLiveRowAndPrintsTerminalResult(t *testing.T) {
-	monitorEvent := func(eventType, status string) v1.Event {
-		data, _ := json.Marshal(v1.MonitorEvent{ToolCallID: "call-monitor", TaskID: "proc-child", TimeoutMS: 1000, Status: status})
-		return v1.Event{Type: eventType, Data: data}
-	}
-
-	var live bytes.Buffer
-	renderer := terminal.NewLiveRenderer(&live, terminal.RendererConfig{TTY: true})
-	tracker := newTaskStreamTracker(chatview.Presentations{})
-	for _, event := range []v1.Event{monitorEvent(v1.EventMonitorStarted, ""), monitorEvent(v1.EventMonitorFinished, "completed")} {
-		before := live.Len()
-		if err := writeStreamTaskEvent(streamOptions{stderr: io.Discard, renderer: renderer}, &tracker, event); err != nil {
-			t.Fatal(err)
-		}
-		if live.Len() == before {
-			t.Fatalf("%s did not update live renderer", event.Type)
-		}
-	}
-	if !strings.Contains(live.String(), "Monitoring task proc-child") {
-		t.Fatalf("live monitor output = %q", live.String())
-	}
-
-	var plain bytes.Buffer
-	tracker = newTaskStreamTracker(chatview.Presentations{})
-	for _, event := range []v1.Event{monitorEvent(v1.EventMonitorStarted, ""), monitorEvent(v1.EventMonitorFinished, "completed")} {
-		if err := writeStreamTaskEvent(streamOptions{stderr: &plain}, &tracker, event); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if got := plain.String(); got != "✓ Monitoring task proc-child completed\n" {
-		t.Fatalf("plain monitor output = %q", got)
 	}
 }
 

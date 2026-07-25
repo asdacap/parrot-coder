@@ -28,9 +28,9 @@ type agentModeAPI struct {
 func (a *agentModeAPI) Agents(context.Context) (v1.AgentList, error) { return a.agents, nil }
 func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error)   { return a.modes, nil }
 
-func TestSubtaskPromptUsesSpawnAndMonitor(t *testing.T) {
+func TestSubtaskPromptUsesSpawnAndWaitAgent(t *testing.T) {
 	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explorer", Model: "local/model", Subtask: true})
-	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". agent_spawn returns a session_id. Call wait_task with that session_id as task_id, then relay its output.\n\nInspect this"
+	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". Completion is reported automatically. If you need to block for the result, call wait_agent with the returned session_id, then relay its output.\n\nInspect this"
 	if prompt != want {
 		t.Fatalf("subtask prompt = %q, want %q", prompt, want)
 	}
@@ -473,27 +473,6 @@ func taskContent(taskID string, eventType string, data json.RawMessage) v1.Event
 	return v1.Event{Type: eventType, TaskID: taskID, Data: data}
 }
 
-func TestEnhancedMonitorLifecycleUpdatesNamespacedLiveActivity(t *testing.T) {
-	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
-	runtime.activity = append(runtime.activity, enhancedActivityItem{id: "call-monitor", label: "ordinary tool", status: "running", started: time.Now()})
-
-	started, _ := json.Marshal(v1.MonitorEvent{ToolCallID: "call-monitor", TaskID: "proc_child", TimeoutMS: 1000})
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventMonitorStarted, Data: started}); err != nil {
-		t.Fatal(err)
-	}
-	if len(runtime.activity) != 2 || runtime.activity[1].id != "task_main:monitor:call-monitor" || !strings.Contains(runtime.activity[1].rendered, "Monitoring task proc_child") {
-		t.Fatalf("started monitor activity = %#v", runtime.activity)
-	}
-
-	finished, _ := json.Marshal(v1.MonitorEvent{ToolCallID: "call-monitor", TaskID: "proc_child", TimeoutMS: 1000, Status: "completed"})
-	if err := runtime.handleEvent(v1.Event{Type: v1.EventMonitorFinished, Data: finished}); err != nil {
-		t.Fatal(err)
-	}
-	if len(runtime.activity) != 1 || runtime.activity[0].id != "call-monitor" {
-		t.Fatalf("finished monitor activity = %#v", runtime.activity)
-	}
-}
-
 func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
 	if err := runtime.handleEvent(taskStart("task-1", "task_main", "explore")); err != nil {
@@ -540,7 +519,7 @@ func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{}, knownMessages: map[string]bool{}}
 	runtime.activity = append(runtime.activity,
 		enhancedActivityItem{id: "call-read", label: "read · file.go", toolName: "read", status: "running", started: time.Now()},
-		enhancedActivityItem{id: "call-agent", label: "agent · review", toolName: "monitor", status: "running", started: time.Now()},
+		enhancedActivityItem{id: "call-agent", label: "agent · review", toolName: "agent_spawn", status: "running", started: time.Now()},
 	)
 	// A grandchild renders two levels deep because the UI walks the parent
 	// chain it tracks, not because an event envelope carries a depth.
@@ -600,31 +579,6 @@ func TestEnhancedModelineToolOnlyMovesTopLevelInvocation(t *testing.T) {
 	}
 }
 
-func TestEnhancedMonitorLabelUsesFriendlyTaskName(t *testing.T) {
-	presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
-		ID: "monitor",
-		Presentation: v1.ToolPresentation{Label: v1.ToolLabel{Fields: []v1.ToolLabelPart{{
-			Names: []string{"task_id"}, TaskName: true,
-		}}}},
-	}}})
-	runtime := &enhancedChatRuntime{
-		shell:         &chatShell{config: &Config{Presentation: func() chatview.Presentations { return presentation }}},
-		knownMessages: map[string]bool{},
-	}
-	started, _ := json.Marshal(v1.TaskEvent{
-		TaskID: "task-review", SessionID: "task-review", Kind: "agent", Agent: "review", Name: "review-kind-ibex",
-	})
-	if err := runtime.handleEvent(taskContent("task-review", v1.EventTaskStart, started)); err != nil {
-		t.Fatal(err)
-	}
-	pending := json.RawMessage(`{"call_id":"call-monitor","name":"monitor","input":{"task_id":"task-review"}}`)
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
-
-	if len(runtime.activity) != 1 || runtime.activity[0].label != "monitor · review-kind-ibex" {
-		t.Fatalf("monitor activity = %#v", runtime.activity)
-	}
-}
-
 func TestTaskActivityLabelsUseTargetID(t *testing.T) {
 	for _, test := range []struct {
 		name  string
@@ -632,8 +586,7 @@ func TestTaskActivityLabelsUseTargetID(t *testing.T) {
 		want  string
 	}{
 		{name: "agent_send", input: map[string]any{"session_id": "session_agent", "message": "continue"}, want: "agent_send · session_agent · continue"},
-		{name: "monitor", input: map[string]any{"task_id": "task_agent"}, want: "monitor · task_agent"},
-		{name: "wait_task", input: map[string]any{"task_id": "task_agent"}, want: "wait_task · task_agent"},
+		{name: "wait_agent", input: map[string]any{"session_id": "task_agent"}, want: "wait_agent · task_agent"},
 		{name: "task_interrupt", input: map[string]any{"task_id": "task_agent"}, want: "task_interrupt · task_agent"},
 		{name: "task_list_active", input: map[string]any{}, want: "task_list_active"},
 		{name: "write_stdin", input: map[string]any{"task_id": "task_shell", "chars": "input"}, want: "write_stdin · task_shell · <redacted: 5 chars>"},

@@ -328,10 +328,9 @@ Parrot includes the reusable child-agent profiles `explorer`, `worker`, and
 `review`. Start them with `agent_spawn`, which returns the child `session_id`.
 That child session ID is also the agent task's canonical ID. `agent_send`
 accepts either that ID or the friendly name assigned by `agent_spawn` as its
-`session_id`; `monitor` accepts the canonical ID as `task_id` and observes
-child-agent tasks only. Shell tasks use process IDs with `wait_process`,
-`write_stdin`, and `task_interrupt`, and automatically notify their owning
-session on completion.
+`session_id`. Child agents automatically notify their direct parent session on
+completion. Shell tasks use process IDs with `wait_process`, `write_stdin`, and
+`task_interrupt`, and automatically notify their owning session on completion.
 `task_list_active` discovers both kinds using those same identities. Use
 `explorer` for specific, well-scoped codebase
 questions; it is runtime-enforced read-only. Use `worker` for implementation
@@ -341,7 +340,7 @@ workspace. `explore` is accepted as an alias of `explorer`.
 ### Review subagent
 
 Parrot includes a built-in `review` worker. Start it with `agent_spawn` and use
-`wait_task` to wait for its final findings. The worker is defect-first and
+`wait_agent` to wait for its final findings. The worker is defect-first and
 runtime-enforced read-only; it has repository inspection tools, plus a bounded
 read-only `git_diff` tool, but no mutation, shell, network, or nested delegation
 tools. It is a child-agent-only profile, not a selectable foreground mode.
@@ -368,7 +367,7 @@ Templates support `$ARGUMENTS`, `$1` through `$9`, `${1}` through `${9}`, and
 bounded `@relative/path` file inclusion. Shell substitution is forbidden. The
 command file and included files are hash-checked between discovery and use.
 When `subtask: true`, the foreground agent is instructed to start the configured
-child agent with `agent_spawn`, wait for it with `wait_task`, and return its
+child agent with `agent_spawn`, wait for it with `wait_agent`, and return its
 output.
 
 ## Migration
