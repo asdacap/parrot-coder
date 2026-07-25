@@ -547,7 +547,7 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	if parentStatus.SessionID != h.sessionID || parentStatus.RootSession != h.sessionID || parentStatus.ParentSession != "" || parentStatus.State != StatusIdle {
 		t.Fatalf("parent status = %#v", parentStatus)
 	}
-	child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID, Name: "inspect", ToolCallID: "call-1"})
+	child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID, Name: "inspect"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +561,7 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		t.Fatal("child turn did not start")
 	}
 
-	task, messageID, err := child.SendChild(context.Background(), ChildRequest{Prompt: "steer", ToolCallID: "call-2"})
+	task, messageID, err := child.SendChild(context.Background(), ChildRequest{Prompt: "steer"})
 	if err != nil || messageID == "" || task.Turn != 1 || task.State != StatusRunning {
 		t.Fatalf("running SendChild = %#v, %q, %v", task, messageID, err)
 	}
@@ -572,7 +572,7 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		t.Fatalf("first turn = %#v, status = %#v, %v", completed, status, err)
 	}
 
-	task, messageID, err = child.SendChild(context.Background(), ChildRequest{Prompt: "follow-up", ToolCallID: "call-3"})
+	task, messageID, err = child.SendChild(context.Background(), ChildRequest{Prompt: "follow-up"})
 	if err != nil || messageID != "" || task.Turn != 2 || task.State != StatusRunning {
 		t.Fatalf("follow-up SendChild = %#v, %q, %v", task, messageID, err)
 	}

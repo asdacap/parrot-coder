@@ -674,9 +674,10 @@ type taskNode struct {
 	tools            *StreamToolTracker
 	done             map[string]bool
 	progress         *v1.TaskProgress
-	progressID       string
+	progressOpen     bool
 	progressDone     bool
 	progressFlushed  bool
+	progressIgnored  bool
 	finished         bool
 	lifecycleFlushed bool
 
@@ -968,6 +969,10 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		}
 		reports[i].MainStatus = item.Type == v1.EventTaskFinished
 	}
+	if item.Type == v1.EventTaskProgress && owner != nil && owner.progressIgnored {
+		owner.progressIgnored = false
+		return reports, nil
+	}
 	if item.Type == v1.EventTaskProgress || item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
 		reports = append(reports, t.taskStatusReports(item.TaskID)...)
 	}
@@ -1050,7 +1055,7 @@ func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 			node.progressFlushed = true
 		}
 		reports = append(reports, TaskReport{
-			ID: node.progressID, TaskID: node.id, SessionID: node.sessionID, ParentSessionID: node.parentSessionID,
+			ID: node.id + ":task:" + node.id, TaskID: node.id, SessionID: node.sessionID, ParentSessionID: node.parentSessionID,
 			Line: t.eventLine(node, icon+" "+body), Terminal: terminalEvent,
 			EmitPlain: terminalEvent, MainStatus: true, Style: terminal.TextStyleMuted,
 		})
@@ -1269,24 +1274,18 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			return nil, err
 		}
 		progress := payload.(*v1.TaskProgress)
-		id := scope + "task:" + progress.ToolCallID
-		if progress.ToolCallID == "" {
-			id = scope + "task:" + progress.TaskID
-		}
-		if node.done[id] {
+		// Progress belongs to the task generation opened by task.start or
+		// task.working. Once that generation reports a terminal status, delayed
+		// running events cannot resurrect it; a new task.working is required.
+		if !node.progressOpen || node.finished && (progress.Status == "pending" || progress.Status == "running") {
+			node.progressIgnored = true
 			return nil, nil
 		}
-		if node.progressID != id {
-			node.progressFlushed = false
-		}
 		copy := *progress
-		node.progress, node.progressID = &copy, id
+		node.progress = &copy
 		node.progressDone = progress.Status != "pending" && progress.Status != "running"
 		if node.progressDone {
-			if node.done == nil {
-				node.done = make(map[string]bool)
-			}
-			node.done[id] = true
+			node.progressOpen = false
 		}
 		return nil, nil
 	case v1.EventSessionStatus:
@@ -1346,6 +1345,7 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 			t.Presentation.taskNames[event.TaskID] = event.Name
 		}
 		node.status = "working"
+		node.progressOpen = true
 		node.sessionID = event.SessionID
 		node.parentSessionID = event.ParentSessionID
 		if event.SessionID != "" {
@@ -1363,7 +1363,8 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 		}
 		node.status = "working"
 		node.error = ""
-		node.progress, node.progressID = nil, ""
+		node.progress = nil
+		node.progressOpen = true
 		node.progressDone, node.progressFlushed, node.finished, node.lifecycleFlushed = false, false, false, false
 		return nil, nil
 	case v1.EventTaskIdle:

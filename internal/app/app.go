@@ -532,7 +532,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		},
 		OnChildComplete: func(task agent.Status) { notifications.Notify(childNotificationTask(task)) },
 		OnChildProgress: func(task agent.Status) {
-			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
+			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 			live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
 		},
 		OnChildLifecycle: func(item agent.ChildLifecycleEvent) { publishChildLifecycle(live, item) },
@@ -1249,11 +1249,11 @@ type appAgentChildren struct{ userSession agent.UserSession }
 
 type appChildAgent struct{ session agent.AgentSession }
 
-func (c *appAgentChildren) Create(ctx context.Context, parentSession, _ string, prompt, target, model, name, toolCallID string) (tool.ChildAgent, error) {
+func (c *appAgentChildren) Create(ctx context.Context, parentSession, _ string, prompt, target, model, name string) (tool.ChildAgent, error) {
 	if c.userSession == nil {
 		return nil, errors.New("app: agent user session is unavailable")
 	}
-	child, err := c.userSession.Get(parentSession).CreateChild(ctx, agent.ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name, ToolCallID: toolCallID})
+	child, err := c.userSession.Get(parentSession).CreateChild(ctx, agent.ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name})
 	if err != nil {
 		return nil, err
 	}
@@ -1273,8 +1273,8 @@ func (c *appAgentChildren) Resolve(parentSession, identifier string) (tool.Child
 
 func (c appChildAgent) Status() tool.AgentTask { return toolAgentTask(c.session.Status()) }
 
-func (c appChildAgent) Send(ctx context.Context, message, toolCallID string) (tool.AgentTask, string, error) {
-	task, messageID, err := c.session.SendChild(ctx, agent.ChildRequest{Prompt: message, ToolCallID: toolCallID})
+func (c appChildAgent) Send(ctx context.Context, message string) (tool.AgentTask, string, error) {
+	task, messageID, err := c.session.SendChild(ctx, agent.ChildRequest{Prompt: message})
 	return toolAgentTask(task), messageID, err
 }
 

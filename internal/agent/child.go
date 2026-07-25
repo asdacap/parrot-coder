@@ -24,11 +24,10 @@ var (
 // contains no parent permission grants; authorization is inherited from the
 // parent AgentSession at execution time.
 type ChildRequest struct {
-	Prompt     string
-	Agent      string
-	Model      string
-	Name       string
-	ToolCallID string
+	Prompt string
+	Agent  string
+	Model  string
+	Name   string
 }
 
 type ChildUsage struct {
@@ -60,7 +59,6 @@ type Status struct {
 	Output        string
 	Error         string
 	Truncated     bool
-	ToolCallID    string
 	Usage         ChildUsage
 	ToolUses      int
 }

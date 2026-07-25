@@ -28,11 +28,11 @@ type AgentTask struct {
 
 type ChildAgent interface {
 	Status() AgentTask
-	Send(context.Context, string, string) (AgentTask, string, error)
+	Send(context.Context, string) (AgentTask, string, error)
 }
 
 type AgentChildren interface {
-	Create(context.Context, string, string, string, string, string, string, string) (ChildAgent, error)
+	Create(context.Context, string, string, string, string, string, string) (ChildAgent, error)
 	Resolve(string, string) (ChildAgent, error)
 }
 
@@ -182,7 +182,7 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	}
 	switch t.Kind {
 	case agentSpawnID:
-		child, err := t.Children.Create(ctx, call.SessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name, call.ToolCallID)
+		child, err := t.Children.Create(ctx, call.SessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name)
 		if err != nil {
 			return Result{}, err
 		}
@@ -193,7 +193,7 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 		if err != nil {
 			return Result{}, err
 		}
-		task, messageID, err := child.Send(ctx, input.Message, call.ToolCallID)
+		task, messageID, err := child.Send(ctx, input.Message)
 		if err != nil {
 			return Result{}, err
 		}

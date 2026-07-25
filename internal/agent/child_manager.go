@@ -91,7 +91,7 @@ func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (A
 	now := time.Now().UTC()
 	turnCtx, cancel := context.WithCancel(context.Background())
 	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), permit: permit}
-	created.child = &childState{status: Status{SessionID: child.ID(), ParentSession: s.ID(), RootSession: root, Agent: request.Agent, Model: request.Model, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, State: StatusRunning, StartedAt: now, ToolCallID: request.ToolCallID}, request: request, turn: turn, cancel: cancel}
+	created.child = &childState{status: Status{SessionID: child.ID(), ParentSession: s.ID(), RootSession: root, Agent: request.Agent, Model: request.Model, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, State: StatusRunning, StartedAt: now}, request: request, turn: turn, cancel: cancel}
 	if err := user.registerChild(created); err != nil {
 		permit.Release()
 		return nil, errors.Join(err, user.discardChild(context.WithoutCancel(ctx), child.ID()))
@@ -175,13 +175,16 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	turn.result = result
 	s.mu.Unlock()
 	turn.permit.Release()
-	close(turn.done)
-	s.user.workers.Done()
-	s.childOp.Unlock()
+	// Publish terminal state while childOp still prevents a follow-up turn from
+	// starting. Otherwise its task.working event can overtake this turn's final
+	// events and make consumers attribute the old counters to the new turn.
 	s.user.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleFinished, Task: result})
 	if s.user.config.OnChildProgress != nil {
 		s.user.config.OnChildProgress(result)
 	}
+	close(turn.done)
+	s.user.workers.Done()
+	s.childOp.Unlock()
 	if s.user.config.OnChildComplete != nil {
 		s.user.config.OnChildComplete(result)
 	}
@@ -244,7 +247,7 @@ retry:
 	state.status.Turn++
 	state.status.State, state.status.StartedAt, state.status.FinishedAt = StatusRunning, time.Now().UTC(), time.Time{}
 	state.status.Output, state.status.Error, state.status.Truncated = "", "", false
-	state.status.ToolCallID, state.status.Usage, state.status.ToolUses = request.ToolCallID, ChildUsage{}, 0
+	state.status.Usage, state.status.ToolUses = ChildUsage{}, 0
 	request.Agent, request.Model, request.Name = state.status.Agent, state.status.Model, state.status.Name
 	state.request = request
 	turnCtx, cancel := context.WithCancel(context.Background())
