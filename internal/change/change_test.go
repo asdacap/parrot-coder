@@ -226,6 +226,123 @@ func TestPatchUpdateSemantics(t *testing.T) {
 	}
 }
 
+func TestPlanPatchAggregatesDiscoverableErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		setup     map[string]string
+		patch     string
+		wantOrder []string
+	}{
+		{
+			name:  "hunks and operations stay in patch order",
+			setup: map[string]string{"first": "present\n", "occupied": "content\n"},
+			patch: aiderBlock("first", "missing first", "replacement") +
+				aiderBlock("", "missing second", "replacement") +
+				aiderBlock("absent", "missing third", "replacement") +
+				aiderBlock("occupied", "", "replacement"),
+			wantOrder: []string{
+				`[1/4] change: update "first": hunk 1:`,
+				"missing first",
+				`[2/4] change: update "first": hunk 2:`,
+				"missing second",
+				`[3/4] change: update "absent": source is missing`,
+				`[4/4] change: add "occupied":`,
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := testWorkspace(t)
+			for name, data := range tc.setup {
+				if err := os.WriteFile(filepath.Join(ws.Root(), name), []byte(data), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			plan, err := NewService(Config{}).PlanPatch(context.Background(), ws, tc.patch, PatchFormatAider)
+			if !errors.Is(err, ErrConflict) || !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("error = %v, want joined ErrConflict and os.ErrNotExist", err)
+			}
+			if len(plan.Mutations) != 0 || len(plan.Directories) != 0 || plan.Diff != "" {
+				t.Fatalf("plan = %#v, want zero Plan", plan)
+			}
+			message := err.Error()
+			if !strings.HasPrefix(message, "patch planning failed with 4 errors:\n\n") || strings.Count(message, "\n\n") != 4 {
+				t.Fatalf("error format = %q, want header and four blank-line-separated sections", message)
+			}
+			var aggregate interface{ Unwrap() []error }
+			if !errors.As(err, &aggregate) || len(aggregate.Unwrap()) != 4 {
+				t.Fatalf("error = %#v, want four directly unwrapped details", err)
+			}
+			position := -1
+			for _, want := range tc.wantOrder {
+				next := strings.Index(message, want)
+				if next <= position {
+					t.Fatalf("error order = %q, want %q after byte %d", message, want, position)
+				}
+				position = next
+			}
+		})
+	}
+}
+
+func TestPatchPlanningErrorFormat(t *testing.T) {
+	first := errors.New("first cause")
+	second := errors.New("second cause")
+	err := newPatchPlanningError(first, second)
+	want := "patch planning failed with 2 errors:\n\n[1/2] first cause\n\n[2/2] second cause"
+	if err.Error() != want {
+		t.Fatalf("error = %q, want %q", err, want)
+	}
+	var aggregate interface{ Unwrap() []error }
+	if !errors.As(err, &aggregate) {
+		t.Fatalf("error = %#v, want multi-error unwrapping", err)
+	}
+	unwrapped := aggregate.Unwrap()
+	if len(unwrapped) != 2 || unwrapped[0] != first || unwrapped[1] != second {
+		t.Fatalf("unwrapped errors = %#v, want original errors in order", unwrapped)
+	}
+}
+
+func TestPlanPatchSyntaxAndCancellationRemainFailFast(t *testing.T) {
+	ws := testWorkspace(t)
+	service := NewService(Config{})
+	tests := []struct {
+		name    string
+		ctx     context.Context
+		patch   string
+		wantErr error
+	}{
+		{
+			name:    "syntax",
+			ctx:     context.Background(),
+			patch:   "missing\n<<<<<<< SEARCH\nold\n=======\nnew",
+			wantErr: ErrInvalidPatch,
+		},
+		{
+			name: "cancellation",
+			ctx: func() context.Context {
+				ctx, cancel := context.WithCancel(context.Background())
+				cancel()
+				return ctx
+			}(),
+			patch:   aiderBlock("missing", "old", "new"),
+			wantErr: context.Canceled,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			plan, err := service.PlanPatch(tc.ctx, ws, tc.patch, PatchFormatAider)
+			if !errors.Is(err, tc.wantErr) || errors.Is(err, ErrConflict) {
+				t.Fatalf("error = %v, want only %v", err, tc.wantErr)
+			}
+			if len(plan.Mutations) != 0 || len(plan.Directories) != 0 || plan.Diff != "" {
+				t.Fatalf("plan = %#v, want zero Plan", plan)
+			}
+		})
+	}
+}
+
 func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 	ctx := context.Background()
 	service := NewService(Config{})
@@ -238,10 +355,11 @@ func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 		maxErrorLength int
 	}{
 		{
-			name:    "repeated line is ambiguous",
-			before:  []byte("target\nmiddle\ntarget\n"),
-			blocks:  aiderBlock("", "target", "CHANGED"),
-			wantErr: true,
+			name:      "repeated line is ambiguous",
+			before:    []byte("target\nmiddle\ntarget\n"),
+			blocks:    aiderBlock("", "target", "CHANGED"),
+			wantErr:   true,
+			wantMatch: "this SEARCH block matched 2 locations; include more surrounding lines:\n<<<<<<< SEARCH\ntarget\n=======",
 		},
 		{
 			name:    "surrounding lines disambiguate",
@@ -277,15 +395,15 @@ func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 			before:    []byte("one\ntwo\n"),
 			blocks:    aiderBlock("", "missing\nlines", "changed"),
 			wantErr:   true,
-			wantMatch: `"missing\nlines"`,
+			wantMatch: "failed to find this SEARCH block:\n<<<<<<< SEARCH\nmissing\nlines\n=======",
 		},
 		{
 			name:           "large missing search is bounded",
 			before:         []byte("existing\n"),
-			blocks:         aiderBlock("", strings.Repeat("x", (1<<10)+100), "changed"),
+			blocks:         aiderBlock("", strings.Repeat("x", (8<<10)+100), "changed"),
 			wantErr:        true,
 			wantMatch:      "100 bytes omitted",
-			maxErrorLength: (4 << 10) + 256,
+			maxErrorLength: (8 << 10) + 256,
 		},
 	}
 	for _, tc := range tests {
