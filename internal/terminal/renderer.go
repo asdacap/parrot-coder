@@ -61,9 +61,10 @@ func RenderErrorClass(err error) string {
 
 // RendererConfig configures a LiveRenderer.
 type RendererConfig struct {
-	TTY     bool
-	Color   bool
-	Columns int
+	TTY        bool
+	Color      bool
+	Columns    int
+	InlineDiff bool
 	// MaxRows bounds transient status and response rows. It does not include
 	// the independently bounded input/menu region.
 	MaxRows int
@@ -191,6 +192,7 @@ type LiveRenderer struct {
 	columns      int
 	maxRows      int
 	maxInputRows int
+	inlineDiff   bool
 	columnsFn    func() int
 	rows         []string
 	styles       []TextStyle
@@ -228,6 +230,7 @@ func NewLiveRenderer(w io.Writer, config RendererConfig) *LiveRenderer {
 		columns:      columns,
 		maxRows:      maxRows,
 		maxInputRows: maxInputRows,
+		inlineDiff:   config.InlineDiff,
 		columnsFn:    config.ColumnsFunc,
 		plainSeen:    make(map[string]struct{}),
 	}
@@ -1069,7 +1072,7 @@ func (r *LiveRenderer) CommitDiffBlock(status StyledText, rawDiff string) error 
 	}
 	r.syncColumns()
 	content, styles := r.layoutStyledTextAtColumns(status, r.columns)
-	diff := formatDiff(rawDiff, r.columns)
+	diff := formatDiff(rawDiff, r.columns, r.inlineDiff)
 	content.rows = append(content.rows, diff.rows...)
 	content.spans = append(content.spans, diff.spans...)
 	styles = append(styles, repeatedStyle(TextStyleDefault, len(diff.rows))...)

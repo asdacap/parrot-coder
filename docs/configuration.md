@@ -41,6 +41,7 @@ prompt: |-
   You are Parrot Coder, a local coding agent.
 model: provider/model
 variant: high # optional reasoning variant exposed by the selected model
+inline_diff: true # false selects side-by-side diff blocks
 providers:
   provider:
     type: compatible # compatible or openai-compatible
@@ -108,6 +109,12 @@ The predefined prompt identifies Parrot and instructs it not to duplicate work
 with `agent_spawn`: if an agent is already handling the work and remains running,
 Parrot should wait for that agent instead of spawning another one for the same
 work.
+
+`inline_diff` controls changed-file blocks in the enhanced terminal. It defaults
+to `true`, which renders each context, deletion, and addition on its own
+full-width row. Set it to `false` to use the side-by-side before/after viewer.
+Malformed and binary diffs use the bounded unified fallback in either mode, and
+the side-by-side viewer also falls back when the terminal is too narrow.
 
 The `model` and `variant` fields form the default model selection. `variant` is
 optional, but when present it must name a reasoning variant exposed by `model`.
