@@ -20,11 +20,11 @@ func TestRegisterBuiltinsDefinitions(t *testing.T) {
 		t.Fatal(err)
 	}
 	services := BuiltinServices{
-		Skills:    skills,
-		WebFetch:  webfetch.New(webfetch.Config{}),
-		Subagents: subagent.NewManager(nil, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4}),
-		Agents:    func(string) (bool, error) { return true, nil },
-		Status:    statuses,
+		Skills:   skills,
+		WebFetch: webfetch.New(webfetch.Config{}),
+		Children: managerAgentChildren{manager: subagent.NewManager(nil, subagent.Config{})},
+		Agents:   func(string) (bool, error) { return true, nil },
+		Status:   statuses,
 	}
 	if err := RegisterBuiltins(registry, services); err != nil {
 		t.Fatal(err)

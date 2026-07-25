@@ -15,3 +15,4 @@
 - On CLI Event line. Do not forget to put icon or at least indentation.
 - Prefer rich domain model rather than anemic domain model.
 - Postfix dto name with 'Dto'
+- Rather than adding method to a repository or a container that operate on the underlying object, add that method to the object itself. For example, rather than repo.SendToAgent(), do repo.GetAgent().Send().

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -114,14 +115,14 @@ func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	parent := h.agentSessions.Get(h.sessionID)
-	child, err := h.agentSessions.CreateChild(context.Background(), parent, ChildSessionRequest{
+	child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{
 		ProjectID: h.runner.dto.ProjectID, Name: "inspect", Agent: BuildID,
 		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	nested, err := h.agentSessions.CreateChild(context.Background(), child, ChildSessionRequest{
+	nested, err := h.agentSessions.repository.CreateChild(context.Background(), child, ChildSessionRequest{
 		ProjectID: h.runner.dto.ProjectID, Name: "nested", Agent: BuildID,
 		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
 	})
@@ -409,7 +410,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	}
 	snapshot := toolRegistry.Materialize()
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
-	createdAgentSessions, err := NewUserSession(ctx, AgentSessionConfig{
+	createdAgentSessions, err := NewUserSession(ctx, UserSessionConfig{AgentSession: AgentSessionConfig{
 		Sessions:           sessions,
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
 		StateDirectories:   testSessionStateDirectories(t),
@@ -420,7 +421,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		Goals:              goals,
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
-	})
+	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -431,6 +432,154 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		t.Fatal(err)
 	}
 	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, agentSessions: agentSessions, sessionID: created.ID, runner: runner}
+}
+
+func TestRunningSendChildCannotEscapeCompletingManagedTurn(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			close(started)
+			<-release
+		}
+		last := request.Messages[len(request.Messages)-1]
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + last.Content[0].Text},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	parent := h.agentSessions.Get(h.sessionID)
+	child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID, Name: "serialized"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	item := child.(*agentSession)
+	item.childOp.Lock()
+	close(release)
+	for deadline := time.Now().Add(time.Second); item.Status() != StatusIdle; {
+		if time.Now().After(deadline) {
+			item.childOp.Unlock()
+			t.Fatal("child drain did not become idle")
+		}
+		runtime.Gosched()
+	}
+
+	type sendResult struct {
+		task      ChildTask
+		messageID string
+		err       error
+	}
+	sent := make(chan sendResult, 1)
+	go func() {
+		task, messageID, sendErr := child.SendChild(context.Background(), ChildRequest{Prompt: "follow-up"})
+		sent <- sendResult{task: task, messageID: messageID, err: sendErr}
+	}()
+	select {
+	case result := <-sent:
+		item.childOp.Unlock()
+		t.Fatalf("SendChild escaped managed completion: %#v", result)
+	case <-time.After(20 * time.Millisecond):
+	}
+	item.childOp.Unlock()
+	result := <-sent
+	if result.err != nil || result.messageID != "" || result.task.Turn != 2 || result.task.Status != ChildStatusRunning {
+		t.Fatalf("serialized SendChild = %#v", result)
+	}
+	observation, err := child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := observation.Wait(context.Background())
+	if err != nil || completed.Output != "answer-follow-up" {
+		t.Fatalf("follow-up = %#v, %v", completed, err)
+	}
+}
+
+func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		last := request.Messages[len(request.Messages)-1]
+		prompt := last.Content[0].Text
+		if index == 0 {
+			started <- struct{}{}
+			<-release
+		}
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + prompt},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	parent := h.agentSessions.Get(h.sessionID)
+	child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID, Name: "inspect", ToolCallID: "call-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("child turn did not start")
+	}
+
+	task, messageID, err := child.SendChild(context.Background(), ChildRequest{Prompt: "steer", ToolCallID: "call-2"})
+	if err != nil || messageID == "" || task.Turn != 1 || task.Status != ChildStatusRunning {
+		t.Fatalf("running SendChild = %#v, %q, %v", task, messageID, err)
+	}
+	close(release)
+	completed, err := observation.Wait(context.Background())
+	if err != nil || completed.Status != ChildStatusSucceeded || completed.Output != "answer-steer" {
+		t.Fatalf("first turn = %#v, %v", completed, err)
+	}
+
+	task, messageID, err = child.SendChild(context.Background(), ChildRequest{Prompt: "follow-up", ToolCallID: "call-3"})
+	if err != nil || messageID != "" || task.Turn != 2 || task.Status != ChildStatusRunning {
+		t.Fatalf("follow-up SendChild = %#v, %q, %v", task, messageID, err)
+	}
+	observation, err = child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err = observation.Wait(context.Background())
+	if err != nil || completed.Turn != 2 || completed.Output != "answer-follow-up" {
+		t.Fatalf("second turn = %#v, %v", completed, err)
+	}
+	resolved, err := parent.ResolveChild("inspect")
+	if err != nil || resolved != child {
+		t.Fatalf("ResolveChild = %#v, %v", resolved, err)
+	}
+	nested, err := child.CreateChild(context.Background(), ChildRequest{Prompt: "nested", Agent: BuildID, Name: "nested-inspect"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedObservation, err := nested.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := nestedObservation.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, identifier := range []string{nested.ID(), "nested-inspect"} {
+		resolved, err = parent.ResolveChild(identifier)
+		if err != nil || resolved != nested {
+			t.Fatalf("ResolveChild(%q) = %#v, %v", identifier, resolved, err)
+		}
+	}
+	if err := nested.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if err := child.Forget(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := parent.ResolveChild(child.ID()); !errors.Is(err, ErrChildNotFound) {
+		t.Fatalf("ResolveChild after Forget = %v", err)
+	}
 }
 
 func TestAgentSessionPromptAndSendOwnAdmissionAndResultHandling(t *testing.T) {
@@ -485,7 +634,7 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 		}
 	}))
 	parentRuntime := h.agentSessions.Get(parent.ID)
-	child, err := h.agentSessions.CreateChild(context.Background(), parentRuntime, ChildSessionRequest{
+	child, err := h.agentSessions.repository.CreateChild(context.Background(), parentRuntime, ChildSessionRequest{
 		ProjectID:        parent.ProjectID,
 		Name:             "inspect",
 		Agent:            BuildID,
@@ -524,7 +673,7 @@ func TestAgentSessionRepositoryDiscardsPreparedChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := h.agentSessions.CreateChild(context.Background(), h.agentSessions.Get(parent.ID), ChildSessionRequest{
+	child, err := h.agentSessions.repository.CreateChild(context.Background(), h.agentSessions.Get(parent.ID), ChildSessionRequest{
 		ProjectID:        parent.ProjectID,
 		Name:             "discard",
 		Agent:            BuildID,
@@ -534,7 +683,7 @@ func TestAgentSessionRepositoryDiscardsPreparedChild(t *testing.T) {
 		t.Fatal(err)
 	}
 	childID := child.ID()
-	if err := h.agentSessions.DiscardChild(context.Background(), childID); err != nil {
+	if err := h.agentSessions.repository.DiscardChild(context.Background(), childID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := h.sessions.Get(context.Background(), childID); !errors.Is(err, session.ErrNotFound) {
@@ -548,9 +697,156 @@ func TestAgentSessionRepositoryDiscardsPreparedChild(t *testing.T) {
 	}
 }
 
+func TestCreateChildIsAtomicWithParentRemoval(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	parent := h.agentSessions.Get(h.sessionID).(*agentSession)
+
+	// Block after CreateChild reserves the parent but before it performs durable
+	// child creation. Remove must observe that reservation without either side
+	// holding the repository lock while waiting for the runtime boundary.
+	h.agentSessions.childMu.Lock()
+	created := make(chan struct {
+		child AgentSession
+		err   error
+	}, 1)
+	go func() {
+		child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "race", Agent: BuildID, Name: "reserved"})
+		created <- struct {
+			child AgentSession
+			err   error
+		}{child: child, err: err}
+	}()
+	for deadline := time.Now().Add(time.Second); ; {
+		parent.mu.Lock()
+		reserved := parent.childCreations
+		parent.mu.Unlock()
+		if reserved != 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			h.agentSessions.childMu.Unlock()
+			t.Fatal("CreateChild did not reserve its parent")
+		}
+		runtime.Gosched()
+	}
+	if err := h.agentSessions.Remove(parent.ID()); !errors.Is(err, ErrAgentSessionActive) {
+		h.agentSessions.childMu.Unlock()
+		t.Fatalf("Remove during admitted CreateChild = %v", err)
+	}
+	h.agentSessions.childMu.Unlock()
+	result := <-created
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	observation, err := result.child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observation.Wait(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	other := newRunnerHarness(t, fake, nil)
+	retired := other.agentSessions.Get(other.sessionID)
+	if err := other.agentSessions.Remove(retired.ID()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := retired.CreateChild(context.Background(), ChildRequest{Prompt: "late", Agent: BuildID}); !errors.Is(err, ErrAgentSessionRemoved) {
+		t.Fatalf("CreateChild on retired parent = %v", err)
+	}
+}
+
+func TestRemoveIsAtomicWithIdleSessionAdmission(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	runtime := h.agentSessions.Get(h.sessionID).(*agentSession)
+	release := make(chan struct{})
+	runtime.execute = func(context.Context) error {
+		<-release
+		return nil
+	}
+
+	// Hold the runtime boundary until both operations are waiting on it. Whichever
+	// operation acquires it first must exclude the other: removal retires this
+	// runtime, while admission makes it active before Remove can inspect it.
+	runtime.mu.Lock()
+	sendResult := make(chan error, 1)
+	removeResult := make(chan error, 1)
+	go func() {
+		_, err := runtime.Send(context.Background(), "race")
+		sendResult <- err
+	}()
+	go func() { removeResult <- h.agentSessions.Remove(h.sessionID) }()
+	runtime.mu.Unlock()
+
+	sendErr, removeErr := <-sendResult, <-removeResult
+	switch {
+	case sendErr == nil:
+		if !errors.Is(removeErr, ErrAgentSessionActive) {
+			t.Fatalf("admitted Send escaped removal: Send=%v Remove=%v", sendErr, removeErr)
+		}
+		close(release)
+		if err := runtime.Resume(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	case removeErr == nil:
+		if !errors.Is(sendErr, ErrAgentSessionRemoved) {
+			t.Fatalf("removed runtime admitted work: Send=%v Remove=%v", sendErr, removeErr)
+		}
+		close(release)
+	default:
+		close(release)
+		t.Fatalf("Send=%v Remove=%v", sendErr, removeErr)
+	}
+}
+
+func TestForgetAndRemoveDoNotDeadlock(t *testing.T) {
+	for range 100 {
+		fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+			return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+		}}
+		h := newRunnerHarness(t, fake, nil)
+		parent := h.agentSessions.Get(h.sessionID)
+		child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "done", Agent: BuildID, Name: "forget"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		observation, err := child.Observe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := observation.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		results := make(chan error, 2)
+		go func() { <-start; results <- child.Forget() }()
+		go func() { <-start; results <- h.agentSessions.Remove(child.ID()) }()
+		close(start)
+		for range 2 {
+			select {
+			case err := <-results:
+				if err != nil && !errors.Is(err, ErrChildNotFound) {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("Forget and Remove deadlocked")
+			}
+		}
+	}
+}
+
 func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	ctx := context.Background()
-	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
 	parent, err := h.sessions.Get(ctx, h.sessionID)
 	if err != nil {
 		t.Fatal(err)
@@ -574,7 +870,9 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	childA := createChild(parent.ID, "child a")
 	nested := createChild(childA.ID, "nested")
 
-	createdRestarted, err := NewUserSession(ctx, h.agentSessions.repository.config)
+	restartedConfig := h.agentSessions.config
+	restartedConfig.MaxChildTasks = 1
+	createdRestarted, err := NewUserSession(ctx, restartedConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -602,6 +900,23 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	if !restarted.HasChildSessions(parent.ID) || !restarted.HasChildSessions(childA.ID) || restarted.HasChildSessions(nested.ID) {
 		t.Fatalf("HasChildSessions = parent:%t child:%t nested:%t", restarted.HasChildSessions(parent.ID), restarted.HasChildSessions(childA.ID), restarted.HasChildSessions(nested.ID))
 	}
+	managed, err := restarted.Get(parent.ID).CreateChild(ctx, ChildRequest{Prompt: "managed", Agent: BuildID, Name: "managed"})
+	if err != nil {
+		t.Fatalf("historical children consumed MaxChildTasks: %v", err)
+	}
+	managedObservation, err := managed.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := managedObservation.Wait(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Get(parent.ID).CreateChild(ctx, ChildRequest{Prompt: "over limit", Agent: BuildID, Name: "over-limit"}); !errors.Is(err, ErrChildTaskLimit) {
+		t.Fatalf("CreateChild over managed retention limit = %v", err)
+	}
+	if got, ok := restarted.ChildRelation(nested.ID); !ok || got != childA.ID {
+		t.Fatalf("historical nested hierarchy after managed create = %q, %v", got, ok)
+	}
 	nestedRuntime := restarted.Get(nested.ID)
 	if nestedRuntime.Name() != "nested" || restarted.Get(childA.ID).Name() != "child a" {
 		t.Fatalf("restored names = nested:%q child:%q", nestedRuntime.Name(), restarted.Get(childA.ID).Name())
@@ -624,7 +939,10 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 		replayed = append(replayed, child)
 		live.ObserveSession(child.SessionID)
 	}))
-	wantReplayed := append(append([]ChildSession(nil), wantChildren...), ChildSession{SessionID: nested.ID, ParentSessionID: childA.ID})
+	wantReplayed := append(append([]ChildSession(nil), wantChildren...),
+		ChildSession{SessionID: nested.ID, ParentSessionID: childA.ID},
+		ChildSession{SessionID: managed.ID(), ParentSessionID: parent.ID},
+	)
 	sort.Slice(wantReplayed, func(i, j int) bool { return wantReplayed[i].SessionID < wantReplayed[j].SessionID })
 	if !reflect.DeepEqual(replayed, wantReplayed) {
 		t.Fatalf("restored observer replay = %#v, want %#v", replayed, wantReplayed)

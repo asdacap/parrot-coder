@@ -96,26 +96,34 @@ type MessageSender interface {
 	Send(context.Context, Execution, string) (string, error)
 }
 
+// TurnPermit owns concurrency capacity for one active agent turn.
+type TurnPermit interface {
+	Release()
+}
+
+// TurnAdmitter acquires the concurrency capacity owned by the user and parent sessions.
+type TurnAdmitter interface {
+	TryAdmitTurn(parentSessionID string) (TurnPermit, bool, error)
+}
+
 type SessionHierarchy interface {
 	HasChildSessions(parentSessionID string) bool
 	ForgetChild(sessionID string) error
 }
 
 type Config struct {
-	MaxConcurrent          int
-	MaxConcurrentPerParent int
-	MaxDepth               int
-	MaxTasks               int
-	MaxPromptBytes         int
-	MaxResultBytes         int
-	AgentIdentity          func(string) string
-	AgentRecursionLimit    func(string) int
-	NameGenerator          func() string
-	OnProgress             func(Task)
-	OnComplete             func(Task)
-	OnEvent                func(LifecycleEvent)
-	Tasks                  *managedtask.Manager
-	Sessions               SessionHierarchy
+	MaxDepth            int
+	MaxTasks            int
+	MaxPromptBytes      int
+	MaxResultBytes      int
+	AgentIdentity       func(string) string
+	AgentRecursionLimit func(string) int
+	NameGenerator       func() string
+	OnProgress          func(Task)
+	OnComplete          func(Task)
+	OnEvent             func(LifecycleEvent)
+	Tasks               *managedtask.Manager
+	Sessions            SessionHierarchy
 }
 
 // Lifecycle kinds a task reports as flat events on its parent session's
@@ -177,6 +185,7 @@ type taskState struct {
 type turnState struct {
 	done   chan struct{}
 	result Task
+	permit TurnPermit
 }
 
 // Observer waits for the turn which was current when it was created. It stays
@@ -190,8 +199,6 @@ type Manager struct {
 	executor Executor
 	config   Config
 	tasks    map[string]*taskState
-	running  int
-	byParent map[string]int
 	closed   bool
 	workers  sync.WaitGroup
 }
@@ -209,7 +216,22 @@ func NewManager(executor Executor, config Config) *Manager {
 	if config.MaxResultBytes <= 0 {
 		config.MaxResultBytes = 1 << 20
 	}
-	return &Manager{executor: executor, config: config, tasks: make(map[string]*taskState), byParent: make(map[string]int)}
+	return &Manager{executor: executor, config: config, tasks: make(map[string]*taskState)}
+}
+
+func (m *Manager) tryAdmitTurn(parentSessionID string) (TurnPermit, error) {
+	admitter, ok := m.executor.(TurnAdmitter)
+	if !ok {
+		return nil, errors.New("subagent: executor does not support turn admission")
+	}
+	permit, admitted, err := admitter.TryAdmitTurn(parentSessionID)
+	if err != nil {
+		return nil, err
+	}
+	if !admitted || permit == nil {
+		return nil, ErrConcurrency
+	}
+	return permit, nil
 }
 
 func (m *Manager) validate(parentSession string, lineage []string, request Request) error {
@@ -238,7 +260,7 @@ func (m *Manager) validate(parentSession string, lineage []string, request Reque
 	return nil
 }
 
-func (m *Manager) launch(sessionID, parentSession string, lineage []string, request Request) (string, error) {
+func (m *Manager) launch(sessionID, parentSession string, lineage []string, request Request, permit TurnPermit) (string, error) {
 	if strings.TrimSpace(sessionID) == "" {
 		return "", ErrInvalid
 	}
@@ -257,10 +279,6 @@ func (m *Manager) launch(sessionID, parentSession string, lineage []string, requ
 		m.mu.Unlock()
 		return "", ErrTaskLimit
 	}
-	if m.running >= m.config.MaxConcurrent || m.byParent[parentSession] >= m.config.MaxConcurrentPerParent {
-		m.mu.Unlock()
-		return "", ErrConcurrency
-	}
 	name := managedtask.SanitizeName(request.Name)
 	if name == "" {
 		generated := petname.Generate(2, "-")
@@ -276,10 +294,9 @@ func (m *Manager) launch(sessionID, parentSession string, lineage []string, requ
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	request.Name = name
-	state := &taskState{task: Task{SessionID: sessionID, ParentSession: parentSession, RootSession: rootSession, Agent: request.Agent, Model: request.Model, Name: name, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: &turnState{done: make(chan struct{})}, cancel: cancel}
+	turn := &turnState{done: make(chan struct{}), permit: permit}
+	state := &taskState{task: Task{SessionID: sessionID, ParentSession: parentSession, RootSession: rootSession, Agent: request.Agent, Model: request.Model, Name: name, Lineage: lineage, ToolCallID: request.ToolCallID, Depth: len(lineage) + 1, Turn: 1, Status: StatusRunning, StartedAt: now}, request: request, turn: turn, cancel: cancel}
 	m.tasks[sessionID] = state
-	m.running++
-	m.byParent[parentSession]++
 	m.workers.Add(1)
 	start := LifecycleEvent{Kind: LifecycleStart, Task: cloneTask(state.task)}
 	m.mu.Unlock()
@@ -289,15 +306,13 @@ func (m *Manager) launch(sessionID, parentSession string, lineage []string, requ
 			cancel()
 			m.mu.Lock()
 			delete(m.tasks, sessionID)
-			m.running--
-			m.byParent[parentSession]--
 			m.workers.Done()
 			m.mu.Unlock()
 			return "", err
 		}
 	}
 	m.emit(start)
-	go m.run(ctx, state)
+	go m.run(ctx, state, turn)
 	return sessionID, nil
 }
 
@@ -374,10 +389,20 @@ func (m *Manager) Spawn(ctx context.Context, parentSession, callerAgent string, 
 	if strings.TrimSpace(sessionID) == "" {
 		return "", errors.New("subagent: preparer returned an empty child session")
 	}
-	id, err := m.launch(sessionID, parentSession, lineage, request)
+	permit, err := m.tryAdmitTurn(parentSession)
+	if err != nil {
+		if discarder, ok := m.executor.(PreparationDiscarder); ok {
+			if discardErr := discarder.DiscardPreparation(context.WithoutCancel(ctx), sessionID); discardErr != nil {
+				return "", errors.Join(err, fmt.Errorf("subagent: discard prepared session %s: %w", sessionID, discardErr))
+			}
+		}
+		return "", err
+	}
+	id, err := m.launch(sessionID, parentSession, lineage, request, permit)
 	if err == nil {
 		return id, nil
 	}
+	permit.Release()
 	if discarder, ok := m.executor.(PreparationDiscarder); ok {
 		if discardErr := discarder.DiscardPreparation(context.WithoutCancel(ctx), sessionID); discardErr != nil {
 			return "", errors.Join(err, fmt.Errorf("subagent: discard prepared session %s: %w", sessionID, discardErr))
@@ -386,7 +411,7 @@ func (m *Manager) Spawn(ctx context.Context, parentSession, callerAgent string, 
 	return "", err
 }
 
-func (m *Manager) run(ctx context.Context, state *taskState) {
+func (m *Manager) run(ctx context.Context, state *taskState, turnState *turnState) {
 	turn := state.task.Turn
 	report := func(progress Progress) { m.reportProgress(state, turn, progress) }
 	m.emit(LifecycleEvent{Kind: LifecycleWorking, Task: cloneTask(state.task)})
@@ -416,19 +441,15 @@ func (m *Manager) run(ctx context.Context, state *taskState) {
 	state.task.Error = errText
 	state.task.Truncated = truncated
 	state.task.FinishedAt = time.Now().UTC()
-	m.running--
-	m.byParent[state.task.ParentSession]--
-	if m.byParent[state.task.ParentSession] == 0 {
-		delete(m.byParent, state.task.ParentSession)
-	}
 	state.cancel()
 	snapshot := cloneTask(state.task)
-	state.turn.result = snapshot
+	turnState.result = snapshot
 	callback := m.config.OnProgress
 	complete := m.config.OnComplete
 	finished := LifecycleEvent{Kind: LifecycleFinished, Task: snapshot}
-	done := state.turn.done
+	done := turnState.done
 	m.mu.Unlock()
+	turnState.permit.Release()
 	close(done)
 	m.workers.Done()
 	m.emit(finished)
@@ -564,9 +585,27 @@ func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, err
 		m.mu.Unlock()
 		return Task{}, ErrRunning
 	}
-	if m.running >= m.config.MaxConcurrent || m.byParent[state.task.ParentSession] >= m.config.MaxConcurrentPerParent {
+	parentSession := state.task.ParentSession
+	m.mu.Unlock()
+	permit, err := m.tryAdmitTurn(parentSession)
+	if err != nil {
+		return Task{}, err
+	}
+	m.mu.Lock()
+	if m.tasks[id] != state {
 		m.mu.Unlock()
-		return Task{}, ErrConcurrency
+		permit.Release()
+		return Task{}, ErrNotFound
+	}
+	if m.closed {
+		m.mu.Unlock()
+		permit.Release()
+		return Task{}, ErrClosed
+	}
+	if state.task.Status == StatusRunning || state.task.Status == StatusPending {
+		m.mu.Unlock()
+		permit.Release()
+		return Task{}, ErrRunning
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	state.task.Turn++
@@ -580,14 +619,13 @@ func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, err
 	state.task.ToolUses = 0
 	request.Agent, request.Model, request.Name = state.task.Agent, state.task.Model, state.task.Name
 	state.request = request
-	state.turn = &turnState{done: make(chan struct{})}
+	turn := &turnState{done: make(chan struct{}), permit: permit}
+	state.turn = turn
 	state.cancel = cancel
-	m.running++
-	m.byParent[state.task.ParentSession]++
 	m.workers.Add(1)
 	task := cloneTask(state.task)
 	m.mu.Unlock()
-	go m.run(ctx, state)
+	go m.run(ctx, state, turn)
 	return task, nil
 }
 

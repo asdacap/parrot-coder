@@ -172,7 +172,6 @@ type App struct {
 
 	sessionStore  *store.Registry
 	userSession   agent.UserSession
-	subagents     *subagent.Manager
 	compactions   *compaction.Repository
 	outputs       *tool.OutputStore
 	processes     *process.Runner
@@ -419,29 +418,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
-	subagentExecutor := &appSubagentExecutor{projectID: info.ID, defaultSelection: defaultSelection, events: live}
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
 	notifications := subagent.NewCompletionNotifier()
 	result.notifications = notifications
-	subagents := subagent.NewManager(subagentExecutor, subagent.Config{MaxConcurrent: loaded.Config.Subagents.MaxConcurrent, MaxConcurrentPerParent: loaded.Config.Subagents.MaxConcurrentPerParent, MaxDepth: loaded.Config.Subagents.MaxDepth, AgentIdentity: func(id string) string {
-		profile, resolveErr := profileResolver.GetProfile(id)
-		if resolveErr != nil {
-			return id
-		}
-		return profile.ID
-	}, AgentRecursionLimit: func(id string) int {
-		profile, resolveErr := profileResolver.GetProfile(id)
-		if resolveErr != nil {
-			return 0
-		}
-		return profile.RecursionLimit
-	}, Tasks: tasks, Sessions: subagentExecutor, OnComplete: notifications.Notify, OnProgress: func(task subagent.Task) {
-		data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
-		live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
-	}, OnEvent: func(item subagent.LifecycleEvent) {
-		publishSubagentLifecycle(live, item)
-	}})
-	result.subagents = subagents
+	children := &appAgentChildren{}
 
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
 		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Name: item.Name, Kind: string(managedtask.KindShell), Error: item.Error}
@@ -471,7 +451,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
 		Changes: changes, Processes: processes, Tasks: &managedTaskController{tasks: tasks}, Todos: todos, Goals: goals, Questions: questions,
 		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
-		Subagents: subagents, Agents: agentLookup,
+		Children: children, Agents: agentLookup,
 		ConfigDir: paths.Config, Status: statusRegistry,
 	}); err != nil {
 		return nil, fmt.Errorf("app: register built-in tools: %w", err)
@@ -517,16 +497,46 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: session state directories: %w", err)
 	}
-	userSession, err := agent.NewUserSession(ctx, agent.AgentSessionConfig{
-		Sessions: sessions, Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
-		ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
-		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
-			return tool.Executor{Snapshot: snapshot, Permissions: permissions, ErrorAdvisor: pathErrorAdvisor}
+	userSession, err := agent.NewUserSession(ctx, agent.UserSessionConfig{
+		AgentSession: agent.AgentSessionConfig{
+			Sessions: sessions, Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
+			ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
+			ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
+				return tool.Executor{Snapshot: snapshot, Permissions: permissions, ErrorAdvisor: pathErrorAdvisor}
+			},
+			Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
+				return live.TaskIDFor(sessionID, managedtask.MainTaskID)
+			}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
+			ToolPanicLogger: toolPanicLogger(),
 		},
-		Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
-			return live.TaskIDFor(sessionID, managedtask.MainTaskID)
-		}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
-		ToolPanicLogger: toolPanicLogger(),
+		MaxConcurrentChildTurns:          loaded.Config.Subagents.MaxConcurrent,
+		MaxConcurrentChildTurnsPerParent: loaded.Config.Subagents.MaxConcurrentPerParent,
+		MaxChildDepth:                    loaded.Config.Subagents.MaxDepth,
+		ChildAgentIdentity: func(id string) string {
+			profile, resolveErr := profileResolver.GetProfile(id)
+			if resolveErr != nil {
+				return id
+			}
+			return profile.ID
+		},
+		ChildAgentRecursionLimit: func(id string) int {
+			profile, resolveErr := profileResolver.GetProfile(id)
+			if resolveErr != nil {
+				return 0
+			}
+			return profile.RecursionLimit
+		},
+		ChildTasks: tasks, ProjectID: info.ID, DefaultSelection: defaultSelection,
+		ObserveChildProgress: func(sessionID string, report func(agent.ChildProgress)) func() {
+			return live.ObserveTransient(sessionID, func(item v1.Event) { reportChildEvent(report, item) })
+		},
+		OnChildComplete: func(task agent.ChildTask) { notifications.Notify(childNotificationTask(task)) },
+		OnChildProgress: func(task agent.ChildTask) {
+			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
+			live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
+		},
+		OnChildLifecycle: func(item agent.ChildLifecycleEvent) { publishChildLifecycle(live, item) },
+		OnChildDiscard:   live.ForgetSession,
 	}, reporter)
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
@@ -537,7 +547,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return session, ok
 	})
 	processes.SetAgentSessions(processAgentSessionsAdapter{userSession})
-	subagentExecutor.userSession = userSession
+	children.userSession = userSession
 	live.SetSessionHierarchy(userSession)
 	userSession.AddChildCreatedObserver(childSessionObserver{live})
 	result.userSession = userSession
@@ -721,12 +731,10 @@ func (a *App) Close() error {
 			a.closeErr = errors.Join(a.closeErr, a.notifications.Close(ctx))
 			cancel()
 		}
-		if a.subagents != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			a.closeErr = errors.Join(a.closeErr, a.subagents.Shutdown(ctx))
-			cancel()
-		}
 		if a.userSession != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			a.closeErr = errors.Join(a.closeErr, a.userSession.Shutdown(ctx))
+			cancel()
 			active := a.userSession.Active()
 			activeSessions = len(active)
 			diagnostics.Event("app_close_started", "active_sessions", activeSessions)
@@ -1237,83 +1245,52 @@ func (o childSessionObserver) ChildCreated(child agent.ChildSession) {
 	o.events.ObserveSession(child.SessionID)
 }
 
-type appSubagentExecutor struct {
-	userSession      agent.UserSession
-	projectID        string
-	defaultSelection session.Selection
-	events           *event.Broker
-}
+type appAgentChildren struct{ userSession agent.UserSession }
 
-func (e *appSubagentExecutor) HasChildSessions(parentSessionID string) bool {
-	return e.userSession != nil && e.userSession.HasChildSessions(parentSessionID)
-}
+type appChildAgent struct{ session agent.AgentSession }
 
-func (e *appSubagentExecutor) ForgetChild(sessionID string) error {
-	if e.userSession == nil {
-		return nil
+func (c *appAgentChildren) Create(ctx context.Context, parentSession, _ string, prompt, target, model, name, toolCallID string) (tool.ChildAgent, error) {
+	if c.userSession == nil {
+		return nil, errors.New("app: agent user session is unavailable")
 	}
-	return e.userSession.ForgetChild(sessionID)
-}
-
-func (e *appSubagentExecutor) DiscardPreparation(ctx context.Context, sessionID string) error {
-	if e.userSession == nil {
-		return errors.New("app: subagent user session is unavailable")
-	}
-	if err := e.userSession.DiscardChild(ctx, sessionID); err != nil {
-		return err
-	}
-	if e.events != nil {
-		e.events.ForgetSession(sessionID)
-	}
-	return nil
-}
-
-func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Preparation) (string, error) {
-	if e.userSession == nil {
-		return "", errors.New("app: subagent user session is unavailable")
-	}
-	parent := e.userSession.Get(execution.ParentSession)
-	child, err := e.userSession.CreateChild(ctx, parent, agent.ChildSessionRequest{
-		ProjectID:        e.projectID,
-		Name:             execution.Request.Name,
-		Agent:            execution.Request.Agent,
-		Model:            execution.Request.Model,
-		DefaultSelection: e.defaultSelection,
-	})
+	child, err := c.userSession.Get(parentSession).CreateChild(ctx, agent.ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name, ToolCallID: toolCallID})
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	return child.ID(), nil
+	return appChildAgent{session: child}, nil
 }
 
-func (e *appSubagentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
-	if e.userSession == nil {
-		return "", errors.New("app: subagent user session is unavailable")
+func (c *appAgentChildren) Resolve(parentSession, identifier string) (tool.ChildAgent, error) {
+	if c.userSession == nil {
+		return nil, errors.New("app: agent user session is unavailable")
 	}
-	child, ok := e.userSession.Lookup(execution.SessionID)
-	if !ok {
-		return "", errors.New("app: subagent session is unavailable")
+	child, err := c.userSession.Get(parentSession).ResolveChild(identifier)
+	if err != nil {
+		return nil, err
 	}
-	stopProgress := e.events.ObserveTransient(execution.SessionID, func(item v1.Event) {
-		reportSubagentEvent(execution.ReportProgress, item)
-	})
-	defer stopProgress()
-	return child.Prompt(ctx, execution.Request.Prompt)
+	return appChildAgent{session: child}, nil
 }
 
-func (e *appSubagentExecutor) Send(ctx context.Context, execution subagent.Execution, message string) (string, error) {
-	if e.userSession == nil {
-		return "", errors.New("app: subagent user session is unavailable")
-	}
-	child, ok := e.userSession.Lookup(execution.SessionID)
-	if !ok {
-		return "", errors.New("app: subagent session is unavailable")
-	}
-	return child.Send(ctx, message)
+func (c appChildAgent) Task() (tool.AgentTask, bool) {
+	task, ok := c.session.ChildTask()
+	return toolAgentTask(task), ok
 }
 
-// publishSubagentLifecycle publishes one flat task lifecycle event for an
-// agent task on its parent session's stream.
+func (c appChildAgent) Send(ctx context.Context, message, toolCallID string) (tool.AgentTask, string, error) {
+	task, messageID, err := c.session.SendChild(ctx, agent.ChildRequest{Prompt: message, ToolCallID: toolCallID})
+	return toolAgentTask(task), messageID, err
+}
+
+func toolAgentTask(task agent.ChildTask) tool.AgentTask {
+	return tool.AgentTask{SessionID: task.SessionID, Agent: task.Agent, Name: task.Name, Status: string(task.Status), Turn: task.Turn, Depth: task.Depth, Output: task.Output, Error: task.Error}
+}
+
+func childNotificationTask(task agent.ChildTask) subagent.Task {
+	return subagent.Task{SessionID: task.SessionID, ParentSession: task.ParentSession, Agent: task.Agent, Name: task.Name, Turn: task.Turn, Status: subagent.Status(task.Status), Output: task.Output, Error: task.Error}
+}
+
+// publishChildLifecycle publishes one flat task lifecycle event for an agent
+// task on its parent session's stream.
 type managedTaskController struct{ tasks *managedtask.Manager }
 
 func (c *managedTaskController) Interrupt(ctx context.Context, callerSession, id string) (managedtask.Active, error) {
@@ -1332,18 +1309,18 @@ func (c *managedTaskController) WaitKind(ctx context.Context, callerSession, id 
 	return c.tasks.WaitKind(ctx, callerSession, id, kind)
 }
 
-func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) {
+func publishChildLifecycle(live *event.Broker, item agent.ChildLifecycleEvent) {
 	task := item.Task
 	payload := v1.TaskEvent{TaskID: task.SessionID, SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
 	eventType := ""
 	switch item.Kind {
-	case subagent.LifecycleStart:
+	case agent.ChildLifecycleStart:
 		eventType = managedtask.EventStart
-	case subagent.LifecycleWorking:
+	case agent.ChildLifecycleWorking:
 		eventType = managedtask.EventWorking
-	case subagent.LifecycleIdle:
+	case agent.ChildLifecycleIdle:
 		eventType = managedtask.EventIdle
-	case subagent.LifecycleFinished:
+	case agent.ChildLifecycleFinished:
 		eventType = managedtask.EventFinished
 		payload.Status = string(task.Status)
 		payload.Error = task.Error
@@ -1354,7 +1331,7 @@ func publishSubagentLifecycle(live *event.Broker, item subagent.LifecycleEvent) 
 	live.PublishEvent(v1.Event{Type: eventType, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
 }
 
-func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {
+func reportChildEvent(report func(agent.ChildProgress), item v1.Event) {
 	if report == nil {
 		return
 	}
@@ -1365,9 +1342,9 @@ func reportSubagentEvent(report func(subagent.Progress), item v1.Event) {
 			return
 		}
 		if status.Kind == "tool_call_complete" {
-			report(subagent.Progress{ToolUses: 1})
+			report(agent.ChildProgress{ToolUses: 1})
 		} else if status.Kind == "usage" && status.Usage != nil {
-			report(subagent.Progress{Usage: subagent.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, TotalTokens: status.Usage.TotalTokens, ReasoningTokens: status.Usage.ReasoningTokens, CachedInputTokens: status.Usage.CachedInputTokens}})
+			report(agent.ChildProgress{Usage: agent.ChildUsage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, TotalTokens: status.Usage.TotalTokens, ReasoningTokens: status.Usage.ReasoningTokens, CachedInputTokens: status.Usage.CachedInputTokens}})
 		}
 	}
 }

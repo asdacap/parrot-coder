@@ -165,7 +165,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	}
 	snapshot := toolRegistry.Materialize()
 	contextRegistry, _ := systemcontext.NewRegistry(source)
-	agentSessions, err := NewUserSession(ctx, AgentSessionConfig{
+	agentSessions, err := NewUserSession(ctx, UserSessionConfig{AgentSession: AgentSessionConfig{
 		Sessions:           sessions,
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
 		StateDirectories:   testSessionStateDirectories(t),
@@ -176,7 +176,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 		Goals:              goals,
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
-	})
+	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4})
 	if err != nil {
 		t.Fatal(err)
 	}

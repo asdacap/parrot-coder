@@ -3,6 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -10,6 +11,10 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 )
+
+type toolTestTurnPermit struct{}
+
+func (toolTestTurnPermit) Release() {}
 
 type reusableAgentExecutor struct {
 	mu       sync.Mutex
@@ -24,6 +29,10 @@ func newReusableAgentExecutor() *reusableAgentExecutor {
 
 func (e *reusableAgentExecutor) Prepare(context.Context, subagent.Preparation) (string, error) {
 	return "session-child", nil
+}
+
+func (*reusableAgentExecutor) TryAdmitTurn(string) (subagent.TurnPermit, bool, error) {
+	return toolTestTurnPermit{}, true, nil
 }
 
 func (e *reusableAgentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
@@ -52,12 +61,69 @@ func (e *reusableAgentExecutor) release(id, output string) {
 	release <- output
 }
 
+type managerAgentChildren struct{ manager *subagent.Manager }
+
+type managerChildAgent struct {
+	manager       *subagent.Manager
+	parentSession string
+	sessionID     string
+}
+
+func (c managerAgentChildren) Create(ctx context.Context, parentSession, callerAgent, prompt, agent, model, name, toolCallID string) (ChildAgent, error) {
+	sessionID, err := c.manager.Spawn(ctx, parentSession, callerAgent, subagent.Request{
+		Prompt: prompt, Agent: agent, Model: model, Name: name, ToolCallID: toolCallID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return managerChildAgent{manager: c.manager, parentSession: parentSession, sessionID: sessionID}, nil
+}
+
+func (c managerAgentChildren) Resolve(parentSession, identifier string) (ChildAgent, error) {
+	task, err := c.manager.Resolve(parentSession, identifier)
+	if err != nil {
+		return nil, err
+	}
+	return managerChildAgent{manager: c.manager, parentSession: parentSession, sessionID: task.SessionID}, nil
+}
+
+func (c managerChildAgent) Task() (AgentTask, bool) {
+	task, err := c.manager.Status(c.parentSession, c.sessionID)
+	return testAgentTask(task), err == nil
+}
+
+func (c managerChildAgent) Send(ctx context.Context, message, toolCallID string) (AgentTask, string, error) {
+	task, err := c.manager.Status(c.parentSession, c.sessionID)
+	if err != nil {
+		return AgentTask{}, "", err
+	}
+	if task.Status == subagent.StatusRunning || task.Status == subagent.StatusPending {
+		messageID, sendErr := c.manager.Send(ctx, c.parentSession, c.sessionID, message)
+		if sendErr == nil {
+			task, err = c.manager.Status(c.parentSession, c.sessionID)
+			return testAgentTask(task), messageID, err
+		}
+		if !errors.Is(sendErr, subagent.ErrNotRunning) {
+			return AgentTask{}, "", sendErr
+		}
+	}
+	task, err = c.manager.FollowUp(c.parentSession, c.sessionID, subagent.Request{Prompt: message, ToolCallID: toolCallID})
+	return testAgentTask(task), "", err
+}
+
+func testAgentTask(task subagent.Task) AgentTask {
+	return AgentTask{
+		SessionID: task.SessionID, Agent: task.Agent, Name: task.Name, Status: string(task.Status),
+		Turn: task.Turn, Depth: task.Depth, Output: task.Output, Error: task.Error,
+	}
+}
+
 func TestAgentToolsReusableLifecycle(t *testing.T) {
 	executor := newReusableAgentExecutor()
-	manager := subagent.NewManager(executor, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4})
+	manager := subagent.NewManager(executor, subagent.Config{})
 	lookup := func(id string) (bool, error) { return id != "build", nil }
 	tools := make(map[string]Tool)
-	for _, item := range NewAgentTools(manager, lookup) {
+	for _, item := range NewAgentTools(managerAgentChildren{manager: manager}, lookup) {
 		tools[item.ID()] = item
 	}
 	call := CallContext{SessionID: "root", Agent: "build", ToolCallID: "call-1"}
@@ -81,7 +147,7 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 
 	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer","name":"code-review"}`)
 	sessionID, ok := spawned.Metadata["session_id"].(string)
-	if !ok || sessionID == "" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != subagent.StatusRunning {
+	if !ok || sessionID == "" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != string(subagent.StatusRunning) {
 		t.Fatalf("spawned = %#v", spawned)
 	}
 	first := <-executor.runs
@@ -98,7 +164,7 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 		t.Fatal(err)
 	}
 	followed := execute(agentSendID, `{"session_id":"code-review","message":"continue"}`)
-	if followed.Metadata["turn"] != 2 || followed.Metadata["status"] != subagent.StatusRunning {
+	if followed.Metadata["turn"] != 2 || followed.Metadata["status"] != string(subagent.StatusRunning) {
 		t.Fatalf("followed = %#v", followed)
 	}
 	second := <-executor.runs

@@ -18,7 +18,6 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
-	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -309,7 +308,7 @@ func TestModelTextBoundsWithoutTouchingTheRecord(t *testing.T) {
 // field before encoding rather than cutting the encoded document.
 func TestJSONToolsKeepModelCopyParseable(t *testing.T) {
 	large := strings.Repeat("y", maxModelTextBytes*2)
-	result := agentResult(subagent.Task{SessionID: "session_1", Agent: "reviewer", Status: "completed", Output: large, Error: large})
+	result := agentResult(AgentTask{SessionID: "session_1", Agent: "reviewer", Status: "completed", Output: large, Error: large})
 	if len(result.Text) <= maxModelTextBytes {
 		t.Fatalf("record was bounded: %d bytes", len(result.Text))
 	}

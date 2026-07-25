@@ -45,6 +45,13 @@ type AgentSession interface {
 	ID() string
 	Name() string
 	Parent() AgentSession
+	CreateChild(context.Context, ChildRequest) (AgentSession, error)
+	ChildTask() (ChildTask, bool)
+	Observe() (ChildTurnObserver, error)
+	ResolveChild(string) (AgentSession, error)
+	SendChild(context.Context, ChildRequest) (ChildTask, string, error)
+	InterruptChild(context.Context) (ChildTask, error)
+	Forget() error
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
 	Wake()
@@ -56,6 +63,54 @@ type AgentSession interface {
 func (s *agentSession) ID() string           { return s.dto.ID }
 func (s *agentSession) Name() string         { return s.dto.Name }
 func (s *agentSession) Parent() AgentSession { return s.parent }
+func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (AgentSession, error) {
+	if s.user == nil {
+		return nil, ErrChildNotFound
+	}
+	return s.user.createChild(ctx, s, request)
+}
+
+func (s *agentSession) ChildTask() (ChildTask, bool) {
+	if s.user == nil {
+		return ChildTask{}, false
+	}
+	return s.user.childTask(s.dto.ID)
+}
+
+func (s *agentSession) Observe() (ChildTurnObserver, error) {
+	if s.user == nil || s.parent == nil {
+		return nil, ErrChildNotFound
+	}
+	return s.user.observeChild(s.parent.ID(), s.dto.ID)
+}
+
+func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
+	if s.user == nil {
+		return nil, ErrChildNotFound
+	}
+	return s.user.resolveChild(s.ID(), identifier)
+}
+
+func (s *agentSession) SendChild(ctx context.Context, request ChildRequest) (ChildTask, string, error) {
+	if s.user == nil || s.parent == nil {
+		return ChildTask{}, "", ErrChildNotFound
+	}
+	return s.sendChild(ctx, request)
+}
+
+func (s *agentSession) InterruptChild(ctx context.Context) (ChildTask, error) {
+	if s.user == nil || s.parent == nil {
+		return ChildTask{}, ErrChildNotFound
+	}
+	return s.interruptChild(ctx)
+}
+
+func (s *agentSession) Forget() error {
+	if s.user == nil || s.parent == nil {
+		return ErrChildNotFound
+	}
+	return s.forget()
+}
 
 // Prompt admits input, runs the session to idle, and returns the assistant
 // message produced by that execution lifecycle.
@@ -68,10 +123,11 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 	for _, message := range messages {
 		cutoff = max(cutoff, message.Sequence)
 	}
-	if _, err := s.admit(ctx, content); err != nil {
+	_, state, err := s.admitAndStart(ctx, content)
+	if err != nil {
 		return "", err
 	}
-	if err := s.Resume(ctx); err != nil {
+	if err := s.wait(ctx, state); err != nil {
 		if ctx.Err() != nil {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			_ = s.Interrupt(cleanup)
@@ -97,15 +153,32 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 
 // Send admits steer input and wakes the session without waiting for it to idle.
 func (s *agentSession) Send(ctx context.Context, content string) (string, error) {
-	messageID, err := s.admit(ctx, content)
-	if err != nil {
-		return "", err
-	}
-	s.Wake()
-	return messageID, nil
+	messageID, _, err := s.admitAndStart(ctx, content)
+	return messageID, err
 }
 
 func (s *agentSession) admit(ctx context.Context, content string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.admitLocked(ctx, content)
+}
+
+func (s *agentSession) admitAndStart(ctx context.Context, content string) (string, *drainState, error) {
+	s.mu.Lock()
+	messageID, err := s.admitLocked(ctx, content)
+	if err != nil {
+		s.mu.Unlock()
+		return "", nil, err
+	}
+	state := s.startOrJoinLocked(true)
+	s.mu.Unlock()
+	return messageID, state, nil
+}
+
+func (s *agentSession) admitLocked(ctx context.Context, content string) (string, error) {
+	if s.removed {
+		return "", ErrAgentSessionRemoved
+	}
 	messageID, err := id.New("msg")
 	if err != nil {
 		return "", err
@@ -117,11 +190,27 @@ func (s *agentSession) admit(ctx context.Context, content string) (string, error
 }
 
 // Wake coalesces with an active drain and returns immediately.
-func (s *agentSession) Wake() { s.startOrJoin(true) }
+func (s *agentSession) Wake() {
+	s.mu.Lock()
+	if !s.removed {
+		s.startOrJoinLocked(true)
+	}
+	s.mu.Unlock()
+}
 
 // Resume starts an idle drain or joins the complete lifetime of an active one.
 func (s *agentSession) Resume(ctx context.Context) error {
-	state := s.startOrJoin(false)
+	s.mu.Lock()
+	if s.removed {
+		s.mu.Unlock()
+		return ErrAgentSessionRemoved
+	}
+	state := s.startOrJoinLocked(false)
+	s.mu.Unlock()
+	return s.wait(ctx, state)
+}
+
+func (s *agentSession) wait(ctx context.Context, state *drainState) error {
 	select {
 	case <-state.done:
 		s.mu.Lock()
@@ -162,23 +251,53 @@ func (s *agentSession) Status() Status {
 	return StatusIdle
 }
 
-func (s *agentSession) startOrJoin(requestWake bool) *drainState {
-	s.mu.Lock()
+func (s *agentSession) startOrJoinLocked(requestWake bool) *drainState {
 	if s.drain != nil {
 		if requestWake {
 			s.drain.wake = true
 		}
-		state := s.drain
-		s.mu.Unlock()
-		return state
+		return s.drain
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	state := &drainState{done: make(chan struct{}), cancel: cancel, status: StatusRunning}
 	s.drain = state
-	s.mu.Unlock()
-	s.started()
-	go s.run(ctx, state)
+	go func() {
+		s.started()
+		s.run(ctx, state)
+	}()
 	return state
+}
+
+func (s *agentSession) reserveChildCreation() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.removed {
+		return ErrAgentSessionRemoved
+	}
+	s.childCreations++
+	return nil
+}
+
+func (s *agentSession) releaseChildCreation() {
+	s.mu.Lock()
+	s.childCreations--
+	s.mu.Unlock()
+}
+
+func (s *agentSession) removeIfIdle(remove func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.removed {
+		return nil
+	}
+	if s.drain != nil || s.childCreations != 0 || s.child != nil && (s.child.task.Status == ChildStatusRunning || s.child.task.Status == ChildStatusPending) {
+		return ErrAgentSessionActive
+	}
+	if err := remove(); err != nil {
+		return err
+	}
+	s.removed = true
+	return nil
 }
 
 func (s *agentSession) run(ctx context.Context, state *drainState) {

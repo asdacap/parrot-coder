@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"strings"
-
-	"github.com/amirulashraf/parrot-coder/internal/subagent"
 )
 
 const (
@@ -17,17 +15,38 @@ const (
 
 type AgentLookup func(string) (bool, error)
 
-type AgentTool struct {
-	BasePresentation
-	Kind    string
-	Manager *subagent.Manager
-	Agents  AgentLookup
+type AgentTask struct {
+	SessionID string
+	Agent     string
+	Name      string
+	Status    string
+	Turn      int
+	Depth     int
+	Output    string
+	Error     string
 }
 
-func NewAgentTools(manager *subagent.Manager, agents AgentLookup) []Tool {
+type ChildAgent interface {
+	Task() (AgentTask, bool)
+	Send(context.Context, string, string) (AgentTask, string, error)
+}
+
+type AgentChildren interface {
+	Create(context.Context, string, string, string, string, string, string, string) (ChildAgent, error)
+	Resolve(string, string) (ChildAgent, error)
+}
+
+type AgentTool struct {
+	BasePresentation
+	Kind     string
+	Children AgentChildren
+	Agents   AgentLookup
+}
+
+func NewAgentTools(children AgentChildren, agents AgentLookup) []Tool {
 	return []Tool{
-		&AgentTool{Kind: agentSpawnID, Manager: manager, Agents: agents},
-		&AgentTool{Kind: agentSendID, Manager: manager, Agents: agents},
+		&AgentTool{Kind: agentSpawnID, Children: children, Agents: agents},
+		&AgentTool{Kind: agentSendID, Children: children, Agents: agents},
 	}
 }
 
@@ -102,7 +121,7 @@ func decodeAgentInput(raw json.RawMessage) (agentInput, error) {
 }
 
 func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if t.Manager == nil || call.SessionID == "" || call.Agent == "" {
+	if t.Children == nil || call.SessionID == "" || call.Agent == "" {
 		return Plan{}, errors.New("agent: manager, session, and caller agent are required")
 	}
 	input, err := decodeAgentInput(raw)
@@ -136,9 +155,13 @@ func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContex
 		if err != nil {
 			return Plan{}, err
 		}
-		task, err := t.agentTask(call.SessionID, input.SessionID)
+		child, err := t.Children.Resolve(call.SessionID, input.SessionID)
 		if err != nil {
 			return Plan{}, err
+		}
+		task, ok := child.Task()
+		if !ok {
+			return Plan{}, errors.New("agent_send: child task is unavailable")
 		}
 		input.SessionID = task.SessionID
 		targetReadOnly, err := t.Agents(task.Agent)
@@ -162,41 +185,35 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	}
 	switch t.Kind {
 	case agentSpawnID:
-		id, err := t.Manager.Spawn(ctx, call.SessionID, call.Agent, subagent.Request{Prompt: input.Prompt, Agent: input.Agent, Model: input.Model, Name: input.Name, ToolCallID: call.ToolCallID})
+		child, err := t.Children.Create(ctx, call.SessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name, call.ToolCallID)
 		if err != nil {
 			return Result{}, err
 		}
-		task, err := t.Manager.Status(call.SessionID, id)
-		return agentResult(task), err
+		task, ok := child.Task()
+		if !ok {
+			return Result{}, errors.New("agent_spawn: child task is unavailable")
+		}
+		return agentResult(task), nil
 	case agentSendID:
-		task, err := t.agentTask(call.SessionID, input.SessionID)
+		child, err := t.Children.Resolve(call.SessionID, input.SessionID)
 		if err != nil {
 			return Result{}, err
 		}
-		if task.Status == subagent.StatusRunning || task.Status == subagent.StatusPending {
-			messageID, err := t.Manager.Send(ctx, call.SessionID, task.SessionID, input.Message)
-			if err != nil && !errors.Is(err, subagent.ErrNotRunning) {
-				return Result{}, err
-			}
-			if err == nil {
-				task, err = t.Manager.Status(call.SessionID, task.SessionID)
-				result := agentResult(task)
-				result.Metadata["message_id"] = messageID
-				return result, err
-			}
+		task, messageID, err := child.Send(ctx, input.Message, call.ToolCallID)
+		if err != nil {
+			return Result{}, err
 		}
-		task, err = t.Manager.FollowUp(call.SessionID, task.SessionID, subagent.Request{Prompt: input.Message, ToolCallID: call.ToolCallID})
-		return agentResult(task), err
+		result := agentResult(task)
+		if messageID != "" {
+			result.Metadata["message_id"] = messageID
+		}
+		return result, nil
 	default:
 		return Result{}, errors.New("agent: unknown operation")
 	}
 }
 
-func (t *AgentTool) agentTask(callerSession, identifier string) (subagent.Task, error) {
-	return t.Manager.Resolve(callerSession, identifier)
-}
-
-func agentResult(task subagent.Task) Result {
+func agentResult(task AgentTask) Result {
 	metadata := agentMetadata(task)
 	text, _ := json.Marshal(metadata)
 	// The subagent transcript is bounded before encoding: truncating the encoded
@@ -211,7 +228,7 @@ func agentResult(task subagent.Task) Result {
 	return Result{Text: string(text), ModelText: string(encoded), Metadata: metadata}
 }
 
-func agentMetadata(task subagent.Task) map[string]any {
+func agentMetadata(task AgentTask) map[string]any {
 	metadata := map[string]any{
 		"session_id": task.SessionID,
 		"kind":       "agent",
