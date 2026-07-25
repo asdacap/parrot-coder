@@ -685,20 +685,22 @@ func TestAgentToolSessionResolvesDirectParentAndDescendantsOnly(t *testing.T) {
 		}
 	}
 
-	resolved, err := session.ResolveAgent("direct-parent")
+	send := &tool.AgentTool{Kind: "agent_send", Session: session, Agents: func(string) (bool, error) { return false, nil }}
+	call := tool.CallContext{SessionID: subject.ID(), Agent: ExplorerID}
+	plan, err := send.Plan(context.Background(), json.RawMessage(`{"session_id":"direct-parent","message":"report upward"}`), call)
 	if err != nil {
 		t.Fatal(err)
 	}
-	status, messageID, err := resolved.Agent.Send(context.Background(), "report upward")
-	if err != nil || messageID != "" || status.SessionID != parent.ID() || status.Status != "running" {
-		t.Fatalf("Send() = %#v, %q, %v", status, messageID, err)
+	result, err := send.Execute(context.Background(), plan, call)
+	if err != nil || result.Metadata["message_id"] != nil || result.Metadata["session_id"] != parent.ID() || result.Metadata["status"] != "running" {
+		t.Fatalf("Execute() = %#v, %v", result, err)
 	}
 	observation, err := parent.Observe()
 	if err != nil {
 		t.Fatal(err)
 	}
 	completed, err := observation.Wait(context.Background())
-	if err != nil || completed.Output != "answer-report upward" {
+	if err != nil || completed.Output != "answer-Agent message from subject:\n\nreport upward" {
 		t.Fatalf("parent follow-up = %#v, %v", completed, err)
 	}
 }

@@ -26,9 +26,18 @@ type AgentTask struct {
 	Error     string
 }
 
+type AgentMessage struct {
+	Sender  string
+	Content string
+}
+
+func (m AgentMessage) String() string {
+	return fmt.Sprintf("Agent message from %s:\n\n%s", m.Sender, m.Content)
+}
+
 type ChildAgent interface {
 	Status() AgentTask
-	Send(context.Context, string) (AgentTask, string, error)
+	Send(context.Context, AgentMessage) (AgentTask, string, error)
 }
 
 type AgentChildren interface {
@@ -95,13 +104,14 @@ func (t *AgentTool) DescribeRequest(raw json.RawMessage) (string, error) {
 func (t *AgentTool) JSONSchema() json.RawMessage { return t.Descriptor().Schema }
 
 type agentInput struct {
-	Prompt    string        `json:"prompt"`
-	Agent     string        `json:"agent"`
-	Model     string        `json:"model"`
-	Name      string        `json:"name"`
-	SessionID string        `json:"session_id"`
-	Message   string        `json:"message"`
-	Target    ResolvedAgent `json:"-"`
+	Prompt     string        `json:"prompt"`
+	Agent      string        `json:"agent"`
+	Model      string        `json:"model"`
+	Name       string        `json:"name"`
+	SessionID  string        `json:"session_id"`
+	Message    string        `json:"message"`
+	Target     ResolvedAgent `json:"-"`
+	SenderName string        `json:"-"`
 }
 
 func decodeAgentInput(raw json.RawMessage) (agentInput, error) {
@@ -152,6 +162,12 @@ func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContex
 		task := target.Agent.Status()
 		input.SessionID = task.SessionID
 		input.Target = target
+		input.SenderName = call.SessionID
+		if t.Session != nil {
+			if name := t.Session.SessionName(); name != "" {
+				input.SenderName = name
+			}
+		}
 		targetReadOnly, err := t.Agents(task.Agent)
 		if err != nil {
 			return Plan{}, err
@@ -189,7 +205,7 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 		if input.Target.Agent == nil {
 			return Result{}, errors.New("agent_send: planned target is required")
 		}
-		task, messageID, err := input.Target.Agent.Send(ctx, input.Message)
+		task, messageID, err := input.Target.Agent.Send(ctx, AgentMessage{Sender: input.SenderName, Content: input.Message})
 		if err != nil {
 			return Result{}, err
 		}

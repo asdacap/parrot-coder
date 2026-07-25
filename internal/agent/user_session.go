@@ -471,7 +471,8 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 
 type agentToolSession struct{ session *agentSession }
 
-func (s agentToolSession) SessionID() string { return s.session.ID() }
+func (s agentToolSession) SessionID() string   { return s.session.ID() }
+func (s agentToolSession) SessionName() string { return s.session.Name() }
 func (s agentToolSession) CreateAgent(ctx context.Context, callerAgent, prompt, target, model, name string) (tool.ChildAgent, error) {
 	child, err := s.session.CreateChild(ctx, ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name})
 	if err != nil {
@@ -493,8 +494,8 @@ func (s agentToolSession) ResolveAgent(identifier string) (tool.ResolvedAgent, e
 type agentToolChild struct{ session AgentSession }
 
 func (c agentToolChild) Status() tool.AgentTask { return toolAgentTask(c.session.Status()) }
-func (c agentToolChild) Send(ctx context.Context, message string) (tool.AgentTask, string, error) {
-	messageID, err := c.session.Send(ctx, message)
+func (c agentToolChild) Send(ctx context.Context, message tool.AgentMessage) (tool.AgentTask, string, error) {
+	messageID, err := c.session.SendAgentMessage(ctx, message)
 	return c.Status(), messageID, err
 }
 

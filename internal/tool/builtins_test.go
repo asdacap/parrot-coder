@@ -21,7 +21,8 @@ func (a *recordingErrorAdvisor) Advise(_ context.Context, err error, advice Erro
 
 type builtinTestAgentSession struct{}
 
-func (builtinTestAgentSession) SessionID() string { return "session" }
+func (builtinTestAgentSession) SessionID() string   { return "session" }
+func (builtinTestAgentSession) SessionName() string { return "test-session" }
 func (builtinTestAgentSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
 	return nil, errors.New("not implemented")
 }

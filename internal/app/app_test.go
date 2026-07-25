@@ -806,7 +806,7 @@ func TestReadOnlyChildCanSendToWritableDirectParent(t *testing.T) {
 				t.Errorf("child agent_send failed: %s", body)
 			}
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"child sent report\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
-		case bytes.Contains(body, []byte("report from child")):
+		case bytes.Contains(body, []byte(`Agent message from child-reporter:\n\nreport from child`)):
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent received child steer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		case bytes.Contains(body, []byte("child report prompt")) && !bytes.Contains(body, []byte("function_call_output")):
 			<-releaseChild
@@ -818,7 +818,7 @@ func TestReadOnlyChildCanSendToWritableDirectParent(t *testing.T) {
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 			close(releaseChild)
 		default:
-			arguments := `{"prompt":"child report prompt","agent":"explorer"}`
+			arguments := `{"prompt":"child report prompt","agent":"explorer","name":"child-reporter"}`
 			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_spawn\",\"type\":\"function_call\",\"call_id\":\"call_spawn\",\"name\":\"agent_spawn\",\"arguments\":%q}}\n\n", arguments)
 			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
 		}

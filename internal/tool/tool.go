@@ -117,6 +117,7 @@ type ResolvedAgent struct {
 // deliberately owned by this package so tool does not depend on agent.
 type AgentSession interface {
 	SessionID() string
+	SessionName() string
 	CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error)
 	ResolveAgent(string) (ResolvedAgent, error)
 }
