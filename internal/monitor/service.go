@@ -22,7 +22,15 @@ type sessionAdmitter interface {
 	Admit(context.Context, string, session.AdmitParams) (session.Admission, error)
 }
 
-type sessionWaker interface{ Wake(string) }
+// AgentSession is the object-level capability monitors need after resolving a
+// session ID. Composition adapts the application's richer agent session type.
+type AgentSession interface {
+	Wake()
+}
+
+type agentSessionResolver interface {
+	Get(string) AgentSession
+}
 
 type lifecyclePublisher interface{ PublishEvent(v1.Event) }
 
@@ -57,7 +65,7 @@ type Service struct {
 	mu     sync.Mutex
 	ctx    context.Context
 	cancel context.CancelFunc
-	waker  sessionWaker
+	agents agentSessionResolver
 	closed bool
 	active map[monitorKey]*activeMonitor
 	paused map[string]int
@@ -72,10 +80,10 @@ func NewService(processes *process.Runner, tasks *managedtask.Manager, sessions 
 	}
 }
 
-// SetWaker completes composition after the agent coordinator is available.
-func (s *Service) SetWaker(waker sessionWaker) {
+// SetAgentSessions completes composition after the agent coordinator is available.
+func (s *Service) SetAgentSessions(agents agentSessionResolver) {
 	s.mu.Lock()
-	s.waker = waker
+	s.agents = agents
 	s.mu.Unlock()
 }
 
@@ -98,9 +106,9 @@ func (s *Service) Start(request Request) error {
 		s.mu.Unlock()
 		return errors.New("monitor: service is closed")
 	}
-	if s.waker == nil {
+	if s.agents == nil {
 		s.mu.Unlock()
-		return errors.New("monitor: session waker is unavailable")
+		return errors.New("monitor: agent sessions are unavailable")
 	}
 	if s.paused[request.SessionID] > 0 {
 		s.mu.Unlock()
@@ -208,7 +216,7 @@ func (s *Service) notify(monitorCtx context.Context, sessionID, content string) 
 	}
 	s.mu.Lock()
 	paused := s.paused[sessionID] > 0
-	waker := s.waker
+	agents := s.agents
 	s.mu.Unlock()
 	if paused {
 		return context.Canceled
@@ -227,10 +235,10 @@ func (s *Service) notify(monitorCtx context.Context, sessionID, content string) 
 	if err := monitorCtx.Err(); err != nil {
 		return err
 	}
-	if waker == nil {
-		return errors.New("monitor: session waker is unavailable")
+	if agents == nil {
+		return errors.New("monitor: agent sessions are unavailable")
 	}
-	waker.Wake(sessionID)
+	agents.Get(sessionID).Wake()
 	return nil
 }
 

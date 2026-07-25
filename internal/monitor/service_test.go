@@ -57,9 +57,18 @@ func (a *recordingAdmitter) Admit(_ context.Context, _ string, params session.Ad
 	return session.Admission{}, nil
 }
 
-type recordingWaker struct{ woken chan string }
+type recordingAgentSessions struct{ woken chan string }
 
-func (w *recordingWaker) Wake(sessionID string) { w.woken <- sessionID }
+func (s *recordingAgentSessions) Get(sessionID string) AgentSession {
+	return recordingAgentSession{id: sessionID, woken: s.woken}
+}
+
+type recordingAgentSession struct {
+	id    string
+	woken chan string
+}
+
+func (s recordingAgentSession) Wake() { s.woken <- s.id }
 
 type recordingLifecycle struct{ events chan v1.Event }
 
@@ -78,10 +87,10 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	defer runner.Close()
 
 	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 2)}
-	waker := &recordingWaker{woken: make(chan string, 2)}
+	waker := &recordingAgentSessions{woken: make(chan string, 2)}
 	lifecycle := &recordingLifecycle{events: make(chan v1.Event, 4)}
 	service := NewService(runner, tasks, admitter, lifecycle)
-	service.SetWaker(waker)
+	service.SetAgentSessions(waker)
 	defer service.Close(context.Background())
 
 	exited, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
@@ -219,7 +228,7 @@ func TestTaskManagerWaitYieldsThenReturnsShellCompletionWithoutConsumingOutput(t
 	}
 }
 
-func TestServiceRequiresWakerAndStopsNotificationsOnClose(t *testing.T) {
+func TestServiceRequiresAgentSessionsAndStopsNotificationsOnClose(t *testing.T) {
 	workspaceRoot, err := workspace.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -238,10 +247,10 @@ func TestServiceRequiresWakerAndStopsNotificationsOnClose(t *testing.T) {
 	if err != nil || running.ProcessID == nil {
 		t.Fatalf("process start = %#v, %v", running, err)
 	}
-	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "waker") {
-		t.Fatalf("start without waker error = %v", err)
+	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "agent sessions") {
+		t.Fatalf("start without agent sessions error = %v", err)
 	}
-	service.SetWaker(&recordingWaker{woken: make(chan string, 1)})
+	service.SetAgentSessions(&recordingAgentSessions{woken: make(chan string, 1)})
 	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err != nil {
 		t.Fatal(err)
 	}

@@ -96,9 +96,9 @@ func goalDTO(goal session.Goal) v1.Goal {
 }
 
 type AgentSessionController interface {
+	Get(string) agent.AgentSession
 	Active() []agent.Active
 	Status(string) agent.Status
-	Wake(string)
 	Interrupt(context.Context, string) error
 	Remove(string) error
 }
@@ -346,7 +346,7 @@ func (b *DomainBackend) Wake(id string) {
 	if b.AgentSessions == nil {
 		return
 	}
-	b.AgentSessions.Wake(id)
+	b.AgentSessions.Get(id).Wake()
 	if b.Events != nil {
 		data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 		b.Events.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})
@@ -747,11 +747,11 @@ func replyMatchesChoices(choices []v1.PermissionChoice, reply v1.PermissionReply
 	return false
 }
 
-func sessionDTO(item session.UserSession) v1.Session {
+func sessionDTO(item session.UserSessionDto) v1.Session {
 	return v1.Session{ID: item.ID, ParentSessionID: item.ParentSessionID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 }
 
-func selectionDTO(item session.UserSession) v1.SessionSelection {
+func selectionDTO(item session.UserSessionDto) v1.SessionSelection {
 	return v1.SessionSelection{Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant}
 }
 

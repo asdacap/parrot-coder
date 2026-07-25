@@ -319,7 +319,32 @@ func newTestSessionController(drainer testDrainer) *testSessionController {
 	return &testSessionController{drainer: drainer, active: make(map[string]*testDrainState)}
 }
 
-func (c *testSessionController) Wake(id string) {
+func (c *testSessionController) Get(id string) agent.AgentSession {
+	return testAgentSession{controller: c, id: id}
+}
+
+type testAgentSession struct {
+	controller *testSessionController
+	id         string
+}
+
+func (s testAgentSession) ID() string { return s.id }
+func (s testAgentSession) Prompt(context.Context, string) (string, error) {
+	return "", errors.New("not implemented")
+}
+func (s testAgentSession) Send(context.Context, string) (string, error) {
+	return "", errors.New("not implemented")
+}
+func (s testAgentSession) Wake() { s.controller.wake(s.id) }
+func (s testAgentSession) Resume(context.Context) error {
+	return errors.New("not implemented")
+}
+func (s testAgentSession) Interrupt(ctx context.Context) error {
+	return s.controller.Interrupt(ctx, s.id)
+}
+func (s testAgentSession) Status() agent.Status { return s.controller.Status(s.id) }
+
+func (c *testSessionController) wake(id string) {
 	c.mu.Lock()
 	if state := c.active[id]; state != nil {
 		state.wake = true
@@ -413,7 +438,7 @@ func TestSelectionRejectsActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend.AgentSessions.Wake(created.ID)
+	backend.AgentSessions.Get(created.ID).Wake()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -488,7 +513,7 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backend.AgentSessions.Wake(created.ID)
+	backend.AgentSessions.Get(created.ID).Wake()
 	select {
 	case <-drainer.started:
 	case <-time.After(time.Second):
@@ -521,7 +546,7 @@ func TestInterruptDoesNotAutoResumeWithoutPendingInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backend.AgentSessions.Wake(created.ID)
+	backend.AgentSessions.Get(created.ID).Wake()
 	select {
 	case <-drainer.started:
 	case <-time.After(time.Second):
