@@ -409,7 +409,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	}
 	snapshot := toolRegistry.Materialize()
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
-	createdAgentSessions, err := NewUserSession(ctx, AgentSessionConfig{
+	createdAgentSessions, err := NewUserSession(ctx, UserSessionConfig{AgentSession: AgentSessionConfig{
 		Sessions:           sessions,
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
 		StateDirectories:   testSessionStateDirectories(t),
@@ -420,7 +420,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		Goals:              goals,
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
-	})
+	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -574,7 +574,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	childA := createChild(parent.ID, "child a")
 	nested := createChild(childA.ID, "nested")
 
-	createdRestarted, err := NewUserSession(ctx, h.agentSessions.repository.config)
+	createdRestarted, err := NewUserSession(ctx, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}

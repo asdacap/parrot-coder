@@ -130,6 +130,7 @@ type agentSession struct {
 	securityProfile *agentSessionSecurityProfile
 	mu              sync.Mutex
 	drain           *drainState
+	childTurns      childTurnSemaphore
 	observers       []LifecycleObserver
 	execute         func(context.Context) error
 }

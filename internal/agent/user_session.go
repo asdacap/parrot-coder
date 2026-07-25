@@ -29,6 +29,7 @@ type ChildCreatedObserver interface {
 // UserSession is the runtime aggregate for a user. It owns the agent runtimes
 // participating in that user's session hierarchy.
 type UserSession interface {
+	TryAcquireChildTurn() (ChildTurnPermit, bool)
 	CreateChild(context.Context, AgentSession, ChildSessionRequest) (AgentSession, error)
 	AddChildCreatedObserver(ChildCreatedObserver)
 	ChildRelation(sessionID string) (string, bool)
@@ -44,19 +45,34 @@ type UserSession interface {
 	Remove(sessionID string) error
 }
 
+type UserSessionConfig struct {
+	AgentSession                     AgentSessionConfig
+	MaxConcurrentChildTurns          int
+	MaxConcurrentChildTurnsPerParent int
+}
+
 type userSession struct {
+	config     UserSessionConfig
 	repository *agentSessionRepository
+	childTurns childTurnSemaphore
 }
 
 var _ UserSession = (*userSession)(nil)
 
 // NewUserSession creates a user runtime with its own agent-session repository.
-func NewUserSession(ctx context.Context, config AgentSessionConfig, observers ...LifecycleObserver) (UserSession, error) {
-	repository, err := newAgentSessionRepository(ctx, config, observers...)
+func NewUserSession(ctx context.Context, config UserSessionConfig, observers ...LifecycleObserver) (UserSession, error) {
+	if config.MaxConcurrentChildTurns <= 0 || config.MaxConcurrentChildTurnsPerParent <= 0 || config.MaxConcurrentChildTurnsPerParent > config.MaxConcurrentChildTurns {
+		return nil, errors.New("agent: child turn concurrency limits are invalid")
+	}
+	repository, err := newAgentSessionRepository(ctx, config.AgentSession, config.MaxConcurrentChildTurnsPerParent, observers...)
 	if err != nil {
 		return nil, err
 	}
-	return &userSession{repository: repository}, nil
+	return &userSession{config: config, repository: repository, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}, nil
+}
+
+func (s *userSession) TryAcquireChildTurn() (ChildTurnPermit, bool) {
+	return s.childTurns.tryAcquire()
 }
 
 func (s *userSession) CreateChild(ctx context.Context, parent AgentSession, request ChildSessionRequest) (AgentSession, error) {
@@ -106,16 +122,17 @@ func (s *userSession) Remove(sessionID string) error { return s.repository.Remov
 // agentSessionRepository owns the one runtime AgentSession object associated
 // with each persisted session ID. Persistent state remains in SessionRuntime.
 type agentSessionRepository struct {
-	mu             sync.Mutex
-	config         AgentSessionConfig
-	observers      []LifecycleObserver
-	childObservers []ChildCreatedObserver
-	sessions       map[string]*agentSession
-	dtos           map[string]session.AgentSessionDto
-	children       map[string]ChildSession
+	mu                      sync.Mutex
+	config                  AgentSessionConfig
+	observers               []LifecycleObserver
+	childObservers          []ChildCreatedObserver
+	sessions                map[string]*agentSession
+	dtos                    map[string]session.AgentSessionDto
+	children                map[string]ChildSession
+	maxConcurrentChildTurns int
 }
 
-func newAgentSessionRepository(ctx context.Context, config AgentSessionConfig, observers ...LifecycleObserver) (*agentSessionRepository, error) {
+func newAgentSessionRepository(ctx context.Context, config AgentSessionConfig, maxConcurrentChildTurns int, observers ...LifecycleObserver) (*agentSessionRepository, error) {
 	if err := validateAgentSessionConfig(&config); err != nil {
 		return nil, err
 	}
@@ -124,7 +141,7 @@ func newAgentSessionRepository(ctx context.Context, config AgentSessionConfig, o
 		return nil, fmt.Errorf("agent: list sessions: %w", err)
 	}
 	repository := &agentSessionRepository{
-		config: config, observers: observers,
+		config: config, observers: observers, maxConcurrentChildTurns: maxConcurrentChildTurns,
 		sessions: make(map[string]*agentSession), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession),
 	}
 	for _, item := range items {
@@ -330,7 +347,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	if existing := r.sessions[dto.ID]; existing != nil {
 		return existing
 	}
-	created := &agentSession{dto: dto, parent: parent, config: r.config, observers: r.observers}
+	created := &agentSession{dto: dto, parent: parent, config: r.config, childTurns: newChildTurnSemaphore(r.maxConcurrentChildTurns), observers: r.observers}
 	r.sessions[dto.ID] = created
 	r.dtos[dto.ID] = dto
 	return created

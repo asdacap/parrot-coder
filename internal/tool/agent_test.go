@@ -11,6 +11,10 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/subagent"
 )
 
+type toolTestTurnPermit struct{}
+
+func (toolTestTurnPermit) Release() {}
+
 type reusableAgentExecutor struct {
 	mu       sync.Mutex
 	runs     chan subagent.Execution
@@ -24,6 +28,10 @@ func newReusableAgentExecutor() *reusableAgentExecutor {
 
 func (e *reusableAgentExecutor) Prepare(context.Context, subagent.Preparation) (string, error) {
 	return "session-child", nil
+}
+
+func (*reusableAgentExecutor) TryAdmitTurn(string) (subagent.TurnPermit, bool, error) {
+	return toolTestTurnPermit{}, true, nil
 }
 
 func (e *reusableAgentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
@@ -54,7 +62,7 @@ func (e *reusableAgentExecutor) release(id, output string) {
 
 func TestAgentToolsReusableLifecycle(t *testing.T) {
 	executor := newReusableAgentExecutor()
-	manager := subagent.NewManager(executor, subagent.Config{MaxConcurrent: 8, MaxConcurrentPerParent: 4})
+	manager := subagent.NewManager(executor, subagent.Config{})
 	lookup := func(id string) (bool, error) { return id != "build", nil }
 	tools := make(map[string]Tool)
 	for _, item := range NewAgentTools(manager, lookup) {

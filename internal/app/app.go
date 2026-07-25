@@ -423,7 +423,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
 	notifications := subagent.NewCompletionNotifier()
 	result.notifications = notifications
-	subagents := subagent.NewManager(subagentExecutor, subagent.Config{MaxConcurrent: loaded.Config.Subagents.MaxConcurrent, MaxConcurrentPerParent: loaded.Config.Subagents.MaxConcurrentPerParent, MaxDepth: loaded.Config.Subagents.MaxDepth, AgentIdentity: func(id string) string {
+	subagents := subagent.NewManager(subagentExecutor, subagent.Config{MaxDepth: loaded.Config.Subagents.MaxDepth, AgentIdentity: func(id string) string {
 		profile, resolveErr := profileResolver.GetProfile(id)
 		if resolveErr != nil {
 			return id
@@ -517,16 +517,20 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: session state directories: %w", err)
 	}
-	userSession, err := agent.NewUserSession(ctx, agent.AgentSessionConfig{
-		Sessions: sessions, Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
-		ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
-		ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
-			return tool.Executor{Snapshot: snapshot, Permissions: permissions, ErrorAdvisor: pathErrorAdvisor}
+	userSession, err := agent.NewUserSession(ctx, agent.UserSessionConfig{
+		AgentSession: agent.AgentSessionConfig{
+			Sessions: sessions, Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
+			ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
+			ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
+				return tool.Executor{Snapshot: snapshot, Permissions: permissions, ErrorAdvisor: pathErrorAdvisor}
+			},
+			Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
+				return live.TaskIDFor(sessionID, managedtask.MainTaskID)
+			}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
+			ToolPanicLogger: toolPanicLogger(),
 		},
-		Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
-			return live.TaskIDFor(sessionID, managedtask.MainTaskID)
-		}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
-		ToolPanicLogger: toolPanicLogger(),
+		MaxConcurrentChildTurns:          loaded.Config.Subagents.MaxConcurrent,
+		MaxConcurrentChildTurnsPerParent: loaded.Config.Subagents.MaxConcurrentPerParent,
 	}, reporter)
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
@@ -1242,6 +1246,37 @@ type appSubagentExecutor struct {
 	projectID        string
 	defaultSelection session.Selection
 	events           *event.Broker
+}
+
+type appChildTurnPermit struct {
+	user   agent.ChildTurnPermit
+	parent agent.ChildTurnPermit
+}
+
+func (p appChildTurnPermit) Release() {
+	p.parent.Release()
+	p.user.Release()
+}
+
+func (e *appSubagentExecutor) TryAdmitTurn(parentSessionID string) (subagent.TurnPermit, bool, error) {
+	if e.userSession == nil {
+		return nil, false, errors.New("app: subagent user session is unavailable")
+	}
+	userPermit, ok := e.userSession.TryAcquireChildTurn()
+	if !ok {
+		return nil, false, nil
+	}
+	parent, ok := e.userSession.Lookup(parentSessionID)
+	if !ok {
+		userPermit.Release()
+		return nil, false, errors.New("app: parent agent session is unavailable")
+	}
+	parentPermit, ok := parent.TryAcquireChildTurn()
+	if !ok {
+		userPermit.Release()
+		return nil, false, nil
+	}
+	return appChildTurnPermit{user: userPermit, parent: parentPermit}, true, nil
 }
 
 func (e *appSubagentExecutor) HasChildSessions(parentSessionID string) bool {
