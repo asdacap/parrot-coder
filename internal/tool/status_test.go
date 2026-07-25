@@ -22,13 +22,13 @@ func TestStatusToolReturnsSelectionAndProfileStatus(t *testing.T) {
 		t.Fatalf("status tool unexpectedly affects permissions or prompt: %#v", plan)
 	}
 	result, err := item.Execute(context.Background(), plan, CallContext{
-		StatusQuery:    statusinfo.Query{SessionID: "session", ParentSessionID: "ses_parent", ParentSessionName: "main-task", Agent: "plan", Provider: "openai", Model: "gpt", Variant: "high"},
+		StatusQuery:    statusinfo.Query{SessionID: "session", ParentSessionID: "ses_parent", ParentSessionName: "main-task", ParentAgent: "build", Agent: "plan", Provider: "openai", Model: "gpt", Variant: "high"},
 		StatusProvider: statusinfo.Static{ProviderKey: "profile:plan", Text: "Plan mode is read-only."},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := "Plan mode is read-only.\n\nActive profile: plan\nModel: openai/gpt\nVariant: high\nParent session: ses_parent (main-task)"
+	want := "Plan mode is read-only.\n\nActive profile: plan\nModel: openai/gpt\nVariant: high\nParent agent: build\nParent session: ses_parent (main-task)"
 	if result.Text != want || result.ModelText != want {
 		t.Fatalf("result = %#v", result)
 	}

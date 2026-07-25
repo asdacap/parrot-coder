@@ -17,6 +17,7 @@ type Query struct {
 	SessionID         string
 	ParentSessionID   string
 	ParentSessionName string
+	ParentAgent       string
 	Agent             string
 	Provider          string
 	Model             string
@@ -85,6 +86,9 @@ func (Selection) Observe(_ context.Context, query Query) (Observation, error) {
 	lines := []string{"Active profile: " + query.Agent, "Model: " + query.Provider + "/" + query.Model}
 	if query.Variant != "" {
 		lines = append(lines, "Variant: "+query.Variant)
+	}
+	if parentAgent := strings.TrimSpace(query.ParentAgent); parentAgent != "" {
+		lines = append(lines, "Parent agent: "+parentAgent)
 	}
 	if query.ParentSessionID != "" {
 		parent := query.ParentSessionID

@@ -101,8 +101,8 @@ func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 		Provider:        "openai",
 		Model:           "gpt",
 	}, Profile{ID: "build"})
-	if query.ParentSessionID != "ses_deleted_parent" || query.ParentSessionName != "" {
-		t.Fatalf("parent status = %q (%q), want %q with no name", query.ParentSessionID, query.ParentSessionName, "ses_deleted_parent")
+	if query.ParentSessionID != "ses_deleted_parent" || query.ParentSessionName != "" || query.ParentAgent != "" {
+		t.Fatalf("parent status = %q (%q, agent %q), want %q with no details", query.ParentSessionID, query.ParentSessionName, query.ParentAgent, "ses_deleted_parent")
 	}
 }
 
@@ -114,12 +114,18 @@ func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
+	if _, err := h.sessions.UpdateSelection(context.Background(), h.sessionID, session.SelectionPatch{Agent: "root-agent"}, nil); err != nil {
+		t.Fatal(err)
+	}
 	parent := h.agentSessions.Get(h.sessionID)
 	child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{
 		ProjectID: h.runner.dto.ProjectID, Name: "inspect", Agent: BuildID,
 		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
 	})
 	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.sessions.UpdateSelection(context.Background(), child.ID(), session.SelectionPatch{Agent: "direct-parent-agent"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	nested, err := h.agentSessions.repository.CreateChild(context.Background(), child, ChildSessionRequest{
@@ -147,7 +153,10 @@ func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
 	if !containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, want) {
 		t.Fatalf("status does not contain %q: %#v", want, requests[0].Messages)
 	}
-	if containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent session: "+h.sessionID) {
+	if !containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent agent: direct-parent-agent") {
+		t.Fatalf("status does not contain direct parent agent: %#v", requests[0].Messages)
+	}
+	if containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent session: "+h.sessionID) || containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent agent: root-agent") {
 		t.Fatalf("status contains root instead of direct parent: %#v", requests[0].Messages)
 	}
 }

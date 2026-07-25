@@ -111,12 +111,17 @@ func TestSelectionStatus(t *testing.T) {
 		},
 		{
 			name:  "named parent",
-			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "main-task", Agent: "worker", Provider: "openai", Model: "gpt"},
-			want:  "Active profile: worker\nModel: openai/gpt\nParent session: ses_parent (main-task)",
+			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "main-task", ParentAgent: "build", Agent: "worker", Provider: "openai", Model: "gpt"},
+			want:  "Active profile: worker\nModel: openai/gpt\nParent agent: build\nParent session: ses_parent (main-task)",
 		},
 		{
 			name:  "unnamed parent",
-			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "  ", Agent: "worker", Provider: "openai", Model: "gpt"},
+			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "  ", ParentAgent: "plan", Agent: "worker", Provider: "openai", Model: "gpt"},
+			want:  "Active profile: worker\nModel: openai/gpt\nParent agent: plan\nParent session: ses_parent",
+		},
+		{
+			name:  "unavailable parent details",
+			query: Query{ParentSessionID: "ses_parent", ParentAgent: "  ", Agent: "worker", Provider: "openai", Model: "gpt"},
 			want:  "Active profile: worker\nModel: openai/gpt\nParent session: ses_parent",
 		},
 	}
