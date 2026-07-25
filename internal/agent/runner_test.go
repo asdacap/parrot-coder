@@ -117,7 +117,7 @@ func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
 	if _, err := h.sessions.UpdateSelection(context.Background(), h.sessionID, session.SelectionPatch{Agent: "root-agent"}, nil); err != nil {
 		t.Fatal(err)
 	}
-	parent := h.agentSessions.Get(h.sessionID)
+	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
 	child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{
 		ProjectID: h.runner.dto.ProjectID, Name: "inspect", Agent: BuildID,
 		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
@@ -398,6 +398,15 @@ func (c *fakeCompactor) Compact(_ context.Context, request compaction.Request) (
 	return compaction.Result{Status: "skipped"}, nil
 }
 
+func mustGetAgentSession(t *testing.T, sessions *userSession, id string) AgentSession {
+	t.Helper()
+	created, err := sessions.Get(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return created
+}
+
 func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tools ...tool.Tool) *runnerHarness {
 	t.Helper()
 	ctx := context.Background()
@@ -425,13 +434,15 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolRegistry := tool.NewRegistry()
+	providersList := make([]tool.ToolProvider, 0, len(tools))
 	for _, item := range tools {
-		if err := toolRegistry.Register(item); err != nil {
-			t.Fatal(err)
-		}
+		item := item
+		providersList = append(providersList, &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(item), CreateTool: func(tool.SessionState) (tool.Tool, error) { return item, nil }})
 	}
-	snapshot := toolRegistry.Materialize()
+	toolProviders, err := tool.NewProviders(providersList...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
 	createdAgentSessions, err := NewUserSession(ctx, UserSessionConfig{AgentSession: AgentSessionConfig{
 		Sessions:           sessions,
@@ -439,8 +450,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,
-		ToolSnapshot:       func() tool.Snapshot { return snapshot },
-		ToolExecutor:       func(snapshot tool.Snapshot) tool.Executor { return tool.Executor{Snapshot: snapshot} },
+		ToolProviders:      toolProviders,
 		Goals:              goals,
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
@@ -449,7 +459,11 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		t.Fatal(err)
 	}
 	agentSessions := createdAgentSessions.(*userSession)
-	runner := agentSessions.Get(created.ID).(*agentSession)
+	runtimeSession, err := agentSessions.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := runtimeSession.(*agentSession)
 	sessionDB, err := db.Session(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -472,7 +486,7 @@ func TestRunningSendChildCannotEscapeCompletingManagedTurn(t *testing.T) {
 		), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
-	parent := h.agentSessions.Get(h.sessionID)
+	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
 	child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID, Name: "serialized"})
 	if err != nil {
 		t.Fatal(err)
@@ -542,7 +556,7 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
-	parent := h.agentSessions.Get(h.sessionID)
+	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
 	parentStatus := parent.Status()
 	if parentStatus.SessionID != h.sessionID || parentStatus.RootSession != h.sessionID || parentStatus.ParentSession != "" || parentStatus.State != StatusIdle {
 		t.Fatalf("parent status = %#v", parentStatus)
@@ -624,7 +638,7 @@ func TestManagedAgentSessionInterruptsItself(t *testing.T) {
 		return nil, ctx.Err()
 	}}
 	h := newRunnerHarness(t, fake, nil)
-	child, err := h.agentSessions.Get(h.sessionID).CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID})
+	child, err := mustGetAgentSession(t, h.agentSessions, h.sessionID).CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -690,7 +704,7 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 			t.Fatal("runtime unavailable to observer")
 		}
 	}))
-	parentRuntime := h.agentSessions.Get(parent.ID)
+	parentRuntime := mustGetAgentSession(t, h.agentSessions, parent.ID)
 	child, err := h.agentSessions.repository.CreateChild(context.Background(), parentRuntime, ChildSessionRequest{
 		ProjectID:        parent.ProjectID,
 		Name:             "inspect",
@@ -724,13 +738,64 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	}
 }
 
+type deleteFailSessionRuntime struct {
+	SessionRuntime
+	err error
+}
+
+func (r deleteFailSessionRuntime) Delete(context.Context, string) error { return r.err }
+
+func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	providerErr := errors.New("child provider failed")
+	provider := &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(&fakeTool{id: "bound"}), CreateTool: func(state tool.SessionState) (tool.Tool, error) {
+		if state.SessionID() != h.sessionID {
+			return nil, providerErr
+		}
+		return &fakeTool{id: "bound"}, nil
+	}}
+	providers, err := tool.NewProviders(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.agentSessions.repository.config.ToolProviders = providers
+	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
+	before, err := h.sessions.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{ProjectID: parent.(*agentSession).dto.ProjectID, Name: "rollback", Agent: BuildID, DefaultSelection: session.Selection{Provider: "fake", Model: "model"}}); !errors.Is(err, providerErr) || child != nil {
+		t.Fatalf("CreateChild = %#v, %v", child, err)
+	}
+	after, err := h.sessions.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) || h.agentSessions.HasChildSessions(h.sessionID) {
+		t.Fatalf("failed child remained: sessions=%d want=%d children=%#v", len(after), len(before), h.agentSessions.ChildSessions(h.sessionID))
+	}
+
+	cleanupErr := errors.New("delete failed")
+	h.agentSessions.repository.config.Sessions = deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}
+	if child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{ProjectID: parent.(*agentSession).dto.ProjectID, Name: "retained", Agent: BuildID, DefaultSelection: session.Selection{Provider: "fake", Model: "model"}}); !errors.Is(err, providerErr) || !errors.Is(err, cleanupErr) || child != nil {
+		t.Fatalf("CreateChild cleanup failure = %#v, %v", child, err)
+	}
+	children := h.agentSessions.ChildSessions(h.sessionID)
+	if len(children) != 1 {
+		t.Fatalf("cleanup failure children = %#v, want retained relation", children)
+	}
+	if _, err := h.sessions.Get(context.Background(), children[0].SessionID); err != nil {
+		t.Fatalf("cleanup failure did not retain durable child: %v", err)
+	}
+}
+
 func TestAgentSessionRepositoryDiscardsPreparedChild(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	parent, err := h.sessions.Get(context.Background(), h.sessionID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := h.agentSessions.repository.CreateChild(context.Background(), h.agentSessions.Get(parent.ID), ChildSessionRequest{
+	child, err := h.agentSessions.repository.CreateChild(context.Background(), mustGetAgentSession(t, h.agentSessions, parent.ID), ChildSessionRequest{
 		ProjectID:        parent.ProjectID,
 		Name:             "discard",
 		Agent:            BuildID,
@@ -759,7 +824,7 @@ func TestCreateChildIsAtomicWithParentRemoval(t *testing.T) {
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
-	parent := h.agentSessions.Get(h.sessionID).(*agentSession)
+	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID).(*agentSession)
 
 	// Block after CreateChild reserves the parent but before it performs durable
 	// child creation. Remove must observe that reservation without either side
@@ -807,7 +872,7 @@ func TestCreateChildIsAtomicWithParentRemoval(t *testing.T) {
 	}
 
 	other := newRunnerHarness(t, fake, nil)
-	retired := other.agentSessions.Get(other.sessionID)
+	retired := mustGetAgentSession(t, other.agentSessions, other.sessionID)
 	if err := other.agentSessions.Remove(retired.ID()); err != nil {
 		t.Fatal(err)
 	}
@@ -821,7 +886,7 @@ func TestRemoveIsAtomicWithIdleSessionAdmission(t *testing.T) {
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
-	runtime := h.agentSessions.Get(h.sessionID).(*agentSession)
+	runtime := mustGetAgentSession(t, h.agentSessions, h.sessionID).(*agentSession)
 	release := make(chan struct{})
 	runtime.execute = func(context.Context) error {
 		<-release
@@ -868,7 +933,7 @@ func TestForgetAndRemoveDoNotDeadlock(t *testing.T) {
 			return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 		}}
 		h := newRunnerHarness(t, fake, nil)
-		parent := h.agentSessions.Get(h.sessionID)
+		parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
 		child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "done", Agent: BuildID, Name: "forget"})
 		if err != nil {
 			t.Fatal(err)
@@ -957,7 +1022,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	if !restarted.HasChildSessions(parent.ID) || !restarted.HasChildSessions(childA.ID) || restarted.HasChildSessions(nested.ID) {
 		t.Fatalf("HasChildSessions = parent:%t child:%t nested:%t", restarted.HasChildSessions(parent.ID), restarted.HasChildSessions(childA.ID), restarted.HasChildSessions(nested.ID))
 	}
-	managed, err := restarted.Get(parent.ID).CreateChild(ctx, ChildRequest{Prompt: "managed", Agent: BuildID, Name: "managed"})
+	managed, err := mustGetAgentSession(t, restarted, parent.ID).CreateChild(ctx, ChildRequest{Prompt: "managed", Agent: BuildID, Name: "managed"})
 	if err != nil {
 		t.Fatalf("historical children consumed MaxChildTasks: %v", err)
 	}
@@ -968,22 +1033,22 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	if _, err := managedObservation.Wait(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := restarted.Get(parent.ID).CreateChild(ctx, ChildRequest{Prompt: "over limit", Agent: BuildID, Name: "over-limit"}); !errors.Is(err, ErrChildTaskLimit) {
+	if _, err := mustGetAgentSession(t, restarted, parent.ID).CreateChild(ctx, ChildRequest{Prompt: "over limit", Agent: BuildID, Name: "over-limit"}); !errors.Is(err, ErrChildTaskLimit) {
 		t.Fatalf("CreateChild over managed retention limit = %v", err)
 	}
 	if got, ok := restarted.ChildRelation(nested.ID); !ok || got != childA.ID {
 		t.Fatalf("historical nested hierarchy after managed create = %q, %v", got, ok)
 	}
-	nestedRuntime := restarted.Get(nested.ID)
-	if nestedRuntime.Name() != "nested" || restarted.Get(childA.ID).Name() != "child a" {
-		t.Fatalf("restored names = nested:%q child:%q", nestedRuntime.Name(), restarted.Get(childA.ID).Name())
+	nestedRuntime := mustGetAgentSession(t, restarted, nested.ID)
+	if nestedRuntime.Name() != "nested" || mustGetAgentSession(t, restarted, childA.ID).Name() != "child a" {
+		t.Fatalf("restored names = nested:%q child:%q", nestedRuntime.Name(), mustGetAgentSession(t, restarted, childA.ID).Name())
 	}
 	childRuntime := nestedRuntime.Parent()
-	if childRuntime == nil || childRuntime.ID() != childA.ID || childRuntime != restarted.Get(childA.ID) {
+	if childRuntime == nil || childRuntime.ID() != childA.ID || childRuntime != mustGetAgentSession(t, restarted, childA.ID) {
 		t.Fatalf("restored nested parent = %#v, want canonical runtime %q", childRuntime, childA.ID)
 	}
 	parentRuntime := childRuntime.Parent()
-	if parentRuntime == nil || parentRuntime.ID() != parent.ID || parentRuntime != restarted.Get(parent.ID) || parentRuntime.Parent() != nil {
+	if parentRuntime == nil || parentRuntime.ID() != parent.ID || parentRuntime != mustGetAgentSession(t, restarted, parent.ID) || parentRuntime.Parent() != nil {
 		t.Fatalf("restored root parent chain = %#v, want canonical root runtime %q", parentRuntime, parent.ID)
 	}
 

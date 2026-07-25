@@ -39,6 +39,18 @@ type Presentation struct {
 	CompletedInput CompletedInputSpec `json:"completed_input,omitempty"`
 }
 
+func (p Presentation) clone() Presentation {
+	p.Redact = append([]string(nil), p.Redact...)
+	p.CompletedInput.Fields = append([]string(nil), p.CompletedInput.Fields...)
+	p.Label.Source = append([]string(nil), p.Label.Source...)
+	p.Label.Fields = append([]LabelField(nil), p.Label.Fields...)
+	for i := range p.Label.Fields {
+		p.Label.Fields[i].Names = append([]string(nil), p.Label.Fields[i].Names...)
+		p.Label.Fields[i].Item = append([]string(nil), p.Label.Fields[i].Item...)
+	}
+	return p
+}
+
 // CompletedInputSpec describes an input block retained in the transcript.
 type CompletedInputSpec struct {
 	Fields       []string `json:"fields,omitempty"`
@@ -136,6 +148,10 @@ func (BasePresentation) Presentation() Presentation { return Presentation{} }
 // SystemPromptGuidance implements Tool for tools that have no extra system
 // prompt explanation. Tools override this to inject runtime-behavior guidance.
 func (BasePresentation) SystemPromptGuidance() string { return "" }
+
+// Descriptor supplies an opt-in metadata source. Tools with static metadata may
+// override it so providers and execution reuse one descriptor definition.
+func (BasePresentation) Descriptor() Descriptor { return Descriptor{} }
 
 // PresentationEntry pairs a tool ID with its declared presentation. It is a
 // projection parallel to Definition rather than a field of it.

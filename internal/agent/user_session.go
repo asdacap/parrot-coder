@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"runtime/debug"
 	"sort"
 	"strings"
 	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
+	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 var (
@@ -37,7 +39,7 @@ type UserSession interface {
 	ChildRelation(sessionID string) (string, bool)
 	ChildSessions(parentSessionID string) []ChildSession
 	HasChildSessions(parentSessionID string) bool
-	Get(sessionID string) AgentSession
+	Get(sessionID string) (AgentSession, error)
 	Lookup(sessionID string) (AgentSession, bool)
 	Active() []Active
 	Interrupt(context.Context, string) error
@@ -109,7 +111,7 @@ func (s *userSession) HasChildSessions(parentSessionID string) bool {
 	return s.repository.HasChildSessions(parentSessionID)
 }
 
-func (s *userSession) Get(sessionID string) AgentSession { return s.repository.Get(sessionID) }
+func (s *userSession) Get(sessionID string) (AgentSession, error) { return s.repository.Get(sessionID) }
 
 func (s *userSession) Lookup(sessionID string) (AgentSession, bool) {
 	return s.repository.Lookup(sessionID)
@@ -136,6 +138,7 @@ type agentSessionRepository struct {
 	observers               []LifecycleObserver
 	childObservers          []ChildCreatedObserver
 	sessions                map[string]*agentSession
+	bindings                map[string]*sessionBinding
 	dtos                    map[string]session.AgentSessionDto
 	children                map[string]ChildSession
 	maxConcurrentChildTurns int
@@ -151,7 +154,7 @@ func newAgentSessionRepository(ctx context.Context, config AgentSessionConfig, m
 	}
 	repository := &agentSessionRepository{
 		config: config, observers: observers, maxConcurrentChildTurns: maxConcurrentChildTurns,
-		sessions: make(map[string]*agentSession), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession),
+		sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession),
 	}
 	for _, item := range items {
 		repository.dtos[item.ID] = item
@@ -228,7 +231,17 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	r.dtos[child.ID] = child
 	observers := append([]ChildCreatedObserver(nil), r.childObservers...)
 	r.mu.Unlock()
-	runtime := r.bind(child, parent)
+	runtime, err := r.bind(child, parent, func() error { return r.config.Sessions.Delete(ctx, child.ID) })
+	if err != nil {
+		if _, retained := r.ChildRelation(child.ID); retained {
+			for _, observer := range observers {
+				if observer != nil {
+					observer.ChildCreated(relation)
+				}
+			}
+		}
+		return nil, err
+	}
 	for _, observer := range observers {
 		if observer != nil {
 			observer.ChildCreated(relation)
@@ -342,19 +355,36 @@ func (r *agentSessionRepository) DiscardChild(ctx context.Context, sessionID str
 	return nil
 }
 
-func (r *agentSessionRepository) Get(sessionID string) AgentSession {
+type sessionBinding struct {
+	done chan struct{}
+	err  error
+}
+
+func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 	r.mu.Lock()
 	if existing := r.sessions[sessionID]; existing != nil {
 		r.mu.Unlock()
-		return existing
+		return existing, nil
 	}
 	relation, child := r.children[sessionID]
 	dto, known := r.dtos[sessionID]
 	r.mu.Unlock()
 
 	if !known && r.config.Sessions != nil {
-		if loaded, err := r.config.Sessions.Get(context.Background(), sessionID); err == nil {
-			dto, known = loaded, true
+		loaded, err := r.config.Sessions.Get(context.Background(), sessionID)
+		if err != nil {
+			return nil, fmt.Errorf("agent: get session %s: %w", sessionID, err)
+		}
+		dto, known = loaded, true
+		if dto.ParentSessionID != "" {
+			relation = ChildSession{SessionID: dto.ID, ParentSessionID: dto.ParentSessionID}
+			child = true
+			r.mu.Lock()
+			if r.dtos == nil { r.dtos = make(map[string]session.AgentSessionDto) }
+			if r.children == nil { r.children = make(map[string]ChildSession) }
+			r.dtos[dto.ID] = dto
+			r.children[dto.ID] = relation
+			r.mu.Unlock()
 		}
 	}
 	if !known {
@@ -363,24 +393,106 @@ func (r *agentSessionRepository) Get(sessionID string) AgentSession {
 	var parent AgentSession
 	if child {
 		dto.ParentSessionID = relation.ParentSessionID
-		parent = r.Get(relation.ParentSessionID)
+		var err error
+		parent, err = r.Get(relation.ParentSessionID)
+		if err != nil {
+			return nil, fmt.Errorf("agent: bind parent %s: %w", relation.ParentSessionID, err)
+		}
 	}
-	return r.bind(dto, parent)
+	return r.bind(dto, parent, nil)
 }
 
-func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentSession) AgentSession {
+func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentSession, rollback func() error) (created AgentSession, err error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if r.dtos == nil {
-		r.dtos = make(map[string]session.AgentSessionDto)
-	}
 	if existing := r.sessions[dto.ID]; existing != nil {
-		return existing
+		r.mu.Unlock()
+		return existing, nil
 	}
-	created := &agentSession{dto: dto, parent: parent, user: r.user, config: r.config, childTurns: newChildTurnSemaphore(r.maxConcurrentChildTurns), observers: r.observers}
-	r.sessions[dto.ID] = created
-	r.dtos[dto.ID] = dto
-	return created
+	if binding := r.bindings[dto.ID]; binding != nil {
+		done := binding.done
+		r.mu.Unlock()
+		<-done
+		r.mu.Lock()
+		created, err := r.sessions[dto.ID], binding.err
+		r.mu.Unlock()
+		return created, err
+	}
+	binding := &sessionBinding{done: make(chan struct{})}
+	if r.bindings == nil {
+		r.bindings = make(map[string]*sessionBinding)
+	}
+	r.bindings[dto.ID] = binding
+	r.mu.Unlock()
+
+	candidate := &agentSession{dto: dto, parent: parent, user: r.user, config: r.config, childTurns: newChildTurnSemaphore(r.maxConcurrentChildTurns), observers: r.observers}
+	rolledBack := false
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("agent: materialize tools for session %s: panic: %v\n%s", dto.ID, recovered, debug.Stack())
+		}
+		if err != nil && rollback != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				err = errors.Join(err, fmt.Errorf("agent: rollback child session: %w", rollbackErr))
+			} else {
+				rolledBack = true
+			}
+		}
+		r.mu.Lock()
+		if err == nil {
+			if r.dtos == nil {
+				r.dtos = make(map[string]session.AgentSessionDto)
+			}
+			r.sessions[dto.ID] = candidate
+			r.dtos[dto.ID] = dto
+			created = candidate
+		} else if rolledBack {
+			delete(r.sessions, dto.ID)
+			delete(r.children, dto.ID)
+			delete(r.dtos, dto.ID)
+		}
+		binding.err = err
+		delete(r.bindings, dto.ID)
+		close(binding.done)
+		r.mu.Unlock()
+	}()
+
+	snapshot, err := r.config.ToolProviders.Materialize(agentToolSessionState{candidate})
+	if err != nil {
+		return nil, err
+	}
+	candidate.toolSnapshot = snapshot
+	candidate.toolExecutor = tool.Executor{Snapshot: snapshot, Permissions: r.config.ToolPermissions, ErrorAdvisor: r.config.ToolErrorAdvisor, MaxInputBytes: r.config.ToolMaxInputBytes, MaxOutputBytes: r.config.ToolMaxOutputBytes}
+	return candidate, nil
+}
+
+type agentToolSessionState struct{ session *agentSession }
+
+func (s agentToolSessionState) SessionID() string { return s.session.ID() }
+func (s agentToolSessionState) CreateAgent(ctx context.Context, callerAgent, prompt, target, model, name string) (tool.ChildAgent, error) {
+	child, err := s.session.CreateChild(ctx, ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name})
+	if err != nil {
+		return nil, err
+	}
+	return agentToolChild{session: child}, nil
+}
+func (s agentToolSessionState) ResolveAgent(identifier string) (tool.ChildAgent, error) {
+	child, err := s.session.ResolveChild(identifier)
+	if err != nil {
+		return nil, err
+	}
+	return agentToolChild{session: child}, nil
+}
+
+type agentToolChild struct{ session AgentSession }
+
+func (c agentToolChild) Status() tool.AgentTask { return toolAgentTask(c.session.Status()) }
+func (c agentToolChild) Send(ctx context.Context, message string) (tool.AgentTask, string, error) {
+	status, messageID, err := c.session.SendChild(ctx, ChildRequest{Prompt: message})
+	return toolAgentTask(status), messageID, err
+}
+
+func toolAgentTask(status Status) tool.AgentTask {
+	return tool.AgentTask{SessionID: status.SessionID, Agent: status.Agent, Name: status.Name, Status: string(status.State), Turn: status.Turn, Depth: status.Depth, Output: status.Output, Error: status.Error}
 }
 
 func (r *agentSessionRepository) Lookup(sessionID string) (AgentSession, bool) {

@@ -119,8 +119,11 @@ type AgentSessionConfig struct {
 	Agents             *Registry
 	Profiles           ProfileResolver
 	Providers          ProviderResolver
-	ToolSnapshot       func() tool.Snapshot
-	ToolExecutor       func(tool.Snapshot) tool.Executor
+	ToolProviders      tool.Providers
+	ToolPermissions    tool.Authorizer
+	ToolErrorAdvisor   tool.ErrorAdvisor
+	ToolMaxInputBytes  int
+	ToolMaxOutputBytes int
 	Workspace          *workspace.Workspace
 	Outputs            *tool.OutputStore
 	Processes          *process.Runner
@@ -152,6 +155,8 @@ type agentSession struct {
 	removed         bool
 	childTurns      childTurnSemaphore
 	observers       []LifecycleObserver
+	toolSnapshot    tool.Snapshot
+	toolExecutor    tool.Executor
 	execute         func(context.Context) error
 }
 
@@ -188,8 +193,11 @@ func validateAgentSessionConfig(config *AgentSessionConfig) error {
 	if config.Profiles == nil {
 		config.Profiles = config.Agents
 	}
-	if config.Sessions == nil || config.StateDirectories == nil || config.Profiles == nil || config.Providers == nil || config.ToolSnapshot == nil || config.ToolExecutor == nil {
+	if config.Sessions == nil || config.StateDirectories == nil || config.Profiles == nil || config.Providers == nil {
 		return errors.New("agent: session dependencies are required")
+	}
+	if !config.ToolProviders.Valid() {
+		return errors.New("agent: tool providers are required")
 	}
 	if config.MaxConcurrentTools <= 0 {
 		config.MaxConcurrentTools = 4
@@ -332,8 +340,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 		}
 
-		snapshot := r.config.ToolSnapshot()
-		definitions := toolDefinitions(snapshot)
+		definitions := toolDefinitions(r.toolSnapshot)
 		turn++
 		instructions := runnerInstructions(epoch.Baseline, scratchPath, turn >= profile.MaxTurns)
 		if turn >= profile.MaxTurns {
@@ -411,7 +418,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if turn >= profile.MaxTurns {
 				return errors.New("agent: provider returned tools after max-turn tool omission")
 			}
-			if err := r.executeTools(ctx, selected, profile, snapshot, calls); err != nil {
+			if err := r.executeTools(ctx, selected, profile, calls); err != nil {
 				return err
 			}
 			if r.config.Goals != nil {
@@ -852,8 +859,8 @@ func executeToolCall(ctx context.Context, executor tool.Executor, call completed
 	return executor.Execute(ctx, call.call.Name, json.RawMessage(call.call.Input), callContext)
 }
 
-func (r *agentSession) executeTools(ctx context.Context, selected session.AgentSessionDto, profile Profile, snapshot tool.Snapshot, calls []completedCall) error {
-	executor := r.config.ToolExecutor(snapshot)
+func (r *agentSession) executeTools(ctx context.Context, selected session.AgentSessionDto, profile Profile, calls []completedCall) error {
+	executor := r.toolExecutor
 	statusQuery := r.statusQuery(ctx, selected, profile)
 	sem := make(chan struct{}, r.config.MaxConcurrentTools)
 	outcomes := make([]toolOutcome, len(calls))

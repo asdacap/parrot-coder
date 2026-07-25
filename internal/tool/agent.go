@@ -39,7 +39,8 @@ type AgentChildren interface {
 type AgentTool struct {
 	BasePresentation
 	Kind     string
-	Children AgentChildren
+	Children AgentChildren // retained for direct construction in focused tests
+	Session  SessionState
 	Agents   AgentLookup
 }
 
@@ -52,32 +53,29 @@ func NewAgentTools(children AgentChildren, agents AgentLookup) []Tool {
 
 func (t *AgentTool) ID() string { return t.Kind }
 
-func (t *AgentTool) Presentation() Presentation {
-	presentation := Presentation{Subagent: true}
-	if t.Kind == agentSpawnID {
-		presentation.Label = LabelSpec{Fields: []LabelField{
-			{Names: []string{"name", "agent"}},
-		}}
-		presentation.CompletedInput = CompletedInputSpec{
-			Fields: []string{"name", "agent", "model", "prompt"}, TerminalOnly: true,
-		}
-		return presentation
-	}
-	presentation.Label = LabelSpec{Fields: []LabelField{
-		{Names: []string{"session_id"}, TaskName: true}, {Names: []string{"message"}},
-	}}
-	return presentation
-}
-func (t *AgentTool) Description() string {
-	switch t.Kind {
+func (t *AgentTool) Descriptor() Descriptor { return AgentDescriptor(t.Kind) }
+
+func AgentDescriptor(kind string) Descriptor {
+	descriptor := Descriptor{ID: kind, SystemPromptGuidance: ""}
+	switch kind {
 	case agentSpawnID:
-		return "Start a reusable child agent in an isolated session and return its session ID immediately."
+		descriptor.Description = "Start a reusable child agent in an isolated session and return its session ID immediately."
+		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"name":{"type":"string","description":"Optional UI name. It is lowercased and sanitized to letters, digits, and hyphens; omitted or empty names are generated."}},"required":["prompt","agent"],"additionalProperties":false}`)
+		descriptor.Presentation = Presentation{Subagent: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"name", "agent"}}}}, CompletedInput: CompletedInputSpec{Fields: []string{"name", "agent", "model", "prompt"}, TerminalOnly: true}}
 	case agentSendID:
-		return "Send a message to a child agent session by canonical ID or friendly name. Running agents are steered; idle agents start a follow-up turn."
+		descriptor.Description = "Send a message to a child agent session by canonical ID or friendly name. Running agents are steered; idle agents start a follow-up turn."
+		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{"session_id":{"type":"string","description":"Canonical child session ID or friendly name."},"message":{"type":"string"}},"required":["session_id","message"],"additionalProperties":false}`)
+		descriptor.Presentation = Presentation{Subagent: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"session_id"}, TaskName: true}, {Names: []string{"message"}}}}}
 	default:
-		return "Manage a reusable child agent task."
+		descriptor.Description = "Manage a reusable child agent task."
+		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
+		descriptor.Presentation = Presentation{Subagent: true}
 	}
+	return descriptor
 }
+
+func (t *AgentTool) Presentation() Presentation { return t.Descriptor().Presentation }
+func (t *AgentTool) Description() string        { return t.Descriptor().Description }
 
 func (t *AgentTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	input, err := decodeAgentInput(raw)
@@ -94,16 +92,7 @@ func (t *AgentTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	}
 }
 
-func (t *AgentTool) JSONSchema() json.RawMessage {
-	switch t.Kind {
-	case agentSpawnID:
-		return json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"name":{"type":"string","description":"Optional UI name. It is lowercased and sanitized to letters, digits, and hyphens; omitted or empty names are generated."}},"required":["prompt","agent"],"additionalProperties":false}`)
-	case agentSendID:
-		return json.RawMessage(`{"type":"object","properties":{"session_id":{"type":"string","description":"Canonical child session ID or friendly name."},"message":{"type":"string"}},"required":["session_id","message"],"additionalProperties":false}`)
-	default:
-		return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
-	}
-}
+func (t *AgentTool) JSONSchema() json.RawMessage { return t.Descriptor().Schema }
 
 type agentInput struct {
 	Prompt    string `json:"prompt"`
@@ -121,7 +110,7 @@ func decodeAgentInput(raw json.RawMessage) (agentInput, error) {
 }
 
 func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if t.Children == nil || call.SessionID == "" || call.Agent == "" {
+	if t.Session == nil && t.Children == nil || call.SessionID == "" || call.Agent == "" {
 		return Plan{}, errors.New("agent: manager, session, and caller agent are required")
 	}
 	input, err := decodeAgentInput(raw)
@@ -155,7 +144,7 @@ func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContex
 		if err != nil {
 			return Plan{}, err
 		}
-		child, err := t.Children.Resolve(call.SessionID, input.SessionID)
+		child, err := t.resolve(call.SessionID, input.SessionID)
 		if err != nil {
 			return Plan{}, err
 		}
@@ -182,14 +171,20 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	}
 	switch t.Kind {
 	case agentSpawnID:
-		child, err := t.Children.Create(ctx, call.SessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name)
+		var child ChildAgent
+		var err error
+		if t.Session != nil {
+			child, err = t.Session.CreateAgent(ctx, call.Agent, input.Prompt, input.Agent, input.Model, input.Name)
+		} else {
+			child, err = t.Children.Create(ctx, call.SessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name)
+		}
 		if err != nil {
 			return Result{}, err
 		}
 		task := child.Status()
 		return agentResult(task), nil
 	case agentSendID:
-		child, err := t.Children.Resolve(call.SessionID, input.SessionID)
+		child, err := t.resolve(call.SessionID, input.SessionID)
 		if err != nil {
 			return Result{}, err
 		}
@@ -205,6 +200,13 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	default:
 		return Result{}, errors.New("agent: unknown operation")
 	}
+}
+
+func (t *AgentTool) resolve(parentSession, identifier string) (ChildAgent, error) {
+	if t.Session != nil {
+		return t.Session.ResolveAgent(identifier)
+	}
+	return t.Children.Resolve(parentSession, identifier)
 }
 
 func agentResult(task AgentTask) Result {
