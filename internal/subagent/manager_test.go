@@ -53,6 +53,41 @@ func (t testManagedTask) Interrupt(context.Context) (managedtask.Snapshot, error
 	return t.snapshot, nil
 }
 
+func TestResolveFriendlyName(t *testing.T) {
+	manager := NewManager(nil, Config{})
+	manager.tasks = map[string]*taskState{
+		"session-a": {task: Task{SessionID: "session-a", RootSession: "root", Name: "friendly"}},
+		"session-b": {task: Task{SessionID: "session-b", RootSession: "root", Name: "session-a"}},
+		"hidden":    {task: Task{SessionID: "hidden", RootSession: "other", Name: "secret"}},
+	}
+	for _, test := range []struct {
+		name       string
+		caller     string
+		identifier string
+		want       string
+	}{
+		{name: "friendly name", caller: "root", identifier: "friendly", want: "session-a"},
+		{name: "canonical ID takes precedence", caller: "root", identifier: "session-a", want: "session-a"},
+		{name: "canonical ID", caller: "root", identifier: "session-b", want: "session-b"},
+		{name: "hidden name", caller: "root", identifier: "secret"},
+		{name: "unknown name", caller: "root", identifier: "unknown"},
+		{name: "empty caller", identifier: "friendly"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			task, err := manager.Resolve(test.caller, test.identifier)
+			if test.want == "" {
+				if !errors.Is(err, ErrNotFound) {
+					t.Fatalf("Resolve() error = %v, want %v", err, ErrNotFound)
+				}
+				return
+			}
+			if err != nil || task.SessionID != test.want {
+				t.Fatalf("Resolve() = %#v, %v; want session %q", task, err, test.want)
+			}
+		})
+	}
+}
+
 func TestFriendlyNames(t *testing.T) {
 	executions := make(chan Execution, 4)
 	manager := NewManager(executorFunc(func(_ context.Context, execution Execution) (string, error) {

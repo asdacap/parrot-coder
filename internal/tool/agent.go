@@ -54,7 +54,7 @@ func (t *AgentTool) Description() string {
 	case agentSpawnID:
 		return "Start a reusable child agent in an isolated session and return its session ID immediately."
 	case agentSendID:
-		return "Send a message to a child agent session. Running agents are steered; idle agents start a follow-up turn."
+		return "Send a message to a child agent session by canonical ID or friendly name. Running agents are steered; idle agents start a follow-up turn."
 	default:
 		return "Manage a reusable child agent task."
 	}
@@ -80,7 +80,7 @@ func (t *AgentTool) JSONSchema() json.RawMessage {
 	case agentSpawnID:
 		return json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"name":{"type":"string","description":"Optional UI name. It is lowercased and sanitized to letters, digits, and hyphens; omitted or empty names are generated."}},"required":["prompt","agent"],"additionalProperties":false}`)
 	case agentSendID:
-		return json.RawMessage(`{"type":"object","properties":{"session_id":{"type":"string","description":"Identifier of the child agent session."},"message":{"type":"string"}},"required":["session_id","message"],"additionalProperties":false}`)
+		return json.RawMessage(`{"type":"object","properties":{"session_id":{"type":"string","description":"Canonical child session ID or friendly name."},"message":{"type":"string"}},"required":["session_id","message"],"additionalProperties":false}`)
 	default:
 		return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 	}
@@ -140,6 +140,7 @@ func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContex
 		if err != nil {
 			return Plan{}, err
 		}
+		input.SessionID = task.SessionID
 		targetReadOnly, err := t.Agents(task.Agent)
 		if err != nil {
 			return Plan{}, err
@@ -191,12 +192,8 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	}
 }
 
-func (t *AgentTool) agentTask(callerSession, childSession string) (subagent.Task, error) {
-	task, ok := t.Manager.TaskForSession(childSession)
-	if !ok {
-		return subagent.Task{}, subagent.ErrNotFound
-	}
-	return t.Manager.Status(callerSession, task.SessionID)
+func (t *AgentTool) agentTask(callerSession, identifier string) (subagent.Task, error) {
+	return t.Manager.Resolve(callerSession, identifier)
 }
 
 func agentResult(task subagent.Task) Result {

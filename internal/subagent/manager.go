@@ -625,6 +625,25 @@ func (m *Manager) Status(parentSession, id string) (Task, error) {
 	return cloneTask(state.task), nil
 }
 
+// Resolve returns a caller-visible task by canonical child session ID or
+// friendly name. An exact session ID takes precedence over a name match.
+func (m *Manager) Resolve(callerSession, identifier string) (Task, error) {
+	if m == nil || callerSession == "" || identifier == "" {
+		return Task{}, ErrNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state := m.tasks[identifier]; state != nil && m.visibleLocked(callerSession, state) {
+		return cloneTask(state.task), nil
+	}
+	for _, state := range m.tasks {
+		if state.task.Name == identifier && m.visibleLocked(callerSession, state) {
+			return cloneTask(state.task), nil
+		}
+	}
+	return Task{}, ErrNotFound
+}
+
 // List is stable by agent ID and returns the caller-visible subtree.
 func (m *Manager) List(callerSession string) []Task {
 	return m.list(callerSession, false)
