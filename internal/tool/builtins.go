@@ -51,7 +51,6 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 		NewShowTool(ReadConfig{}),
 		NewGlobTool(GlobConfig{}),
 		NewRgTool(RgConfig{}),
-		NewReadOutputTool(1 << 20),
 		NewApplyPatchTool(services.Changes),
 		NewExecCommandTool(services.Processes),
 		NewWritePermissionTool(services.Processes),

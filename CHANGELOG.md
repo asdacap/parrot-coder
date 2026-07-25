@@ -70,7 +70,7 @@ All notable changes to Parrot Coder will be documented in this file.
   transactional edits and strict patches.
 - Versioned HTTP/JSON/SSE API with in-process transport and loopback-only server.
 - Skills, custom commands, subagents, MCP stdio/HTTP, LSP, formatter proposals,
-  managed output, and SSRF-resistant web fetch.
+  large output files, and SSRF-resistant web fetch.
 - Nix development/build checks, cross-platform CI, fuzz targets, and tagged
   release automation for macOS and Linux amd64/arm64.
 

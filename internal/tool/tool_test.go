@@ -1,19 +1,16 @@
 package tool
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
@@ -143,54 +140,46 @@ func TestExecutorDiagnosticsOmitInputAndOutput(t *testing.T) {
 
 func TestExecutorStoresOversizedOutput(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "outputs")
-	store, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 8, PreviewLines: 4, PerOutput: 100, Total: 100, Retention: time.Hour})
+	store, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 8, PreviewLines: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := NewRegistry()
 	_ = r.Register(outputTestTool{})
 	e := Executor{Snapshot: r.Materialize(), MaxOutputBytes: 4}
-	result, err := e.Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{Outputs: store})
+	result, err := e.Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{Outputs: store, SessionID: "ses_test"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	id, ok := result.Metadata["output_id"].(string)
-	if !ok || strings.Contains(result.Text, filepath.Base(dir)) {
-		t.Fatalf("managed output not opaque: %#v", result)
+	path, ok := result.Metadata["output_path"].(string)
+	if !ok || !strings.HasPrefix(path, filepath.Join(dir, "ses_test", "large_outputs")+string(filepath.Separator)) || filepath.Ext(path) != ".txt" {
+		t.Fatalf("large output path = %#v", result)
 	}
 	if result.Text != "long model output" {
 		t.Fatalf("executor altered the record: %#v", result)
 	}
-	if !strings.Contains(result.ModelText, "read_output id "+id) {
-		t.Fatalf("model copy does not name the managed output: %#v", result)
+	if !strings.Contains(result.ModelText, path) {
+		t.Fatalf("model copy does not name the large output file: %#v", result)
 	}
-	b, err := store.Read(id, 0, 100)
+	b, err := os.ReadFile(path)
 	if err != nil || string(b) != "long model output" {
 		t.Fatalf("stored %q: %v", b, err)
 	}
 }
 
 func TestExecutorReportsLossyOutputWhenStorageFails(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "outputs")
-	store, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 4, PreviewLines: 2, PerOutput: 5, Total: 5, Retention: time.Hour})
+	store, err := NewOutputStore(OutputConfig{Directory: filepath.Join(t.TempDir(), "outputs"), PreviewBytes: 4, PreviewLines: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
 	r := NewRegistry()
 	_ = r.Register(outputTestTool{})
-	e := Executor{Snapshot: r.Materialize(), MaxOutputBytes: 4}
-	result, err := e.Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{Outputs: store})
+	result, err := (Executor{Snapshot: r.Materialize(), MaxOutputBytes: 4}).Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{Outputs: store})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if lossy, _ := result.Metadata["output_lossy"].(bool); !lossy {
-		t.Fatalf("result does not report lossy output: %#v", result)
-	}
-	if result.Text != "long model output" {
-		t.Fatalf("executor altered the record: %#v", result)
-	}
-	if !strings.Contains(result.ModelText, "unrecoverable") {
-		t.Fatalf("model copy does not report the lost output: %#v", result)
+	if lossy, _ := result.Metadata["output_lossy"].(bool); !lossy || !strings.Contains(result.ModelText, "unrecoverable") {
+		t.Fatalf("result does not report failed storage: %#v", result)
 	}
 }
 
@@ -345,106 +334,33 @@ func (outputTestTool) Execute(context.Context, Plan, CallContext) (Result, error
 	return Result{Text: "long model output", ModelText: "long model output"}, nil
 }
 
-func TestOutputStoreUTF8QuotasModesAndRetention(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "private")
-	s, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 5, PreviewLines: 4, PerOutput: 20, Total: 25, Retention: time.Hour})
+func TestOutputStoreWritesCompletePerSessionPetnameFiles(t *testing.T) {
+	root := t.TempDir()
+	store, err := NewOutputStore(OutputConfig{Directory: root, PreviewBytes: 5, PreviewLines: 4})
 	if err != nil {
 		t.Fatal(err)
 	}
-	out, err := s.Store(context.Background(), strings.NewReader("αβγδεζηθ"))
+	stored, err := store.Store(context.Background(), "ses_test", strings.NewReader("αβγδεζηθ"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !utf8.ValidString(out.Preview) {
-		t.Fatalf("invalid UTF-8: %q", out.Preview)
+	wantDir := filepath.Join(root, "ses_test", "large_outputs")
+	name := strings.TrimSuffix(filepath.Base(stored.Path), ".txt")
+	if filepath.Dir(stored.Path) != wantDir || filepath.Ext(stored.Path) != ".txt" || strings.Count(name, "-") != 2 || stored.Size != int64(len("αβγδεζηθ")) || !utf8.ValidString(stored.Preview) {
+		t.Fatalf("stored = %#v", stored)
 	}
-	info, err := os.Stat(filepath.Join(dir, out.ID))
-	if err != nil {
-		t.Fatal(err)
+	data, err := os.ReadFile(stored.Path)
+	if err != nil || string(data) != "αβγδεζηθ" {
+		t.Fatalf("content = %q, %v", data, err)
 	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("mode %o", info.Mode().Perm())
+	for path, mode := range map[string]os.FileMode{wantDir: 0o700, stored.Path: 0o600} {
+		info, err := os.Stat(path)
+		if err != nil || info.Mode().Perm() != mode {
+			t.Fatalf("%s mode = %v, %v", path, info.Mode().Perm(), err)
+		}
 	}
-	dirInfo, _ := os.Stat(dir)
-	if dirInfo.Mode().Perm() != 0o700 {
-		t.Fatalf("dir mode %o", dirInfo.Mode().Perm())
-	}
-	if _, err := s.Store(context.Background(), bytes.NewReader(make([]byte, 21))); err == nil {
-		t.Fatal("total quota ignored")
-	}
-	if _, err := s.Store(context.Background(), bytes.NewReader(make([]byte, 10))); err == nil {
-		t.Fatal("total quota ignored")
-	}
-	if _, err := s.Read("../secret", 0, 1); err == nil {
-		t.Fatal("arbitrary path accepted")
-	}
-	if err := os.Chtimes(filepath.Join(dir, out.ID), time.Now().Add(-2*time.Hour), time.Now().Add(-2*time.Hour)); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.Cleanup(time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := s.Read(out.ID, 0, 1); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("retained output: %v", err)
-	}
-}
-
-type chunkedReader struct {
-	data  []byte
-	chunk int
-}
-
-func (r *chunkedReader) Read(p []byte) (int, error) {
-	if len(r.data) == 0 {
-		return 0, io.EOF
-	}
-	n := min(r.chunk, len(r.data))
-	copy(p, r.data[:n])
-	r.data = r.data[n:]
-	return n, nil
-}
-
-func TestOutputStoreStartTruncationKeepsTailAndCountsOmitted(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "outputs")
-	s, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 4, PreviewLines: 2, PerOutput: 10, Total: 1000, Retention: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	input := "0123456789ABCDEFGHIJKLMNOPQRSTUV"
-	out, err := s.Store(context.Background(), &chunkedReader{data: []byte(input), chunk: 5})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if out.Size != 10 || out.OmittedBytes != 22 {
-		t.Fatalf("stored = %#v", out)
-	}
-	b, err := s.Read(out.ID, 0, 10)
-	if err != nil || string(b) != "MNOPQRSTUV" {
-		t.Fatalf("stored content %q: %v", b, err)
-	}
-}
-
-func TestExecutorReportsBytesLostWhenSpilledOutputExceedsPerOutputLimit(t *testing.T) {
-	dir := filepath.Join(t.TempDir(), "outputs")
-	store, err := NewOutputStore(OutputConfig{Directory: dir, PreviewBytes: 4, PreviewLines: 2, PerOutput: 5, Total: 100, Retention: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	r := NewRegistry()
-	_ = r.Register(outputTestTool{})
-	e := Executor{Snapshot: r.Materialize(), MaxOutputBytes: 4}
-	result, err := e.Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{Outputs: store})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if lossy, _ := result.Metadata["output_lossy"].(bool); !lossy {
-		t.Fatalf("result does not report lossy output: %#v", result)
-	}
-	if _, ok := result.Metadata["output_id"].(string); !ok {
-		t.Fatalf("result does not name the managed output: %#v", result)
-	}
-	if !strings.Contains(result.ModelText, "first 12 bytes could not be stored") || !strings.Contains(result.ModelText, "read_output id") {
-		t.Fatalf("model copy does not report the lost bytes: %#v", result)
+	if _, err := store.Store(context.Background(), "../unsafe", strings.NewReader("x")); err == nil {
+		t.Fatal("unsafe session accepted")
 	}
 }
 

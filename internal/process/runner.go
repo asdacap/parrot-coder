@@ -69,20 +69,18 @@ type PersistentEvent struct {
 }
 
 type StoredOutput struct {
-	ID           string
-	Size         int64
-	OmittedBytes int64
-	Preview      string
+	Path    string
+	Size    int64
+	Preview string
 }
 
 type OutputStore interface {
-	Create(context.Context) (ManagedOutput, error)
-	Read(id string, offset, limit int64) ([]byte, error)
+	Create(context.Context, string) (Output, error)
 }
 
-type ManagedOutput interface {
+type Output interface {
 	io.Writer
-	ID() string
+	Path() string
 	Finalize(ctx context.Context) (StoredOutput, error)
 	Discard()
 }
@@ -105,7 +103,7 @@ type Result struct {
 	TimedOut   bool   `json:"timed_out"`
 	Cancelled  bool   `json:"cancelled"`
 	Truncated  bool   `json:"truncated"`
-	OutputID   string `json:"output_id,omitempty"`
+	OutputPath string `json:"output_path,omitempty"`
 	OutputSize int64  `json:"output_size,omitempty"`
 }
 
@@ -396,13 +394,13 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 	if r.config.OutputStore == nil {
 		return Result{}, errors.New("process: output store is required")
 	}
-	managedOutput, err := r.config.OutputStore.Create(ctx)
+	largeOutput, err := r.config.OutputStore.Create(ctx, request.SessionID)
 	if err != nil {
 		return Result{}, fmt.Errorf("process: create output: %w", err)
 	}
-	capture := &streamWriter{stream: request.Output, output: managedOutput}
+	capture := &streamWriter{stream: request.Output, output: largeOutput}
 	fail := func(err error) (Result, error) {
-		managedOutput.Discard()
+		largeOutput.Discard()
 		return Result{}, err
 	}
 	resolvedShell, err := executableFile(request.Shell)
@@ -456,7 +454,7 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		result.TimedOut = true
 		waitErr = r.terminate(command.Process.Pid, wait)
 	}
-	storedOutput, storeErr := managedOutput.Finalize(context.WithoutCancel(ctx))
+	storedOutput, storeErr := largeOutput.Finalize(context.WithoutCancel(ctx))
 	if command.ProcessState != nil {
 		result.ExitCode = command.ProcessState.ExitCode()
 	}
@@ -467,7 +465,7 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 	if capture.err != nil {
 		return result, fmt.Errorf("process: capture output: %w", capture.err)
 	}
-	result.OutputID = storedOutput.ID
+	result.OutputPath = storedOutput.Path
 	result.OutputSize = storedOutput.Size
 	output, truncated, readErr := r.readStoredOutput(storedOutput)
 	if readErr != nil {
@@ -481,37 +479,34 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 	return result, nil
 }
 
-// readStoredOutput bounds stored command output to the model-facing budget,
-// keeping the head and tail and reporting bytes the store dropped up front.
+// readStoredOutputWithBudget bounds stored command output to the model-facing
+// budget while keeping the complete output available at its filesystem path.
 func (r *Runner) readStoredOutputWithBudget(stored StoredOutput, budget int64) (string, bool, error) {
 	if budget <= 0 {
 		budget = r.config.MaxOutputBytes
 	}
-	truncated := stored.OmittedBytes > 0
-	var text string
+	f, err := os.Open(stored.Path)
+	if err != nil {
+		return "", false, err
+	}
+	defer f.Close()
 	if stored.Size <= budget {
-		data, err := r.config.OutputStore.Read(stored.ID, 0, stored.Size)
-		if err != nil {
-			return "", false, err
-		}
-		text = string(bytesToValidUTF8(data))
-	} else {
-		half := budget / 2
-		head, err := r.config.OutputStore.Read(stored.ID, 0, half)
-		if err != nil {
-			return "", false, err
-		}
-		tail, err := r.config.OutputStore.Read(stored.ID, stored.Size-half, half)
-		if err != nil {
-			return "", false, err
-		}
-		text = string(bytesToValidUTF8(head)) + fmt.Sprintf("\n... %d bytes omitted ...\n", stored.Size-budget) + string(bytesToValidUTF8(tail))
-		truncated = true
+		data, err := io.ReadAll(io.LimitReader(f, stored.Size))
+		return string(bytesToValidUTF8(data)), false, err
 	}
-	if stored.OmittedBytes > 0 {
-		text = fmt.Sprintf("... first %d bytes of output were lost ...\n", stored.OmittedBytes) + text
+	half := budget / 2
+	head, err := io.ReadAll(io.LimitReader(f, half))
+	if err != nil {
+		return "", false, err
 	}
-	return text, truncated, nil
+	if _, err := f.Seek(stored.Size-half, io.SeekStart); err != nil {
+		return "", false, err
+	}
+	tail, err := io.ReadAll(io.LimitReader(f, half))
+	if err != nil {
+		return "", false, err
+	}
+	return string(bytesToValidUTF8(head)) + fmt.Sprintf("\n... %d bytes omitted ...\n", stored.Size-budget) + string(bytesToValidUTF8(tail)), true, nil
 }
 
 func setEnvironment(environment []string, name, value string) {

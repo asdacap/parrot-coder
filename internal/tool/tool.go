@@ -335,29 +335,23 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 		result.ModelText = emptyModelText
 	}
 	// Text is never truncated here, and bounding the model copy is each tool's
-	// responsibility. Spilling is the exception: the executor performed the spill
-	// and is the only party holding the resulting identifier, so it replaces the
-	// model copy to report what it did. Without this the model receives a
-	// preview it cannot act on, because nothing else names the output ID.
+	// responsibility. Spilling is the exception: the executor wrote the file and
+	// is the only party holding its path, so it replaces the model copy to report
+	// what it did. Without this the model receives a preview it cannot act on.
 	if len(result.Text) > max && call.Outputs != nil {
 		if result.Metadata == nil {
 			result.Metadata = make(map[string]any)
 		}
-		stored, storeErr := call.Outputs.Store(ctx, strings.NewReader(result.Text))
+		stored, storeErr := call.Outputs.Store(ctx, call.SessionID, strings.NewReader(result.Text))
 		if storeErr != nil {
 			result.Metadata["output_lossy"] = true
 			result.ModelText = modelText(result.ModelText) +
 				fmt.Sprintf("\n... output exceeded %d bytes and could not be stored; the remainder is unrecoverable ...", max)
 		} else {
-			result.Metadata["output_id"] = stored.ID
+			result.Metadata["output_path"] = stored.Path
 			result.Metadata["output_bytes"] = stored.Size
-			lost := ""
-			if stored.OmittedBytes > 0 {
-				result.Metadata["output_lossy"] = true
-				lost = fmt.Sprintf("\n... first %d bytes could not be stored ...", stored.OmittedBytes)
-			}
-			result.ModelText = modelText(stored.Preview) + lost +
-				fmt.Sprintf("\n... %d bytes total; read the remainder with read_output id %s ...", stored.Size, stored.ID)
+			result.ModelText = modelText(stored.Preview) +
+				fmt.Sprintf("\n... %d bytes total; full output saved to %s ...", stored.Size, stored.Path)
 		}
 	}
 	if len(result.ModelText) > max {

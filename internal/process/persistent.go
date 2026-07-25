@@ -70,7 +70,7 @@ type PersistentResult struct {
 	ExitCode           *int
 	OriginalTokenCount int
 	OmittedBytes       int
-	OutputID           string
+	OutputPath         string
 	OutputSize         int64
 	Truncated          bool
 }
@@ -140,17 +140,17 @@ type persistentProcess struct {
 	announced    bool
 	finishedSent bool
 
-	mu            sync.Mutex
-	output        headTailBuffer
-	stream        io.Writer
-	waitErr       error
-	exitCode      *int
-	managedOutput ManagedOutput
-	storedOutput  *StoredOutput
-	storeErr      error
-	notify        chan struct{}
-	finished      chan struct{}
-	readerDone    chan struct{}
+	mu           sync.Mutex
+	output       headTailBuffer
+	stream       io.Writer
+	waitErr      error
+	exitCode     *int
+	largeOutput  Output
+	storedOutput *StoredOutput
+	storeErr     error
+	notify       chan struct{}
+	finished     chan struct{}
+	readerDone   chan struct{}
 }
 
 func (r *Runner) emitPersistent(event PersistentEvent) {
@@ -232,7 +232,7 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 		r.releaseReservedID(processID)
 		return PersistentResult{}, errors.New("process: output store is required")
 	}
-	managedOutput, err := r.config.OutputStore.Create(ctx)
+	largeOutput, err := r.config.OutputStore.Create(ctx, request.SessionID)
 	if err != nil {
 		r.releaseReservedID(processID)
 		return PersistentResult{}, fmt.Errorf("process: create output: %w", err)
@@ -242,11 +242,11 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 	item := &persistentProcess{
 		id: processID, name: processName, sessionID: request.SessionID, command: command, tty: request.TTY,
 		started: time.Now(), lastUsed: time.Now(), output: newHeadTailBuffer(persistentOutputBytes),
-		managedOutput: managedOutput,
-		notify:        make(chan struct{}, 1), finished: make(chan struct{}), readerDone: make(chan struct{}),
+		largeOutput: largeOutput,
+		notify:      make(chan struct{}, 1), finished: make(chan struct{}), readerDone: make(chan struct{}),
 	}
 	if err := r.startPersistent(ctx, item); err != nil {
-		managedOutput.Discard()
+		largeOutput.Discard()
 		r.releaseReservedID(processID)
 		return PersistentResult{}, fmt.Errorf("process: start: %w", err)
 	}
@@ -475,7 +475,7 @@ func (r *Runner) startPersistent(ctx context.Context, item *persistentProcess) e
 			_ = item.reader.Close()
 		}
 		<-item.readerDone
-		stored, storeErr := item.managedOutput.Finalize(context.WithoutCancel(ctx))
+		stored, storeErr := item.largeOutput.Finalize(context.WithoutCancel(ctx))
 		item.mu.Lock()
 		item.waitErr = err
 		if item.command.ProcessState != nil {
@@ -521,8 +521,8 @@ type persistentOutputWriter struct{ process *persistentProcess }
 func (w persistentOutputWriter) Write(value []byte) (int, error) {
 	w.process.mu.Lock()
 	w.process.output.push(value)
-	if w.process.managedOutput != nil {
-		_, _ = w.process.managedOutput.Write(value)
+	if w.process.largeOutput != nil {
+		_, _ = w.process.largeOutput.Write(value)
 	}
 	if w.process.stream != nil {
 		_, _ = w.process.stream.Write(value)
@@ -575,27 +575,28 @@ func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duratio
 	item.mu.Lock()
 	output := item.output.drain()
 	exitCode := item.exitCode
-	var managedOutput ManagedOutput
-	if item.managedOutput != nil {
-		managedOutput = item.managedOutput
+	var largeOutput Output
+	if item.largeOutput != nil {
+		largeOutput = item.largeOutput
 	}
 	storedOutput := item.storedOutput
 	storeErr := item.storeErr
 	item.mu.Unlock()
 
-	outputID := ""
-	if managedOutput != nil {
-		outputID = managedOutput.ID()
+	outputPath := ""
+	if largeOutput != nil {
+		outputPath = largeOutput.Path()
 	}
 	result := PersistentResult{
 		ChunkID: generateChunkID(), Name: item.name, WallTime: wallTime,
-		ExitCode: exitCode, OutputID: outputID,
+		ExitCode: exitCode, OutputPath: outputPath,
 	}
 
 	if running {
 		result.Output = truncatePersistentOutput(output.text(), maxTokens, tokensForBytes(output.totalBytes()), output.omitted)
 		result.OriginalTokenCount = tokensForBytes(output.totalBytes())
 		result.OmittedBytes = output.omitted
+		result.Truncated = output.omitted > 0 || maxTokens != nil && result.OriginalTokenCount > normalizeOutputTokens(maxTokens)
 		id := item.id
 		result.ProcessID, result.ExitCode = &id, nil
 		return result
@@ -613,7 +614,7 @@ func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duratio
 			result.Truncated = truncated
 			result.OutputSize = storedOutput.Size
 			result.OriginalTokenCount = tokensForBytes(int(storedOutput.Size))
-			result.OmittedBytes = int(storedOutput.OmittedBytes)
+			result.OmittedBytes = 0
 		}
 	}
 	return result
