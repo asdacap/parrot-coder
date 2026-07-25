@@ -17,6 +17,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
@@ -274,8 +275,79 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 			}
 		}
 		r.announcePersistent(item)
+		r.notifyPersistentCompletion(item)
 	}
 	return result, nil
+}
+
+type activeNotification struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
+func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
+	sessions := r.agentSessions()
+	if sessions == nil {
+		diagnostics.Warn("shell_task_notification_unavailable", "session_id", item.sessionID, "task_id", item.id)
+		return
+	}
+	r.mu.Lock()
+	if r.closed || r.notifyPaused[item.sessionID] > 0 {
+		r.mu.Unlock()
+		return
+	}
+	ctx, cancel := context.WithCancel(r.notifyCtx)
+	notification := &activeNotification{cancel: cancel, done: make(chan struct{})}
+	if r.notifications[item.sessionID] == nil {
+		r.notifications[item.sessionID] = make(map[string]*activeNotification)
+	}
+	r.notifications[item.sessionID][item.id] = notification
+	r.notifyWG.Add(1)
+	r.mu.Unlock()
+	go func() {
+		defer func() {
+			cancel()
+			r.mu.Lock()
+			if r.notifications[item.sessionID][item.id] == notification {
+				delete(r.notifications[item.sessionID], item.id)
+				if len(r.notifications[item.sessionID]) == 0 {
+					delete(r.notifications, item.sessionID)
+				}
+			}
+			close(notification.done)
+			r.mu.Unlock()
+			r.notifyWG.Done()
+		}()
+		select {
+		case <-item.finished:
+		case <-ctx.Done():
+			return
+		}
+		item.mu.Lock()
+		exitCode, waitErr := item.exitCode, item.waitErr
+		item.mu.Unlock()
+
+		content := fmt.Sprintf("Shell task notification: task %s finished.", item.id)
+		if exitCode != nil {
+			content = fmt.Sprintf("Shell task notification: task %s exited with code %d.", item.id, *exitCode)
+		}
+		if waitErr != nil {
+			content += "\n\nError: " + waitErr.Error()
+		}
+		sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
+		defer sendCancel()
+		if sendCtx.Err() != nil {
+			return
+		}
+		session := sessions.Get(item.sessionID)
+		if session == nil {
+			diagnostics.Warn("shell_task_notification_unavailable", "session_id", item.sessionID, "task_id", item.id)
+			return
+		}
+		if _, err := session.Send(sendCtx, content); err != nil && !errors.Is(err, context.Canceled) {
+			diagnostics.Error("shell_task_notification_failed", "session_id", item.sessionID, "task_id", item.id, "error_type", diagnostics.ErrorType(err))
+		}
+	}()
 }
 
 // announcePersistent promotes a retained process to a shell task. A process
@@ -967,6 +1039,38 @@ func (t *managedShellTask) Interrupt(ctx context.Context) (managedtask.Snapshot,
 	return managedtask.Snapshot{ID: item.ID, Name: item.Name, SessionID: item.SessionID, Kind: managedtask.KindShell, Status: "canceled", StartedAt: item.StartedAt}, nil
 }
 
+// SuspendSession prevents new shell-task notifications for one session,
+// cancels in-flight delivery, and waits until delivery has stopped.
+func (r *Runner) SuspendSession(ctx context.Context, sessionID string) error {
+	r.mu.Lock()
+	r.notifyPaused[sessionID]++
+	active := make([]*activeNotification, 0, len(r.notifications[sessionID]))
+	for _, notification := range r.notifications[sessionID] {
+		notification.cancel()
+		active = append(active, notification)
+	}
+	r.mu.Unlock()
+	for _, notification := range active {
+		select {
+		case <-notification.done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
+// ResumeSession permits shell-task notifications after lifecycle cleanup.
+func (r *Runner) ResumeSession(sessionID string) {
+	r.mu.Lock()
+	if r.notifyPaused[sessionID] <= 1 {
+		delete(r.notifyPaused, sessionID)
+	} else {
+		r.notifyPaused[sessionID]--
+	}
+	r.mu.Unlock()
+}
+
 // InterruptSession terminates retained processes owned by one Parrot session.
 func (r *Runner) InterruptSession(sessionID string) error {
 	items := r.takeSessionProcesses(sessionID, false)
@@ -1047,6 +1151,7 @@ func (r *Runner) Close() error {
 	defer r.cleanup.Unlock()
 	r.mu.Lock()
 	r.closed = true
+	r.notifyCancel()
 	items := make([]*persistentProcess, 0, len(r.processes))
 	for _, item := range r.processes {
 		items = append(items, item)
@@ -1055,6 +1160,7 @@ func (r *Runner) Close() error {
 	r.reservedIDs = make(map[string]string)
 	r.reservedNames = make(map[string]string)
 	r.writablePaths = make(map[string]map[string]struct{})
+	r.notifyPaused = make(map[string]int)
 	type temporaryDirectoryCleanup struct {
 		path string
 		wait <-chan struct{}
@@ -1075,6 +1181,7 @@ func (r *Runner) Close() error {
 		}
 		r.terminatePersistent(item)
 	}
+	r.notifyWG.Wait()
 	var err error
 	for sessionID, temporaryDirectory := range temporaryDirectories {
 		if temporaryDirectory.wait != nil {

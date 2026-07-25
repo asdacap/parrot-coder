@@ -20,7 +20,7 @@ import (
 
 const (
 	MaxToolBlockLines   = 10
-	maxShellOutputLines = 3
+	maxShellOutputLines = 10
 	maxShellOutputBytes = 16 << 10
 )
 

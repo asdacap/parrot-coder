@@ -33,9 +33,21 @@ type Config struct {
 	MaxProcesses           int
 	MaxSessionProcesses    int
 	OnPersistentEvent      func(PersistentEvent)
+	AgentSessions          AgentSessionResolver
 	Tasks                  *managedtask.Manager
 	SandboxRules           []security.Rule
 	sandbox                sandbox
+}
+
+// AgentSession is the capability used to deliver a yielded process's eventual
+// completion to its owning session.
+type AgentSession interface {
+	Send(context.Context, string) (string, error)
+}
+
+// AgentSessionResolver resolves the owner of a yielded process.
+type AgentSessionResolver interface {
+	Get(string) AgentSession
 }
 
 // Persistent lifecycle kinds reported through Config.OnPersistentEvent.
@@ -108,6 +120,11 @@ type Runner struct {
 	processes       map[string]*persistentProcess
 	reservedIDs     map[string]string
 	reservedNames   map[string]string
+	notifyCtx       context.Context
+	notifyCancel    context.CancelFunc
+	notifications   map[string]map[string]*activeNotification
+	notifyPaused    map[string]int
+	notifyWG        sync.WaitGroup
 	closed          bool
 }
 
@@ -190,11 +207,13 @@ func NewRunner(config Config) (*Runner, error) {
 		}
 		implementation = platformSandbox(config.Workspace, resolved)
 	}
+	notifyCtx, notifyCancel := context.WithCancel(context.Background())
 	return &Runner{
-		config: config, sandbox: implementation,
+		config: config, sandbox: implementation, notifyCtx: notifyCtx, notifyCancel: notifyCancel,
 		writablePaths: make(map[string]map[string]struct{}),
 		temporaryDirs: make(map[string]*sessionTemporaryDirectory), deletedSessions: make(map[string]struct{}),
 		processes: make(map[string]*persistentProcess), reservedIDs: make(map[string]string), reservedNames: make(map[string]string),
+		notifications: make(map[string]map[string]*activeNotification), notifyPaused: make(map[string]int),
 	}, nil
 }
 
@@ -214,6 +233,21 @@ func (r *Runner) persistentEventHandler() func(PersistentEvent) {
 	handler := r.config.OnPersistentEvent
 	r.mu.RUnlock()
 	return handler
+}
+
+// SetAgentSessions completes composition after the agent coordinator is
+// available. Processes started before composition do not send notifications.
+func (r *Runner) SetAgentSessions(sessions AgentSessionResolver) {
+	r.mu.Lock()
+	r.config.AgentSessions = sessions
+	r.mu.Unlock()
+}
+
+func (r *Runner) agentSessions() AgentSessionResolver {
+	r.mu.RLock()
+	sessions := r.config.AgentSessions
+	r.mu.RUnlock()
+	return sessions
 }
 
 // AllowWrite grants sandboxed commands in one session write access to an exact
@@ -694,7 +728,7 @@ func (w *streamWriter) Write(p []byte) (int, error) {
 }
 
 const (
-	outputTailLines     = 3
+	outputTailLines     = 10
 	outputTailLineBytes = 16 << 10
 )
 

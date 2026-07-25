@@ -69,7 +69,11 @@ listed in agent context without warnings for tools that are absent.
 `exec_command` runs in an OS sandbox without a permission prompt by default: the
 sandbox is the boundary, so confined work is not asked about. Setting
 `sandbox_permissions` to `disable_sandbox` always requires permission and runs
-with the invoking user's local authority. Linux requires Bubblewrap and
+with the invoking user's local authority. When a command outlives
+`exec_command`'s yield window, it remains available as a shell task and sends a
+completion message to the session that started it; a separate `monitor` call is
+not required. Use the returned task ID with `write_stdin`, `wait_process`, or
+`task_interrupt` to interact with it. Linux requires Bubblewrap and
 unprivileged user namespaces; the Nix package and development shell include
 Bubblewrap. macOS uses the system Seatbelt executable. The host filesystem is
 read-only, the workspace and its Git metadata are writable except for existing

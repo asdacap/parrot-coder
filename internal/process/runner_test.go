@@ -370,24 +370,25 @@ func TestRunReportsBytesLostFromStartOfStoredOutput(t *testing.T) {
 	}
 }
 
-func TestOutputTailKeepsLastThreeLinesAndCarriageReturnReplacement(t *testing.T) {
+func TestOutputTailKeepsLastTenLinesAndCarriageReturnReplacement(t *testing.T) {
 	runner := testRunner(t, Config{MaxOutputBytes: 4})
 	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: `printf 'one\ntwo\n1%%\r2%%\rthree\nfour'`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "on\n... 20 bytes omitted ...\nur" || !result.Truncated || result.OutputTail != "two\nthree\nfour" {
+	if result.Output != "on\n... 20 bytes omitted ...\nur" || !result.Truncated || result.OutputTail != "one\ntwo\nthree\nfour" {
 		t.Fatalf("result = %#v", result)
 	}
 }
 
-func TestOutputTailPreservesUTF8AcrossWrites(t *testing.T) {
+func TestOutputTailKeepsLastTenLinesAndPreservesUTF8AcrossWrites(t *testing.T) {
 	var tail lineTail
-	value := []byte("one\ntwo\n世界")
+	value := []byte("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\n世界")
 	tail.Write(value[:len(value)-1])
 	tail.Write(value[len(value)-1:])
-	if got := tail.String(); got != string(value) {
-		t.Fatalf("tail = %q", got)
+	want := "three\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\n世界"
+	if got := tail.String(); got != want {
+		t.Fatalf("tail = %q, want %q", got, want)
 	}
 }
 
@@ -509,6 +510,96 @@ func TestPersistentProcessPTYInputPollingOwnershipAndCleanup(t *testing.T) {
 	}
 	if _, err := runner.RunPersistent(context.Background(), PersistentRequest{Shell: "/bin/sh", Command: "true", SessionID: "owner", Yield: MinYieldTime}); err == nil || !strings.Contains(err.Error(), "closed") {
 		t.Fatalf("run after close = %v", err)
+	}
+}
+
+type recordingProcessAgentSessions struct {
+	sessionID string
+	sent      chan string
+}
+
+func (s *recordingProcessAgentSessions) Get(sessionID string) AgentSession {
+	s.sessionID = sessionID
+	return recordingProcessAgentSession{sent: s.sent}
+}
+
+type recordingProcessAgentSession struct{ sent chan string }
+
+func (s recordingProcessAgentSession) Send(_ context.Context, content string) (string, error) {
+	s.sent <- content
+	return "message", nil
+}
+
+func TestRunPersistentNotifiesOwningAgentSessionOnlyAfterYieldedProcessFinishes(t *testing.T) {
+	notifications := &recordingProcessAgentSessions{sent: make(chan string, 2)}
+	runner := testRunner(t, Config{TerminationGrace: 50 * time.Millisecond})
+	runner.SetAgentSessions(notifications)
+	t.Cleanup(func() { _ = runner.Close() })
+
+	inline, err := runner.RunPersistent(context.Background(), PersistentRequest{
+		Shell: "/bin/sh", Command: "true", SessionID: "owner", Yield: time.Second,
+	})
+	if err != nil || inline.ProcessID != nil {
+		t.Fatalf("inline process = %#v, %v", inline, err)
+	}
+	select {
+	case notification := <-notifications.sent:
+		t.Fatalf("inline process notification = %q", notification)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	yielded, err := runner.RunPersistent(context.Background(), PersistentRequest{
+		Shell: "/bin/sh", Command: "sleep .35; exit 7", SessionID: "owner", Yield: MinYieldTime,
+	})
+	if err != nil || yielded.ProcessID == nil {
+		t.Fatalf("yielded process = %#v, %v", yielded, err)
+	}
+	select {
+	case notification := <-notifications.sent:
+		if notifications.sessionID != "owner" || !strings.Contains(notification, *yielded.ProcessID) || !strings.Contains(notification, "exited with code 7") {
+			t.Fatalf("notification owner=%q content=%q", notifications.sessionID, notification)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("yielded process completion was not sent to its owning agent session")
+	}
+}
+
+func TestPersistentNotificationSuspensionCancelsDeliveryUntilResumed(t *testing.T) {
+	notifications := &recordingProcessAgentSessions{sent: make(chan string, 2)}
+	runner := testRunner(t, Config{TerminationGrace: 50 * time.Millisecond})
+	runner.SetAgentSessions(notifications)
+	t.Cleanup(func() { _ = runner.Close() })
+
+	yielded, err := runner.RunPersistent(context.Background(), PersistentRequest{
+		Shell: "/bin/sh", Command: "sleep .4", SessionID: "owner", Yield: MinYieldTime,
+	})
+	if err != nil || yielded.ProcessID == nil {
+		t.Fatalf("yielded process = %#v, %v", yielded, err)
+	}
+	if err := runner.SuspendSession(context.Background(), "owner"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(250 * time.Millisecond)
+	select {
+	case notification := <-notifications.sent:
+		t.Fatalf("suspended notification = %q", notification)
+	default:
+	}
+
+	runner.ResumeSession("owner")
+	yielded, err = runner.RunPersistent(context.Background(), PersistentRequest{
+		Shell: "/bin/sh", Command: "sleep .3", SessionID: "owner", Yield: MinYieldTime,
+	})
+	if err != nil || yielded.ProcessID == nil {
+		t.Fatalf("resumed process = %#v, %v", yielded, err)
+	}
+	select {
+	case notification := <-notifications.sent:
+		if !strings.Contains(notification, *yielded.ProcessID) {
+			t.Fatalf("resumed notification = %q", notification)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("resumed notification was not delivered")
 	}
 }
 

@@ -9,20 +9,20 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/monitor"
 )
 
-type recordingProcessMonitor struct {
+type recordingAgentMonitor struct {
 	request monitor.Request
 	err     error
 }
 
-func (m *recordingProcessMonitor) Start(request monitor.Request) error {
+func (m *recordingAgentMonitor) Start(request monitor.Request) error {
 	m.request = request
 	return m.err
 }
 
 func TestMonitorToolPlansAndStartsBackgroundMonitor(t *testing.T) {
-	monitor := &recordingProcessMonitor{}
+	monitor := &recordingAgentMonitor{}
 	item := NewMonitorTool(monitor)
-	raw := json.RawMessage(`{"task_id":"proc_test","timeout_ms":1500}`)
+	raw := json.RawMessage(`{"task_id":"agent_test","timeout_ms":1500}`)
 	plan, err := item.Plan(context.Background(), raw, CallContext{SessionID: "caller"})
 	if err != nil {
 		t.Fatal(err)
@@ -34,24 +34,24 @@ func TestMonitorToolPlansAndStartsBackgroundMonitor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if monitor.request.SessionID != "caller" || monitor.request.CallerTask != "task_main" || monitor.request.ToolCallID != "call_monitor" || monitor.request.TaskID != "proc_test" || monitor.request.Timeout.Milliseconds() != 1500 {
+	if monitor.request.SessionID != "caller" || monitor.request.CallerTask != "task_main" || monitor.request.ToolCallID != "call_monitor" || monitor.request.TaskID != "agent_test" || monitor.request.Timeout.Milliseconds() != 1500 {
 		t.Fatalf("monitor request = %#v", monitor.request)
 	}
-	if !strings.Contains(result.Text, "proc_test") || !strings.Contains(result.Text, "1500 ms") {
+	if !strings.Contains(result.Text, "agent_test") || !strings.Contains(result.Text, "1500 ms") {
 		t.Fatalf("result = %q", result.Text)
 	}
-	if described, err := item.DescribeRequest(raw); err != nil || described != "Monitor task proc_test" {
+	if described, err := item.DescribeRequest(raw); err != nil || described != "Monitor task agent_test" {
 		t.Fatalf("description = %q, %v", described, err)
 	}
 	description := strings.ToLower(item.Description())
 	schema := strings.ToLower(string(item.JSONSchema()))
-	if !strings.Contains(description, "process") || !strings.Contains(description, "session") || !strings.Contains(schema, "process") || !strings.Contains(schema, "session") {
+	if strings.Contains(description, "process") || strings.Contains(schema, "process") || !strings.Contains(description, "child agent") || !strings.Contains(schema, "agent task") {
 		t.Fatalf("tool contract = %q, %s", item.Description(), item.JSONSchema())
 	}
 }
 
 func TestMonitorToolRejectsInvalidRequests(t *testing.T) {
-	item := NewMonitorTool(&recordingProcessMonitor{})
+	item := NewMonitorTool(&recordingAgentMonitor{})
 	tests := []struct {
 		name string
 		raw  string
