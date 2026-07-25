@@ -40,10 +40,10 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profile.SandboxRules) != 2 || profile.SandboxRules[0] != baseRule || profile.SandboxRules[1].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt, "This mode is read-only except for the designated plan file.") {
+	if len(profile.SandboxRules) != 1 || profile.SandboxRules[0] != baseRule || len(profile.SecurityCapabilities) != 1 || profile.SecurityCapabilities[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt, "This mode is read-only except for the designated plan file.") {
 		t.Fatalf("plan profile = %#v", profile)
 	}
-	path := profile.SandboxRules[1].Path
+	path := profile.SecurityCapabilities[0].Path
 	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
 		t.Fatalf("initial plan artifact = %#v, %v", info, err)
 	}
@@ -58,8 +58,8 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(revised.SandboxRules) != 2 || revised.SandboxRules[0] != baseRule || revised.SandboxRules[1] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
-		t.Fatalf("revised sandbox rules = %#v, want base rule then allow_write %q", revised.SandboxRules, path)
+	if len(revised.SandboxRules) != 1 || revised.SandboxRules[0] != baseRule || len(revised.SecurityCapabilities) != 1 || revised.SecurityCapabilities[0] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
+		t.Fatalf("revised security layers = base %#v, capabilities %#v", revised.SandboxRules, revised.SecurityCapabilities)
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() != int64(len(existingPlan)) || info.Mode().Perm() != 0o600 {
 		t.Fatalf("revised plan artifact = %#v, %v", info, err)

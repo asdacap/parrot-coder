@@ -144,7 +144,7 @@ func (m *planMode) PrepareTurn(sessionID string) (agent.Profile, error) {
 		return agent.Profile{}, fmt.Errorf("mode: make plan file writable: %w", err)
 	}
 	profile := m.profile
-	profile.SandboxRules = append(append([]security.Rule(nil), profile.SandboxRules...), security.Rule{Path: path, Action: security.ActionAllowWrite})
+	profile.SecurityCapabilities = append(append([]security.Rule(nil), profile.SecurityCapabilities...), security.Rule{Path: path, Action: security.ActionAllowWrite})
 	profile.Prompt += "\n\nWrite the complete implementation plan as Markdown to this exact file: " + path + ". Do not include the plan in your assistant response. Finish only after writing the file."
 	return profile, nil
 }

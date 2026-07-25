@@ -1024,30 +1024,24 @@ func TestRunnerCancellationDuringProviderStreamDropsUnexecutedToolCalls(t *testi
 
 type preparedProfileResolver struct{ base Profile }
 
-func (preparedProfileResolver) GetProfile(string) (Profile, error) {
+func (*preparedProfileResolver) GetProfile(string) (Profile, error) {
 	return Profile{}, errors.New("GetProfile called before PrepareTurn")
 }
-func (r preparedProfileResolver) PrepareTurn(string, string) (Profile, error) {
+func (r *preparedProfileResolver) PrepareTurn(string, string) (Profile, error) {
 	profile := r.base
-	profile.SandboxRules = []security.Rule{{Path: "/tmp/plan.md", Action: security.ActionAllowWrite}}
+	profile.SecurityCapabilities = []security.Rule{{Path: "/tmp/plan.md", Action: security.ActionAllowWrite}}
 	return profile, nil
 }
 
 type profileCaptureTool struct {
 	fakeTool
-	profilePaths []string
-	callPaths    []string
+	paths []string
 }
 
 func (t *profileCaptureTool) Execute(_ context.Context, _ tool.Plan, call tool.CallContext) (tool.Result, error) {
 	for _, rule := range call.SecurityProfile.Rules() {
 		if rule.Action == security.ActionAllowWrite {
-			t.profilePaths = append(t.profilePaths, rule.Path)
-		}
-	}
-	for _, rule := range call.SandboxRules {
-		if rule.Action == security.ActionAllowWrite {
-			t.callPaths = append(t.callPaths, rule.Path)
+			t.paths = append(t.paths, rule.Path)
 		}
 	}
 	return tool.Result{Text: "ok", ModelText: "ok"}, nil
@@ -1065,16 +1059,17 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	}}
 	base := Profile{ID: "plan", Prompt: "plan", ReadOnly: true, MaxTurns: 10}
 	h := newRunnerHarness(t, fake, []Profile{base}, &fakeTool{id: "status"}, capture)
-	h.runner.config.Profiles = preparedProfileResolver{base: base}
+	resolver := &preparedProfileResolver{base: base}
+	h.runner.config.Profiles = resolver
 	h.admit(t, "user", "plan", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(capture.profilePaths) != 1 || capture.profilePaths[0] != "/tmp/plan.md" {
-		t.Fatalf("profile allow_write rules = %#v", capture.profilePaths)
+	if len(capture.paths) != 2 || capture.paths[0] != "/tmp/plan.md" || !strings.HasSuffix(capture.paths[1], "/session/"+h.sessionID+"/scratch") {
+		t.Fatalf("session profile allow_write rules = %#v", capture.paths)
 	}
-	if len(capture.callPaths) != 1 || !strings.HasSuffix(capture.callPaths[0], "/session/"+h.sessionID+"/scratch") {
-		t.Fatalf("call-scoped allow_write rules = %#v", capture.callPaths)
+	if len(resolver.base.SandboxRules) != 0 || len(resolver.base.SecurityCapabilities) != 0 {
+		t.Fatalf("reusable profile security layers = %#v, %#v", resolver.base.SandboxRules, resolver.base.SecurityCapabilities)
 	}
 }
 

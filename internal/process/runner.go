@@ -96,7 +96,6 @@ type Request struct {
 	Output          io.Writer         `json:"-"`
 	SessionID       string            `json:"-"`
 	SecurityProfile security.SecurityProfile
-	SandboxRules    []security.Rule
 }
 
 type Result struct {
@@ -418,7 +417,7 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		}
 		defer releaseTemporaryDirectory()
 		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
-		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SandboxRules, request.SessionID, resolved)
+		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved)
 		if buildErr != nil {
 			return fail(buildErr)
 		}
@@ -626,17 +625,21 @@ func unsafeEnvironmentName(name string) bool {
 
 // buildProfile constructs a concrete security.SecurityProfile for a sandboxed
 // command by combining the request's profile with session-enriched rules.
-func (r *Runner) buildProfile(profile security.SecurityProfile, callRules []security.Rule, sessionID, cwd string) (security.SecurityProfile, error) {
+func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd string) (security.SecurityProfile, error) {
 	workspaceRoot := r.config.Workspace.Root()
 
-	var profileRules []security.Rule
+	var profileRules, capabilityRules []security.Rule
 	var readOnly bool
 	if profile != nil {
 		profileRules = profile.Rules()
 		readOnly = profile.IsReadOnly()
+		if layered, ok := profile.(security.LayeredSecurityProfile); ok {
+			profileRules = layered.BaseRules()
+			capabilityRules = layered.CapabilityRules()
+		}
 	}
 
-	rules := make([]security.Rule, 0, len(profileRules)+len(r.config.SandboxRules)+len(callRules)+8)
+	rules := make([]security.Rule, 0, len(profileRules)+len(capabilityRules)+len(r.config.SandboxRules)+8)
 	if !readOnly {
 		writePaths := []string{workspaceRoot}
 		granted, err := r.writableForSession(sessionID)
@@ -652,22 +655,20 @@ func (r *Runner) buildProfile(profile security.SecurityProfile, callRules []secu
 		}
 	}
 	rules = append(rules, profileRules...)
+	configuredRules := r.config.SandboxRules
+	if readOnly {
+		configuredRules = rulesForReadOnlyProfile(configuredRules, allowWriteRulePaths(capabilityRules))
+	} else {
+		configuredRules = rulesWithoutWriteRestrictionsOverlapping(configuredRules, allowWriteRulePaths(capabilityRules))
+	}
+	// Session-added capabilities override user-configured restrictions, while
+	// reusable profile rules retain their normal precedence and runner-owned
+	// protections remain authoritative.
+	rules = append(rules, configuredRules...)
+	rules = append(rules, capabilityRules...)
 	for _, path := range protectedWorkspacePaths(workspaceRoot, cwd) {
 		rules = append(rules, security.Rule{Path: path, Action: security.ActionDenyWrite})
 	}
-
-	configuredRules := r.config.SandboxRules
-	if readOnly {
-		writeRules := make([]security.Rule, 0, len(profileRules)+len(callRules))
-		writeRules = append(writeRules, profileRules...)
-		writeRules = append(writeRules, callRules...)
-		configuredRules = rulesForReadOnlyProfile(configuredRules, allowWriteRulePaths(writeRules))
-	}
-	rules = append(rules, configuredRules...)
-	if len(callRules) > 0 {
-		rules = rulesWithoutWriteRestrictionsOverlapping(rules, allowWriteRulePaths(callRules))
-	}
-	rules = append(rules, callRules...)
 	return &sandboxProfile{readOnly: readOnly, rules: rules}, nil
 }
 
@@ -682,9 +683,8 @@ func allowWriteRulePaths(rules []security.Rule) []string {
 }
 
 // rulesForReadOnlyProfile keeps configured rules from widening a read-only
-// profile or masking one of its deliberately writable paths. Other read
-// restrictions still apply, and writable profiles retain the configured rule
-// ordering unchanged.
+// profile or masking one of its session-added writable capabilities. Reusable
+// profile rules remain subordinate to configured restrictions.
 func rulesForReadOnlyProfile(rules []security.Rule, writePaths []string) []security.Rule {
 	filtered := make([]security.Rule, 0, len(rules))
 	for _, rule := range rules {

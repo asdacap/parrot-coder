@@ -43,6 +43,16 @@ type SecurityProfile interface {
 	Rules() []Rule
 }
 
+// LayeredSecurityProfile separates reusable policy rules from session-added
+// capabilities. Rules still returns both layers so every tool observes the
+// complete session policy; process sandboxes use the layers to preserve their
+// distinct precedence.
+type LayeredSecurityProfile interface {
+	SecurityProfile
+	BaseRules() []Rule
+	CapabilityRules() []Rule
+}
+
 // CanWrite reports whether profile permits writing path. A writable profile
 // permits writes by default, while a read-only profile requires a matching
 // allow_write rule. Matching write rules are applied in order.

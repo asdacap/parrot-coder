@@ -852,13 +852,20 @@ func (s *recordingRulesSandbox) command(_ string, _ string, _ string, profile se
 func (*recordingRulesSandbox) temporaryDirectory(path string) string { return path }
 
 type testSecurityProfile struct {
-	readOnly  bool
-	writePath string
+	readOnly     bool
+	rules        []security.Rule
+	capabilities []security.Rule
 }
 
 func (p testSecurityProfile) IsReadOnly() bool { return p.readOnly }
 func (p testSecurityProfile) Rules() []security.Rule {
-	return []security.Rule{{Path: p.writePath, Action: security.ActionAllowWrite}}
+	return append(p.BaseRules(), p.capabilities...)
+}
+func (p testSecurityProfile) BaseRules() []security.Rule {
+	return append([]security.Rule(nil), p.rules...)
+}
+func (p testSecurityProfile) CapabilityRules() []security.Rule {
+	return append([]security.Rule(nil), p.capabilities...)
 }
 
 func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.T) {
@@ -886,24 +893,36 @@ func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.
 		want    []security.Rule
 	}{
 		{
-			name:    "read-only",
-			profile: testSecurityProfile{readOnly: true, writePath: artifact},
+			name:    "read-only reusable rule remains subordinate",
+			profile: testSecurityProfile{readOnly: true, rules: []security.Rule{{Path: artifact, Action: security.ActionAllowWrite}}},
 			want: []security.Rule{
 				{Path: artifact, Action: security.ActionAllowWrite},
+				rules[1],
 				rules[2],
 			},
 		},
 		{
-			name:    "writable",
-			profile: testSecurityProfile{writePath: artifact},
-			want: append([]security.Rule{
+			name:    "read-only session capability overrides restriction",
+			profile: testSecurityProfile{readOnly: true, capabilities: []security.Rule{{Path: artifact, Action: security.ActionAllowWrite}}},
+			want: []security.Rule{
+				rules[2],
+				{Path: artifact, Action: security.ActionAllowWrite},
+			},
+		},
+		{
+			name:    "writable reusable rule remains subordinate",
+			profile: testSecurityProfile{rules: []security.Rule{{Path: artifact, Action: security.ActionAllowWrite}}},
+			want: []security.Rule{
 				{Path: root, Action: security.ActionAllowWrite},
 				{Path: artifact, Action: security.ActionAllowWrite},
-			}, rules...),
+				rules[0],
+				rules[1],
+				rules[2],
+			},
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			profile, err := runner.buildProfile(test.profile, nil, test.name, root)
+			profile, err := runner.buildProfile(test.profile, test.name, root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -914,13 +933,17 @@ func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.
 	}
 }
 
-func TestBuildProfileAppendsCallRulesAfterConfiguredRestrictions(t *testing.T) {
+func TestBuildProfileAppendsSessionProfileRulesAfterConfiguredRestrictions(t *testing.T) {
 	root := t.TempDir()
 	ws, err := workspace.New(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	scratch := filepath.Join(t.TempDir(), "scratch")
+	protected := filepath.Join(root, "parrot.yaml")
+	if err := os.WriteFile(protected, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
 	runner, err := NewRunner(Config{
 		Workspace:    ws,
 		OutputStore:  &memoryOutputStore{},
@@ -929,18 +952,21 @@ func TestBuildProfileAppendsCallRulesAfterConfiguredRestrictions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	callRules := []security.Rule{{Path: scratch, Action: security.ActionAllowWrite}}
-	built, err := runner.buildProfile(nil, callRules, "session", root)
+	profile := testSecurityProfile{
+		rules:        []security.Rule{{Path: root, Action: security.ActionAllowWrite}},
+		capabilities: []security.Rule{{Path: scratch, Action: security.ActionAllowWrite}},
+	}
+	built, err := runner.buildProfile(profile, "session", root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rules := built.Rules()
-	if got := rules[len(rules)-1]; got != (security.Rule{Path: scratch, Action: security.ActionAllowWrite}) {
-		t.Fatalf("last rule = %#v, want call-scoped scratch capability", got)
+	if got := rules[len(rules)-1]; got != (security.Rule{Path: protected, Action: security.ActionDenyWrite}) {
+		t.Fatalf("last rule = %#v, want runner-owned protected path restriction", got)
 	}
 	for _, rule := range rules[:len(rules)-1] {
 		if rule.Action == security.ActionDenyWrite && overlapsAnyPath(rule.Path, []string{scratch}) {
-			t.Fatalf("conflicting rule retained before call-scoped capability: %#v", rule)
+			t.Fatalf("conflicting configured rule retained before session capability: %#v", rule)
 		}
 	}
 }

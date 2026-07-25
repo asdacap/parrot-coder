@@ -124,13 +124,43 @@ type AgentSessionConfig struct {
 }
 
 type agentSession struct {
-	dto       session.AgentSessionDto
-	parent    AgentSession
-	config    AgentSessionConfig
-	mu        sync.Mutex
-	drain     *drainState
-	observers []LifecycleObserver
-	execute   func(context.Context) error
+	dto             session.AgentSessionDto
+	parent          AgentSession
+	config          AgentSessionConfig
+	securityProfile *agentSessionSecurityProfile
+	mu              sync.Mutex
+	drain           *drainState
+	observers       []LifecycleObserver
+	execute         func(context.Context) error
+}
+
+type agentSessionSecurityProfile struct {
+	readOnly     bool
+	baseRules    []security.Rule
+	capabilities []security.Rule
+}
+
+func newAgentSessionSecurityProfile(profile security.SecurityProfile) *agentSessionSecurityProfile {
+	session := &agentSessionSecurityProfile{readOnly: profile.IsReadOnly(), baseRules: append([]security.Rule(nil), profile.Rules()...)}
+	if layered, ok := profile.(security.LayeredSecurityProfile); ok {
+		session.baseRules = layered.BaseRules()
+		session.capabilities = layered.CapabilityRules()
+	}
+	return session
+}
+
+func (p *agentSessionSecurityProfile) IsReadOnly() bool { return p.readOnly }
+func (p *agentSessionSecurityProfile) Rules() []security.Rule {
+	return append(p.BaseRules(), p.capabilities...)
+}
+func (p *agentSessionSecurityProfile) BaseRules() []security.Rule {
+	return append([]security.Rule(nil), p.baseRules...)
+}
+func (p *agentSessionSecurityProfile) CapabilityRules() []security.Rule {
+	return append([]security.Rule(nil), p.capabilities...)
+}
+func (p *agentSessionSecurityProfile) AddCapability(rule security.Rule) {
+	p.capabilities = append(p.capabilities, rule)
 }
 
 func validateAgentSessionConfig(config *AgentSessionConfig) error {
@@ -221,6 +251,8 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
+			r.securityProfile = newAgentSessionSecurityProfile(profile.GetSecurityProfile())
+			r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
 		}
 		providerClient, model, err := r.config.Providers.Resolve(selected.Provider, selected.Model)
 		if err != nil {
@@ -355,7 +387,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if turn >= profile.MaxTurns {
 				return errors.New("agent: provider returned tools after max-turn tool omission")
 			}
-			if err := r.executeTools(ctx, selected, profile, snapshot, calls, scratchPath); err != nil {
+			if err := r.executeTools(ctx, selected, profile, snapshot, calls); err != nil {
 				return err
 			}
 			if r.config.Goals != nil {
@@ -795,7 +827,7 @@ func executeToolCall(ctx context.Context, executor tool.Executor, call completed
 	return executor.Execute(ctx, call.call.Name, json.RawMessage(call.call.Input), callContext)
 }
 
-func (r *agentSession) executeTools(ctx context.Context, selected session.AgentSessionDto, profile Profile, snapshot tool.Snapshot, calls []completedCall, scratchPath string) error {
+func (r *agentSession) executeTools(ctx context.Context, selected session.AgentSessionDto, profile Profile, snapshot tool.Snapshot, calls []completedCall) error {
 	executor := r.config.ToolExecutor(snapshot)
 	statusQuery := r.statusQuery(ctx, selected, profile)
 	sem := make(chan struct{}, r.config.MaxConcurrentTools)
@@ -829,7 +861,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 			if r.config.TaskIDFor != nil {
 				taskID = r.config.TaskIDFor(r.dto.ID)
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), SandboxRules: []security.Rule{{Path: scratchPath, Action: security.ActionAllowWrite}}, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile)}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile)}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

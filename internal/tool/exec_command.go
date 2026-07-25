@@ -176,7 +176,6 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 		MaxOutputTokens: input.MaxOutputTokens, TTY: input.TTY, Output: call.Output,
 		Unrestricted:    input.SandboxPermissions == "disable_sandbox",
 		SecurityProfile: call.SecurityProfile,
-		SandboxRules:    call.SandboxRules,
 	})
 	if err != nil {
 		return Result{}, err
