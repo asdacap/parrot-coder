@@ -915,7 +915,7 @@ func dividerStatusBar(left, center, right string, columns int) string {
 }
 
 func pendingPreview(value string, columns int) string {
-	const prefix = "$ "
+	const prefix = UserPromptIcon + " "
 	const suffix = "  (○ pending)"
 	available := columns - displayWidth(prefix) - displayWidth(suffix)
 	if available <= 0 {
@@ -1620,13 +1620,13 @@ func (r *LiveRenderer) decorateDefault(row string, base ansiStyle) string {
 	switch {
 	case hasSpinnerPrefix(row):
 		spinner, rest := firstRune(row)
-		if strings.HasPrefix(rest, " $ ") {
-			return color("36", spinner) + " " + color("36", "$") + rest[2:]
+		if strings.HasPrefix(rest, " "+UserPromptIcon+" ") {
+			return color("36", spinner) + " " + color("36", UserPromptIcon) + rest[len(" "+UserPromptIcon):]
 		}
 		return color("36", spinner) + rest
-	case strings.HasPrefix(row, "$ "):
-		return color("36", "$") + row[1:]
-	case strings.HasPrefix(row, "● ") || strings.HasPrefix(row, "- "):
+	case strings.HasPrefix(row, UserPromptIcon+" "):
+		return color("36", UserPromptIcon) + row[len(UserPromptIcon):]
+	case strings.HasPrefix(row, AssistantMessageIcon+" ") || strings.HasPrefix(row, "- "):
 		marker, rest := firstRune(row)
 		return color("32", marker) + rest
 	case strings.HasPrefix(row, "✓ "):
@@ -1709,14 +1709,14 @@ func semanticTextSpans(row string) []textSpan {
 		_, rest := firstRune(row)
 		spinnerEnd := len(row) - len(rest)
 		spans := span(spinnerEnd, cyan)
-		if strings.HasPrefix(rest, " $ ") {
+		if strings.HasPrefix(rest, " "+UserPromptIcon+" ") {
 			start := spinnerEnd + len(" ")
-			spans = append(spans, textSpan{start: start, end: start + len("$"), style: cyan})
+			spans = append(spans, textSpan{start: start, end: start + len(UserPromptIcon), style: cyan})
 		}
 		return spans
-	case strings.HasPrefix(row, "$ "):
-		return span(len("$"), cyan)
-	case strings.HasPrefix(row, "● ") || strings.HasPrefix(row, "- "):
+	case strings.HasPrefix(row, UserPromptIcon+" "):
+		return span(len(UserPromptIcon), cyan)
+	case strings.HasPrefix(row, AssistantMessageIcon+" ") || strings.HasPrefix(row, "- "):
 		_, rest := firstRune(row)
 		return span(len(row)-len(rest), ansiStyle{color: "32"})
 	case strings.HasPrefix(row, "✓ "):
@@ -1969,7 +1969,7 @@ func repeatedStyle(style TextStyle, count int) []TextStyle {
 
 func isAssistantPrefix(prefix string) bool {
 	prefix = Sanitize(prefix)
-	return prefix == "● " || prefix == "- "
+	return prefix == AssistantMessageIcon+" " || prefix == "- "
 }
 
 func layoutText(text string, cursor, columns int) ([]string, int, int) {

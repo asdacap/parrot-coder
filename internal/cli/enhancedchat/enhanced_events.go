@@ -569,7 +569,7 @@ func (r *enhancedChatRuntime) settleIdle() error {
 			return errors.New("turn completion dialog handler is required")
 		}
 		if dialog.Markdown != "" {
-			if err := r.shell.renderer.CommitMessage("● ", dialog.Markdown, false); err != nil {
+			if err := r.shell.renderer.CommitMessage(chatview.AssistantMessageIcon+" ", dialog.Markdown, false); err != nil {
 				return err
 			}
 		}
@@ -641,9 +641,9 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 
 func (r *enhancedChatRuntime) commitAssistantContent(item v1.Message) error {
 	if item.ID != r.streamMessageID {
-		return r.shell.renderer.CommitMessage("● ", item.Content, false)
+		return r.shell.renderer.CommitMessage(chatview.AssistantMessageIcon+" ", item.Content, false)
 	}
-	err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: "● ", Text: item.Content}, false)
+	err := r.shell.renderer.CommitStream(terminal.StreamMessage{ID: item.ID, Prefix: chatview.AssistantMessageIcon + " ", Text: item.Content}, false)
 	if terminal.RenderErrorClass(err) == "stream_text_changed" {
 		// Some live text may already be permanent terminal scrollback and cannot
 		// be replaced. Close the stream with the text the user has seen instead

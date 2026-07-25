@@ -143,11 +143,11 @@ func formatModelineActivity(item enhancedActivityItem, now time.Time) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
+	frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
 	if item.status == "thinking" {
-		return fmt.Sprintf("%s Thinking…%s · %.1fs", spinnerFrames[frame], formatActivityUsage(item), elapsed.Seconds())
+		return fmt.Sprintf("%s Thinking…%s · %.1fs", chatview.SpinnerFrames[frame], formatActivityUsage(item), elapsed.Seconds())
 	}
-	return fmt.Sprintf("%s Working: %s%s · %.1fs", spinnerFrames[frame], item.label, formatActivityUsage(item), elapsed.Seconds())
+	return fmt.Sprintf("%s Working: %s%s · %.1fs", chatview.SpinnerFrames[frame], item.label, formatActivityUsage(item), elapsed.Seconds())
 }
 
 func (r *enhancedChatRuntime) isModelineActivity(item enhancedActivityItem) bool {
@@ -165,8 +165,8 @@ func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns i
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-	header := spinnerFrames[frame] + " Thinking:"
+	frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
+	header := chatview.SpinnerFrames[frame] + " Thinking:"
 
 	lines := strings.Split(item.label, "\n")
 	nonEmpty := make([]string, 0, 3)
@@ -198,8 +198,8 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 			if elapsed < 0 {
 				elapsed = 0
 			}
-			frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-			return strings.Replace(item.rendered, spinnerFrames[0], spinnerFrames[frame], 1)
+			frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
+			return strings.Replace(item.rendered, chatview.SpinnerFrames[0], chatview.SpinnerFrames[frame], 1)
 		}
 		return item.rendered
 	}
@@ -297,19 +297,19 @@ func formatCost(cost float64) string {
 func activityTitle(status string, elapsed time.Duration) string {
 	switch status {
 	case "thinking":
-		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-		return spinnerFrames[frame] + " Thought"
+		frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
+		return chatview.SpinnerFrames[frame] + " Thought"
 	case "pending":
-		return "○ Queued tool"
+		return chatview.PendingIcon + " Queued tool"
 	case "running":
-		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-		return spinnerFrames[frame] + " Working"
+		frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
+		return chatview.SpinnerFrames[frame] + " Working"
 	case "success":
-		return "✓"
+		return chatview.SuccessIcon
 	case "failure":
-		return "✗"
+		return chatview.FailureIcon
 	case "interrupted":
-		return "■ Interrupted"
+		return chatview.InterruptedIcon + " Interrupted"
 	default:
 		return "Status"
 	}
@@ -378,8 +378,9 @@ func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) 
 }
 
 // finishReasoningSummaryPart commits a provider-finalized summary immediately.
-// Another part merely receiving a delta is not enough to produce a checkmark;
-// explicit completion (or the later answer/assistant boundary fallback) is.
+// Another part merely receiving a delta is not enough to produce a finalized
+// marker; explicit completion (or the later answer/assistant boundary fallback)
+// is.
 func (r *enhancedChatRuntime) finishReasoningSummaryPart(messageID, partID string) error {
 	if messageID == "" {
 		messageID = "assistant"
@@ -401,7 +402,7 @@ func (r *enhancedChatRuntime) finishReasoningSummaryPart(messageID, partID strin
 			return nil
 		}
 		if singleLineReasoningSummary(item.label) != "" {
-			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
+			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: chatview.FinalizedReasoningSummaryIcon + " ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
 				return err
 			}
 			r.borderCommitted = false
@@ -602,7 +603,7 @@ func (r *enhancedChatRuntime) finishAssistantActivity(id string, noContent bool)
 		if r.shouldFlushActivityItem(r.activity[i], noContent) && r.shell != nil && r.shell.renderer != nil {
 			var err error
 			if r.activity[i].reasoningSummary {
-				err = r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: r.activity[i].label, Style: r.activity[i].style, Markdown: true})
+				err = r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: chatview.FinalizedReasoningSummaryIcon + " ", Text: r.activity[i].label, Style: r.activity[i].style, Markdown: true})
 			} else {
 				err = r.shell.renderer.Commit(formatActivity(r.activity[i], time.Now()))
 			}
@@ -745,7 +746,7 @@ func (r *enhancedChatRuntime) flushReasoningBeforeAnswer(messageID string) error
 			item.status = "success"
 			item.terminal = true
 			item.ended = now
-			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
+			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: chatview.FinalizedReasoningSummaryIcon + " ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
 				return err
 			}
 			r.borderCommitted = false

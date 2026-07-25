@@ -316,15 +316,15 @@ func renderTodoActivityItems(items []todoActivityItem) string {
 func todoActivityMarker(status string) string {
 	switch status {
 	case "pending":
-		return "○"
+		return TodoPendingIcon
 	case "in_progress":
-		return "◐"
+		return TodoInProgressIcon
 	case "completed":
-		return "✓"
+		return TodoCompletedIcon
 	case "cancelled":
-		return "■"
+		return TodoCancelledIcon
 	default:
-		return "•"
+		return TodoUnknownStatusIcon
 	}
 }
 
@@ -723,7 +723,7 @@ func EventLine(indent int, agent, event string) string {
 	}
 	icon, event := splitEventIcon(event)
 	if icon == "" {
-		icon = "•"
+		icon = ActivityIcon
 	}
 	indentation := strings.Repeat("  ", indent)
 	agent = strings.TrimSpace(agent)
@@ -754,7 +754,7 @@ func prefixTaskText(prefix, text string) string {
 
 func splitEventIcon(event string) (string, string) {
 	trimmed := strings.TrimLeft(event, " ")
-	icons := append([]string{"•", "○", "◌", "◐", "✓", "✗", "■", "↻"}, SpinnerFrames...)
+	icons := append([]string{ActivityIcon, PendingIcon, "◌", TodoInProgressIcon, SuccessIcon, FailureIcon, InterruptedIcon, StatusNoticeIcon, FinalizedReasoningSummaryIcon, CompletedReasoningIcon}, SpinnerFrames...)
 	for _, icon := range icons {
 		if rest, ok := strings.CutPrefix(trimmed, icon+" "); ok {
 			return icon, rest
@@ -1011,9 +1011,9 @@ func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 			if !node.finished || node.lifecycleFlushed || children != 0 {
 				continue
 			}
-			icon, body, style := "✓", "completed", terminal.TextStyleMuted
+			icon, body, style := SuccessIcon, "completed", terminal.TextStyleMuted
 			if node.status != "" && node.status != "succeeded" {
-				icon, body, style = "✗", node.status, terminal.TextStyleDefault
+				icon, body, style = FailureIcon, node.status, terminal.TextStyleDefault
 				if node.error != "" {
 					body += ": " + cleanActivityDetail(node.error)
 				}
@@ -1040,9 +1040,9 @@ func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 		terminalEvent := node.progressDone && children == 0
 		icon := SpinnerFrames[0]
 		if terminalEvent {
-			icon = "✓"
+			icon = SuccessIcon
 			if node.progress.Status != "" && node.progress.Status != "succeeded" {
-				icon = "✗"
+				icon = FailureIcon
 				if node.error != "" {
 					body += ": " + cleanActivityDetail(node.error)
 				}
@@ -1128,7 +1128,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			if strings.TrimSpace(state.text.String()) == "" {
 				return nil, nil
 			}
-			line := t.eventLine(node, "○ response: "+state.text.String())
+			line := t.eventLine(node, PendingIcon+" response: "+state.text.String())
 			return []TaskReport{{ID: key + ":response", Line: line, Style: terminal.TextStyleMuted}}, nil
 		case "reasoning_summary":
 			if !state.reasoningSummary {
@@ -1147,7 +1147,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			}
 			icon := SpinnerFrames[0]
 			if delta.Done {
-				icon = "✓"
+				icon = FinalizedReasoningSummaryIcon
 			}
 			line := t.eventLine(node, icon+" Thought: "+SingleLineReasoningSummary(state.reasoning.String()))
 			return []TaskReport{{ID: key + ":reasoning", Line: line, Terminal: delta.Done, EmitPlain: delta.Done, Style: terminal.TextStyleMuted}}, nil
@@ -1184,11 +1184,11 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			node.done = make(map[string]bool)
 		}
 		node.done[key] = true
-		status := "○"
+		status := PendingIcon
 		if item.Type == "session.assistant.error" {
-			status = "✗"
+			status = FailureIcon
 		} else if item.Type == "session.assistant.interrupted" {
-			status = "■"
+			status = InterruptedIcon
 		}
 		text := ""
 		if state != nil && strings.TrimSpace(state.text.String()) != "" {
@@ -1209,7 +1209,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 				if state.reasoningSummary {
 					label = "Thought: "
 				}
-				reasoning.Line = t.eventLine(node, "✓ "+label+SingleLineReasoningSummary(state.reasoning.String()))
+				reasoning.Line = t.eventLine(node, CompletedReasoningIcon+" "+label+SingleLineReasoningSummary(state.reasoning.String()))
 				reasoning.EmitPlain = true
 				reasoning.Skip = false
 			}
@@ -1302,7 +1302,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if status.Message != "" {
 			line = status.Message
 		}
-		return []TaskReport{{ID: scope + "status:" + status.MessageID, Line: t.eventLine(node, "↻ "+line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
+		return []TaskReport{{ID: scope + "status:" + status.MessageID, Line: t.eventLine(node, StatusNoticeIcon+" "+line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
 	case "session.context.initialized", "session.context.changed", "session.context.replaced":
 		lines := AgentsLoadedActivities(item)
 		reports := make([]TaskReport, 0, len(lines))

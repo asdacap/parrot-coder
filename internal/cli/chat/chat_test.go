@@ -1011,26 +1011,36 @@ func TestTaskEventWithoutKnownIDReportsUnknownTask(t *testing.T) {
 }
 
 func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T) {
-	tracker := newTaskStreamTracker(chatview.Presentations{})
-	if _, err := tracker.describe(taskStart("task-review", "task_main", "review"), true); err != nil {
-		t.Fatal(err)
-	}
-	for _, delta := range []v1.MessagePartDelta{
-		{MessageID: "child-message", Kind: "text", Delta: "  "},
-		{MessageID: "child-message", Kind: "reasoning", Delta: "Checking the change"},
+	for _, test := range []struct {
+		kind string
+		want string
+	}{
+		{kind: "reasoning", want: "  · [review] Reasoning: Checking the change"},
+		{kind: "reasoning_summary", want: "  · [review] Thought: Checking the change"},
 	} {
-		data, _ := json.Marshal(delta)
-		if _, err := tracker.describe(taskContent("task-review", v1.EventMessagePartDelta, data), true); err != nil {
-			t.Fatal(err)
-		}
-	}
-	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	reports, err := tracker.describe(taskContent("task-review", "session.assistant.complete", complete), true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(reports) != 2 || !reports[0].terminal || reports[0].skip || reports[0].line != "  ✓ [review] Reasoning: Checking the change" || !reports[1].terminal || !reports[1].skip {
-		t.Fatalf("completion reports = %#v", reports)
+		t.Run(test.kind, func(t *testing.T) {
+			tracker := newTaskStreamTracker(chatview.Presentations{})
+			if _, err := tracker.describe(taskStart("task-review", "task_main", "review"), true); err != nil {
+				t.Fatal(err)
+			}
+			for _, delta := range []v1.MessagePartDelta{
+				{MessageID: "child-message", Kind: "text", Delta: "  "},
+				{MessageID: "child-message", Kind: test.kind, Delta: "Checking the change"},
+			} {
+				data, _ := json.Marshal(delta)
+				if _, err := tracker.describe(taskContent("task-review", v1.EventMessagePartDelta, data), true); err != nil {
+					t.Fatal(err)
+				}
+			}
+			complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
+			reports, err := tracker.describe(taskContent("task-review", "session.assistant.complete", complete), true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(reports) != 2 || !reports[0].terminal || reports[0].skip || reports[0].line != test.want || !reports[1].terminal || !reports[1].skip {
+				t.Fatalf("completion reports = %#v", reports)
+			}
+		})
 	}
 }
 
@@ -1058,7 +1068,7 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 		case "reasoning_summary":
 			want := "  ⠋ [explore] Thought: Inspecting the UI"
 			if delta.Done {
-				want = "  ✓ [explore] Thought: Inspecting the UI"
+				want = "  ✦ [explore] Thought: Inspecting the UI"
 			}
 			if len(reports) != 1 || reports[0].line != want || reports[0].terminal != delta.Done {
 				t.Fatalf("reasoning summary reports = %#v, want line %q terminal %t", reports, want, delta.Done)
