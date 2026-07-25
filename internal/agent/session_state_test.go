@@ -8,7 +8,7 @@ import (
 
 func TestSessionStateDirectoriesResolvePrepareAndRejectUnsafeIDs(t *testing.T) {
 	root := t.TempDir()
-	directories, err := NewSessionStateDirectories(root)
+	directories, err := NewUserSessionStateDirectories(root)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -50,7 +50,7 @@ func TestSessionStateDirectoriesResolvePrepareAndRejectUnsafeIDs(t *testing.T) {
 			t.Errorf("Prepare(%q) succeeded", id)
 		}
 	}
-	if _, err := NewSessionStateDirectories("relative"); err == nil {
+	if _, err := NewUserSessionStateDirectories("relative"); err == nil {
 		t.Error("relative state root succeeded")
 	}
 }

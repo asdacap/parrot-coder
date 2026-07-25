@@ -1035,13 +1035,19 @@ func (r preparedProfileResolver) PrepareTurn(string, string) (Profile, error) {
 
 type profileCaptureTool struct {
 	fakeTool
-	paths []string
+	profilePaths []string
+	callPaths    []string
 }
 
 func (t *profileCaptureTool) Execute(_ context.Context, _ tool.Plan, call tool.CallContext) (tool.Result, error) {
 	for _, rule := range call.SecurityProfile.Rules() {
 		if rule.Action == security.ActionAllowWrite {
-			t.paths = append(t.paths, rule.Path)
+			t.profilePaths = append(t.profilePaths, rule.Path)
+		}
+	}
+	for _, rule := range call.SandboxRules {
+		if rule.Action == security.ActionAllowWrite {
+			t.callPaths = append(t.callPaths, rule.Path)
 		}
 	}
 	return tool.Result{Text: "ok", ModelText: "ok"}, nil
@@ -1064,8 +1070,11 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(capture.paths) != 2 || capture.paths[0] != "/tmp/plan.md" || !strings.HasSuffix(capture.paths[1], "/session/"+h.sessionID+"/scratch") {
-		t.Fatalf("continuation allow_write rules = %#v", capture.paths)
+	if len(capture.profilePaths) != 1 || capture.profilePaths[0] != "/tmp/plan.md" {
+		t.Fatalf("profile allow_write rules = %#v", capture.profilePaths)
+	}
+	if len(capture.callPaths) != 1 || !strings.HasSuffix(capture.callPaths[0], "/session/"+h.sessionID+"/scratch") {
+		t.Fatalf("call-scoped allow_write rules = %#v", capture.callPaths)
 	}
 }
 
@@ -1276,9 +1285,9 @@ func toolState(t *testing.T, h *runnerHarness, callID string) (string, string) {
 	return status, result
 }
 
-func testSessionStateDirectories(t *testing.T) SessionStateDirectories {
+func testSessionStateDirectories(t *testing.T) UserSessionStateDirectories {
 	t.Helper()
-	directories, err := NewSessionStateDirectories(t.TempDir())
+	directories, err := NewUserSessionStateDirectories(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}

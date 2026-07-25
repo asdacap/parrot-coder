@@ -513,7 +513,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	result.compactions = compactionRepository
 	reporter := &statusReporter{live: live, started: &sync.Map{}}
 	pathErrorAdvisor := tool.NewPathErrorAdvisor(ws.Root(), tool.NewCommandPathContentSearcher())
-	stateDirectories, err := agent.NewSessionStateDirectories(paths.State)
+	stateDirectories, err := agent.NewUserSessionStateDirectories(paths.State)
 	if err != nil {
 		return nil, fmt.Errorf("app: session state directories: %w", err)
 	}

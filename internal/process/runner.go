@@ -9,7 +9,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -97,6 +96,7 @@ type Request struct {
 	Output          io.Writer         `json:"-"`
 	SessionID       string            `json:"-"`
 	SecurityProfile security.SecurityProfile
+	SandboxRules    []security.Rule
 }
 
 type Result struct {
@@ -418,7 +418,7 @@ func (r *Runner) run(ctx context.Context, request Request, sandboxed bool) (Resu
 		}
 		defer releaseTemporaryDirectory()
 		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
-		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved)
+		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SandboxRules, request.SessionID, resolved)
 		if buildErr != nil {
 			return fail(buildErr)
 		}
@@ -626,25 +626,17 @@ func unsafeEnvironmentName(name string) bool {
 
 // buildProfile constructs a concrete security.SecurityProfile for a sandboxed
 // command by combining the request's profile with session-enriched rules.
-func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd string) (security.SecurityProfile, error) {
+func (r *Runner) buildProfile(profile security.SecurityProfile, callRules []security.Rule, sessionID, cwd string) (security.SecurityProfile, error) {
 	workspaceRoot := r.config.Workspace.Root()
 
-	var profileRules, enforcedRules []security.Rule
+	var profileRules []security.Rule
 	var readOnly bool
 	if profile != nil {
 		profileRules = profile.Rules()
 		readOnly = profile.IsReadOnly()
-		if enforced, ok := profile.(security.EnforcedRulesProfile); ok {
-			enforcedRules = enforced.EnforcedRules()
-			start := len(profileRules) - len(enforcedRules)
-			if start < 0 || !slices.Equal(profileRules[start:], enforcedRules) {
-				return nil, errors.New("process: enforced sandbox rules must be the final profile rules")
-			}
-			profileRules = profileRules[:start]
-		}
 	}
 
-	rules := make([]security.Rule, 0, len(profileRules)+len(r.config.SandboxRules)+len(enforcedRules)+8)
+	rules := make([]security.Rule, 0, len(profileRules)+len(r.config.SandboxRules)+len(callRules)+8)
 	if !readOnly {
 		writePaths := []string{workspaceRoot}
 		granted, err := r.writableForSession(sessionID)
@@ -666,13 +658,16 @@ func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd s
 
 	configuredRules := r.config.SandboxRules
 	if readOnly {
-		configuredRules = rulesForReadOnlyProfile(configuredRules, allowWriteRulePaths(append(profileRules, enforcedRules...)))
+		writeRules := make([]security.Rule, 0, len(profileRules)+len(callRules))
+		writeRules = append(writeRules, profileRules...)
+		writeRules = append(writeRules, callRules...)
+		configuredRules = rulesForReadOnlyProfile(configuredRules, allowWriteRulePaths(writeRules))
 	}
 	rules = append(rules, configuredRules...)
-	if len(enforcedRules) > 0 {
-		rules = rulesWithoutWriteRestrictionsOverlapping(rules, allowWriteRulePaths(enforcedRules))
+	if len(callRules) > 0 {
+		rules = rulesWithoutWriteRestrictionsOverlapping(rules, allowWriteRulePaths(callRules))
 	}
-	rules = append(rules, enforcedRules...)
+	rules = append(rules, callRules...)
 	return &sandboxProfile{readOnly: readOnly, rules: rules}, nil
 }
 

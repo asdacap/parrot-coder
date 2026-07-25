@@ -6,15 +6,14 @@ import (
 )
 
 type Profile struct {
-	ID                   string
-	Prompt               string
-	HardRules            []string
-	MaxTurns             int
-	RecursionLimit       int
-	ReadOnly             bool
-	SandboxRules         []security.Rule
-	EnforcedSandboxRules []security.Rule
-	Status               status.Provider
+	ID             string
+	Prompt         string
+	HardRules      []string
+	MaxTurns       int
+	RecursionLimit int
+	ReadOnly       bool
+	SandboxRules   []security.Rule
+	Status         status.Provider
 }
 
 // IsReadOnly reports whether the profile is read-only.
@@ -24,11 +23,4 @@ func (p Profile) IsReadOnly() bool { return p.ReadOnly }
 func (p Profile) GetSecurityProfile() security.SecurityProfile { return p }
 
 // Rules returns the profile's ordered sandbox rules.
-func (p Profile) Rules() []security.Rule {
-	return append(append([]security.Rule(nil), p.SandboxRules...), p.EnforcedSandboxRules...)
-}
-
-// EnforcedRules returns capability rules that override ambient configuration.
-func (p Profile) EnforcedRules() []security.Rule {
-	return append([]security.Rule(nil), p.EnforcedSandboxRules...)
-}
+func (p Profile) Rules() []security.Rule { return append([]security.Rule(nil), p.SandboxRules...) }

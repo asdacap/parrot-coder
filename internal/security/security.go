@@ -43,13 +43,6 @@ type SecurityProfile interface {
 	Rules() []Rule
 }
 
-// EnforcedRulesProfile exposes capability rules that must take precedence over
-// ambient configured restrictions. EnforcedRules must be the final rules
-// returned by SecurityProfile.Rules.
-type EnforcedRulesProfile interface {
-	EnforcedRules() []Rule
-}
-
 // CanWrite reports whether profile permits writing path. A writable profile
 // permits writes by default, while a read-only profile requires a matching
 // allow_write rule. Matching write rules are applied in order.

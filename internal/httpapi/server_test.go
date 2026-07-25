@@ -338,9 +338,6 @@ type testAgentSession struct {
 func (s testAgentSession) ID() string                 { return s.id }
 func (s testAgentSession) Name() string               { return "" }
 func (s testAgentSession) Parent() agent.AgentSession { return nil }
-func (s testAgentSession) StateDirectory() (agent.SessionStateDirectory, error) {
-	return agent.SessionStateDirectory{}, errors.New("not implemented")
-}
 func (s testAgentSession) Prompt(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")
 }

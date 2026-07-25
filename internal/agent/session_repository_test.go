@@ -75,12 +75,12 @@ type retrySessionStateDirectories struct {
 	removes int
 }
 
-func (*retrySessionStateDirectories) Directory(string) (SessionStateDirectory, error) {
-	return SessionStateDirectory{}, nil
+func (*retrySessionStateDirectories) Directory(string) (UserSessionStateDirectory, error) {
+	return UserSessionStateDirectory{}, nil
 }
 
-func (*retrySessionStateDirectories) Prepare(string) (SessionStateDirectory, error) {
-	return SessionStateDirectory{}, nil
+func (*retrySessionStateDirectories) Prepare(string) (UserSessionStateDirectory, error) {
+	return UserSessionStateDirectory{}, nil
 }
 
 func (d *retrySessionStateDirectories) Remove(string) error {

@@ -15,7 +15,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/amirulashraf/parrot-coder/internal/agent/profiles"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
@@ -904,7 +903,7 @@ func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			profile, err := runner.buildProfile(test.profile, test.name, root)
+			profile, err := runner.buildProfile(test.profile, nil, test.name, root)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -915,7 +914,7 @@ func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.
 	}
 }
 
-func TestBuildProfileKeepsEnforcedCapabilitiesAfterConfiguredRestrictions(t *testing.T) {
+func TestBuildProfileAppendsCallRulesAfterConfiguredRestrictions(t *testing.T) {
 	root := t.TempDir()
 	ws, err := workspace.New(root)
 	if err != nil {
@@ -930,18 +929,18 @@ func TestBuildProfileKeepsEnforcedCapabilitiesAfterConfiguredRestrictions(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	profile := profiles.Profile{EnforcedSandboxRules: []security.Rule{{Path: scratch, Action: security.ActionAllowWrite}}}
-	built, err := runner.buildProfile(profile, "session", root)
+	callRules := []security.Rule{{Path: scratch, Action: security.ActionAllowWrite}}
+	built, err := runner.buildProfile(nil, callRules, "session", root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	rules := built.Rules()
 	if got := rules[len(rules)-1]; got != (security.Rule{Path: scratch, Action: security.ActionAllowWrite}) {
-		t.Fatalf("last rule = %#v, want enforced scratch capability", got)
+		t.Fatalf("last rule = %#v, want call-scoped scratch capability", got)
 	}
 	for _, rule := range rules[:len(rules)-1] {
 		if rule.Action == security.ActionDenyWrite && overlapsAnyPath(rule.Path, []string{scratch}) {
-			t.Fatalf("conflicting rule retained before enforced capability: %#v", rule)
+			t.Fatalf("conflicting rule retained before call-scoped capability: %#v", rule)
 		}
 	}
 }

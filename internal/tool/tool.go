@@ -38,6 +38,7 @@ type CallContext struct {
 	ToolCallID      string
 	Output          io.Writer
 	SecurityProfile security.SecurityProfile
+	SandboxRules    []security.Rule
 	StatusQuery     statusinfo.Query
 	StatusProvider  statusinfo.Provider
 }

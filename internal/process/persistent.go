@@ -50,6 +50,7 @@ type PersistentRequest struct {
 	Output          io.Writer
 	Unrestricted    bool
 	SecurityProfile security.SecurityProfile
+	SandboxRules    []security.Rule
 }
 
 type PersistentWriteRequest struct {
@@ -211,7 +212,7 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 			}
 		}()
 		setEnvironment(environment, "TMPDIR", r.sandbox.temporaryDirectory(temporaryDirectory))
-		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SessionID, resolved)
+		profile, buildErr := r.buildProfile(request.SecurityProfile, request.SandboxRules, request.SessionID, resolved)
 		if buildErr != nil {
 			return PersistentResult{}, buildErr
 		}
