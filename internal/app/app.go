@@ -528,7 +528,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
 	}
-	monitors.SetWaker(userSession)
+	monitors.SetAgentSessions(agentSessionsAdapter{userSession})
 	subagentExecutor.userSession = userSession
 	live.SetSessionHierarchy(userSession)
 	userSession.AddChildCreatedObserver(childSessionObserver{live})
@@ -749,12 +749,18 @@ func (a *App) Close() error {
 	return a.closeErr
 }
 
+type agentSessionsAdapter struct{ sessions *agent.UserSession }
+
+func (a agentSessionsAdapter) Get(sessionID string) monitor.AgentSession {
+	return a.sessions.Get(sessionID)
+}
+
 type compositionBackend struct {
 	*httpapi.DomainBackend
 }
 
 func (b *compositionBackend) Wake(sessionID string) {
-	b.AgentSessions.Wake(sessionID)
+	b.AgentSessions.Get(sessionID).Wake()
 }
 
 type statusReporter struct {
@@ -883,7 +889,7 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		h.userSession.Wake(id)
+		h.userSession.Get(id).Wake()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}

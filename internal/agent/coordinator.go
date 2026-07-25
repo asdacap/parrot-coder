@@ -307,12 +307,6 @@ func (s *UserSession) Lookup(sessionID string) (AgentSession, bool) {
 
 func (s *UserSession) Active() []Active { return s.repository.Active() }
 
-func (s *UserSession) Wake(sessionID string) { s.repository.Wake(sessionID) }
-
-func (s *UserSession) Resume(ctx context.Context, sessionID string) error {
-	return s.repository.Resume(ctx, sessionID)
-}
-
 func (s *UserSession) Interrupt(ctx context.Context, sessionID string) error {
 	return s.repository.Interrupt(ctx, sessionID)
 }
@@ -529,12 +523,6 @@ func (r *agentSessionRepository) Active() []Active {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].SessionID < result[j].SessionID })
 	return result
-}
-
-func (r *agentSessionRepository) Wake(sessionID string) { r.Get(sessionID).Wake() }
-
-func (r *agentSessionRepository) Resume(ctx context.Context, sessionID string) error {
-	return r.Get(sessionID).Resume(ctx)
 }
 
 func (r *agentSessionRepository) Interrupt(ctx context.Context, sessionID string) error {

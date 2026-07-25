@@ -96,9 +96,9 @@ func goalDTO(goal session.Goal) v1.Goal {
 }
 
 type AgentSessionController interface {
+	Get(string) agent.AgentSession
 	Active() []agent.Active
 	Status(string) agent.Status
-	Wake(string)
 	Interrupt(context.Context, string) error
 	Remove(string) error
 }
@@ -346,7 +346,7 @@ func (b *DomainBackend) Wake(id string) {
 	if b.AgentSessions == nil {
 		return
 	}
-	b.AgentSessions.Wake(id)
+	b.AgentSessions.Get(id).Wake()
 	if b.Events != nil {
 		data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 		b.Events.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})
