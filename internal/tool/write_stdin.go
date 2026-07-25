@@ -10,7 +10,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
-const writeStdinSchema = `{"type":"object","properties":{"task_id":{"type":"string","description":"Canonical process ID or friendly name of the running shell task."},"chars":{"type":"string","description":"Bytes to write to stdin. Defaults to empty, which polls without writing."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}},"required":["task_id"],"additionalProperties":false}`
+const writeStdinSchema = `{"type":"object","properties":{"task_id":{"type":"string","description":"Canonical process ID or friendly name of the running shell task."},"chars":{"type":"string","description":"Bytes to write to stdin. Defaults to empty, which polls without writing."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. The result will automatically be sent once done after the yield."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}},"required":["task_id"],"additionalProperties":false}`
 
 type WriteStdinTool struct {
 	BasePresentation
