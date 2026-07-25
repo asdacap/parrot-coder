@@ -485,7 +485,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := session.Selection{Agent: BuildID, Provider: "fake", Model: "model"}
-	createChild := func(parentID, title string) session.Session {
+	createChild := func(parentID, title string) session.UserSession {
 		t.Helper()
 		child, err := h.sessions.CreateSelected(ctx, session.CreateParams{
 			ParentSessionID: parentID,

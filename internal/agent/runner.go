@@ -24,9 +24,9 @@ import (
 )
 
 type SessionRuntime interface {
-	Get(context.Context, string) (session.Session, error)
-	List(context.Context) ([]session.Session, error)
-	CreateSelected(context.Context, session.CreateParams, session.Selection) (session.Session, error)
+	Get(context.Context, string) (session.UserSession, error)
+	List(context.Context) ([]session.UserSession, error)
+	CreateSelected(context.Context, session.CreateParams, session.Selection) (session.UserSession, error)
 	Delete(context.Context, string) error
 	Admit(context.Context, string, session.AdmitParams) (session.Admission, error)
 	ListMessages(context.Context, string) ([]session.Message, error)
@@ -770,7 +770,7 @@ func executeToolCall(ctx context.Context, executor tool.Executor, call completed
 	return executor.Execute(ctx, call.call.Name, json.RawMessage(call.call.Input), callContext)
 }
 
-func (r *agentSession) executeTools(ctx context.Context, selected session.Session, profile Profile, snapshot tool.Snapshot, calls []completedCall) error {
+func (r *agentSession) executeTools(ctx context.Context, selected session.UserSession, profile Profile, snapshot tool.Snapshot, calls []completedCall) error {
 	executor := r.config.ToolExecutor(snapshot)
 	sem := make(chan struct{}, r.config.MaxConcurrentTools)
 	outcomes := make([]toolOutcome, len(calls))

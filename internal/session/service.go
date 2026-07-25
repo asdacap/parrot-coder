@@ -31,7 +31,7 @@ const (
 	DeliveryQueue Delivery = "queue"
 )
 
-type Session struct {
+type UserSession struct {
 	ID              string
 	ParentSessionID string
 	ProjectID       string
@@ -67,7 +67,7 @@ const (
 )
 
 type InteractiveClaim struct {
-	Session     Session
+	Session     UserSession
 	Disposition ClaimDisposition
 }
 
@@ -120,34 +120,34 @@ func NewService(sessions *store.Registry, events *event.Repository) *Service {
 	return &Service{sessions: sessions, events: events, pid: os.Getpid()}
 }
 
-func (s *Service) Create(ctx context.Context, params CreateParams) (Session, error) {
+func (s *Service) Create(ctx context.Context, params CreateParams) (UserSession, error) {
 	return s.create(ctx, params, Selection{})
 }
 
 // CreateSelected persists a new session and its initial execution selection in
 // one SQLite statement, so concurrent readers cannot observe a half-configured
 // session.
-func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selection Selection) (Session, error) {
+func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selection Selection) (UserSession, error) {
 	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
-		return Session{}, ErrSelectionRequired
+		return UserSession{}, ErrSelectionRequired
 	}
 	return s.create(ctx, params, selection)
 }
 
-func (s *Service) create(ctx context.Context, params CreateParams, selection Selection) (Session, error) {
+func (s *Service) create(ctx context.Context, params CreateParams, selection Selection) (UserSession, error) {
 	if err := s.validateParent(params); err != nil {
-		return Session{}, err
+		return UserSession{}, err
 	}
 	sessionID, err := id.New("ses")
 	if err != nil {
-		return Session{}, fmt.Errorf("session: generate ID: %w", err)
+		return UserSession{}, fmt.Errorf("session: generate ID: %w", err)
 	}
 	db, err := s.sessions.Create(ctx, sessionID)
 	if err != nil {
-		return Session{}, err
+		return UserSession{}, err
 	}
 	now := time.Now().UTC()
-	result := Session{
+	result := UserSession{
 		ID: sessionID, ParentSessionID: params.ParentSessionID, ProjectID: params.ProjectID, ProjectRoot: params.ProjectRoot, Title: params.Title,
 		Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: selection.Variant,
 		CreatedAt: now, UpdatedAt: now,
@@ -157,11 +157,11 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 		// A session whose row was never written would be listed from its
 		// directory but fail to open, so remove it rather than leave a shell.
 		_ = s.sessions.Remove(sessionID)
-		return Session{}, err
+		return UserSession{}, err
 	}
 	if err := s.publish(result); err != nil {
 		_ = s.sessions.Remove(sessionID)
-		return Session{}, err
+		return UserSession{}, err
 	}
 	return result, nil
 }
@@ -187,7 +187,7 @@ func (s *Service) validateParent(params CreateParams) error {
 	return nil
 }
 
-func insertSession(ctx context.Context, tx *sql.Tx, item Session) error {
+func insertSession(ctx context.Context, tx *sql.Tx, item UserSession) error {
 	_, err := tx.ExecContext(ctx, `
 		INSERT INTO session(id, parent_session_id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -203,7 +203,7 @@ func insertSession(ctx context.Context, tx *sql.Tx, item Session) error {
 // publish republishes a session's index entry. The database stays the source of
 // truth; the entry exists so another host can list this session without opening
 // a database it cannot lock.
-func (s *Service) publish(item Session) error {
+func (s *Service) publish(item UserSession) error {
 	return store.WriteMeta(s.sessions.State(), store.Meta{
 		ID:              item.ID,
 		ParentSessionID: item.ParentSessionID,
@@ -307,13 +307,13 @@ func (s *Service) claimInteractiveOnce(ctx context.Context, owner InteractiveOwn
 	return InteractiveClaim{Session: item, Disposition: ClaimCreated}, nil
 }
 
-func (s *Service) Get(ctx context.Context, sessionID string) (Session, error) {
+func (s *Service) Get(ctx context.Context, sessionID string) (UserSession, error) {
 	db, err := s.sessions.Session(ctx, sessionID)
 	if errors.Is(err, store.ErrNoSession) {
-		return Session{}, ErrNotFound
+		return UserSession{}, ErrNotFound
 	}
 	if err != nil {
-		return Session{}, err
+		return UserSession{}, err
 	}
 	return scanSession(db.SQL().QueryRowContext(ctx, `
 		SELECT id, parent_session_id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
@@ -324,12 +324,12 @@ func (s *Service) Get(ctx context.Context, sessionID string) (Session, error) {
 // reading published index entries rather than opening each database. Entries are
 // small and few enough that a directory scan is cheaper than the shared table it
 // replaces, which had to be written on every message to stay ordered.
-func (s *Service) List(ctx context.Context) ([]Session, error) {
+func (s *Service) List(ctx context.Context) ([]UserSession, error) {
 	metas, _, err := store.ListMeta(s.sessions.State())
 	if err != nil {
 		return nil, err
 	}
-	result := make([]Session, 0, len(metas))
+	result := make([]UserSession, 0, len(metas))
 	for _, meta := range metas {
 		item, err := sessionFromMeta(meta)
 		if err != nil {
@@ -633,39 +633,39 @@ type rowScanner interface {
 }
 
 // sessionFromMeta builds a session from its published index entry.
-func sessionFromMeta(meta store.Meta) (Session, error) {
+func sessionFromMeta(meta store.Meta) (UserSession, error) {
 	createdAt, err := parseTime(meta.CreatedAt)
 	if err != nil {
-		return Session{}, err
+		return UserSession{}, err
 	}
 	updatedAt, err := parseTime(meta.UpdatedAt)
 	if err != nil {
-		return Session{}, err
+		return UserSession{}, err
 	}
-	return Session{
+	return UserSession{
 		ID: meta.ID, ParentSessionID: meta.ParentSessionID, ProjectID: meta.ProjectID, ProjectRoot: meta.ProjectRoot, Title: meta.Title,
 		Agent: meta.Agent, Provider: meta.Provider, Model: meta.Model, Variant: meta.Variant,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}, nil
 }
 
-func scanSession(row rowScanner) (Session, error) {
-	var item Session
+func scanSession(row rowScanner) (UserSession, error) {
+	var item UserSession
 	var createdAt, updatedAt string
 	if err := row.Scan(&item.ID, &item.ParentSessionID, &item.ProjectID, &item.ProjectRoot, &item.Title, &item.Agent, &item.Provider, &item.Model, &item.Variant, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return Session{}, ErrNotFound
+			return UserSession{}, ErrNotFound
 		}
-		return Session{}, fmt.Errorf("session: scan: %w", err)
+		return UserSession{}, fmt.Errorf("session: scan: %w", err)
 	}
 	var err error
 	item.CreatedAt, err = parseTime(createdAt)
 	if err != nil {
-		return Session{}, err
+		return UserSession{}, err
 	}
 	item.UpdatedAt, err = parseTime(updatedAt)
 	if err != nil {
-		return Session{}, err
+		return UserSession{}, err
 	}
 	return item, nil
 }

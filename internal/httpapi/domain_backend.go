@@ -747,11 +747,11 @@ func replyMatchesChoices(choices []v1.PermissionChoice, reply v1.PermissionReply
 	return false
 }
 
-func sessionDTO(item session.Session) v1.Session {
+func sessionDTO(item session.UserSession) v1.Session {
 	return v1.Session{ID: item.ID, ParentSessionID: item.ParentSessionID, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 }
 
-func selectionDTO(item session.Session) v1.SessionSelection {
+func selectionDTO(item session.UserSession) v1.SessionSelection {
 	return v1.SessionSelection{Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant}
 }
 
