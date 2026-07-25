@@ -31,7 +31,7 @@ type Mode interface {
 	// Dialog for the user to choose, or directly transition without a dialog.
 	// The mode owns this behavior; callers must not branch on the mode's ID.
 	OnTurnComplete() TurnCompleteResult
-	PrepareTurn(string) (agent.Profile, error)
+	PrepareTurn(string) (agent.TurnProfile, error)
 	CompleteTurn(string, string) (TurnCompleteResult, error)
 }
 
@@ -87,10 +87,12 @@ type builtin struct {
 	profile agent.Profile
 }
 
-func (m builtin) ID() string                                { return m.profile.ID }
-func (m builtin) Profile() agent.Profile                    { return m.profile }
-func (builtin) OnTurnComplete() TurnCompleteResult          { return TurnCompleteResult{} }
-func (m builtin) PrepareTurn(string) (agent.Profile, error) { return m.profile, nil }
+func (m builtin) ID() string                       { return m.profile.ID }
+func (m builtin) Profile() agent.Profile           { return m.profile }
+func (builtin) OnTurnComplete() TurnCompleteResult { return TurnCompleteResult{} }
+func (m builtin) PrepareTurn(string) (agent.TurnProfile, error) {
+	return agent.NewTurnProfile(m.profile), nil
+}
 func (builtin) CompleteTurn(string, string) (TurnCompleteResult, error) {
 	return TurnCompleteResult{}, nil
 }
@@ -122,31 +124,30 @@ func planCompletion(markdown string) TurnCompleteResult {
 
 func (m *planMode) OnTurnComplete() TurnCompleteResult { return planCompletion("") }
 
-func (m *planMode) PrepareTurn(sessionID string) (agent.Profile, error) {
+func (m *planMode) PrepareTurn(sessionID string) (agent.TurnProfile, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := os.MkdirAll(m.directory, 0o700); err != nil {
-		return agent.Profile{}, fmt.Errorf("mode: create plan directory: %w", err)
+		return agent.TurnProfile{}, fmt.Errorf("mode: create plan directory: %w", err)
 	}
 	path := m.files[sessionID]
 	if path == "" {
 		file, err := os.CreateTemp(m.directory, "plan-*.md")
 		if err != nil {
-			return agent.Profile{}, fmt.Errorf("mode: create plan file: %w", err)
+			return agent.TurnProfile{}, fmt.Errorf("mode: create plan file: %w", err)
 		}
 		path = file.Name()
 		if err = file.Close(); err != nil {
-			return agent.Profile{}, err
+			return agent.TurnProfile{}, err
 		}
 		m.files[sessionID] = path
 	}
 	if err := os.Chmod(path, 0o600); err != nil {
-		return agent.Profile{}, fmt.Errorf("mode: make plan file writable: %w", err)
+		return agent.TurnProfile{}, fmt.Errorf("mode: make plan file writable: %w", err)
 	}
 	profile := m.profile
-	profile.SecurityCapabilities = append(append([]security.Rule(nil), profile.SecurityCapabilities...), security.Rule{Path: path, Action: security.ActionAllowWrite})
 	profile.Prompt += "\n\nWrite the complete implementation plan as Markdown to this exact file: " + path + ". Do not include the plan in your assistant response. Finish only after writing the file."
-	return profile, nil
+	return agent.NewTurnProfile(profile, security.Rule{Path: path, Action: security.ActionAllowWrite}), nil
 }
 
 func (m *planMode) CompleteTurn(sessionID, _ string) (TurnCompleteResult, error) {
@@ -220,10 +221,10 @@ func (r *Registry) List() []Mode {
 	return result
 }
 
-func (r *Registry) PrepareTurn(id, sessionID string) (agent.Profile, error) {
+func (r *Registry) PrepareTurn(id, sessionID string) (agent.TurnProfile, error) {
 	item, err := r.Get(id)
 	if err != nil {
-		return agent.Profile{}, err
+		return agent.TurnProfile{}, err
 	}
 	return item.PrepareTurn(sessionID)
 }

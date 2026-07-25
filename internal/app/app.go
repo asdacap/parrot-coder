@@ -1377,11 +1377,12 @@ type combinedProfileResolver struct {
 	agents *agent.Registry
 }
 
-func (r combinedProfileResolver) PrepareTurn(id, sessionID string) (agent.Profile, error) {
+func (r combinedProfileResolver) PrepareTurn(id, sessionID string) (agent.TurnProfile, error) {
 	if _, err := r.modes.Get(id); err == nil {
 		return r.modes.PrepareTurn(id, sessionID)
 	}
-	return r.agents.GetProfile(id)
+	profile, err := r.agents.GetProfile(id)
+	return agent.NewTurnProfile(profile), err
 }
 
 func (r combinedProfileResolver) GetProfile(id string) (agent.Profile, error) {

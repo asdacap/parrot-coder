@@ -241,17 +241,20 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			return err
 		}
 		if turn == 0 {
+			var turnProfile TurnProfile
 			if preparer, ok := r.config.Profiles.(interface {
-				PrepareTurn(string, string) (Profile, error)
+				PrepareTurn(string, string) (TurnProfile, error)
 			}); ok {
-				profile, err = preparer.PrepareTurn(selected.Agent, r.dto.ID)
+				turnProfile, err = preparer.PrepareTurn(selected.Agent, r.dto.ID)
 			} else {
 				profile, err = r.config.Profiles.GetProfile(selected.Agent)
+				turnProfile = NewTurnProfile(profile)
 			}
 			if err != nil {
 				return err
 			}
-			r.securityProfile = newAgentSessionSecurityProfile(profile.GetSecurityProfile())
+			profile = turnProfile.Profile()
+			r.securityProfile = newAgentSessionSecurityProfile(turnProfile)
 			r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
 		}
 		providerClient, model, err := r.config.Providers.Resolve(selected.Provider, selected.Model)

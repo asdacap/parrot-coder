@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent/profiles"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 )
 
 const (
@@ -20,6 +21,27 @@ const (
 )
 
 type Profile = profiles.Profile
+
+// TurnProfile combines a reusable profile with capabilities granted while
+// preparing one session's turn.
+type TurnProfile struct {
+	profile      Profile
+	capabilities []security.Rule
+}
+
+func NewTurnProfile(profile Profile, capabilities ...security.Rule) TurnProfile {
+	return TurnProfile{profile: profile, capabilities: append([]security.Rule(nil), capabilities...)}
+}
+
+func (p TurnProfile) Profile() Profile { return p.profile }
+func (p TurnProfile) IsReadOnly() bool { return p.profile.IsReadOnly() }
+func (p TurnProfile) Rules() []security.Rule {
+	return append(p.BaseRules(), p.capabilities...)
+}
+func (p TurnProfile) BaseRules() []security.Rule { return p.profile.Rules() }
+func (p TurnProfile) CapabilityRules() []security.Rule {
+	return append([]security.Rule(nil), p.capabilities...)
+}
 
 type Registry struct {
 	mu       sync.RWMutex

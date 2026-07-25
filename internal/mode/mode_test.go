@@ -36,14 +36,16 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	}
 	baseRule := security.Rule{Path: "/protected", Action: security.ActionDenyWrite}
 	plan.(*planMode).profile.SandboxRules = []security.Rule{baseRule}
-	profile, err := r.PrepareTurn(PlanID, "session")
+	prepared, err := r.PrepareTurn(PlanID, "session")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profile.SandboxRules) != 1 || profile.SandboxRules[0] != baseRule || len(profile.SecurityCapabilities) != 1 || profile.SecurityCapabilities[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt, "This mode is read-only except for the designated plan file.") {
-		t.Fatalf("plan profile = %#v", profile)
+	profile := prepared.Profile()
+	capabilities := prepared.CapabilityRules()
+	if len(profile.SandboxRules) != 1 || profile.SandboxRules[0] != baseRule || len(capabilities) != 1 || capabilities[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt, "This mode is read-only except for the designated plan file.") {
+		t.Fatalf("plan profile = %#v, capabilities = %#v", profile, capabilities)
 	}
-	path := profile.SecurityCapabilities[0].Path
+	path := capabilities[0].Path
 	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
 		t.Fatalf("initial plan artifact = %#v, %v", info, err)
 	}
@@ -58,8 +60,10 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(revised.SandboxRules) != 1 || revised.SandboxRules[0] != baseRule || len(revised.SecurityCapabilities) != 1 || revised.SecurityCapabilities[0] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
-		t.Fatalf("revised security layers = base %#v, capabilities %#v", revised.SandboxRules, revised.SecurityCapabilities)
+	revisedProfile := revised.Profile()
+	revisedCapabilities := revised.CapabilityRules()
+	if len(revisedProfile.SandboxRules) != 1 || revisedProfile.SandboxRules[0] != baseRule || len(revisedCapabilities) != 1 || revisedCapabilities[0] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
+		t.Fatalf("revised security layers = base %#v, capabilities %#v", revisedProfile.SandboxRules, revisedCapabilities)
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() != int64(len(existingPlan)) || info.Mode().Perm() != 0o600 {
 		t.Fatalf("revised plan artifact = %#v, %v", info, err)

@@ -1027,10 +1027,8 @@ type preparedProfileResolver struct{ base Profile }
 func (*preparedProfileResolver) GetProfile(string) (Profile, error) {
 	return Profile{}, errors.New("GetProfile called before PrepareTurn")
 }
-func (r *preparedProfileResolver) PrepareTurn(string, string) (Profile, error) {
-	profile := r.base
-	profile.SecurityCapabilities = []security.Rule{{Path: "/tmp/plan.md", Action: security.ActionAllowWrite}}
-	return profile, nil
+func (r *preparedProfileResolver) PrepareTurn(string, string) (TurnProfile, error) {
+	return NewTurnProfile(r.base, security.Rule{Path: "/tmp/plan.md", Action: security.ActionAllowWrite}), nil
 }
 
 type profileCaptureTool struct {
@@ -1068,8 +1066,8 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	if len(capture.paths) != 2 || capture.paths[0] != "/tmp/plan.md" || !strings.HasSuffix(capture.paths[1], "/session/"+h.sessionID+"/scratch") {
 		t.Fatalf("session profile allow_write rules = %#v", capture.paths)
 	}
-	if len(resolver.base.SandboxRules) != 0 || len(resolver.base.SecurityCapabilities) != 0 {
-		t.Fatalf("reusable profile security layers = %#v, %#v", resolver.base.SandboxRules, resolver.base.SecurityCapabilities)
+	if len(resolver.base.SandboxRules) != 0 {
+		t.Fatalf("reusable profile rules = %#v", resolver.base.SandboxRules)
 	}
 }
 
