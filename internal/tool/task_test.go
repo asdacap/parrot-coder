@@ -13,7 +13,7 @@ import (
 type recordingTaskController struct {
 	items       []managedtask.Active
 	interrupted managedtask.Active
-	wait        func(context.Context, string, string) (managedtask.Result, error)
+	wait        func(context.Context, string, string, managedtask.Kind) (managedtask.Result, error)
 }
 
 func (c *recordingTaskController) Interrupt(context.Context, string, string) (managedtask.Active, error) {
@@ -21,19 +21,19 @@ func (c *recordingTaskController) Interrupt(context.Context, string, string) (ma
 }
 
 func (c *recordingTaskController) ListActive(string) []managedtask.Active { return c.items }
-func (c *recordingTaskController) Wait(ctx context.Context, sessionID, taskID string) (managedtask.Result, error) {
-	return c.wait(ctx, sessionID, taskID)
+func (c *recordingTaskController) WaitKind(ctx context.Context, sessionID, taskID string, kind managedtask.Kind) (managedtask.Result, error) {
+	return c.wait(ctx, sessionID, taskID, kind)
 }
 
 func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
-	controller := &recordingTaskController{wait: func(_ context.Context, sessionID, taskID string) (managedtask.Result, error) {
-		if sessionID != "session" || taskID != "task_agent" {
-			t.Fatalf("wait = %q, %q", sessionID, taskID)
+	controller := &recordingTaskController{wait: func(_ context.Context, sessionID, taskID string, kind managedtask.Kind) (managedtask.Result, error) {
+		if sessionID != "session" || taskID != "task_agent" || kind != managedtask.KindAgent {
+			t.Fatalf("wait = %q, %q, %q", sessionID, taskID, kind)
 		}
 		return managedtask.Result{ID: taskID, Kind: managedtask.KindAgent, Status: "succeeded", Output: "done"}, nil
 	}}
-	item := &WaitTaskTool{Controller: controller}
-	plan, err := item.Plan(context.Background(), json.RawMessage(`{"task_id":"task_agent"}`), CallContext{SessionID: "session"})
+	item := &WaitTool{Kind: managedtask.KindAgent, Controller: controller}
+	plan, err := item.Plan(context.Background(), json.RawMessage(`{"session_id":"task_agent"}`), CallContext{SessionID: "session"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -48,11 +48,11 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 		t.Fatalf("completion metadata = %#v", result.Metadata)
 	}
 
-	controller.wait = func(ctx context.Context, _, taskID string) (managedtask.Result, error) {
+	controller.wait = func(ctx context.Context, _, taskID string, _ managedtask.Kind) (managedtask.Result, error) {
 		<-ctx.Done()
 		return managedtask.Result{ID: taskID, Kind: managedtask.KindAgent, Status: "running"}, ctx.Err()
 	}
-	plan, err = item.Plan(context.Background(), json.RawMessage(`{"task_id":"task_agent","yield_after_ms":1}`), CallContext{SessionID: "session"})
+	plan, err = item.Plan(context.Background(), json.RawMessage(`{"session_id":"task_agent","yield_after_ms":1}`), CallContext{SessionID: "session"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,26 +66,26 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 	if elapsed, ok := result.Metadata["elapsed_ms"].(float64); !ok || elapsed < 1 {
 		t.Fatalf("elapsed_ms = %#v", result.Metadata["elapsed_ms"])
 	}
-	if described, err := item.DescribeRequest(plan.CanonicalInput); err != nil || described != "Wait for task task_agent" {
+	if described, err := item.DescribeRequest(plan.CanonicalInput); err != nil || described != "Wait for agent task_agent" {
 		t.Fatalf("description = %q, %v", described, err)
 	}
 }
 
 func TestWaitTaskRejectsInvalidRequestsAndPropagatesCancellation(t *testing.T) {
-	controller := &recordingTaskController{wait: func(ctx context.Context, _, _ string) (managedtask.Result, error) {
+	controller := &recordingTaskController{wait: func(ctx context.Context, _, _ string, _ managedtask.Kind) (managedtask.Result, error) {
 		<-ctx.Done()
 		return managedtask.Result{}, ctx.Err()
 	}}
-	item := &WaitTaskTool{Controller: controller}
+	item := &WaitTool{Kind: managedtask.KindAgent, Controller: controller}
 	for _, test := range []struct {
 		name string
 		raw  string
 		call CallContext
 	}{
-		{name: "missing caller", raw: `{"task_id":"task_agent"}`},
+		{name: "missing caller", raw: `{"session_id":"task_agent"}`},
 		{name: "missing task", raw: `{}`, call: CallContext{SessionID: "session"}},
-		{name: "negative yield", raw: `{"task_id":"task_agent","yield_after_ms":-1}`, call: CallContext{SessionID: "session"}},
-		{name: "overflowing yield", raw: `{"task_id":"task_agent","yield_after_ms":9223372036854775807}`, call: CallContext{SessionID: "session"}},
+		{name: "negative yield", raw: `{"session_id":"task_agent","yield_after_ms":-1}`, call: CallContext{SessionID: "session"}},
+		{name: "overflowing yield", raw: `{"session_id":"task_agent","yield_after_ms":9223372036854775807}`, call: CallContext{SessionID: "session"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := item.Plan(context.Background(), json.RawMessage(test.raw), test.call); err == nil {
@@ -94,7 +94,7 @@ func TestWaitTaskRejectsInvalidRequestsAndPropagatesCancellation(t *testing.T) {
 		})
 	}
 
-	plan, err := item.Plan(context.Background(), json.RawMessage(`{"task_id":"task_agent"}`), CallContext{SessionID: "session"})
+	plan, err := item.Plan(context.Background(), json.RawMessage(`{"session_id":"task_agent"}`), CallContext{SessionID: "session"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,20 +139,25 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	for name, description := range map[string]string{
 		"task_interrupt":   interrupt.Description(),
 		"task_list_active": list.Description(),
-		"wait_task":        (&WaitTaskTool{}).Description(),
 	} {
 		contract := strings.ToLower(description)
 		if !strings.Contains(contract, "process") || !strings.Contains(contract, "session") {
 			t.Errorf("%s description = %q", name, description)
 		}
 	}
-	for name, schema := range map[string]string{
-		"task_interrupt": string(interrupt.JSONSchema()),
-		"wait_task":      string((&WaitTaskTool{}).JSONSchema()),
+	for _, test := range []struct {
+		kind       managedtask.Kind
+		identifier string
+	}{
+		{kind: managedtask.KindAgent, identifier: "session"},
+		{kind: managedtask.KindShell, identifier: "process"},
 	} {
-		contract := strings.ToLower(schema)
-		if !strings.Contains(contract, "process") || !strings.Contains(contract, "session") {
-			t.Errorf("%s schema = %s", name, schema)
+		item := &WaitTool{Kind: test.kind}
+		if description := strings.ToLower(item.Description()); !strings.Contains(description, test.identifier) {
+			t.Errorf("%s description = %q", item.ID(), description)
+		}
+		if schema := strings.ToLower(string(item.JSONSchema())); !strings.Contains(schema, test.identifier) {
+			t.Errorf("%s schema = %s", item.ID(), schema)
 		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
@@ -58,15 +59,15 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 
 func TestModelinePresentationSurvivesToolAPIProjection(t *testing.T) {
 	registry := tool.NewRegistry()
-	if err := registry.Register(&tool.WaitTaskTool{}); err != nil {
+	if err := registry.Register(&tool.WaitTool{Kind: managedtask.KindAgent}); err != nil {
 		t.Fatal(err)
 	}
 	list, err := (&DomainBackend{Tools: registry.Materialize()}).ListTools(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Items) != 1 || !list.Items[0].Presentation.Modeline || !chatview.NewPresentations(list).Modeline("wait_task") {
-		t.Fatalf("wait_task presentation = %#v", list.Items)
+	if len(list.Items) != 1 || !list.Items[0].Presentation.Modeline || !chatview.NewPresentations(list).Modeline("wait_agent") {
+		t.Fatalf("wait_agent presentation = %#v", list.Items)
 	}
 }
 
