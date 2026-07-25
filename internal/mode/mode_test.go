@@ -25,7 +25,7 @@ func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 	}
 }
 
-func TestPlanPrepareTurnCreatesWritableEmptyArtifactAndClearsRevisions(t *testing.T) {
+func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.T) {
 	r, err := NewRegistryWithPlanDirectory(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
@@ -47,7 +47,8 @@ func TestPlanPrepareTurnCreatesWritableEmptyArtifactAndClearsRevisions(t *testin
 	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
 		t.Fatalf("initial plan artifact = %#v, %v", info, err)
 	}
-	if err := os.WriteFile(path, []byte("stale plan"), 0o600); err != nil {
+	const existingPlan = "existing plan"
+	if err := os.WriteFile(path, []byte(existingPlan), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(path, 0o400); err != nil {
@@ -60,8 +61,11 @@ func TestPlanPrepareTurnCreatesWritableEmptyArtifactAndClearsRevisions(t *testin
 	if len(revised.SandboxRules) != 2 || revised.SandboxRules[0] != baseRule || revised.SandboxRules[1] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
 		t.Fatalf("revised sandbox rules = %#v, want base rule then allow_write %q", revised.SandboxRules, path)
 	}
-	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
+	if info, err := os.Stat(path); err != nil || info.Size() != int64(len(existingPlan)) || info.Mode().Perm() != 0o600 {
 		t.Fatalf("revised plan artifact = %#v, %v", info, err)
+	}
+	if data, err := os.ReadFile(path); err != nil || string(data) != existingPlan {
+		t.Fatalf("revised plan contents = %q, %v", data, err)
 	}
 }
 
