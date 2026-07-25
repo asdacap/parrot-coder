@@ -309,9 +309,9 @@ func (s *chatShell) slash(name, arguments string) (bool, int) {
 }
 
 type taskReport struct {
-	id, taskID, sessionID, parentSessionID, line, block string
-	terminal, emitPlain, skip, mainStatus               bool
-	style                                               terminal.TextStyle
+	id, taskID, sessionID, parentSessionID, line, block, blockKind string
+	terminal, emitPlain, skip, mainStatus                          bool
+	style                                                          terminal.TextStyle
 }
 
 // taskStreamTracker adapts the shared task tree tracker to the enhanced chat
@@ -347,7 +347,7 @@ func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport
 	}
 	result := make([]taskReport, len(reports))
 	for i, report := range reports {
-		result[i] = taskReport{id: report.ID, taskID: report.TaskID, sessionID: report.SessionID, parentSessionID: report.ParentSessionID, line: report.Line, block: report.Block, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, mainStatus: report.MainStatus, style: report.Style}
+		result[i] = taskReport{id: report.ID, taskID: report.TaskID, sessionID: report.SessionID, parentSessionID: report.ParentSessionID, line: report.Line, block: report.Block, blockKind: report.BlockKind, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, mainStatus: report.MainStatus, style: report.Style}
 	}
 	return result, nil
 }

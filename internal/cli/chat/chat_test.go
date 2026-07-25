@@ -1078,20 +1078,29 @@ func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
 	}
 }
 
-func TestStreamToolTrackerTruncatesBlocks(t *testing.T) {
-	var tracker streamToolTracker
-	tracker.describe(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"edit_call","name":"apply_patch","input":{"path":"file.go"}}`)})
+func TestStreamToolTrackerHandlesResultBlocks(t *testing.T) {
 	lines := make([]string, 12)
 	for i := range lines {
 		lines[i] = fmt.Sprintf("line-%02d", i+1)
 	}
-	success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "result": strings.Join(lines, "\r\n") + "\r\n"})
-	_, block, terminalEvent := tracker.describe(v1.Event{Type: "session.tool.success", Data: success})
-	if !terminalEvent || !strings.Contains(block, "line-10\n… 2 more lines") {
-		t.Fatalf("truncated block = %q, terminal = %t", block, terminalEvent)
-	}
-	if strings.Contains(block, "line-11") || strings.Contains(block, "\r") {
-		t.Fatalf("truncated block retained omitted or CRLF content: %q", block)
+	result := strings.Join(lines, "\r\n") + "\r\n"
+	for _, test := range []struct {
+		name, tool, want string
+		presentation     chatview.Presentations
+	}{
+		{name: "diff remains raw", tool: "apply_patch", want: result},
+		{name: "text is truncated", tool: "custom", want: strings.Join(lines[:10], "\n") + "\n… 2 more lines", presentation: chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{ID: "custom", Presentation: v1.ToolPresentation{Result: chatview.ToolResultText}}}})},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tracker := streamToolTracker{tracker: chatview.StreamToolTracker{Presentation: test.presentation}}
+			pending, _ := json.Marshal(map[string]string{"call_id": "call", "name": test.tool})
+			tracker.describe(v1.Event{Type: "session.tool.pending", Data: pending})
+			success, _ := json.Marshal(map[string]string{"call_id": "call", "result": result})
+			_, block, terminalEvent := tracker.describe(v1.Event{Type: "session.tool.success", Data: success})
+			if !terminalEvent || block != test.want {
+				t.Fatalf("result block = %q, terminal = %t; want %q", block, terminalEvent, test.want)
+			}
+		})
 	}
 }
 

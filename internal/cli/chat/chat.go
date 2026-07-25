@@ -570,13 +570,14 @@ type streamResult struct {
 }
 
 type streamToolReport struct {
-	line     string
-	label    string
-	block    string
-	terminal bool
-	hidden   bool
-	liveOnly bool
-	style    terminal.TextStyle
+	line      string
+	label     string
+	block     string
+	blockKind string
+	terminal  bool
+	hidden    bool
+	liveOnly  bool
+	style     terminal.TextStyle
 }
 
 type streamToolTracker struct {
@@ -599,13 +600,14 @@ func (t *streamToolTracker) output(item *v1.ToolOutputDelta) streamToolReport {
 }
 
 func streamToolReportFromView(report chatview.StreamToolReport) streamToolReport {
-	return streamToolReport{line: report.Line, label: report.Label, block: report.Block, terminal: report.Terminal, hidden: report.Hidden, liveOnly: report.LiveOnly, style: report.Style}
+	return streamToolReport{line: report.Line, label: report.Label, block: report.Block, blockKind: report.BlockKind, terminal: report.Terminal, hidden: report.Hidden, liveOnly: report.LiveOnly, style: report.Style}
 }
 
 type taskReport struct {
 	id        string
 	line      string
 	block     string
+	blockKind string
 	terminal  bool
 	emitPlain bool
 	skip      bool
@@ -644,7 +646,7 @@ func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport
 	}
 	result := make([]taskReport, len(reports))
 	for i, report := range reports {
-		result[i] = taskReport{id: report.ID, line: report.Line, block: report.Block, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
+		result[i] = taskReport{id: report.ID, line: report.Line, block: report.Block, blockKind: report.BlockKind, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
 	}
 	return result, nil
 }
@@ -673,7 +675,10 @@ func writeStreamTaskEvent(options streamOptions, tracker *taskStreamTracker, ite
 			styled := terminal.StyledText{Text: text, Style: report.style}
 			if report.terminal {
 				tracker.liveID = ""
-				if report.block != "" {
+				if report.blockKind == chatview.ToolResultDiff {
+					styled.Text = report.line
+					err = options.renderer.CommitDiffBlock(styled, report.block)
+				} else if report.block != "" {
 					err = options.renderer.CommitStyledBlock(styled)
 				} else {
 					err = options.renderer.CommitStyled(styled)
@@ -723,6 +728,9 @@ func writeStreamToolEvent(options streamOptions, tracker *streamToolTracker, ite
 		}
 		if report.liveOnly {
 			return options.renderer.UpdateStyled(nil)
+		}
+		if report.blockKind == chatview.ToolResultDiff {
+			return options.renderer.CommitDiffBlock(styled, report.block)
 		}
 		if report.block != "" {
 			styled.Text += "\n" + report.block

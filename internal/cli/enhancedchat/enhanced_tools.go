@@ -91,12 +91,18 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
-	if terminalEvent && status == "success" && presentation.Result(name) == chatview.ToolResultText && strings.TrimSpace(result) != "" {
+	if terminalEvent && status == "success" && strings.TrimSpace(result) != "" {
 		for i := range r.activity {
-			if r.activity[i].id == callID {
-				r.activity[i].block = truncateToolBlock(result, maxToolBlockLines)
-				break
+			if r.activity[i].id != callID {
+				continue
 			}
+			switch presentation.Result(r.activity[i].toolName) {
+			case chatview.ToolResultText:
+				r.activity[i].block = truncateToolBlock(result, maxToolBlockLines)
+			case chatview.ToolResultDiff:
+				r.activity[i].block, r.activity[i].blockKind = result, chatview.ToolResultDiff
+			}
+			break
 		}
 	}
 	if terminalEvent && status == "success" {
@@ -106,7 +112,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 			if presentation.Result(r.activity[i].toolName) == chatview.ToolResultTodos {
 				if block, count, ok := formatTodoWriteBlock(result, r.activity[i].input); ok {
-					r.activity[i].block = block
+					r.activity[i].block, r.activity[i].blockKind = block, ""
 					r.activity[i].label = todoWriteActivityLabel(r.activity[i].toolName, count)
 				}
 			}
@@ -131,9 +137,9 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 			if presentation.Failure(r.activity[i].toolName) == chatview.ToolFailureErrorBlock {
 				r.activity[i].error = chatview.FailureErrorSummary(errorText)
-				r.activity[i].block = chatview.FormatFailureErrorBlock(errorText)
+				r.activity[i].block, r.activity[i].blockKind = chatview.FormatFailureErrorBlock(errorText), ""
 			} else if r.activity[i].input != nil {
-				r.activity[i].block = truncateToolBlock(formatFailedToolRequest(r.activity[i].input), maxToolBlockLines)
+				r.activity[i].block, r.activity[i].blockKind = truncateToolBlock(formatFailedToolRequest(r.activity[i].input), maxToolBlockLines), ""
 			}
 			break
 		}
@@ -142,7 +148,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		for i := range r.activity {
 			if r.activity[i].id == callID {
 				if block := presentation.CompletedInputBlock(r.activity[i].toolName, r.activity[i].input); block != "" {
-					r.activity[i].block = block
+					r.activity[i].block, r.activity[i].blockKind = block, ""
 				}
 			}
 		}
@@ -158,7 +164,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 					output = tail.String()
 				}
 				if output != "" {
-					r.activity[i].block = output
+					r.activity[i].block, r.activity[i].blockKind = output, ""
 				}
 				break
 			}

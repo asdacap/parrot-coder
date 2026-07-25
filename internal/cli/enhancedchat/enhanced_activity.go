@@ -692,7 +692,9 @@ func (r *enhancedChatRuntime) flushCompletedTools() error {
 		line := formatActivity(item, time.Now())
 		var err error
 		styled := terminal.StyledText{Text: line, Style: item.style}
-		if item.block != "" {
+		if item.blockKind == chatview.ToolResultDiff {
+			err = r.shell.renderer.CommitDiffBlock(styled, item.block)
+		} else if item.block != "" {
 			styled.Text += "\n" + item.block
 			err = r.shell.renderer.CommitStyledBlock(styled)
 		} else {

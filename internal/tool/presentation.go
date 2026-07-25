@@ -120,6 +120,8 @@ const (
 	ResultNone ResultRender = ""
 	// ResultText renders the result as a truncated text block.
 	ResultText ResultRender = "text"
+	// ResultDiff renders a unified diff as a terminal-aware diff block.
+	ResultDiff ResultRender = "diff"
 	// ResultTodos renders the result as a structured todo list.
 	ResultTodos ResultRender = "todos"
 )

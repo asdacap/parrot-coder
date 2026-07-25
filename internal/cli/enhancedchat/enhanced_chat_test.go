@@ -1867,8 +1867,8 @@ func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {
 	if !strings.Contains(got, "README.md\n\n✓ apply_patch ·") {
 		t.Fatalf("edit block was not separated from compact output: %q", got)
 	}
-	if !strings.Contains(got, "\n--- a/file.go\n+++ b/file.go\n") || !strings.Contains(got, "\n-before\n+after\n") {
-		t.Fatalf("edit block omitted its before/after diff: %q", got)
+	if !strings.Contains(got, "1 -before") || !strings.Contains(got, "│ 1 +after") {
+		t.Fatalf("edit block omitted its side-by-side before/after diff: %q", got)
 	}
 }
 
@@ -1897,8 +1897,8 @@ func TestEnhancedEditTruncatesDiffAfterTenLines(t *testing.T) {
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
 
 	got := output.String()
-	if !strings.Contains(got, strings.Join(diffLines[:10], "\n")+"\n… 2 more lines") {
-		t.Fatalf("edit block did not contain the truncated diff and remaining line count: %q", got)
+	if !strings.Contains(got, strings.Join(diffLines[:10], "\n")+"\n… 2 omitted") {
+		t.Fatalf("edit block did not contain the bounded diff and omitted line count: %q", got)
 	}
 	if strings.Contains(got, diffLines[10]) || strings.Contains(got, diffLines[11]) {
 		t.Fatalf("edit block included lines after the preview: %q", got)

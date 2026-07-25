@@ -280,7 +280,10 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 				continue
 			}
 			styled := terminal.StyledText{Text: text, Style: report.style}
-			if report.block != "" {
+			if report.blockKind == chatview.ToolResultDiff {
+				styled.Text = report.line
+				err = r.shell.renderer.CommitDiffBlock(styled, report.block)
+			} else if report.block != "" {
 				err = r.shell.renderer.CommitStyledBlock(styled)
 			} else {
 				err = r.shell.renderer.CommitStyled(styled)

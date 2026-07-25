@@ -47,6 +47,29 @@ func TestCompletedInputPresentation(t *testing.T) {
 	}
 }
 
+func TestDiffPresentationPreservesRawResultThroughTaskReports(t *testing.T) {
+	tracker := NewTaskTracker()
+	startMainTask(tracker)
+	if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
+		TaskID: "child", SessionID: "child", ParentSessionID: "session-main", Kind: "agent", Agent: "worker",
+	}), false); err != nil {
+		t.Fatal(err)
+	}
+	pending := v1.Event{Type: "session.tool.pending", TaskID: "child", Data: json.RawMessage(`{"call_id":"call","name":"apply_patch"}`)}
+	if _, err := tracker.Apply(pending, false); err != nil {
+		t.Fatal(err)
+	}
+	diff := "--- a/file.go\n+++ b/file.go\n@@ -1 +1 @@\n-old\n+new\n"
+	data, _ := json.Marshal(map[string]string{"call_id": "call", "result": diff})
+	reports, err := tracker.Apply(v1.Event{Type: "session.tool.success", TaskID: "child", Data: data}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 || reports[0].BlockKind != ToolResultDiff || reports[0].Block != diff {
+		t.Fatalf("diff task report = %#v", reports)
+	}
+}
+
 func TestLiveOnlyPresentationDiscardsTerminalReport(t *testing.T) {
 	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "wait", Presentation: v1.ToolPresentation{LiveOnly: true},

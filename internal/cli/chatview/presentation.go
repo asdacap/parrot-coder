@@ -27,6 +27,7 @@ const (
 // Result renderers, mirroring tool.ResultRender.
 const (
 	ToolResultText  = "text"
+	ToolResultDiff  = "diff"
 	ToolResultTodos = "todos"
 )
 
@@ -216,7 +217,7 @@ func (p Presentations) Failure(name string) string { return p.For(name).Failure 
 func legacyResult(name string) string {
 	switch name {
 	case "apply_patch":
-		return ToolResultText
+		return ToolResultDiff
 	case "todowrite", "todo_write":
 		return ToolResultTodos
 	default:

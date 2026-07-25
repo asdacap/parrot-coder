@@ -149,6 +149,7 @@ type enhancedActivityItem struct {
 	reasoning        bool
 	reasoningSummary bool
 	block            string
+	blockKind        string
 	rendered         string
 	output           shellOutputTail
 }

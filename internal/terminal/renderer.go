@@ -1060,6 +1060,23 @@ func (r *LiveRenderer) CommitStyledBlock(text StyledText) error {
 	return r.commitRowsAsRich(content.rows, styles, content.spans, commitBlock)
 }
 
+// CommitDiffBlock atomically appends a styled status and a bounded rendering of
+// raw unified diff text as one transcript block.
+func (r *LiveRenderer) CommitDiffBlock(status StyledText, rawDiff string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errRendererClosed
+	}
+	r.syncColumns()
+	content, styles := r.layoutStyledTextAtColumns(status, r.columns)
+	diff := formatDiff(rawDiff, r.columns)
+	content.rows = append(content.rows, diff.rows...)
+	content.spans = append(content.spans, diff.spans...)
+	styles = append(styles, repeatedStyle(TextStyleDefault, len(diff.rows))...)
+	return r.commitRowsAsRich(content.rows, styles, content.spans, commitBlock)
+}
+
 // CommitDivider appends one permanent input-boundary rule.
 func (r *LiveRenderer) CommitDivider() error {
 	r.mu.Lock()

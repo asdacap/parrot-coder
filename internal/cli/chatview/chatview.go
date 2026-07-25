@@ -608,13 +608,14 @@ type StreamToolTracker struct {
 }
 
 type StreamToolReport struct {
-	Line     string
-	Label    string
-	Block    string
-	Terminal bool
-	Hidden   bool
-	LiveOnly bool
-	Style    terminal.TextStyle
+	Line      string
+	Label     string
+	Block     string
+	BlockKind string
+	Terminal  bool
+	Hidden    bool
+	LiveOnly  bool
+	Style     terminal.TextStyle
 }
 
 type taskMessageState struct {
@@ -634,6 +635,7 @@ type TaskReport struct {
 	ParentSessionID string
 	Line            string
 	Block           string
+	BlockKind       string
 	Terminal        bool
 	EmitPlain       bool
 	Skip            bool
@@ -1210,11 +1212,11 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if report.Label != "" {
 			line = strings.Replace(line, "tool", report.Label, 1)
 		}
-		block := ""
-		if report.Block != "" {
-			block = prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
+		block := report.Block
+		if block != "" && report.BlockKind != ToolResultDiff {
+			block = prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", block)
 		}
-		return []TaskReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
+		return []TaskReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, BlockKind: report.BlockKind, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
 	case v1.EventToolOutputDelta:
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}
@@ -1407,9 +1409,11 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	}
 	status := strings.TrimPrefix(item.Type, "session.tool.")
 	terminalEvent := status == "success" || status == "failure" || status == "interrupted"
-	block := ""
+	block, blockKind := "", ""
 	if status == "success" && call.result == ToolResultText && strings.TrimSpace(result) != "" {
 		block = TruncateToolBlock(result, MaxToolBlockLines)
+	} else if status == "success" && call.result == ToolResultDiff && strings.TrimSpace(result) != "" {
+		block, blockKind = result, ToolResultDiff
 	} else if status == "success" && call.result == ToolResultTodos {
 		if formatted, _, ok := FormatTodoWriteBlock(result, call.input); ok {
 			block = formatted
@@ -1421,7 +1425,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	}
 	if terminalEvent {
 		if inputBlock := t.Presentation.CompletedInputBlock(call.name, call.input); inputBlock != "" {
-			block = inputBlock
+			block, blockKind = inputBlock, ""
 		}
 	}
 	if terminalEvent && call.stream == ToolOutputTail {
@@ -1434,7 +1438,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 			output = call.output.String()
 		}
 		if output != "" {
-			block = output
+			block, blockKind = output, ""
 		}
 	}
 	style := call.style
@@ -1457,7 +1461,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		errorText, block = "", ""
 	}
 	return StreamToolReport{
-		Line: StreamToolStatus(status, errorText), Label: t.Presentation.Label(call.name, call.input), Block: block,
+		Line: StreamToolStatus(status, errorText), Label: t.Presentation.Label(call.name, call.input), Block: block, BlockKind: blockKind,
 		Terminal: terminalEvent, Hidden: !terminalEvent && t.Presentation.TerminalOnly(call.name), LiveOnly: call.liveOnly, Style: style,
 	}
 }

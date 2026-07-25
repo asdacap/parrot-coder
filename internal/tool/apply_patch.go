@@ -25,6 +25,7 @@ func (*ApplyPatchTool) ID() string { return "apply_patch" }
 func (*ApplyPatchTool) Presentation() Presentation {
 	return Presentation{
 		Label:   LabelSpec{Kind: LabelPatchTargets, Source: []string{"patchText", "patch"}},
+		Result:  ResultDiff,
 		Failure: FailureErrorBlock,
 	}
 }
