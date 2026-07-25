@@ -17,6 +17,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
+	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
@@ -99,6 +100,7 @@ type ProfileResolver interface {
 type AgentSessionConfig struct {
 	Sessions           SessionRuntime
 	Contexts           ContextRuntime
+	StateDirectories   SessionStateDirectories
 	Agents             *Registry
 	Profiles           ProfileResolver
 	Providers          ProviderResolver
@@ -135,7 +137,7 @@ func validateAgentSessionConfig(config *AgentSessionConfig) error {
 	if config.Profiles == nil {
 		config.Profiles = config.Agents
 	}
-	if config.Sessions == nil || config.Profiles == nil || config.Providers == nil || config.ToolSnapshot == nil || config.ToolExecutor == nil {
+	if config.Sessions == nil || config.StateDirectories == nil || config.Profiles == nil || config.Providers == nil || config.ToolSnapshot == nil || config.ToolExecutor == nil {
 		return errors.New("agent: session dependencies are required")
 	}
 	if config.MaxConcurrentTools <= 0 {
@@ -148,6 +150,11 @@ func validateAgentSessionConfig(config *AgentSessionConfig) error {
 }
 
 func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
+	stateDirectory, err := r.config.StateDirectories.Prepare(r.dto.ID)
+	if err != nil {
+		return err
+	}
+	scratchPath := stateDirectory.ScratchPath()
 	defer func() {
 		if runErr == nil || ctx.Err() != nil || r.config.Goals == nil || !provider.IsUsageLimitError(runErr) {
 			return
@@ -214,6 +221,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
+			profile.EnforcedSandboxRules = append(append([]security.Rule(nil), profile.EnforcedSandboxRules...), security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
 		}
 		providerClient, model, err := r.config.Providers.Resolve(selected.Provider, selected.Model)
 		if err != nil {
@@ -272,7 +280,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		snapshot := r.config.ToolSnapshot()
 		definitions := toolDefinitions(snapshot)
 		turn++
-		instructions := runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
+		instructions := runnerInstructions(epoch.Baseline, scratchPath, turn >= profile.MaxTurns)
 		if turn >= profile.MaxTurns {
 			definitions = nil
 		}
@@ -293,7 +301,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				if err != nil {
 					return err
 				}
-				instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
+				instructions = runnerInstructions(epoch.Baseline, scratchPath, turn >= profile.MaxTurns)
 			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
@@ -337,7 +345,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
-			request.Instructions = runnerInstructions(epoch.Baseline, profile, turn >= profile.MaxTurns)
+			request.Instructions = runnerInstructions(epoch.Baseline, scratchPath, turn >= profile.MaxTurns)
 			request.Messages = history
 			calls, finish, err = r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 			if err != nil {
@@ -621,9 +629,9 @@ func overflowMessage(message string) bool {
 	return false
 }
 
-func runnerInstructions(baseline string, _ Profile, final bool) string {
-	sections := make([]string, 0, 2)
-	for _, section := range []string{baseline, finalTurnInstructions(final)} {
+func runnerInstructions(baseline, scratchPath string, final bool) string {
+	sections := make([]string, 0, 3)
+	for _, section := range []string{baseline, "Scratch directory: " + scratchPath, finalTurnInstructions(final)} {
 		if section != "" {
 			sections = append(sections, section)
 		}

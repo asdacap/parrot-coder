@@ -45,6 +45,7 @@ type AgentSession interface {
 	ID() string
 	Name() string
 	Parent() AgentSession
+	StateDirectory() (SessionStateDirectory, error)
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
 	Wake()
@@ -56,6 +57,12 @@ type AgentSession interface {
 func (s *agentSession) ID() string           { return s.dto.ID }
 func (s *agentSession) Name() string         { return s.dto.Name }
 func (s *agentSession) Parent() AgentSession { return s.parent }
+func (s *agentSession) StateDirectory() (SessionStateDirectory, error) {
+	if s.config.StateDirectories == nil {
+		return SessionStateDirectory{}, errors.New("agent: session state directories are unavailable")
+	}
+	return s.config.StateDirectories.Directory(s.dto.ID)
+}
 
 // Prompt admits input, runs the session to idle, and returns the assistant
 // message produced by that execution lifecycle.

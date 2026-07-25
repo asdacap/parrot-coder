@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/amirulashraf/parrot-coder/internal/agent/profiles"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
@@ -911,6 +912,37 @@ func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.
 				t.Fatalf("Rules() = %#v, want %#v", profile.Rules(), test.want)
 			}
 		})
+	}
+}
+
+func TestBuildProfileKeepsEnforcedCapabilitiesAfterConfiguredRestrictions(t *testing.T) {
+	root := t.TempDir()
+	ws, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scratch := filepath.Join(t.TempDir(), "scratch")
+	runner, err := NewRunner(Config{
+		Workspace:    ws,
+		OutputStore:  &memoryOutputStore{},
+		SandboxRules: []security.Rule{{Path: filepath.Dir(scratch), Action: security.ActionDenyWrite}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := profiles.Profile{EnforcedSandboxRules: []security.Rule{{Path: scratch, Action: security.ActionAllowWrite}}}
+	built, err := runner.buildProfile(profile, "session", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := built.Rules()
+	if got := rules[len(rules)-1]; got != (security.Rule{Path: scratch, Action: security.ActionAllowWrite}) {
+		t.Fatalf("last rule = %#v, want enforced scratch capability", got)
+	}
+	for _, rule := range rules[:len(rules)-1] {
+		if rule.Action == security.ActionDenyWrite && overlapsAnyPath(rule.Path, []string{scratch}) {
+			t.Fatalf("conflicting rule retained before enforced capability: %#v", rule)
+		}
 	}
 }
 

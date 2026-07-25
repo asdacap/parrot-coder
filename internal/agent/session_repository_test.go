@@ -50,12 +50,42 @@ func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
 	}
 	close(release)
 	waitForAgentSession(t, func() bool { return len(repository.Active()) == 0 })
+	cleanup := &retrySessionStateDirectories{err: errors.New("cleanup failed")}
+	repository.config.StateDirectories = cleanup
+	if err := repository.Remove("a"); !errors.Is(err, cleanup.err) {
+		t.Fatalf("first Remove error = %v, want %v", err, cleanup.err)
+	}
+	if retained, ok := repository.Lookup("a"); !ok || retained != first {
+		t.Fatal("cleanup failure discarded the runtime needed for retry")
+	}
+	cleanup.err = nil
 	if err := repository.Remove("a"); err != nil {
 		t.Fatal(err)
+	}
+	if cleanup.removes != 2 {
+		t.Fatalf("cleanup attempts = %d, want 2", cleanup.removes)
 	}
 	if recreated := repository.Get("a"); recreated == first {
 		t.Fatal("removed session was not recreated")
 	}
+}
+
+type retrySessionStateDirectories struct {
+	err     error
+	removes int
+}
+
+func (*retrySessionStateDirectories) Directory(string) (SessionStateDirectory, error) {
+	return SessionStateDirectory{}, nil
+}
+
+func (*retrySessionStateDirectories) Prepare(string) (SessionStateDirectory, error) {
+	return SessionStateDirectory{}, nil
+}
+
+func (d *retrySessionStateDirectories) Remove(string) error {
+	d.removes++
+	return d.err
 }
 
 func TestAgentSessionRepositoryChildHierarchy(t *testing.T) {

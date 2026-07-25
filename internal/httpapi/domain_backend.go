@@ -248,6 +248,9 @@ func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, r
 
 func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
 	if _, err := b.GetSession(ctx, id); err != nil {
+		if errors.Is(err, ErrNotFound) && b.AgentSessions != nil {
+			return b.AgentSessions.Remove(id)
+		}
 		return err
 	}
 	var cleanupErr error
@@ -266,17 +269,15 @@ func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
 	if cleanupErr != nil {
 		return cleanupErr
 	}
-	if b.AgentSessions != nil {
-		if err := b.AgentSessions.Remove(id); err != nil {
-			return err
-		}
-	}
 	err := b.Sessions.Delete(ctx, id)
 	if errors.Is(err, session.ErrNotFound) {
 		return ErrNotFound
 	}
 	if err != nil {
 		return err
+	}
+	if b.AgentSessions != nil {
+		return b.AgentSessions.Remove(id)
 	}
 	return nil
 }

@@ -379,16 +379,20 @@ func (r *agentSessionRepository) Status(sessionID string) Status {
 
 func (r *agentSessionRepository) Remove(sessionID string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	item := r.sessions[sessionID]
-	if item == nil {
-		return nil
-	}
-	if item.Status() != StatusIdle {
+	if item != nil && item.Status() != StatusIdle {
+		r.mu.Unlock()
 		return ErrAgentSessionActive
+	}
+	if r.config.StateDirectories != nil {
+		if err := r.config.StateDirectories.Remove(sessionID); err != nil {
+			r.mu.Unlock()
+			return err
+		}
 	}
 	if r.sessions[sessionID] == item {
 		delete(r.sessions, sessionID)
 	}
+	r.mu.Unlock()
 	return nil
 }

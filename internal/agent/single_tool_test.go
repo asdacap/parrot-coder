@@ -168,6 +168,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	agentSessions, err := NewUserSession(ctx, AgentSessionConfig{
 		Sessions:           sessions,
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
+		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,
 		ToolSnapshot:       func() tool.Snapshot { return snapshot },

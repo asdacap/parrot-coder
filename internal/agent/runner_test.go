@@ -79,7 +79,7 @@ func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
 	if got, want := observation.Text, "profile prompt\n\nHard rules:\n- rule\n\nprofile status"; got != want {
 		t.Fatalf("profile status = %q, want %q", got, want)
 	}
-	if got, want := runnerInstructions("baseline", profile, false), "baseline"; got != want {
+	if got, want := runnerInstructions("baseline", "/state/session/ses_test/scratch", false), "baseline\n\nScratch directory: /state/session/ses_test/scratch"; got != want {
 		t.Fatalf("runner instructions = %q, want %q", got, want)
 	}
 }
@@ -198,8 +198,8 @@ func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 	buildStatus := "build prompt\n\nBuild mode status\n\nActive profile: build\nModel: fake/model"
 	planStatus := "plan prompt\n\nPlan mode status\n\nActive profile: plan\nModel: fake/model"
 	for index, request := range requests {
-		if request.Instructions != "baseline" {
-			t.Errorf("request %d instructions = %q, want baseline", index, request.Instructions)
+		if !strings.HasPrefix(request.Instructions, "baseline\n\nScratch directory: ") || !strings.HasSuffix(request.Instructions, "/session/"+h.sessionID+"/scratch") {
+			t.Errorf("request %d instructions = %q, want baseline and session scratch path", index, request.Instructions)
 		}
 		var statuses []string
 		for _, message := range request.Messages {
@@ -412,6 +412,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	createdAgentSessions, err := NewUserSession(ctx, AgentSessionConfig{
 		Sessions:           sessions,
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
+		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,
 		ToolSnapshot:       func() tool.Snapshot { return snapshot },
@@ -1063,7 +1064,7 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(capture.paths) != 1 || capture.paths[0] != "/tmp/plan.md" {
+	if len(capture.paths) != 2 || capture.paths[0] != "/tmp/plan.md" || !strings.HasSuffix(capture.paths[1], "/session/"+h.sessionID+"/scratch") {
 		t.Fatalf("continuation allow_write rules = %#v", capture.paths)
 	}
 }
@@ -1273,6 +1274,15 @@ func toolState(t *testing.T, h *runnerHarness, callID string) (string, string) {
 		t.Fatal(err)
 	}
 	return status, result
+}
+
+func testSessionStateDirectories(t *testing.T) SessionStateDirectories {
+	t.Helper()
+	directories, err := NewSessionStateDirectories(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return directories
 }
 
 func containsText(messages []protocol.Message, want string) bool {

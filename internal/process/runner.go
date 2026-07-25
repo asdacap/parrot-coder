@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -628,14 +629,22 @@ func unsafeEnvironmentName(name string) bool {
 func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd string) (security.SecurityProfile, error) {
 	workspaceRoot := r.config.Workspace.Root()
 
-	var profileRules []security.Rule
+	var profileRules, enforcedRules []security.Rule
 	var readOnly bool
 	if profile != nil {
 		profileRules = profile.Rules()
 		readOnly = profile.IsReadOnly()
+		if enforced, ok := profile.(security.EnforcedRulesProfile); ok {
+			enforcedRules = enforced.EnforcedRules()
+			start := len(profileRules) - len(enforcedRules)
+			if start < 0 || !slices.Equal(profileRules[start:], enforcedRules) {
+				return nil, errors.New("process: enforced sandbox rules must be the final profile rules")
+			}
+			profileRules = profileRules[:start]
+		}
 	}
 
-	rules := make([]security.Rule, 0, len(profileRules)+len(r.config.SandboxRules)+8)
+	rules := make([]security.Rule, 0, len(profileRules)+len(r.config.SandboxRules)+len(enforcedRules)+8)
 	if !readOnly {
 		writePaths := []string{workspaceRoot}
 		granted, err := r.writableForSession(sessionID)
@@ -657,9 +666,13 @@ func (r *Runner) buildProfile(profile security.SecurityProfile, sessionID, cwd s
 
 	configuredRules := r.config.SandboxRules
 	if readOnly {
-		configuredRules = rulesForReadOnlyProfile(configuredRules, allowWriteRulePaths(profileRules))
+		configuredRules = rulesForReadOnlyProfile(configuredRules, allowWriteRulePaths(append(profileRules, enforcedRules...)))
 	}
 	rules = append(rules, configuredRules...)
+	if len(enforcedRules) > 0 {
+		rules = rulesWithoutWriteRestrictionsOverlapping(rules, allowWriteRulePaths(enforcedRules))
+	}
+	rules = append(rules, enforcedRules...)
 	return &sandboxProfile{readOnly: readOnly, rules: rules}, nil
 }
 
@@ -681,6 +694,17 @@ func rulesForReadOnlyProfile(rules []security.Rule, writePaths []string) []secur
 	filtered := make([]security.Rule, 0, len(rules))
 	for _, rule := range rules {
 		if rule.Action == security.ActionAllowWrite || overlapsAnyPath(rule.Path, writePaths) {
+			continue
+		}
+		filtered = append(filtered, rule)
+	}
+	return filtered
+}
+
+func rulesWithoutWriteRestrictionsOverlapping(rules []security.Rule, paths []string) []security.Rule {
+	filtered := make([]security.Rule, 0, len(rules))
+	for _, rule := range rules {
+		if rule.Action == security.ActionDenyWrite && overlapsAnyPath(rule.Path, paths) {
 			continue
 		}
 		filtered = append(filtered, rule)
