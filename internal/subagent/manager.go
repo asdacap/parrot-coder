@@ -306,6 +306,25 @@ func (m *Manager) emit(event LifecycleEvent) {
 	}
 }
 
+// ResolveTask returns a caller-visible agent task by session ID or friendly
+// name. Session IDs take precedence, matching the shared task resolver.
+func (m *Manager) ResolveTask(callerSession, identifier string) (Task, error) {
+	if m == nil || callerSession == "" || identifier == "" {
+		return Task{}, ErrNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if state := m.tasks[identifier]; state != nil && m.visibleLocked(callerSession, state) {
+		return cloneTask(state.task), nil
+	}
+	for _, state := range m.tasks {
+		if state.task.Name == identifier && m.visibleLocked(callerSession, state) {
+			return cloneTask(state.task), nil
+		}
+	}
+	return Task{}, ErrNotFound
+}
+
 // TaskForSession returns the agent task bound to a child session, if any. The
 // main task of a subagent child session is the subagent task itself.
 func (m *Manager) TaskForSession(sessionID string) (Task, bool) {
