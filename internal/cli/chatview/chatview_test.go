@@ -205,14 +205,14 @@ func TestTaskToolOutputDeltaLeadsWithActivityIcon(t *testing.T) {
 	}
 	_, err = tracker.Apply(v1.Event{
 		Type: "session.tool.running", TaskID: "task-explorer",
-		Data: json.RawMessage(`{"call_id":"call","name":"exec_command","input":{"cmd":"go test ./..."}}`),
+		Data: json.RawMessage(`{"call_id":"call","name":"exec_command","input":{"name":"project-tests","cmd":"go test ./..."}}`),
 	}, false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	data, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "call", Delta: "ok"})
 	reports, err := tracker.Apply(v1.Event{Type: v1.EventToolOutputDelta, TaskID: "task-explorer", Data: data}, false)
-	if err != nil || len(reports) != 1 || reports[0].Line != "  ◐ [explorer:ui-hierarchy] Running exec_command · go test ./..." {
+	if err != nil || len(reports) != 1 || reports[0].Line != "  ◐ [explorer:ui-hierarchy] Running exec_command · project-tests · go test ./..." {
 		t.Fatalf("tool output report = %#v, %v", reports, err)
 	}
 }
@@ -228,6 +228,8 @@ func TestTaskActivityLabelsUseTargetID(t *testing.T) {
 		{name: "task_interrupt", input: map[string]any{"task_id": "task_agent"}, want: "task_interrupt · task_agent"},
 		{name: "task_list_active", input: map[string]any{}, want: "task_list_active"},
 		{name: "write_stdin", input: map[string]any{"task_id": "task_shell", "chars": "input"}, want: "write_stdin · task_shell · input"},
+		{name: "exec_command", input: map[string]any{"name": "project-tests", "cmd": "go test ./..."}, want: "exec_command · project-tests · go test ./..."},
+		{name: "exec_command", input: map[string]any{"cmd": "go test ./..."}, want: "exec_command · go test ./..."},
 	} {
 		if got := ToolActivityLabel(test.name, test.input); got != test.want {
 			t.Errorf("ToolActivityLabel(%q) = %q, want %q", test.name, got, test.want)

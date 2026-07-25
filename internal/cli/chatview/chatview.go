@@ -434,6 +434,7 @@ func ToolActivityLabel(name string, input map[string]any) string {
 	case "apply_patch":
 		details = append(details, patchActivityTargets(firstString(input, "patchText", "patch"))...)
 	case "exec_command":
+		add(firstString(input, "name"))
 		add(firstString(input, "cmd"))
 	case "write_stdin":
 		add(firstString(input, "task_id"))

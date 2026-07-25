@@ -44,7 +44,10 @@ func (*ExecCommandTool) ID() string { return "exec_command" }
 func (*ExecCommandTool) Presentation() Presentation {
 	return Presentation{
 		Output: OutputTail,
-		Label:  LabelSpec{Fields: []LabelField{{Names: []string{"cmd"}}}},
+		Label: LabelSpec{Fields: []LabelField{
+			{Names: []string{"name"}},
+			{Names: []string{"cmd"}},
+		}},
 	}
 }
 
