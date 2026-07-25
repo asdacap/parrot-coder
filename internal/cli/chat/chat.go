@@ -941,21 +941,20 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					}
 				}
 			case *v1.SessionStatus:
-				// Retry notices carry a human-readable message; flush it as-is
+				// Runner notices carry a human-readable message; flush it as-is
 				// instead of buffering it into the assistant stream.
 				label := "status: " + value.Kind
-				if (value.Kind == "provider_retry" || value.Kind == "status_prompt") && value.Message != "" {
+				if (value.Kind == "provider_retry" || value.Kind == "status_prompt" || value.Kind == "max_turns_reached") && value.Message != "" {
 					label = chatview.EventLine(0, "", chatview.StatusNoticeIcon+" "+value.Message)
 				}
 				if value.Kind == "router_metadata" && value.Message != "" {
 					label = value.Message
 				}
 				if options.format != "jsonl" && value.Kind != "idle" && value.Kind != "finish" && value.Kind != "usage" {
-					if options.renderer != nil {
-						subagentTracker.liveID = ""
-						_ = options.renderer.Update([]string{label})
-					} else {
-						fmt.Fprintln(options.stderr, label)
+					subagentTracker.liveID = ""
+					flush := value.Kind == "provider_retry" || value.Kind == "status_prompt" || value.Kind == "max_turns_reached"
+					if err := writeStreamStatus(options, label, flush); err != nil {
+						return streamResult{err: err}
 					}
 				}
 				if value.Kind == "error" || value.Kind == "provider_error" {
@@ -985,6 +984,17 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 			}
 		}
 	}
+}
+
+func writeStreamStatus(options streamOptions, label string, flush bool) error {
+	if options.renderer == nil {
+		_, err := fmt.Fprintln(options.stderr, label)
+		return err
+	}
+	if flush {
+		return options.renderer.Commit(label)
+	}
+	return options.renderer.Update([]string{label})
 }
 
 func agentsLoadedPaths(item v1.Event) []string { return chatview.AgentsLoadedPaths(item) }

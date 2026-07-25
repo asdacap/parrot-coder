@@ -342,9 +342,11 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 
 		definitions := toolDefinitions(r.toolSnapshot)
 		turn++
-		instructions := runnerInstructions(epoch.Baseline, scratchPath, turn >= profile.MaxTurns)
-		if turn >= profile.MaxTurns {
+		maxTurnsReached := turn >= profile.MaxTurns
+		instructions := runnerInstructions(epoch.Baseline, scratchPath, maxTurnsReached)
+		if maxTurnsReached {
 			definitions = nil
+			r.publishMaxTurnsReached(profile.MaxTurns)
 		}
 		if r.config.Compactor != nil {
 			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
@@ -469,6 +471,12 @@ func (r *agentSession) statusQuery(ctx context.Context, selected session.AgentSe
 func (r *agentSession) publishStatusPromptInjected() {
 	if r.config.Live != nil {
 		r.config.Live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
+	}
+}
+
+func (r *agentSession) publishMaxTurnsReached(maxTurns int) {
+	if r.config.Live != nil {
+		r.config.Live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventMaxTurnsReached, Text: fmt.Sprintf("Maximum turn limit reached (%d); producing final response", maxTurns)})
 	}
 }
 

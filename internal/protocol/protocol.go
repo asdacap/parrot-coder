@@ -144,6 +144,7 @@ const (
 	EventProviderError         EventType = "provider_error"
 	EventProviderRetry         EventType = "provider_retry"
 	EventStatusPromptInjected  EventType = "status_prompt_injected"
+	EventMaxTurnsReached       EventType = "max_turns_reached"
 	EventToolOutputDelta       EventType = "tool_output_delta"
 	EventCodeDisplay           EventType = "code_display"
 	EventRouterMetadata        EventType = "router_metadata"

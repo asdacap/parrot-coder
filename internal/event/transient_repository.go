@@ -115,6 +115,8 @@ func protocolEvent(sessionID string, item protocol.Event) (v1.Event, bool) {
 		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "provider_retry", Message: item.Text}
 	case protocol.EventStatusPromptInjected:
 		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{Kind: "status_prompt", Message: item.Text}
+	case protocol.EventMaxTurnsReached:
+		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{Kind: "max_turns_reached", Message: item.Text}
 	case protocol.EventRouterMetadata:
 		if item.RouterMetadata == nil {
 			return v1.Event{}, false

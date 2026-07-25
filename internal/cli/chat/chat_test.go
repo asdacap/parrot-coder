@@ -609,6 +609,34 @@ func (a catalogOnlyAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, err
 	return v1.Model{}, nil
 }
 
+func TestWriteStreamStatusFlushesMaxTurnNotice(t *testing.T) {
+	const notice = "↻ Maximum turn limit reached (64); producing final response"
+	for _, test := range []struct {
+		name     string
+		renderer bool
+	}{
+		{name: "renderer", renderer: true},
+		{name: "plain"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			options := streamOptions{stderr: &output}
+			if test.renderer {
+				options.renderer = terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+				if err := options.renderer.Update([]string{"temporary"}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writeStreamStatus(options, notice, true); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), notice+"\n") {
+				t.Fatalf("notice was not flushed: %q", output.String())
+			}
+		})
+	}
+}
+
 func TestEnhancedFinishCommitsAssistantFinalOnce(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, MaxRows: 6})

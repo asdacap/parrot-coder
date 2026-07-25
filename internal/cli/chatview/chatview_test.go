@@ -223,17 +223,23 @@ func TestEventLineRendersAgentAndSubagentEvents(t *testing.T) {
 }
 
 func TestTaskStatusLeadsWithActivityIcon(t *testing.T) {
-	tracker := NewTaskTracker()
-	_, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
-		TaskID: "task-explorer", SessionID: "task-explorer", Kind: "agent", Agent: "explorer", Name: "plan-sandbox-flow",
-	}), false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	data, _ := json.Marshal(v1.SessionStatus{Kind: "status_prompt", Message: "Status prompt injected"})
-	reports, err := tracker.Apply(v1.Event{Type: v1.EventSessionStatus, TaskID: "task-explorer", Data: data}, false)
-	if err != nil || len(reports) != 1 || reports[0].Line != "  ↻ [explorer:plan-sandbox-flow] Status prompt injected" {
-		t.Fatalf("status report = %#v, %v", reports, err)
+	for _, status := range []v1.SessionStatus{
+		{Kind: "status_prompt", Message: "Status prompt injected"},
+		{Kind: "max_turns_reached", Message: "Maximum turn limit reached (32); producing final response"},
+	} {
+		tracker := NewTaskTracker()
+		_, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
+			TaskID: "task-explorer", SessionID: "task-explorer", Kind: "agent", Agent: "explorer", Name: "plan-sandbox-flow",
+		}), false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := json.Marshal(status)
+		reports, err := tracker.Apply(v1.Event{Type: v1.EventSessionStatus, TaskID: "task-explorer", Data: data}, false)
+		want := "  ↻ [explorer:plan-sandbox-flow] " + status.Message
+		if err != nil || len(reports) != 1 || reports[0].Line != want || !reports[0].Terminal || !reports[0].EmitPlain {
+			t.Fatalf("status report = %#v, %v; want %q terminal plain report", reports, err, want)
+		}
 	}
 }
 

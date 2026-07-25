@@ -1616,22 +1616,44 @@ func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {
 	}
 }
 
-func TestRunnerMaxTurnsOmitsTools(t *testing.T) {
-	item := &fakeTool{id: "available"}
-	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
-		if len(request.Tools) != 0 {
-			return nil, errors.New("tools were present on final turn")
-		}
-		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
-	}}
-	profile := Profile{ID: "one-turn", Prompt: "finish", MaxTurns: 1}
-	h := newRunnerHarness(t, fake, []Profile{profile}, item)
-	h.admit(t, "user", "finish", session.DeliverySteer)
-	if err := h.runner.drainOnce(context.Background()); err != nil {
-		t.Fatal(err)
-	}
-	if len(fake.Requests()) != 1 {
-		t.Fatalf("provider turns = %d", len(fake.Requests()))
+func TestRunnerMaxTurnsOmitsToolsAndPublishesNotice(t *testing.T) {
+	for _, maxTurns := range []int{1, 2} {
+		t.Run(fmt.Sprintf("turns_%d", maxTurns), func(t *testing.T) {
+			item := &fakeTool{id: "available"}
+			fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+				if index == 0 && maxTurns == 2 {
+					if len(request.Tools) == 0 {
+						return nil, errors.New("tools were omitted before final turn")
+					}
+					call := protocol.ToolCall{ID: "call-1", Name: item.id, Input: json.RawMessage(`{}`)}
+					return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+				}
+				if len(request.Tools) != 0 {
+					return nil, errors.New("tools were present on final turn")
+				}
+				return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+			}}
+			profile := Profile{ID: "limited", Prompt: "finish", MaxTurns: maxTurns}
+			h := newRunnerHarness(t, fake, []Profile{profile}, item)
+			live := &recordingPublisher{}
+			h.runner.config.Live = live
+			h.admit(t, "user", "finish", session.DeliverySteer)
+			if err := h.runner.drainOnce(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.Requests()) != maxTurns {
+				t.Fatalf("provider turns = %d", len(fake.Requests()))
+			}
+			var notices []protocol.Event
+			for _, event := range live.events {
+				if event.Type == protocol.EventMaxTurnsReached {
+					notices = append(notices, event)
+				}
+			}
+			if len(notices) != 1 || !strings.Contains(notices[0].Text, fmt.Sprint(maxTurns)) {
+				t.Fatalf("max-turn notices = %#v", notices)
+			}
+		})
 	}
 }
 

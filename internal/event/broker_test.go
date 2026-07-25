@@ -152,6 +152,7 @@ func TestLiveBrokerMapsRunnerNotices(t *testing.T) {
 	}{
 		{name: "provider retry", eventType: protocol.EventProviderRetry, kind: "provider_retry", message: "provider fake is overloaded; retrying in 2s (attempt 1)"},
 		{name: "status prompt", eventType: protocol.EventStatusPromptInjected, kind: "status_prompt", message: "Status prompt injected"},
+		{name: "max turns", eventType: protocol.EventMaxTurnsReached, kind: "max_turns_reached", message: "Maximum turn limit reached (64); producing final response"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			broker := event.NewBroker(nil, nil, nil)

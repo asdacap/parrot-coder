@@ -447,7 +447,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			if r.shell != nil {
 				r.shell.commitNotice(message)
 			}
-		case "status_prompt":
+		case "status_prompt", "max_turns_reached":
 			if r.shell != nil {
 				r.shell.commitNotice(status.Message)
 			}
