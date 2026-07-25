@@ -30,14 +30,20 @@ func TestPlanPrepareTurnCreatesWritableEmptyArtifactAndClearsRevisions(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
+	plan, err := r.Get(PlanID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseRule := security.Rule{Path: "/protected", Action: security.ActionDenyWrite}
+	plan.(*planMode).profile.SandboxRules = []security.Rule{baseRule}
 	profile, err := r.PrepareTurn(PlanID, "session")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(profile.SandboxRules) != 1 || profile.SandboxRules[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt, "This mode is read-only except for the designated plan file.") {
+	if len(profile.SandboxRules) != 2 || profile.SandboxRules[0] != baseRule || profile.SandboxRules[1].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt, "This mode is read-only except for the designated plan file.") {
 		t.Fatalf("plan profile = %#v", profile)
 	}
-	path := profile.SandboxRules[0].Path
+	path := profile.SandboxRules[1].Path
 	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
 		t.Fatalf("initial plan artifact = %#v, %v", info, err)
 	}
@@ -51,8 +57,8 @@ func TestPlanPrepareTurnCreatesWritableEmptyArtifactAndClearsRevisions(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(revised.SandboxRules) != 1 || revised.SandboxRules[0] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
-		t.Fatalf("revised sandbox rules = %#v, want allow_write %q", revised.SandboxRules, path)
+	if len(revised.SandboxRules) != 2 || revised.SandboxRules[0] != baseRule || revised.SandboxRules[1] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
+		t.Fatalf("revised sandbox rules = %#v, want base rule then allow_write %q", revised.SandboxRules, path)
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() != 0 || info.Mode().Perm() != 0o600 {
 		t.Fatalf("revised plan artifact = %#v, %v", info, err)

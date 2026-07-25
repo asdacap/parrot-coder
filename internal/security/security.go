@@ -45,24 +45,20 @@ type SecurityProfile interface {
 
 // CanWrite reports whether profile permits writing path. A writable profile
 // permits writes by default, while a read-only profile requires a matching
-// allow_write rule. Matching rules are applied in order.
+// allow_write rule. Later rules have precedence, so the first matching rule
+// found while scanning in reverse decides.
 func CanWrite(profile SecurityProfile, path string) bool {
 	if profile == nil {
 		return true
 	}
-	writable := !profile.IsReadOnly()
-	for _, rule := range profile.Rules() {
-		if !pathWithin(path, rule.Path) {
+	rules := profile.Rules()
+	for i := len(rules) - 1; i >= 0; i-- {
+		if !pathWithin(path, rules[i].Path) {
 			continue
 		}
-		switch rule.Action {
-		case ActionAllowWrite:
-			writable = true
-		case ActionDenyRead, ActionAllowRead, ActionDenyWrite:
-			writable = false
-		}
+		return rules[i].Action == ActionAllowWrite
 	}
-	return writable
+	return !profile.IsReadOnly()
 }
 
 func pathWithin(path, root string) bool {
