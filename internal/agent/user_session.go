@@ -479,12 +479,15 @@ func (s agentToolSession) CreateAgent(ctx context.Context, callerAgent, prompt, 
 	}
 	return agentToolChild{session: child}, nil
 }
-func (s agentToolSession) ResolveAgent(identifier string) (tool.ChildAgent, error) {
+func (s agentToolSession) ResolveAgent(identifier string) (tool.ResolvedAgent, error) {
+	if parent := s.session.Parent(); parent != nil && (identifier == parent.ID() || parent.Name() != "" && identifier == parent.Name()) {
+		return tool.ResolvedAgent{Agent: agentToolChild{session: parent}, Relationship: tool.AgentRelationshipParent}, nil
+	}
 	child, err := s.session.ResolveChild(identifier)
 	if err != nil {
-		return nil, err
+		return tool.ResolvedAgent{}, err
 	}
-	return agentToolChild{session: child}, nil
+	return tool.ResolvedAgent{Agent: agentToolChild{session: child}, Relationship: tool.AgentRelationshipDescendant}, nil
 }
 
 type agentToolChild struct{ session AgentSession }

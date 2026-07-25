@@ -118,6 +118,81 @@ func testAgentTask(task subagent.Task) AgentTask {
 	}
 }
 
+type agentSendTestChild struct {
+	task     AgentTask
+	messages []string
+}
+
+func (c *agentSendTestChild) Status() AgentTask { return c.task }
+func (c *agentSendTestChild) Send(_ context.Context, message string) (AgentTask, string, error) {
+	c.messages = append(c.messages, message)
+	return c.task, "message-parent", nil
+}
+
+type agentSendTestSession struct {
+	targets map[string]ResolvedAgent
+}
+
+func (s *agentSendTestSession) SessionID() string { return "caller-session" }
+func (*agentSendTestSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
+	return nil, errors.New("not implemented")
+}
+func (s *agentSendTestSession) ResolveAgent(identifier string) (ResolvedAgent, error) {
+	target, ok := s.targets[identifier]
+	if !ok {
+		return ResolvedAgent{}, errors.New("not found")
+	}
+	return target, nil
+}
+
+func TestAgentSendTrustRelationshipMatrix(t *testing.T) {
+	for _, testCase := range []struct {
+		name         string
+		caller       string
+		target       string
+		relationship AgentRelationship
+		wantError    bool
+	}{
+		{name: "writable caller to writable descendant", caller: "build", target: "build", relationship: AgentRelationshipDescendant},
+		{name: "read-only caller to read-only descendant", caller: "explorer", target: "explorer", relationship: AgentRelationshipDescendant},
+		{name: "read-only caller to writable descendant", caller: "explorer", target: "build", relationship: AgentRelationshipDescendant, wantError: true},
+		{name: "read-only child to writable direct parent", caller: "explorer", target: "build", relationship: AgentRelationshipParent},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			child := &agentSendTestChild{task: AgentTask{SessionID: "canonical-target", Agent: testCase.target, Status: "running"}}
+			session := &agentSendTestSession{targets: map[string]ResolvedAgent{
+				"friendly-target": {Agent: child, Relationship: testCase.relationship},
+			}}
+			send := &AgentTool{Kind: agentSendID, Session: session, Agents: func(agent string) (bool, error) {
+				return agent == "explorer", nil
+			}}
+			call := CallContext{SessionID: session.SessionID(), Agent: testCase.caller}
+			plan, err := send.Plan(context.Background(), json.RawMessage(`{"session_id":"friendly-target","message":"exact message"}`), call)
+			if testCase.wantError {
+				if err == nil || !strings.Contains(err.Error(), "cannot message writable agent") {
+					t.Fatalf("Plan() error = %v", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			input := plan.Data.(agentInput)
+			if input.SessionID != "canonical-target" || input.Target.Relationship != testCase.relationship {
+				t.Fatalf("planned input = %#v", input)
+			}
+			delete(session.targets, "friendly-target")
+			result, err := send.Execute(context.Background(), plan, call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(child.messages) != 1 || child.messages[0] != "exact message" || result.Metadata["message_id"] != "message-parent" || result.Metadata["session_id"] != "canonical-target" {
+				t.Fatalf("messages = %#v, result = %#v", child.messages, result)
+			}
+		})
+	}
+}
+
 func TestAgentToolsReusableLifecycle(t *testing.T) {
 	executor := newReusableAgentExecutor()
 	manager := subagent.NewManager(executor, subagent.Config{})
@@ -192,7 +267,11 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	if schema := string(send.JSONSchema()); !strings.Contains(schema, `"session_id"`) || !strings.Contains(schema, "friendly name") || strings.Contains(schema, `"task_id"`) {
 		t.Fatalf("agent_send schema = %s", schema)
 	}
-	if description := send.Description(); !strings.Contains(description, "friendly name") {
+	if description := send.Description(); !strings.Contains(description, "direct parent or descendant") || !strings.Contains(description, "friendly name") {
 		t.Fatalf("agent_send description = %q", description)
+	}
+	request, err := send.DescribeRequest(json.RawMessage(`{"session_id":"parent","message":"status"}`))
+	if err != nil || request != `Send input to agent session "parent"` {
+		t.Fatalf("agent_send request = %q, %v", request, err)
 	}
 }

@@ -335,8 +335,10 @@ Parrot includes the reusable child-agent profiles `explorer`, `worker`, and
 `review`. Start them with `agent_spawn`, which returns the child `session_id`.
 That child session ID is also the agent task's canonical ID. `agent_send`
 accepts either that ID or the friendly name assigned by `agent_spawn` as its
-`session_id`. Child agents automatically notify their direct parent session on
-completion. Shell tasks use process IDs with `wait_process`, `write_stdin`, and
+`session_id`. A child may also use `agent_send` with its direct parent's
+canonical ID or non-empty friendly name; siblings and other ancestors are not
+accessible. Completion notifications to the direct parent remain automatic.
+Shell tasks use process IDs with `wait_process`, `write_stdin`, and
 `task_interrupt`, and automatically notify their owning session on completion.
 `task_list_active` discovers both kinds using those same identities. Use
 `explorer` for specific, well-scoped codebase

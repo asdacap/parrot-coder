@@ -25,8 +25,8 @@ func (builtinTestAgentSession) SessionID() string { return "session" }
 func (builtinTestAgentSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
 	return nil, errors.New("not implemented")
 }
-func (builtinTestAgentSession) ResolveAgent(string) (ChildAgent, error) {
-	return nil, errors.New("not implemented")
+func (builtinTestAgentSession) ResolveAgent(string) (ResolvedAgent, error) {
+	return ResolvedAgent{}, errors.New("not implemented")
 }
 
 func TestBuiltinProvidersDefinitions(t *testing.T) {

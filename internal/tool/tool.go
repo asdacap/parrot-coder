@@ -97,12 +97,28 @@ func (d Descriptor) clone() Descriptor {
 	return d
 }
 
+// AgentRelationship describes how an agent message target is related to the
+// session whose tools are resolving it.
+type AgentRelationship string
+
+const (
+	AgentRelationshipParent     AgentRelationship = "parent"
+	AgentRelationshipDescendant AgentRelationship = "descendant"
+)
+
+// ResolvedAgent retains both the canonical target and the relationship used to
+// authorize access to it.
+type ResolvedAgent struct {
+	Agent        ChildAgent
+	Relationship AgentRelationship
+}
+
 // AgentSession is the agent-session capability passed to tool providers. It is
 // deliberately owned by this package so tool does not depend on agent.
 type AgentSession interface {
 	SessionID() string
 	CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error)
-	ResolveAgent(string) (ChildAgent, error)
+	ResolveAgent(string) (ResolvedAgent, error)
 }
 
 type ToolProvider interface {
