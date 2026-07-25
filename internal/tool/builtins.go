@@ -22,7 +22,7 @@ import (
 type BuiltinServices struct {
 	Changes   *change.Service
 	Processes *process.Runner
-	Monitor   ProcessMonitor
+	Monitor   AgentMonitor
 	Tasks     TaskController
 	Todos     *session.TodoService
 	Goals     *session.GoalService

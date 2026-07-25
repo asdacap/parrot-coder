@@ -12,7 +12,6 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
-	"github.com/amirulashraf/parrot-coder/internal/process"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 )
 
@@ -48,10 +47,10 @@ type activeMonitor struct {
 	request Request
 }
 
-// Service owns process monitors independently of the tool calls which create
-// them. A monitor timeout only stops observation; it never stops the process.
+// Service owns child-agent monitors independently of the tool calls which
+// create them. A monitor timeout only stops observation; it never stops the
+// agent.
 type Service struct {
-	processes *process.Runner
 	tasks     *managedtask.Manager
 	lifecycle lifecyclePublisher
 
@@ -65,10 +64,10 @@ type Service struct {
 	wg     sync.WaitGroup
 }
 
-func NewService(processes *process.Runner, tasks *managedtask.Manager, lifecycle lifecyclePublisher) *Service {
+func NewService(tasks *managedtask.Manager, lifecycle lifecyclePublisher) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		processes: processes, tasks: tasks, lifecycle: lifecycle, ctx: ctx, cancel: cancel,
+		tasks: tasks, lifecycle: lifecycle, ctx: ctx, cancel: cancel,
 		active: make(map[monitorKey]*activeMonitor), paused: make(map[string]int),
 	}
 }
@@ -129,15 +128,15 @@ func (s *Service) observe(sessionID, taskID string) (taskWait, error) {
 	if err != nil {
 		return nil, err
 	}
+	if item.Snapshot().Kind != managedtask.KindAgent {
+		return nil, managedtask.ErrWrongKind
+	}
 	return func(ctx context.Context) (string, error) {
 		completion, err := item.Wait(ctx)
 		if err != nil {
 			return "", err
 		}
-		content := fmt.Sprintf("Task monitor notification: %s task %s finished with status %s.", completion.Task.Kind, completion.Task.ID, completion.Task.Status)
-		if completion.ExitCode != nil {
-			content = fmt.Sprintf("Task monitor notification: shell task %s exited with code %d.", completion.Task.ID, *completion.ExitCode)
-		}
+		content := fmt.Sprintf("Task monitor notification: agent task %s finished with status %s.", completion.Task.ID, completion.Task.Status)
 		if completion.Output != "" {
 			content += "\n\n" + completion.Output
 		}
@@ -257,22 +256,6 @@ func (s *Service) ResumeSession(sessionID string) {
 		s.paused[sessionID]--
 	}
 	s.mu.Unlock()
-}
-
-// InterruptSession delegates retained-process interruption to the runner.
-func (s *Service) InterruptSession(sessionID string) error {
-	if s == nil || s.processes == nil {
-		return errors.New("monitor: process runner is unavailable")
-	}
-	return s.processes.InterruptSession(sessionID)
-}
-
-// DeleteSession delegates process-owned session cleanup to the runner.
-func (s *Service) DeleteSession(sessionID string) error {
-	if s == nil || s.processes == nil {
-		return errors.New("monitor: process runner is unavailable")
-	}
-	return s.processes.DeleteSession(sessionID)
 }
 
 // Close cancels outstanding monitors and waits for their goroutines to exit.

@@ -458,7 +458,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		data, _ := json.Marshal(payload)
 		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
 	})
-	monitors := monitor.NewService(processes, tasks, live)
+	monitors := monitor.NewService(tasks, live)
 	result.monitors = monitors
 	tools := tool.NewRegistry()
 	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks))
@@ -529,6 +529,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
 	}
 	monitors.SetAgentSessions(agentSessionsAdapter{userSession})
+	processes.SetAgentSessions(processAgentSessionsAdapter{userSession})
 	subagentExecutor.userSession = userSession
 	live.SetSessionHierarchy(userSession)
 	userSession.AddChildCreatedObserver(childSessionObserver{live})
@@ -536,7 +537,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	backend := &httpapi.DomainBackend{
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, AgentSessions: userSession, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
-		Events: live, DefaultSelection: defaultSelection, Processes: monitors,
+		Events: live, DefaultSelection: defaultSelection, Processes: processLifecycle{monitors: monitors, processes: processes},
 		ProviderResolver: providerRegistry, Tools: toolSnapshot,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
@@ -749,9 +750,42 @@ func (a *App) Close() error {
 	return a.closeErr
 }
 
+type processLifecycle struct {
+	monitors  *monitor.Service
+	processes *process.Runner
+}
+
+func (l processLifecycle) SuspendSession(ctx context.Context, sessionID string) error {
+	if err := l.processes.SuspendSession(ctx, sessionID); err != nil {
+		return err
+	}
+	if err := l.monitors.SuspendSession(ctx, sessionID); err != nil {
+		l.processes.ResumeSession(sessionID)
+		return err
+	}
+	return nil
+}
+
+func (l processLifecycle) ResumeSession(sessionID string) {
+	l.monitors.ResumeSession(sessionID)
+	l.processes.ResumeSession(sessionID)
+}
+func (l processLifecycle) InterruptSession(sessionID string) error {
+	return l.processes.InterruptSession(sessionID)
+}
+func (l processLifecycle) DeleteSession(sessionID string) error {
+	return l.processes.DeleteSession(sessionID)
+}
+
 type agentSessionsAdapter struct{ sessions agent.UserSession }
 
 func (a agentSessionsAdapter) Get(sessionID string) monitor.AgentSession {
+	return a.sessions.Get(sessionID)
+}
+
+type processAgentSessionsAdapter struct{ sessions agent.UserSession }
+
+func (a processAgentSessionsAdapter) Get(sessionID string) process.AgentSession {
 	return a.sessions.Get(sessionID)
 }
 

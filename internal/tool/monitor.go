@@ -10,18 +10,18 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/monitor"
 )
 
-const monitorSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Process ID for a shell or child session ID for an agent."},"timeout_ms":{"type":"integer","minimum":0,"description":"Maximum time to monitor in milliseconds. Zero or omitted waits without a timeout."}},"required":["task_id"],"additionalProperties":false}`
+const monitorSchema = `{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Child session ID for an agent task."},"timeout_ms":{"type":"integer","minimum":0,"description":"Maximum time to monitor in milliseconds. Zero or omitted waits without a timeout."}},"required":["task_id"],"additionalProperties":false}`
 
 const maxMonitorTimeoutMS = int64(^uint64(0)>>1) / int64(time.Millisecond)
 
-// ProcessMonitor starts application-owned process monitors.
-type ProcessMonitor interface {
+// AgentMonitor starts application-owned child-agent monitors.
+type AgentMonitor interface {
 	Start(monitor.Request) error
 }
 
 type MonitorTool struct {
 	BasePresentation
-	Service ProcessMonitor
+	Service AgentMonitor
 }
 
 type monitorInput struct {
@@ -29,7 +29,7 @@ type monitorInput struct {
 	TimeoutMS int64  `json:"timeout_ms"`
 }
 
-func NewMonitorTool(service ProcessMonitor) *MonitorTool { return &MonitorTool{Service: service} }
+func NewMonitorTool(service AgentMonitor) *MonitorTool { return &MonitorTool{Service: service} }
 
 func (*MonitorTool) ID() string { return "monitor" }
 func (*MonitorTool) Presentation() Presentation {
@@ -40,7 +40,7 @@ func (*MonitorTool) Presentation() Presentation {
 }
 
 func (*MonitorTool) Description() string {
-	return "Monitor a shell process or child agent session in the background and steer a notification into the caller session when it exits or the monitor times out. task_id is the process ID for a shell or the child session ID for an agent."
+	return "Monitor a child agent session in the background and steer a notification into the caller session when it exits or the monitor times out. task_id is the child session ID for an agent task."
 }
 
 func (*MonitorTool) JSONSchema() json.RawMessage { return json.RawMessage(monitorSchema) }
