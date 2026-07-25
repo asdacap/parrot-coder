@@ -79,9 +79,9 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 		return result
 	}
 
-	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer"}`)
+	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer","name":"code-review"}`)
 	sessionID, ok := spawned.Metadata["session_id"].(string)
-	if !ok || sessionID == "" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != subagent.StatusRunning {
+	if !ok || sessionID == "" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != subagent.StatusRunning {
 		t.Fatalf("spawned = %#v", spawned)
 	}
 	first := <-executor.runs
@@ -89,7 +89,7 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 		t.Fatalf("first execution = %#v, session ID = %q", first, sessionID)
 	}
 	id := first.SessionID
-	sent := execute(agentSendID, `{"session_id":"`+sessionID+`","message":"focus"}`)
+	sent := execute(agentSendID, `{"session_id":"code-review","message":"focus"}`)
 	if sent.Metadata["message_id"] != "message-1" || sent.Metadata["session_id"] != sessionID || <-executor.sends != sessionID+":focus" {
 		t.Fatalf("sent = %#v", sent)
 	}
@@ -97,7 +97,7 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	if _, err := manager.Await(context.Background(), "root", id); err != nil {
 		t.Fatal(err)
 	}
-	followed := execute(agentSendID, `{"session_id":"`+sessionID+`","message":"continue"}`)
+	followed := execute(agentSendID, `{"session_id":"code-review","message":"continue"}`)
 	if followed.Metadata["turn"] != 2 || followed.Metadata["status"] != subagent.StatusRunning {
 		t.Fatalf("followed = %#v", followed)
 	}
@@ -123,7 +123,10 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	if len(presentation.Label.Fields) != 2 || presentation.Label.Fields[0].Names[0] != "session_id" || !presentation.Label.Fields[0].TaskName {
 		t.Fatalf("agent_send presentation = %#v", presentation)
 	}
-	if schema := string(send.JSONSchema()); !strings.Contains(schema, `"session_id"`) || strings.Contains(schema, `"task_id"`) {
+	if schema := string(send.JSONSchema()); !strings.Contains(schema, `"session_id"`) || !strings.Contains(schema, "friendly name") || strings.Contains(schema, `"task_id"`) {
 		t.Fatalf("agent_send schema = %s", schema)
+	}
+	if description := send.Description(); !strings.Contains(description, "friendly name") {
+		t.Fatalf("agent_send description = %q", description)
 	}
 }
