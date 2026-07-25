@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	maxRenderedDiffRows  = 10
+	maxRenderedDiffRows  = 100
 	maxDiffSourceBytes   = 512 * 1024
 	minSideBySideColumns = 40
 )

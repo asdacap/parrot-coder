@@ -65,8 +65,8 @@ func TestFormatDiffPreservesMultipleHunkBoundaries(t *testing.T) {
 
 func TestFormatDiffBoundsWidthAndFallback(t *testing.T) {
 	var many strings.Builder
-	many.WriteString("--- old/a.txt\n+++ new/a.txt\n@@ -1,12 +1,12 @@\n")
-	for index := 0; index < 11; index++ {
+	many.WriteString("--- old/a.txt\n+++ new/a.txt\n@@ -1,102 +1,102 @@\n")
+	for index := 0; index < 101; index++ {
 		many.WriteString(" line\t界界界界界界\n")
 	}
 	many.WriteString("-old\n+new\n")
@@ -79,8 +79,8 @@ func TestFormatDiffBoundsWidthAndFallback(t *testing.T) {
 		wantText   string
 		wantGutter bool
 	}{
-		{name: "bounded side by side", raw: many.String(), columns: 41, wantRows: 11, wantText: "4 diff rows omitted", wantGutter: true},
-		{name: "narrow unified", raw: testTraditionalDiff, columns: 20, wantRows: 11, wantText: "3 omitted", wantGutter: false},
+		{name: "bounded side by side", raw: many.String(), columns: 41, wantRows: 101, wantText: "4 diff rows omitted", wantGutter: true},
+		{name: "narrow unified", raw: many.String(), columns: 20, wantRows: 101, wantText: "6 omitted", wantGutter: false},
 		{name: "malformed unified", raw: "--- a\n+++ b\n@@ broken\n-old\n+new", columns: 60, wantRows: 5, wantText: "@@ broken", wantGutter: false},
 	}
 	for _, test := range tests {
