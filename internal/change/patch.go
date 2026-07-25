@@ -415,7 +415,7 @@ func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) (int,
 			}
 		}
 		if count > 1 {
-			return -1, fmt.Errorf("%w: found %d matches, include more surrounding lines", ErrConflict, count)
+			return -1, ambiguousPatchMatchError(pattern, count)
 		}
 		if count == 1 {
 			return found, nil
@@ -425,13 +425,28 @@ func seekPatchSequence(lines, pattern []string, start int, endOfFile bool) (int,
 }
 
 func failedPatchMatchError(pattern []string) error {
-	const maxMatchBytes = 1 << 10
+	return patchMatchError(pattern, "failed to find this SEARCH block")
+}
+
+func ambiguousPatchMatchError(pattern []string, count int) error {
+	return patchMatchError(pattern, fmt.Sprintf("this SEARCH block matched %d locations; include more surrounding lines", count))
+}
+
+func patchMatchError(pattern []string, message string) error {
+	const maxMatchBytes = 8 << 10
 	match := strings.Join(pattern, "\n")
+	omitted := 0
 	if len(match) > maxMatchBytes {
-		omitted := len(match) - maxMatchBytes
-		return fmt.Errorf("%w: failed to find expected lines %q (... %d bytes omitted)", ErrConflict, match[:maxMatchBytes], omitted)
+		omitted = len(match) - maxMatchBytes
+		match = match[:maxMatchBytes]
 	}
-	return fmt.Errorf("%w: failed to find expected lines %q", ErrConflict, match)
+	var detail strings.Builder
+	fmt.Fprintf(&detail, "%s:\n%s\n%s", message, patchSearchMarker, match)
+	if omitted > 0 {
+		fmt.Fprintf(&detail, "\n... %d bytes omitted", omitted)
+	}
+	fmt.Fprintf(&detail, "\n%s", strings.Repeat("=", 7))
+	return fmt.Errorf("%w: %s", ErrConflict, detail.String())
 }
 
 func patchSequenceEqual(lines, pattern []string, equal func(string, string) bool) bool {

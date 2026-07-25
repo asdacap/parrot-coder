@@ -238,10 +238,11 @@ func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 		maxErrorLength int
 	}{
 		{
-			name:    "repeated line is ambiguous",
-			before:  []byte("target\nmiddle\ntarget\n"),
-			blocks:  aiderBlock("", "target", "CHANGED"),
-			wantErr: true,
+			name:      "repeated line is ambiguous",
+			before:    []byte("target\nmiddle\ntarget\n"),
+			blocks:    aiderBlock("", "target", "CHANGED"),
+			wantErr:   true,
+			wantMatch: "this SEARCH block matched 2 locations; include more surrounding lines:\n<<<<<<< SEARCH\ntarget\n=======",
 		},
 		{
 			name:    "surrounding lines disambiguate",
@@ -277,15 +278,15 @@ func TestPatchRejectsAmbiguousSearch(t *testing.T) {
 			before:    []byte("one\ntwo\n"),
 			blocks:    aiderBlock("", "missing\nlines", "changed"),
 			wantErr:   true,
-			wantMatch: `"missing\nlines"`,
+			wantMatch: "failed to find this SEARCH block:\n<<<<<<< SEARCH\nmissing\nlines\n=======",
 		},
 		{
 			name:           "large missing search is bounded",
 			before:         []byte("existing\n"),
-			blocks:         aiderBlock("", strings.Repeat("x", (1<<10)+100), "changed"),
+			blocks:         aiderBlock("", strings.Repeat("x", (8<<10)+100), "changed"),
 			wantErr:        true,
 			wantMatch:      "100 bytes omitted",
-			maxErrorLength: (4 << 10) + 256,
+			maxErrorLength: (8 << 10) + 256,
 		},
 	}
 	for _, tc := range tests {

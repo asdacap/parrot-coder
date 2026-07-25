@@ -254,15 +254,31 @@ func TestApplyPatchHonorsOrderedSecurityRules(t *testing.T) {
 	}
 }
 
-func TestApplyPatchReportsMissingSearchMatch(t *testing.T) {
+func TestApplyPatchReportsProblematicSearchBlock(t *testing.T) {
 	ctx, ws, changes := workspaceToolHarness(t)
-	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("existing\ncontent\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("existing\ncontent\nexisting\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	raw := json.RawMessage(`{"patchText":"file\n<<<<<<< SEARCH\nmissing\nmatch\n=======\nreplacement\n>>>>>>> REPLACE\n"}`)
-	_, err := NewApplyPatchTool(changes).Plan(ctx, raw, CallContext{Workspace: ws})
-	if !errors.Is(err, change.ErrConflict) || !strings.Contains(err.Error(), `"missing\nmatch"`) {
-		t.Fatalf("error = %v, want ErrConflict identifying the missing match", err)
+	tests := []struct {
+		name   string
+		search string
+		want   string
+	}{
+		{name: "missing", search: "missing\nmatch", want: "failed to find this SEARCH block:\n<<<<<<< SEARCH\nmissing\nmatch\n======="},
+		{name: "ambiguous", search: "existing", want: "this SEARCH block matched 2 locations; include more surrounding lines:\n<<<<<<< SEARCH\nexisting\n======="},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			patchText := "file\n<<<<<<< SEARCH\n" + tc.search + "\n=======\nreplacement\n>>>>>>> REPLACE\n"
+			raw, err := json.Marshal(map[string]string{"patchText": patchText})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = NewApplyPatchTool(changes).Plan(ctx, raw, CallContext{Workspace: ws})
+			if !errors.Is(err, change.ErrConflict) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want ErrConflict identifying the problematic SEARCH block", err)
+			}
+		})
 	}
 }
 
