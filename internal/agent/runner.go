@@ -126,10 +126,15 @@ type AgentSessionConfig struct {
 type agentSession struct {
 	dto             session.AgentSessionDto
 	parent          AgentSession
+	user            *userSession
 	config          AgentSessionConfig
 	securityProfile *agentSessionSecurityProfile
 	mu              sync.Mutex
+	childOp         sync.Mutex
+	child           *childState
 	drain           *drainState
+	childCreations  int
+	removed         bool
 	childTurns      childTurnSemaphore
 	observers       []LifecycleObserver
 	execute         func(context.Context) error

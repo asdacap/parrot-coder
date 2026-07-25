@@ -27,7 +27,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/session"
-	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
@@ -1003,13 +1002,13 @@ providers:
 	}
 }
 
-func TestReportSubagentEventConvertsUsageAndToolCalls(t *testing.T) {
-	var progress []subagent.Progress
-	report := func(item subagent.Progress) { progress = append(progress, item) }
+func TestReportChildEventConvertsUsageAndToolCalls(t *testing.T) {
+	var progress []agent.ChildProgress
+	report := func(item agent.ChildProgress) { progress = append(progress, item) }
 	usage, _ := json.Marshal(v1.SessionStatus{Kind: "usage", Usage: &v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}})
-	reportSubagentEvent(report, v1.Event{Type: v1.EventSessionStatus, Data: usage})
+	reportChildEvent(report, v1.Event{Type: v1.EventSessionStatus, Data: usage})
 	toolCall, _ := json.Marshal(v1.SessionStatus{Kind: "tool_call_complete"})
-	reportSubagentEvent(report, v1.Event{Type: v1.EventSessionStatus, Data: toolCall})
+	reportChildEvent(report, v1.Event{Type: v1.EventSessionStatus, Data: toolCall})
 	if len(progress) != 2 || progress[0].Usage.TotalTokens != 12 || progress[0].Usage.CachedInputTokens != 3 || progress[1].ToolUses != 1 {
 		t.Fatalf("progress = %#v", progress)
 	}
@@ -1041,18 +1040,18 @@ func TestBrokerFlattensTaskAttribution(t *testing.T) {
 	}
 }
 
-func TestPublishSubagentLifecycleEmitsFlatTaskEvents(t *testing.T) {
+func TestPublishChildLifecycleEmitsFlatTaskEvents(t *testing.T) {
 	live := event.NewBroker(nil, nil)
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
 
-	publishSubagentLifecycle(live, subagent.LifecycleEvent{Kind: subagent.LifecycleStart, Task: subagent.Task{SessionID: "child", ParentSession: "parent", Agent: "explore"}})
+	publishChildLifecycle(live, agent.ChildLifecycleEvent{Kind: agent.ChildLifecycleStart, Task: agent.ChildTask{SessionID: "child", ParentSession: "parent", Agent: "explore"}})
 	started := decodeTaskEvent(t, <-parentEvents)
 	if started.TaskID != "child" || started.SessionID != "child" || started.ParentSessionID != "parent" || started.Kind != "agent" || started.Agent != "explore" {
 		t.Fatalf("start = %#v", started)
 	}
 
-	publishSubagentLifecycle(live, subagent.LifecycleEvent{Kind: subagent.LifecycleFinished, Task: subagent.Task{SessionID: "child", ParentSession: "parent", Agent: "explore", Status: subagent.StatusFailed, Error: "boom"}})
+	publishChildLifecycle(live, agent.ChildLifecycleEvent{Kind: agent.ChildLifecycleFinished, Task: agent.ChildTask{SessionID: "child", ParentSession: "parent", Agent: "explore", Status: agent.ChildStatusFailed, Error: "boom"}})
 	finished := decodeTaskEvent(t, <-parentEvents)
 	if finished.TaskID != "child" || finished.SessionID != "child" || finished.Status != "failed" || finished.Error != "boom" {
 		t.Fatalf("finished = %#v", finished)
@@ -1076,9 +1075,9 @@ func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
 	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent"}})
 	parentEvents, unsubscribeParent := live.Subscribe("parent", 2)
 	defer unsubscribeParent()
-	var progress []subagent.Progress
+	var progress []agent.ChildProgress
 	stop := live.ObserveTransient("child", func(item v1.Event) {
-		reportSubagentEvent(func(item subagent.Progress) { progress = append(progress, item) }, item)
+		reportChildEvent(func(item agent.ChildProgress) { progress = append(progress, item) }, item)
 	})
 	defer stop()
 

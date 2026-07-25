@@ -9,9 +9,13 @@ import (
 	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 )
 
-var ErrAgentSessionActive = errors.New("agent: session is active")
+var (
+	ErrAgentSessionActive  = errors.New("agent: session is active")
+	ErrAgentSessionRemoved = errors.New("agent: session was removed")
+)
 
 // ChildSession is the canonical relationship between a child agent session and
 // its direct parent session.
@@ -29,32 +33,47 @@ type ChildCreatedObserver interface {
 // UserSession is the runtime aggregate for a user. It owns the agent runtimes
 // participating in that user's session hierarchy.
 type UserSession interface {
-	TryAcquireAgentTurn() (ChildTurnPermit, bool)
-	CreateChild(context.Context, AgentSession, ChildSessionRequest) (AgentSession, error)
 	AddChildCreatedObserver(ChildCreatedObserver)
 	ChildRelation(sessionID string) (string, bool)
 	ChildSessions(parentSessionID string) []ChildSession
 	HasChildSessions(parentSessionID string) bool
-	ForgetChild(sessionID string) error
-	DiscardChild(context.Context, string) error
 	Get(sessionID string) AgentSession
 	Lookup(sessionID string) (AgentSession, bool)
 	Active() []Active
 	Interrupt(context.Context, string) error
 	Status(sessionID string) Status
 	Remove(sessionID string) error
+	Shutdown(context.Context) error
 }
 
 type UserSessionConfig struct {
 	AgentSession                     AgentSessionConfig
 	MaxConcurrentChildTurns          int
 	MaxConcurrentChildTurnsPerParent int
+	MaxChildDepth                    int
+	MaxChildTasks                    int
+	MaxChildPromptBytes              int
+	MaxChildResultBytes              int
+	ChildAgentIdentity               func(string) string
+	ChildAgentRecursionLimit         func(string) int
+	ChildNameGenerator               func() string
+	ChildTasks                       *managedtask.Manager
+	ProjectID                        string
+	DefaultSelection                 session.Selection
+	ObserveChildProgress             func(sessionID string, report func(ChildProgress)) func()
+	OnChildProgress                  func(ChildTask)
+	OnChildComplete                  func(ChildTask)
+	OnChildLifecycle                 func(ChildLifecycleEvent)
+	OnChildDiscard                   func(string)
 }
 
 type userSession struct {
 	config     UserSessionConfig
 	repository *agentSessionRepository
 	childTurns childTurnSemaphore
+	childMu    sync.Mutex
+	closed     bool
+	workers    sync.WaitGroup
 }
 
 var _ UserSession = (*userSession)(nil)
@@ -68,15 +87,10 @@ func NewUserSession(ctx context.Context, config UserSessionConfig, observers ...
 	if err != nil {
 		return nil, err
 	}
-	return &userSession{config: config, repository: repository, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}, nil
-}
-
-func (s *userSession) TryAcquireAgentTurn() (ChildTurnPermit, bool) {
-	return s.childTurns.tryAcquire()
-}
-
-func (s *userSession) CreateChild(ctx context.Context, parent AgentSession, request ChildSessionRequest) (AgentSession, error) {
-	return s.repository.CreateChild(ctx, parent, request)
+	created := &userSession{config: config, repository: repository, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
+	repository.user = created
+	applyChildDefaults(&created.config)
+	return created, nil
 }
 
 func (s *userSession) AddChildCreatedObserver(observer ChildCreatedObserver) {
@@ -95,14 +109,6 @@ func (s *userSession) HasChildSessions(parentSessionID string) bool {
 	return s.repository.HasChildSessions(parentSessionID)
 }
 
-func (s *userSession) ForgetChild(sessionID string) error {
-	return s.repository.ForgetChild(sessionID)
-}
-
-func (s *userSession) DiscardChild(ctx context.Context, sessionID string) error {
-	return s.repository.DiscardChild(ctx, sessionID)
-}
-
 func (s *userSession) Get(sessionID string) AgentSession { return s.repository.Get(sessionID) }
 
 func (s *userSession) Lookup(sessionID string) (AgentSession, bool) {
@@ -119,10 +125,13 @@ func (s *userSession) Status(sessionID string) Status { return s.repository.Stat
 
 func (s *userSession) Remove(sessionID string) error { return s.repository.Remove(sessionID) }
 
+func (s *userSession) Shutdown(ctx context.Context) error { return s.shutdownChildren(ctx) }
+
 // agentSessionRepository owns the one runtime AgentSession object associated
 // with each persisted session ID. Persistent state remains in SessionRuntime.
 type agentSessionRepository struct {
 	mu                      sync.Mutex
+	user                    *userSession
 	config                  AgentSessionConfig
 	observers               []LifecycleObserver
 	childObservers          []ChildCreatedObserver
@@ -281,19 +290,40 @@ func (r *agentSessionRepository) HasChildSessions(parentSessionID string) bool {
 	return false
 }
 
+// ManagedChildTasks returns the retained children created and managed by this
+// user-session lifetime. Persisted historical relations remain available for
+// hierarchy traversal, but do not consume the managed task retention limit.
+func (r *agentSessionRepository) ManagedChildTasks() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	count := 0
+	for _, runtime := range r.sessions {
+		if runtime.child != nil {
+			count++
+		}
+	}
+	return count
+}
+
 // ForgetChild removes the retained child runtime and its relationship.
 func (r *agentSessionRepository) ForgetChild(sessionID string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	if runtime := r.sessions[sessionID]; runtime != nil {
-		if runtime.Status() != StatusIdle {
-			return ErrAgentSessionActive
+	runtime := r.sessions[sessionID]
+	r.mu.Unlock()
+	remove := func() error {
+		r.mu.Lock()
+		if r.sessions[sessionID] == runtime {
+			delete(r.sessions, sessionID)
 		}
-		delete(r.sessions, sessionID)
+		delete(r.children, sessionID)
+		delete(r.dtos, sessionID)
+		r.mu.Unlock()
+		return nil
 	}
-	delete(r.children, sessionID)
-	delete(r.dtos, sessionID)
-	return nil
+	if runtime == nil {
+		return remove()
+	}
+	return runtime.removeIfIdle(remove)
 }
 
 // DiscardChild removes a child runtime, relationship, and durable session when
@@ -347,7 +377,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	if existing := r.sessions[dto.ID]; existing != nil {
 		return existing
 	}
-	created := &agentSession{dto: dto, parent: parent, config: r.config, childTurns: newChildTurnSemaphore(r.maxConcurrentChildTurns), observers: r.observers}
+	created := &agentSession{dto: dto, parent: parent, user: r.user, config: r.config, childTurns: newChildTurnSemaphore(r.maxConcurrentChildTurns), observers: r.observers}
 	r.sessions[dto.ID] = created
 	r.dtos[dto.ID] = dto
 	return created
@@ -397,19 +427,21 @@ func (r *agentSessionRepository) Status(sessionID string) Status {
 func (r *agentSessionRepository) Remove(sessionID string) error {
 	r.mu.Lock()
 	item := r.sessions[sessionID]
-	if item != nil && item.Status() != StatusIdle {
-		r.mu.Unlock()
-		return ErrAgentSessionActive
-	}
-	if r.config.StateDirectories != nil {
-		if err := r.config.StateDirectories.Remove(sessionID); err != nil {
-			r.mu.Unlock()
-			return err
-		}
-	}
-	if r.sessions[sessionID] == item {
-		delete(r.sessions, sessionID)
-	}
 	r.mu.Unlock()
-	return nil
+	if item == nil {
+		return nil
+	}
+	return item.removeIfIdle(func() error {
+		if r.config.StateDirectories != nil {
+			if err := r.config.StateDirectories.Remove(sessionID); err != nil {
+				return err
+			}
+		}
+		r.mu.Lock()
+		if r.sessions[sessionID] == item {
+			delete(r.sessions, sessionID)
+		}
+		r.mu.Unlock()
+		return nil
+	})
 }

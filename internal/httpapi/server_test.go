@@ -330,10 +330,6 @@ func (c *testSessionController) Get(id string) agent.AgentSession {
 	return testAgentSession{controller: c, id: id}
 }
 
-type testChildTurnPermit struct{}
-
-func (testChildTurnPermit) Release() {}
-
 type testAgentSession struct {
 	controller *testSessionController
 	id         string
@@ -342,9 +338,23 @@ type testAgentSession struct {
 func (s testAgentSession) ID() string                 { return s.id }
 func (s testAgentSession) Name() string               { return "" }
 func (s testAgentSession) Parent() agent.AgentSession { return nil }
-func (s testAgentSession) TryAcquireChildTurn() (agent.ChildTurnPermit, bool) {
-	return testChildTurnPermit{}, true
+func (s testAgentSession) CreateChild(context.Context, agent.ChildRequest) (agent.AgentSession, error) {
+	return nil, errors.New("not implemented")
 }
+func (s testAgentSession) ChildTask() (agent.ChildTask, bool) { return agent.ChildTask{}, false }
+func (s testAgentSession) Observe() (agent.ChildTurnObserver, error) {
+	return nil, errors.New("not implemented")
+}
+func (s testAgentSession) ResolveChild(string) (agent.AgentSession, error) {
+	return nil, errors.New("not implemented")
+}
+func (s testAgentSession) SendChild(context.Context, agent.ChildRequest) (agent.ChildTask, string, error) {
+	return agent.ChildTask{}, "", errors.New("not implemented")
+}
+func (s testAgentSession) InterruptChild(context.Context) (agent.ChildTask, error) {
+	return agent.ChildTask{}, errors.New("not implemented")
+}
+func (s testAgentSession) Forget() error { return errors.New("not implemented") }
 func (s testAgentSession) Prompt(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")
 }
