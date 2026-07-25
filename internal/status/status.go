@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/task"
 )
 
@@ -74,6 +76,38 @@ func (p ActiveTasks) Observe(_ context.Context, query Query) (Observation, error
 			details = append(details, fmt.Sprintf("turn: %d", item.Turn), fmt.Sprintf("depth: %d", item.Depth))
 		}
 		lines = append(lines, fmt.Sprintf("- %s (%s)", item.ID, strings.Join(details, ", ")))
+	}
+	return Observation{Available: true, Text: strings.Join(lines, "\n")}, nil
+}
+
+type queueLister interface {
+	List(sessionID string) ([]queue.Info, error)
+}
+
+type Queues struct{ queues queueLister }
+
+func NewQueues(queues queueLister) Queues { return Queues{queues: queues} }
+
+func (Queues) Key() string { return "runtime:queues" }
+func (p Queues) Observe(_ context.Context, query Query) (Observation, error) {
+	if p.queues == nil {
+		return Observation{Available: true, Text: "Queues: none"}, nil
+	}
+	items, err := p.queues.List(query.SessionID)
+	if err != nil {
+		return Observation{}, err
+	}
+	if len(items) == 0 {
+		return Observation{Available: true, Text: "Queues: none"}, nil
+	}
+	lines := make([]string, 1, len(items)+1)
+	lines[0] = "Queues:"
+	for _, item := range items {
+		line := fmt.Sprintf("- %s (%d items", item.Name, item.Size)
+		if item.Description != "" {
+			line += ", description: " + strconv.Quote(item.Description)
+		}
+		lines = append(lines, line+")")
 	}
 	return Observation{Available: true, Text: strings.Join(lines, "\n")}, nil
 }

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -275,6 +276,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			profile = turnProfile.Profile()
 			r.securityProfile = newAgentSessionSecurityProfile(turnProfile)
 			r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
+			r.securityProfile.AddCapability(security.Rule{Path: stateDirectory.QueuesPath(), Action: security.ActionAllowRead})
 		}
 		providerClient, model, err := r.config.Providers.Resolve(selected.Provider, selected.Model)
 		if err != nil {
@@ -683,8 +685,9 @@ func overflowMessage(message string) bool {
 }
 
 func runnerInstructions(systemPrompt, summaryPrompt, scratchPath string, final bool) string {
-	sections := make([]string, 0, 4)
-	for _, section := range []string{systemPrompt, summaryPrompt, "Scratch directory: " + scratchPath, finalTurnInstructions(final)} {
+	sections := make([]string, 0, 5)
+	queuesPath := filepath.Join(filepath.Dir(scratchPath), "queues")
+	for _, section := range []string{systemPrompt, summaryPrompt, "Scratch directory: " + scratchPath, "Queues directory (read-only; use queue tools to modify): " + queuesPath, finalTurnInstructions(final)} {
 		if section != "" {
 			sections = append(sections, section)
 		}

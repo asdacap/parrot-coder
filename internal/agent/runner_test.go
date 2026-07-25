@@ -80,7 +80,7 @@ func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
 	if got, want := observation.Text, "profile prompt\n\nHard rules:\n- rule\n\nprofile status"; got != want {
 		t.Fatalf("profile status = %q, want %q", got, want)
 	}
-	if got, want := runnerInstructions("baseline", "", "/state/session/ses_test/scratch", false), "baseline\n\nScratch directory: /state/session/ses_test/scratch"; got != want {
+	if got, want := runnerInstructions("baseline", "", "/state/session/ses_test/scratch", false), "baseline\n\nScratch directory: /state/session/ses_test/scratch\n\nQueues directory (read-only; use queue tools to modify): /state/session/ses_test/queues"; got != want {
 		t.Fatalf("runner instructions = %q, want %q", got, want)
 	}
 }
@@ -295,8 +295,8 @@ func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 	buildStatus := "build prompt\n\nBuild mode status\n\nActive profile: build\nModel: fake/model"
 	planStatus := "plan prompt\n\nPlan mode status\n\nActive profile: plan\nModel: fake/model"
 	for index, request := range requests {
-		if !strings.HasPrefix(request.Instructions, "baseline\n\nScratch directory: ") || !strings.HasSuffix(request.Instructions, "/session/"+h.sessionID+"/scratch") {
-			t.Errorf("request %d instructions = %q, want baseline and session scratch path", index, request.Instructions)
+		if !strings.HasPrefix(request.Instructions, "baseline\n\nScratch directory: ") || !strings.HasSuffix(request.Instructions, "/session/"+h.sessionID+"/queues") || !strings.Contains(request.Instructions, "\n\nQueues directory (read-only; use queue tools to modify): ") {
+			t.Errorf("request %d instructions = %q, want baseline and session scratch and queues paths", index, request.Instructions)
 		}
 		var statuses []string
 		for _, message := range request.Messages {
@@ -1708,13 +1708,17 @@ func (r *preparedProfileResolver) PrepareTurn(string, string) (TurnProfile, erro
 
 type profileCaptureTool struct {
 	fakeTool
-	paths []string
+	writePaths []string
+	readPaths  []string
 }
 
 func (t *profileCaptureTool) Execute(_ context.Context, _ tool.Plan, call tool.CallContext) (tool.Result, error) {
 	for _, rule := range call.SecurityProfile.Rules() {
-		if rule.Action == security.ActionAllowWrite {
-			t.paths = append(t.paths, rule.Path)
+		switch rule.Action {
+		case security.ActionAllowWrite:
+			t.writePaths = append(t.writePaths, rule.Path)
+		case security.ActionAllowRead:
+			t.readPaths = append(t.readPaths, rule.Path)
 		}
 	}
 	return tool.Result{Text: "ok", ModelText: "ok"}, nil
@@ -1738,8 +1742,11 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if len(capture.paths) != 2 || capture.paths[0] != "/tmp/plan.md" || !strings.HasSuffix(capture.paths[1], "/session/"+h.sessionID+"/scratch") {
-		t.Fatalf("session profile allow_write rules = %#v", capture.paths)
+	if len(capture.writePaths) != 2 || capture.writePaths[0] != "/tmp/plan.md" || !strings.HasSuffix(capture.writePaths[1], "/session/"+h.sessionID+"/scratch") {
+		t.Fatalf("session profile allow_write rules = %#v", capture.writePaths)
+	}
+	if len(capture.readPaths) != 1 || !strings.HasSuffix(capture.readPaths[0], "/session/"+h.sessionID+"/queues") {
+		t.Fatalf("session profile allow_read rules = %#v", capture.readPaths)
 	}
 	if len(resolver.base.SandboxRules) != 0 {
 		t.Fatalf("reusable profile rules = %#v", resolver.base.SandboxRules)

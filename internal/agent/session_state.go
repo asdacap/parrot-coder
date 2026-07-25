@@ -11,6 +11,7 @@ import (
 const (
 	sessionStateDirectoryName = "session"
 	scratchDirectoryName      = "scratch"
+	queuesDirectoryName       = "queues"
 )
 
 // UserSessionStateDirectory is the private application state owned by one user
@@ -26,6 +27,13 @@ func (d UserSessionStateDirectory) ScratchPath() string {
 		return ""
 	}
 	return filepath.Join(d.path, scratchDirectoryName)
+}
+
+func (d UserSessionStateDirectory) QueuesPath() string {
+	if d.path == "" {
+		return ""
+	}
+	return filepath.Join(d.path, queuesDirectoryName)
 }
 
 // UserSessionStateDirectories resolves and provisions per-user-session state.
@@ -60,10 +68,12 @@ func (d localUserSessionStateDirectories) Prepare(sessionID string) (UserSession
 	if err != nil {
 		return UserSessionStateDirectory{}, err
 	}
-	if err := os.MkdirAll(directory.ScratchPath(), 0o700); err != nil {
-		return UserSessionStateDirectory{}, fmt.Errorf("agent: create session scratch directory: %w", err)
+	for _, path := range []string{directory.ScratchPath(), directory.QueuesPath()} {
+		if err := os.MkdirAll(path, 0o700); err != nil {
+			return UserSessionStateDirectory{}, fmt.Errorf("agent: create session state subdirectory: %w", err)
+		}
 	}
-	for _, path := range []string{directory.Path(), directory.ScratchPath()} {
+	for _, path := range []string{directory.Path(), directory.ScratchPath(), directory.QueuesPath()} {
 		if err := os.Chmod(path, 0o700); err != nil {
 			return UserSessionStateDirectory{}, fmt.Errorf("agent: secure session state directory: %w", err)
 		}

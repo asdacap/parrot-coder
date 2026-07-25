@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
@@ -45,6 +46,7 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 		WebFetch: webfetch.New(webfetch.Config{}),
 		Agents:   func(string) (bool, error) { return true, nil },
 		Status:   statuses,
+		Queues:   queue.New(t.TempDir()),
 	}
 	providers, err := BuiltinProviders(services)
 	if err != nil {
@@ -103,7 +105,7 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 	definitions := providers.Definitions()
 	want := []string{
 		"agent_send", "agent_spawn", "apply_patch", "create_goal", "exec_command", "get_goal", "git_diff", "glob", "question",
-		"read", "request_write_permission", "rg", "set_config", "show", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "update_goal", "wait_agent", "wait_process", "web_fetch", "write_stdin",
+		"queue_create", "queue_info", "queue_push", "queue_take", "read", "request_write_permission", "rg", "set_config", "show", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "update_goal", "wait_agent", "wait_process", "web_fetch", "write_stdin",
 	}
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions = %#v", definitions)

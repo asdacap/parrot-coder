@@ -39,6 +39,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/question"
+	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
@@ -436,7 +437,8 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		data, _ := json.Marshal(payload)
 		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
 	})
-	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks))
+	queues := queue.New(paths.State)
+	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks), statusinfo.NewQueues(queues))
 	if err != nil {
 		return nil, fmt.Errorf("app: status registry: %w", err)
 	}
@@ -446,7 +448,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	toolProviders, err := tool.BuiltinProviders(tool.BuiltinServices{
 		Changes: changes, Processes: processes, Tasks: &managedTaskController{tasks: tasks}, Todos: todos, Goals: goals, Questions: questions,
-		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web, Agents: agentLookup,
+		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web, Agents: agentLookup, Queues: queues,
 		ConfigDir: paths.Config, Status: statusRegistry,
 	})
 	if err != nil {

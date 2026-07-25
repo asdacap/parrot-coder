@@ -7,12 +7,17 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/task"
 )
 
 type activeTaskListerFunc func(string) []task.Active
 
 func (list activeTaskListerFunc) ListActive(sessionID string) []task.Active { return list(sessionID) }
+
+type queueListerFunc func(string) ([]queue.Info, error)
+
+func (list queueListerFunc) List(sessionID string) ([]queue.Info, error) { return list(sessionID) }
 
 type providerFunc struct {
 	key string
@@ -93,6 +98,26 @@ func TestActiveTasksStatus(t *testing.T) {
 			}
 			if !observation.Available || observation.Text != test.want {
 				t.Fatalf("observation = %#v, want text %q", observation, test.want)
+			}
+		})
+	}
+}
+
+func TestQueuesStatus(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		items []queue.Info
+		want  string
+	}{
+		{name: "none", want: "Queues: none"},
+		{name: "summaries", items: []queue.Info{{Name: "alpha-beta-gamma", Description: "work\n- forged", Size: 2}, {Name: "one-two-three"}}, want: "Queues:\n- alpha-beta-gamma (2 items, description: \"work\\n- forged\")\n- one-two-three (0 items)"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var sessionID string
+			provider := NewQueues(queueListerFunc(func(got string) ([]queue.Info, error) { sessionID = got; return test.items, nil }))
+			observation, err := provider.Observe(context.Background(), Query{SessionID: "session"})
+			if err != nil || provider.Key() != "runtime:queues" || sessionID != "session" || !observation.Available || observation.Text != test.want {
+				t.Fatalf("Observe() = %#v, %v; key=%q session=%q", observation, err, provider.Key(), sessionID)
 			}
 		})
 	}
