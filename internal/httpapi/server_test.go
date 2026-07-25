@@ -319,7 +319,7 @@ type testDrainState struct {
 	cancel context.CancelFunc
 	done   chan struct{}
 	wake   bool
-	status agent.Status
+	status agent.AgentStatus
 }
 
 func newTestSessionController(drainer testDrainer) *testSessionController {
@@ -341,18 +341,14 @@ func (s testAgentSession) Parent() agent.AgentSession { return nil }
 func (s testAgentSession) CreateChild(context.Context, agent.ChildRequest) (agent.AgentSession, error) {
 	return nil, errors.New("not implemented")
 }
-func (s testAgentSession) ChildTask() (agent.ChildTask, bool) { return agent.ChildTask{}, false }
 func (s testAgentSession) Observe() (agent.ChildTurnObserver, error) {
 	return nil, errors.New("not implemented")
 }
 func (s testAgentSession) ResolveChild(string) (agent.AgentSession, error) {
 	return nil, errors.New("not implemented")
 }
-func (s testAgentSession) SendChild(context.Context, agent.ChildRequest) (agent.ChildTask, string, error) {
-	return agent.ChildTask{}, "", errors.New("not implemented")
-}
-func (s testAgentSession) InterruptChild(context.Context) (agent.ChildTask, error) {
-	return agent.ChildTask{}, errors.New("not implemented")
+func (s testAgentSession) SendChild(context.Context, agent.ChildRequest) (agent.Status, string, error) {
+	return agent.Status{}, "", errors.New("not implemented")
 }
 func (s testAgentSession) Forget() error { return errors.New("not implemented") }
 func (s testAgentSession) Prompt(context.Context, string) (string, error) {
@@ -368,7 +364,9 @@ func (s testAgentSession) Resume(context.Context) error {
 func (s testAgentSession) Interrupt(ctx context.Context) error {
 	return s.controller.Interrupt(ctx, s.id)
 }
-func (s testAgentSession) Status() agent.Status { return s.controller.Status(s.id) }
+func (s testAgentSession) Status() agent.Status {
+	return agent.Status{SessionID: s.id, State: s.controller.Status(s.id)}
+}
 
 func (c *testSessionController) wake(id string) {
 	c.mu.Lock()
@@ -421,7 +419,7 @@ func (c *testSessionController) Interrupt(ctx context.Context, id string) error 
 	}
 }
 
-func (c *testSessionController) Status(id string) agent.Status {
+func (c *testSessionController) Status(id string) agent.AgentStatus {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if state := c.active[id]; state != nil {

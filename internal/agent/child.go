@@ -24,11 +24,10 @@ var (
 // contains no parent permission grants; authorization is inherited from the
 // parent AgentSession at execution time.
 type ChildRequest struct {
-	Prompt     string
-	Agent      string
-	Model      string
-	Name       string
-	ToolCallID string
+	Prompt string
+	Agent  string
+	Model  string
+	Name   string
 }
 
 type ChildUsage struct {
@@ -44,17 +43,7 @@ type ChildProgress struct {
 	ToolUses int
 }
 
-type ChildStatus string
-
-const (
-	ChildStatusPending   ChildStatus = "pending"
-	ChildStatusRunning   ChildStatus = "running"
-	ChildStatusSucceeded ChildStatus = "succeeded"
-	ChildStatusFailed    ChildStatus = "failed"
-	ChildStatusCanceled  ChildStatus = "canceled"
-)
-
-type ChildTask struct {
+type Status struct {
 	SessionID     string
 	ParentSession string
 	RootSession   string
@@ -64,13 +53,12 @@ type ChildTask struct {
 	Lineage       []string
 	Depth         int
 	Turn          int
-	Status        ChildStatus
+	State         AgentStatus
 	StartedAt     time.Time
 	FinishedAt    time.Time
 	Output        string
 	Error         string
 	Truncated     bool
-	ToolCallID    string
 	Usage         ChildUsage
 	ToolUses      int
 }
@@ -84,10 +72,10 @@ const (
 
 type ChildLifecycleEvent struct {
 	Kind string
-	Task ChildTask
+	Task Status
 }
 
 // ChildTurnObserver remains bound to the turn current when it was created.
 type ChildTurnObserver interface {
-	Wait(context.Context) (ChildTask, error)
+	Wait(context.Context) (Status, error)
 }

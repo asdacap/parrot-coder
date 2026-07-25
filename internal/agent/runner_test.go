@@ -481,7 +481,13 @@ func TestRunningSendChildCannotEscapeCompletingManagedTurn(t *testing.T) {
 	item := child.(*agentSession)
 	item.childOp.Lock()
 	close(release)
-	for deadline := time.Now().Add(time.Second); item.Status() != StatusIdle; {
+	for deadline := time.Now().Add(time.Second); ; {
+		item.mu.Lock()
+		idle := item.drain == nil
+		item.mu.Unlock()
+		if idle {
+			break
+		}
 		if time.Now().After(deadline) {
 			item.childOp.Unlock()
 			t.Fatal("child drain did not become idle")
@@ -490,7 +496,7 @@ func TestRunningSendChildCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 
 	type sendResult struct {
-		task      ChildTask
+		task      Status
 		messageID string
 		err       error
 	}
@@ -507,7 +513,7 @@ func TestRunningSendChildCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 	item.childOp.Unlock()
 	result := <-sent
-	if result.err != nil || result.messageID != "" || result.task.Turn != 2 || result.task.Status != ChildStatusRunning {
+	if result.err != nil || result.messageID != "" || result.task.Turn != 2 || result.task.State != StatusRunning {
 		t.Fatalf("serialized SendChild = %#v", result)
 	}
 	observation, err := child.Observe()
@@ -537,7 +543,11 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	parent := h.agentSessions.Get(h.sessionID)
-	child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID, Name: "inspect", ToolCallID: "call-1"})
+	parentStatus := parent.Status()
+	if parentStatus.SessionID != h.sessionID || parentStatus.RootSession != h.sessionID || parentStatus.ParentSession != "" || parentStatus.State != StatusIdle {
+		t.Fatalf("parent status = %#v", parentStatus)
+	}
+	child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID, Name: "inspect"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,18 +561,19 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		t.Fatal("child turn did not start")
 	}
 
-	task, messageID, err := child.SendChild(context.Background(), ChildRequest{Prompt: "steer", ToolCallID: "call-2"})
-	if err != nil || messageID == "" || task.Turn != 1 || task.Status != ChildStatusRunning {
+	task, messageID, err := child.SendChild(context.Background(), ChildRequest{Prompt: "steer"})
+	if err != nil || messageID == "" || task.Turn != 1 || task.State != StatusRunning {
 		t.Fatalf("running SendChild = %#v, %q, %v", task, messageID, err)
 	}
 	close(release)
 	completed, err := observation.Wait(context.Background())
-	if err != nil || completed.Status != ChildStatusSucceeded || completed.Output != "answer-steer" {
-		t.Fatalf("first turn = %#v, %v", completed, err)
+	status := child.Status()
+	if err != nil || completed.State != StatusSucceeded || completed.Output != "answer-steer" || status.State != StatusSucceeded || status.Output != completed.Output || status.SessionID != child.ID() || status.ParentSession != parent.ID() || status.RootSession != parent.ID() {
+		t.Fatalf("first turn = %#v, status = %#v, %v", completed, status, err)
 	}
 
-	task, messageID, err = child.SendChild(context.Background(), ChildRequest{Prompt: "follow-up", ToolCallID: "call-3"})
-	if err != nil || messageID != "" || task.Turn != 2 || task.Status != ChildStatusRunning {
+	task, messageID, err = child.SendChild(context.Background(), ChildRequest{Prompt: "follow-up"})
+	if err != nil || messageID != "" || task.Turn != 2 || task.State != StatusRunning {
 		t.Fatalf("follow-up SendChild = %#v, %q, %v", task, messageID, err)
 	}
 	observation, err = child.Observe()
@@ -602,6 +613,29 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	}
 	if _, err := parent.ResolveChild(child.ID()); !errors.Is(err, ErrChildNotFound) {
 		t.Fatalf("ResolveChild after Forget = %v", err)
+	}
+}
+
+func TestManagedAgentSessionInterruptsItself(t *testing.T) {
+	started := make(chan struct{})
+	fake := &fakeProvider{stream: func(_ int, ctx context.Context, _ protocol.Request) (provider.Stream, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	child, err := h.agentSessions.Get(h.sessionID).CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	if err := child.Interrupt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := child.Status()
+	if status.State != StatusCanceled || status.Error != ErrChildCanceled.Error() {
+		t.Fatalf("status = %#v", status)
 	}
 }
 

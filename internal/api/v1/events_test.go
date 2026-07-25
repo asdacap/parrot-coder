@@ -37,8 +37,8 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 		},
 		{
 			name:  "task progress",
-			event: v1.Event{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","tool_call_id":"call_1","agent":"explore","status":"running","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"reasoning_tokens":1,"cached_input_tokens":3},"tool_uses":4}`)},
-			want:  &v1.TaskProgress{TaskID: "task_1", ToolCallID: "call_1", Agent: "explore", Status: "running", Usage: v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}, ToolUses: 4},
+			event: v1.Event{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","agent":"explore","status":"running","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"reasoning_tokens":1,"cached_input_tokens":3},"tool_uses":4}`)},
+			want:  &v1.TaskProgress{TaskID: "task_1", Agent: "explore", Status: "running", Usage: v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}, ToolUses: 4},
 		},
 		{
 			name:  "message part delta",

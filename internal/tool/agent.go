@@ -27,12 +27,12 @@ type AgentTask struct {
 }
 
 type ChildAgent interface {
-	Task() (AgentTask, bool)
-	Send(context.Context, string, string) (AgentTask, string, error)
+	Status() AgentTask
+	Send(context.Context, string) (AgentTask, string, error)
 }
 
 type AgentChildren interface {
-	Create(context.Context, string, string, string, string, string, string, string) (ChildAgent, error)
+	Create(context.Context, string, string, string, string, string, string) (ChildAgent, error)
 	Resolve(string, string) (ChildAgent, error)
 }
 
@@ -159,10 +159,7 @@ func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContex
 		if err != nil {
 			return Plan{}, err
 		}
-		task, ok := child.Task()
-		if !ok {
-			return Plan{}, errors.New("agent_send: child task is unavailable")
-		}
+		task := child.Status()
 		input.SessionID = task.SessionID
 		targetReadOnly, err := t.Agents(task.Agent)
 		if err != nil {
@@ -185,21 +182,18 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	}
 	switch t.Kind {
 	case agentSpawnID:
-		child, err := t.Children.Create(ctx, call.SessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name, call.ToolCallID)
+		child, err := t.Children.Create(ctx, call.SessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name)
 		if err != nil {
 			return Result{}, err
 		}
-		task, ok := child.Task()
-		if !ok {
-			return Result{}, errors.New("agent_spawn: child task is unavailable")
-		}
+		task := child.Status()
 		return agentResult(task), nil
 	case agentSendID:
 		child, err := t.Children.Resolve(call.SessionID, input.SessionID)
 		if err != nil {
 			return Result{}, err
 		}
-		task, messageID, err := child.Send(ctx, input.Message, call.ToolCallID)
+		task, messageID, err := child.Send(ctx, input.Message)
 		if err != nil {
 			return Result{}, err
 		}

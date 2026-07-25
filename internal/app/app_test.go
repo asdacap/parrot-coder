@@ -1045,13 +1045,13 @@ func TestPublishChildLifecycleEmitsFlatTaskEvents(t *testing.T) {
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
 
-	publishChildLifecycle(live, agent.ChildLifecycleEvent{Kind: agent.ChildLifecycleStart, Task: agent.ChildTask{SessionID: "child", ParentSession: "parent", Agent: "explore"}})
+	publishChildLifecycle(live, agent.ChildLifecycleEvent{Kind: agent.ChildLifecycleStart, Task: agent.Status{SessionID: "child", ParentSession: "parent", Agent: "explore"}})
 	started := decodeTaskEvent(t, <-parentEvents)
 	if started.TaskID != "child" || started.SessionID != "child" || started.ParentSessionID != "parent" || started.Kind != "agent" || started.Agent != "explore" {
 		t.Fatalf("start = %#v", started)
 	}
 
-	publishChildLifecycle(live, agent.ChildLifecycleEvent{Kind: agent.ChildLifecycleFinished, Task: agent.ChildTask{SessionID: "child", ParentSession: "parent", Agent: "explore", Status: agent.ChildStatusFailed, Error: "boom"}})
+	publishChildLifecycle(live, agent.ChildLifecycleEvent{Kind: agent.ChildLifecycleFinished, Task: agent.Status{SessionID: "child", ParentSession: "parent", Agent: "explore", State: agent.StatusFailed, Error: "boom"}})
 	finished := decodeTaskEvent(t, <-parentEvents)
 	if finished.TaskID != "child" || finished.SessionID != "child" || finished.Status != "failed" || finished.Error != "boom" {
 		t.Fatalf("finished = %#v", finished)

@@ -69,9 +69,9 @@ type managerChildAgent struct {
 	sessionID     string
 }
 
-func (c managerAgentChildren) Create(ctx context.Context, parentSession, callerAgent, prompt, agent, model, name, toolCallID string) (ChildAgent, error) {
+func (c managerAgentChildren) Create(ctx context.Context, parentSession, callerAgent, prompt, agent, model, name string) (ChildAgent, error) {
 	sessionID, err := c.manager.Spawn(ctx, parentSession, callerAgent, subagent.Request{
-		Prompt: prompt, Agent: agent, Model: model, Name: name, ToolCallID: toolCallID,
+		Prompt: prompt, Agent: agent, Model: model, Name: name,
 	})
 	if err != nil {
 		return nil, err
@@ -87,12 +87,12 @@ func (c managerAgentChildren) Resolve(parentSession, identifier string) (ChildAg
 	return managerChildAgent{manager: c.manager, parentSession: parentSession, sessionID: task.SessionID}, nil
 }
 
-func (c managerChildAgent) Task() (AgentTask, bool) {
-	task, err := c.manager.Status(c.parentSession, c.sessionID)
-	return testAgentTask(task), err == nil
+func (c managerChildAgent) Status() AgentTask {
+	task, _ := c.manager.Status(c.parentSession, c.sessionID)
+	return testAgentTask(task)
 }
 
-func (c managerChildAgent) Send(ctx context.Context, message, toolCallID string) (AgentTask, string, error) {
+func (c managerChildAgent) Send(ctx context.Context, message string) (AgentTask, string, error) {
 	task, err := c.manager.Status(c.parentSession, c.sessionID)
 	if err != nil {
 		return AgentTask{}, "", err
@@ -107,7 +107,7 @@ func (c managerChildAgent) Send(ctx context.Context, message, toolCallID string)
 			return AgentTask{}, "", sendErr
 		}
 	}
-	task, err = c.manager.FollowUp(c.parentSession, c.sessionID, subagent.Request{Prompt: message, ToolCallID: toolCallID})
+	task, err = c.manager.FollowUp(c.parentSession, c.sessionID, subagent.Request{Prompt: message})
 	return testAgentTask(task), "", err
 }
 

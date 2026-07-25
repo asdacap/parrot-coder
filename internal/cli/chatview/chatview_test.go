@@ -337,13 +337,65 @@ func TestTaskTrackerProjectsTreeAndReportOwners(t *testing.T) {
 		t.Fatalf("content report metadata = %#v", report)
 	}
 
-	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-child", ToolCallID: "call", Agent: "explore", Status: "running"})
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-child", Agent: "explore", Status: "running"})
 	reports, err = tracker.Apply(v1.Event{Type: v1.EventTaskProgress, TaskID: "task-child", Data: data}, false)
 	if err != nil || len(reports) != 1 {
 		t.Fatalf("progress reports = %#v, %v", reports, err)
 	}
 	if report := reports[0]; report.TaskID != "task-child" || report.SessionID != "task-child" || report.ParentSessionID != "task-z" || !report.MainStatus {
 		t.Fatalf("progress report metadata = %#v", report)
+	}
+}
+
+func TestTaskTrackerProgressFollowsTaskGenerations(t *testing.T) {
+	tracker := NewTaskTracker()
+	startMainTask(tracker)
+	apply := func(event v1.Event) []TaskReport {
+		reports, err := tracker.Apply(event, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return reports
+	}
+	progress := func(status string, tokens int) v1.Event {
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: "task", Agent: "explore", Status: status, Usage: v1.Usage{TotalTokens: tokens}})
+		return v1.Event{Type: v1.EventTaskProgress, TaskID: "task", Data: data}
+	}
+
+	apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "task", SessionID: "task", ParentSessionID: "session-main", Kind: "agent", Agent: "explore"}))
+	reports := apply(progress("running", 10))
+	if len(reports) != 1 || reports[0].ID != "task:task:task" || reports[0].Terminal {
+		t.Fatalf("running generation = %#v", reports)
+	}
+
+	// task.finished records lifecycle state but leaves the generation open for
+	// the final progress event, which carries the authoritative counters.
+	reports = apply(taskLifecycleEvent(v1.EventTaskFinished, v1.TaskEvent{TaskID: "task", Status: "succeeded"}))
+	if len(reports) != 1 || reports[0].Terminal || !strings.Contains(reports[0].Line, "10 tokens") {
+		t.Fatalf("finished before final progress = %#v", reports)
+	}
+	if reports := apply(progress("running", 15)); len(reports) != 0 {
+		t.Fatalf("late running progress before final = %#v", reports)
+	}
+	reports = apply(progress("succeeded", 20))
+	if len(reports) != 1 || !reports[0].Terminal || !reports[0].EmitPlain || !strings.Contains(reports[0].Line, "20 tokens") {
+		t.Fatalf("final progress = %#v", reports)
+	}
+	if reports := apply(progress("running", 30)); len(reports) != 0 {
+		t.Fatalf("late running progress = %#v", reports)
+	}
+
+	apply(taskLifecycleEvent(v1.EventTaskWorking, v1.TaskEvent{TaskID: "task"}))
+	reports = apply(progress("running", 40))
+	if len(reports) != 1 || reports[0].Terminal || !strings.Contains(reports[0].Line, "40 tokens") {
+		t.Fatalf("follow-up running generation = %#v", reports)
+	}
+	reports = apply(progress("succeeded", 50))
+	if len(reports) != 1 || !reports[0].Terminal || !strings.Contains(reports[0].Line, "50 tokens") {
+		t.Fatalf("follow-up terminal generation = %#v", reports)
+	}
+	if reports := apply(progress("running", 60)); len(reports) != 0 {
+		t.Fatalf("late follow-up progress = %#v", reports)
 	}
 }
 
@@ -358,7 +410,7 @@ func TestTaskTrackerDefersProgressUntilDescendantsFinish(t *testing.T) {
 		return reports
 	}
 	progress := func(taskID, status string, tokens, tools int) v1.Event {
-		data, _ := json.Marshal(v1.TaskProgress{TaskID: taskID, ToolCallID: "call-" + taskID, Agent: "explore", Status: status, Usage: v1.Usage{TotalTokens: tokens}, ToolUses: tools})
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: taskID, Agent: "explore", Status: status, Usage: v1.Usage{TotalTokens: tokens}, ToolUses: tools})
 		return v1.Event{Type: v1.EventTaskProgress, TaskID: taskID, Data: data}
 	}
 

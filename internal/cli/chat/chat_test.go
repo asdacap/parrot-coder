@@ -966,7 +966,7 @@ func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, status := range []string{"running", "succeeded"} {
-		data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-explore", ToolCallID: "call-1", Agent: "explore", Status: status})
+		data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-explore", Agent: "explore", Status: status})
 		before := output.Len()
 		if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
 			t.Fatal(err)
@@ -976,14 +976,18 @@ func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 		}
 	}
 	before := output.Len()
-	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-explore", ToolCallID: "call-1", Agent: "explore", Status: "running"})
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-explore", Agent: "explore", Status: "running"})
 	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != before {
 		t.Fatal("late task progress repainted renderer")
 	}
-	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-explore", ToolCallID: "call-2", Agent: "explore", Status: "running"})
+	working, _ := json.Marshal(v1.TaskEvent{TaskID: "task-explore"})
+	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskWorking, working)); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-explore", Agent: "explore", Status: "running"})
 	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}

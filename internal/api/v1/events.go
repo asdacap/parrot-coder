@@ -66,13 +66,12 @@ type Usage struct {
 }
 
 type TaskProgress struct {
-	TaskID     string `json:"task_id"`
-	SessionID  string `json:"session_id,omitempty"`
-	ToolCallID string `json:"tool_call_id,omitempty"`
-	Agent      string `json:"agent"`
-	Status     string `json:"status"`
-	Usage      Usage  `json:"usage"`
-	ToolUses   int    `json:"tool_uses"`
+	TaskID    string `json:"task_id"`
+	SessionID string `json:"session_id,omitempty"`
+	Agent     string `json:"agent"`
+	Status    string `json:"status"`
+	Usage     Usage  `json:"usage"`
+	ToolUses  int    `json:"tool_uses"`
 }
 
 type ToolOutputDelta struct {

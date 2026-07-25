@@ -438,7 +438,7 @@ func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
 		t.Fatalf("modeline token usage = %q", got)
 	}
 
-	progress, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "running",
+	progress, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", Agent: "explore", Status: "running",
 		Usage: v1.Usage{InputTokens: 100, OutputTokens: 50, CachedInputTokens: 25, TotalTokens: 150}, ToolUses: 3})
 	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, progress)); err != nil {
 		t.Fatal(err)
@@ -478,7 +478,7 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	if err := runtime.handleEvent(taskStart("task-1", "task_main", "explore")); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-1", Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
 	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
@@ -490,7 +490,7 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 		t.Fatalf("line = %q", line)
 	}
 
-	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "succeeded", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", Agent: "explore", Status: "succeeded", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
 	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +498,7 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 		t.Fatalf("completed task remains live: %#v", runtime.activity)
 	}
 
-	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent", Agent: "explore", Status: "running"})
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", Agent: "explore", Status: "running"})
 	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
@@ -506,7 +506,11 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 		t.Fatalf("late task progress recreated activity: %#v", runtime.activity)
 	}
 
-	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", ToolCallID: "call-agent-2", Agent: "explore", Status: "running"})
+	working, _ := json.Marshal(v1.TaskEvent{TaskID: "task-1"})
+	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskWorking, working)); err != nil {
+		t.Fatal(err)
+	}
+	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-1", Agent: "explore", Status: "running"})
 	if err := runtime.handleEvent(taskContent("task-1", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
