@@ -378,9 +378,8 @@ func TestSpawnUsesPreparedSessionIDAsTaskIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	bySession, ok := manager.TaskForSession(preparedSessionID)
-	if id != preparedSessionID || task.SessionID != preparedSessionID || execution.SessionID != preparedSessionID || !ok || bySession.SessionID != preparedSessionID {
-		t.Fatalf("session identity: id=%q task=%#v execution=%#v bySession=%#v found=%v", id, task, execution, bySession, ok)
+	if id != preparedSessionID || task.SessionID != preparedSessionID || execution.SessionID != preparedSessionID {
+		t.Fatalf("session identity: id=%q task=%#v execution=%#v", id, task, execution)
 	}
 	if preparation.ParentSession != "parent-session" || preparation.RootSession != "parent-session" || preparation.Turn != 1 || len(preparation.Lineage) != 1 || preparation.Lineage[0] != "builder" {
 		t.Fatalf("preparation = %#v", preparation)

@@ -325,21 +325,6 @@ func (m *Manager) ResolveTask(callerSession, identifier string) (Task, error) {
 	return Task{}, ErrNotFound
 }
 
-// TaskForSession returns the agent task bound to a child session, if any. The
-// main task of a subagent child session is the subagent task itself.
-func (m *Manager) TaskForSession(sessionID string) (Task, bool) {
-	if m == nil || sessionID == "" {
-		return Task{}, false
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	state := m.taskForSessionLocked(sessionID)
-	if state == nil {
-		return Task{}, false
-	}
-	return cloneTask(state.task), true
-}
-
 func (m *Manager) agentIdentity(id string) string {
 	if m.config.AgentIdentity == nil {
 		return id

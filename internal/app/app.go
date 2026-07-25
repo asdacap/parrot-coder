@@ -512,7 +512,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: compaction: %w", err)
 	}
 	result.compactions = compactionRepository
-	reporter := statusReporter{live: live, subagents: subagents, started: &sync.Map{}}
+	reporter := &statusReporter{live: live, started: &sync.Map{}}
 	pathErrorAdvisor := tool.NewPathErrorAdvisor(ws.Root(), tool.NewCommandPathContentSearcher())
 	userSession, err := agent.NewUserSession(ctx, agent.AgentSessionConfig{
 		Sessions: sessions, Contexts: contexts, Profiles: profileResolver, Providers: providerRegistry,
@@ -528,6 +528,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
 	}
+	reporter.sessionFor = userSession.Get
 	monitors.SetAgentSessions(agentSessionsAdapter{userSession})
 	processes.SetAgentSessions(processAgentSessionsAdapter{userSession})
 	subagentExecutor.userSession = userSession
@@ -798,8 +799,8 @@ func (b *compositionBackend) Wake(sessionID string) {
 }
 
 type statusReporter struct {
-	live      *event.Broker
-	subagents *subagent.Manager
+	live       *event.Broker
+	sessionFor func(string) agent.AgentSession
 
 	// started records sessions whose main task already emitted task.start.
 	// It is a pointer so statusReporter value copies share one registry.
@@ -835,15 +836,10 @@ func (d statusReporter) LifecycleComplete(sessionID string, err error) {
 	diagnostics.Event("session_run_finished", attributes...)
 }
 
-// mainTaskOwns reports whether sessionID's lifecycle belongs to the session's
-// own main task. A subagent child session's lifecycle belongs to the subagent
-// task instead, whose manager emits its task events.
+// mainTaskOwns reports whether sessionID is a main session. Child session
+// lifecycles belong to their parent task instead.
 func (d statusReporter) mainTaskOwns(sessionID string) bool {
-	if d.subagents == nil {
-		return true
-	}
-	_, subagentOwned := d.subagents.TaskForSession(sessionID)
-	return !subagentOwned
+	return d.sessionFor == nil || d.sessionFor(sessionID).Parent() == nil
 }
 
 // mainTaskStarted emits the main task's flat start and working events. Start
