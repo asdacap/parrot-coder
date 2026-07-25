@@ -29,7 +29,7 @@ type ChildCreatedObserver interface {
 // UserSession is the runtime aggregate for a user. It owns the agent runtimes
 // participating in that user's session hierarchy.
 type UserSession interface {
-	CreateChild(context.Context, ChildSessionRequest) (AgentSession, error)
+	CreateChild(context.Context, AgentSession, ChildSessionRequest) (AgentSession, error)
 	AddChildCreatedObserver(ChildCreatedObserver)
 	ChildRelation(sessionID string) (string, bool)
 	ChildSessions(parentSessionID string) []ChildSession
@@ -59,8 +59,8 @@ func NewUserSession(ctx context.Context, config AgentSessionConfig, observers ..
 	return &userSession{repository: repository}, nil
 }
 
-func (s *userSession) CreateChild(ctx context.Context, request ChildSessionRequest) (AgentSession, error) {
-	return s.repository.CreateChild(ctx, request)
+func (s *userSession) CreateChild(ctx context.Context, parent AgentSession, request ChildSessionRequest) (AgentSession, error) {
+	return s.repository.CreateChild(ctx, parent, request)
 }
 
 func (s *userSession) AddChildCreatedObserver(observer ChildCreatedObserver) {
@@ -135,7 +135,6 @@ func newAgentSessionRepository(ctx context.Context, config AgentSessionConfig, o
 }
 
 type ChildSessionRequest struct {
-	ParentSessionID  string
 	ProjectID        string
 	Name             string
 	Agent            string
@@ -144,17 +143,24 @@ type ChildSessionRequest struct {
 }
 
 // CreateChild persists a selected child session and returns its bound runtime.
-func (r *agentSessionRepository) CreateChild(ctx context.Context, request ChildSessionRequest) (AgentSession, error) {
-	parent, err := r.config.Sessions.Get(ctx, request.ParentSessionID)
+func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSession, request ChildSessionRequest) (AgentSession, error) {
+	if parent == nil || parent.ID() == "" {
+		return nil, errors.New("agent: child parent session is required")
+	}
+	selectedParent, err := r.config.Sessions.Get(ctx, parent.ID())
 	if err != nil {
 		return nil, fmt.Errorf("agent: child parent session: %w", err)
 	}
-	if parent.ProjectID != request.ProjectID {
+	boundParent, ok := r.Lookup(parent.ID())
+	if !ok || boundParent != parent {
+		return nil, errors.New("agent: child parent runtime is not owned by this user session")
+	}
+	if selectedParent.ProjectID != request.ProjectID {
 		return nil, errors.New("agent: child parent belongs to another project")
 	}
 	selection := request.DefaultSelection
-	if parent.Provider != "" && parent.Model != "" {
-		selection.Provider, selection.Model, selection.Variant = parent.Provider, parent.Model, parent.Variant
+	if selectedParent.Provider != "" && selectedParent.Model != "" {
+		selection.Provider, selection.Model, selection.Variant = selectedParent.Provider, selectedParent.Model, selectedParent.Variant
 	}
 	selection.Agent = request.Agent
 	if request.Model != "" {
@@ -176,15 +182,15 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, request ChildS
 		}
 	}
 	child, err := r.config.Sessions.CreateSelected(ctx, session.CreateParams{
-		ParentSessionID: parent.ID,
-		ProjectID:       parent.ProjectID,
-		ProjectRoot:     parent.ProjectRoot,
+		ParentSessionID: selectedParent.ID,
+		ProjectID:       selectedParent.ProjectID,
+		ProjectRoot:     selectedParent.ProjectRoot,
 		Title:           "Subtask " + request.Name + " [" + request.Agent + "]",
 	}, selection)
 	if err != nil {
 		return nil, err
 	}
-	relation := ChildSession{SessionID: child.ID, ParentSessionID: parent.ID}
+	relation := ChildSession{SessionID: child.ID, ParentSessionID: selectedParent.ID}
 	r.mu.Lock()
 	if r.children == nil {
 		r.children = make(map[string]ChildSession)
@@ -192,7 +198,7 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, request ChildS
 	r.children[child.ID] = relation
 	observers := append([]ChildCreatedObserver(nil), r.childObservers...)
 	r.mu.Unlock()
-	runtime := r.Get(child.ID)
+	runtime := r.bind(AgentSessionDto{ID: child.ID, ParentID: selectedParent.ID}, parent)
 	for _, observer := range observers {
 		if observer != nil {
 			observer.ChildCreated(relation)
@@ -254,11 +260,17 @@ func (r *agentSessionRepository) HasChildSessions(parentSessionID string) bool {
 	return false
 }
 
-// ForgetChild removes the relationship for sessionID.
+// ForgetChild removes the retained child runtime and its relationship.
 func (r *agentSessionRepository) ForgetChild(sessionID string) error {
 	r.mu.Lock()
+	defer r.mu.Unlock()
+	if runtime := r.sessions[sessionID]; runtime != nil {
+		if runtime.Status() != StatusIdle {
+			return ErrAgentSessionActive
+		}
+		delete(r.sessions, sessionID)
+	}
 	delete(r.children, sessionID)
-	r.mu.Unlock()
 	return nil
 }
 
@@ -279,12 +291,30 @@ func (r *agentSessionRepository) DiscardChild(ctx context.Context, sessionID str
 
 func (r *agentSessionRepository) Get(sessionID string) AgentSession {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	if existing := r.sessions[sessionID]; existing != nil {
+		r.mu.Unlock()
 		return existing
 	}
-	created := &agentSession{id: sessionID, config: r.config, observers: r.observers}
-	r.sessions[sessionID] = created
+	relation, child := r.children[sessionID]
+	r.mu.Unlock()
+
+	var parent AgentSession
+	parentID := ""
+	if child {
+		parentID = relation.ParentSessionID
+		parent = r.Get(parentID)
+	}
+	return r.bind(AgentSessionDto{ID: sessionID, ParentID: parentID}, parent)
+}
+
+func (r *agentSessionRepository) bind(dto AgentSessionDto, parent AgentSession) AgentSession {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing := r.sessions[dto.ID]; existing != nil {
+		return existing
+	}
+	created := &agentSession{dto: dto, parent: parent, config: r.config, observers: r.observers}
+	r.sessions[dto.ID] = created
 	return created
 }
 

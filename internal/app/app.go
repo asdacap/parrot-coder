@@ -1242,8 +1242,8 @@ func (e *appSubagentExecutor) Prepare(ctx context.Context, execution subagent.Pr
 	if e.userSession == nil {
 		return "", errors.New("app: subagent user session is unavailable")
 	}
-	child, err := e.userSession.CreateChild(ctx, agent.ChildSessionRequest{
-		ParentSessionID:  execution.ParentSession,
+	parent := e.userSession.Get(execution.ParentSession)
+	child, err := e.userSession.CreateChild(ctx, parent, agent.ChildSessionRequest{
 		ProjectID:        e.projectID,
 		Name:             execution.Request.Name,
 		Agent:            execution.Request.Agent,

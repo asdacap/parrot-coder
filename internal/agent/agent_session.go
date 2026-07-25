@@ -30,6 +30,12 @@ type Active struct {
 	Status    Status
 }
 
+// AgentSessionDto identifies an agent runtime and its direct parent.
+type AgentSessionDto struct {
+	ID       string
+	ParentID string
+}
+
 type drainState struct {
 	done   chan struct{}
 	cancel context.CancelFunc
@@ -43,6 +49,7 @@ type drainState struct {
 // is active for its bound session ID.
 type AgentSession interface {
 	ID() string
+	Parent() AgentSession
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
 	Wake()
@@ -51,12 +58,13 @@ type AgentSession interface {
 	Status() Status
 }
 
-func (s *agentSession) ID() string { return s.id }
+func (s *agentSession) ID() string           { return s.dto.ID }
+func (s *agentSession) Parent() AgentSession { return s.parent }
 
 // Prompt admits input, runs the session to idle, and returns the assistant
 // message produced by that execution lifecycle.
 func (s *agentSession) Prompt(ctx context.Context, content string) (string, error) {
-	messages, err := s.config.Sessions.ListMessages(ctx, s.id)
+	messages, err := s.config.Sessions.ListMessages(ctx, s.dto.ID)
 	if err != nil {
 		return "", err
 	}
@@ -75,7 +83,7 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 		}
 		return "", err
 	}
-	messages, err = s.config.Sessions.ListMessages(ctx, s.id)
+	messages, err = s.config.Sessions.ListMessages(ctx, s.dto.ID)
 	if err != nil {
 		return "", err
 	}
@@ -106,7 +114,7 @@ func (s *agentSession) admit(ctx context.Context, content string) (string, error
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.config.Sessions.Admit(ctx, s.id, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
+	if _, err := s.config.Sessions.Admit(ctx, s.dto.ID, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
 		return "", err
 	}
 	return messageID, nil
@@ -224,7 +232,7 @@ func (s *agentSession) run(ctx context.Context, state *drainState) {
 func (s *agentSession) started() {
 	for _, observer := range s.observers {
 		if starter, ok := observer.(LifecycleStartObserver); ok {
-			starter.LifecycleStarted(s.id)
+			starter.LifecycleStarted(s.dto.ID)
 		}
 	}
 }
@@ -232,7 +240,7 @@ func (s *agentSession) started() {
 func (s *agentSession) completed(err error) {
 	for _, observer := range s.observers {
 		if observer != nil {
-			observer.LifecycleComplete(s.id, err)
+			observer.LifecycleComplete(s.dto.ID, err)
 		}
 	}
 }

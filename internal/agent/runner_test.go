@@ -416,8 +416,8 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 			t.Fatal("runtime unavailable to observer")
 		}
 	}))
-	child, err := h.agentSessions.CreateChild(context.Background(), ChildSessionRequest{
-		ParentSessionID:  parent.ID,
+	parentRuntime := h.agentSessions.Get(parent.ID)
+	child, err := h.agentSessions.CreateChild(context.Background(), parentRuntime, ChildSessionRequest{
 		ProjectID:        parent.ProjectID,
 		Name:             "inspect",
 		Agent:            BuildID,
@@ -437,6 +437,9 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	if bound, ok := h.agentSessions.Lookup(selected.ID); !ok || bound != child {
 		t.Fatal("created child was not bound in the repository")
 	}
+	if child.Parent() != parentRuntime {
+		t.Fatal("created child does not reference its parent runtime")
+	}
 	wantRelation := ChildSession{SessionID: selected.ID, ParentSessionID: parent.ID}
 	if observed != wantRelation {
 		t.Fatalf("observed child = %#v, want %#v", observed, wantRelation)
@@ -453,8 +456,7 @@ func TestAgentSessionRepositoryDiscardsPreparedChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := h.agentSessions.CreateChild(context.Background(), ChildSessionRequest{
-		ParentSessionID:  parent.ID,
+	child, err := h.agentSessions.CreateChild(context.Background(), h.agentSessions.Get(parent.ID), ChildSessionRequest{
 		ProjectID:        parent.ProjectID,
 		Name:             "discard",
 		Agent:            BuildID,
@@ -530,6 +532,15 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	}
 	if !restarted.HasChildSessions(parent.ID) || !restarted.HasChildSessions(childA.ID) || restarted.HasChildSessions(nested.ID) {
 		t.Fatalf("HasChildSessions = parent:%t child:%t nested:%t", restarted.HasChildSessions(parent.ID), restarted.HasChildSessions(childA.ID), restarted.HasChildSessions(nested.ID))
+	}
+	nestedRuntime := restarted.Get(nested.ID)
+	childRuntime := nestedRuntime.Parent()
+	if childRuntime == nil || childRuntime.ID() != childA.ID || childRuntime != restarted.Get(childA.ID) {
+		t.Fatalf("restored nested parent = %#v, want canonical runtime %q", childRuntime, childA.ID)
+	}
+	parentRuntime := childRuntime.Parent()
+	if parentRuntime == nil || parentRuntime.ID() != parent.ID || parentRuntime != restarted.Get(parent.ID) || parentRuntime.Parent() != nil {
+		t.Fatalf("restored root parent chain = %#v, want canonical root runtime %q", parentRuntime, parent.ID)
 	}
 
 	live := event.NewBroker(h.repository, nil)

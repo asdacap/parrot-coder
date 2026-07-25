@@ -122,7 +122,8 @@ type AgentSessionConfig struct {
 }
 
 type agentSession struct {
-	id        string
+	dto       AgentSessionDto
+	parent    AgentSession
 	config    AgentSessionConfig
 	mu        sync.Mutex
 	drain     *drainState
@@ -153,11 +154,11 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), r.config.CleanupTimeout)
 		defer cancel()
-		if _, _, err := r.config.Goals.MarkUsageLimited(cleanupCtx, r.id); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+		if _, _, err := r.config.Goals.MarkUsageLimited(cleanupCtx, r.dto.ID); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
 			runErr = errors.Join(runErr, err)
 		}
 	}()
-	if err := r.config.Sessions.RepairActive(ctx, r.id); err != nil {
+	if err := r.config.Sessions.RepairActive(ctx, r.dto.ID); err != nil {
 		return err
 	}
 	turn := 0
@@ -166,11 +167,11 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		cutoff, err := r.config.Sessions.LatestSequence(ctx, r.id)
+		cutoff, err := r.config.Sessions.LatestSequence(ctx, r.dto.ID)
 		if err != nil {
 			return err
 		}
-		epoch, epochErr := r.config.Sessions.CurrentContextEpoch(ctx, r.id)
+		epoch, epochErr := r.config.Sessions.CurrentContextEpoch(ctx, r.dto.ID)
 		initial := errors.Is(epochErr, session.ErrNotFound)
 		if epochErr != nil && !initial {
 			return epochErr
@@ -179,13 +180,13 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if r.config.Contexts == nil {
 				return errors.New("agent: context runtime is required for initialization")
 			}
-			epoch, err = r.config.Contexts.Initialize(ctx, r.id, cutoff)
+			epoch, err = r.config.Contexts.Initialize(ctx, r.dto.ID, cutoff)
 			if err != nil {
 				return err
 			}
 		}
 		if !initial && r.config.Contexts != nil {
-			reconciled, reconcileErr := r.config.Contexts.Reconcile(ctx, r.id)
+			reconciled, reconcileErr := r.config.Contexts.Reconcile(ctx, r.dto.ID)
 			if reconcileErr != nil && reconciled.ID == "" {
 				return reconcileErr
 			}
@@ -193,12 +194,12 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				epoch = reconciled
 			}
 		}
-		promoted, err := r.config.Sessions.PromoteSteers(ctx, r.id, cutoff)
+		promoted, err := r.config.Sessions.PromoteSteers(ctx, r.dto.ID, cutoff)
 		if err != nil {
 			return err
 		}
 
-		selected, err := r.config.Sessions.Get(ctx, r.id)
+		selected, err := r.config.Sessions.Get(ctx, r.dto.ID)
 		if err != nil {
 			return err
 		}
@@ -206,7 +207,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if preparer, ok := r.config.Profiles.(interface {
 				PrepareTurn(string, string) (Profile, error)
 			}); ok {
-				profile, err = preparer.PrepareTurn(selected.Agent, r.id)
+				profile, err = preparer.PrepareTurn(selected.Agent, r.dto.ID)
 			} else {
 				profile, err = r.config.Profiles.GetProfile(selected.Agent)
 			}
@@ -218,7 +219,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if err != nil {
 			return err
 		}
-		history, err := r.config.Sessions.ListModelHistory(ctx, r.id, epoch.HistoryCutoff)
+		history, err := r.config.Sessions.ListModelHistory(ctx, r.dto.ID, epoch.HistoryCutoff)
 		if err != nil {
 			return err
 		}
@@ -236,31 +237,31 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			break
 		}
 		if !ready {
-			queued, err := r.config.Sessions.PromoteNextQueue(ctx, r.id)
+			queued, err := r.config.Sessions.PromoteNextQueue(ctx, r.dto.ID)
 			if err != nil || len(queued) == 0 {
 				return err
 			}
-			history, err = r.config.Sessions.ListModelHistory(ctx, r.id, epoch.HistoryCutoff)
+			history, err = r.config.Sessions.ListModelHistory(ctx, r.dto.ID, epoch.HistoryCutoff)
 			if err != nil {
 				return err
 			}
 		}
 		if turn == 0 && r.config.Status != nil {
-			pending, err := r.config.Sessions.StatusPromptPending(ctx, r.id)
+			pending, err := r.config.Sessions.StatusPromptPending(ctx, r.dto.ID)
 			if err != nil {
 				return err
 			}
 			if pending {
-				statusPrompt, err := r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, newProfileStatus(profile))
+				statusPrompt, err := r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.dto.ID, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, newProfileStatus(profile))
 				if err != nil {
 					return err
 				}
 				if strings.TrimSpace(statusPrompt) != "" {
-					if _, err := r.config.Sessions.AppendStatusPrompt(ctx, r.id, statusPrompt); err != nil {
+					if _, err := r.config.Sessions.AppendStatusPrompt(ctx, r.dto.ID, statusPrompt); err != nil {
 						return err
 					}
 					r.publishStatusPromptInjected()
-					history, err = r.config.Sessions.ListModelHistory(ctx, r.id, epoch.HistoryCutoff)
+					history, err = r.config.Sessions.ListModelHistory(ctx, r.dto.ID, epoch.HistoryCutoff)
 					if err != nil {
 						return err
 					}
@@ -277,18 +278,18 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		}
 		if r.config.Compactor != nil {
 			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
-				SessionID: r.id, ProviderID: selected.Provider, Model: model,
+				SessionID: r.dto.ID, ProviderID: selected.Provider, Model: model,
 				Instructions: finalTurnInstructions(turn >= profile.MaxTurns), Tools: definitions,
 			})
 			if compactErr != nil {
 				return compactErr
 			}
 			if result.Status == "complete" {
-				epoch, err = r.config.Sessions.CurrentContextEpoch(ctx, r.id)
+				epoch, err = r.config.Sessions.CurrentContextEpoch(ctx, r.dto.ID)
 				if err != nil {
 					return err
 				}
-				history, err = r.config.Sessions.ListModelHistory(ctx, r.id, epoch.HistoryCutoff)
+				history, err = r.config.Sessions.ListModelHistory(ctx, r.dto.ID, epoch.HistoryCutoff)
 				if err != nil {
 					return err
 				}
@@ -310,7 +311,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				return err
 			}
 			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
-				SessionID: r.id, ProviderID: selected.Provider, Model: model,
+				SessionID: r.dto.ID, ProviderID: selected.Provider, Model: model,
 				Instructions: finalTurnInstructions(turn >= profile.MaxTurns), Tools: definitions, Force: true,
 			})
 			if compactErr != nil || result.Status != "complete" {
@@ -325,14 +326,14 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if !ok {
 				return errors.New("agent: session runtime cannot record compaction retry")
 			}
-			if recordErr := recorder.RecordCompactionRetry(ctx, r.id, failure.code, result.RecordID); recordErr != nil {
+			if recordErr := recorder.RecordCompactionRetry(ctx, r.dto.ID, failure.code, result.RecordID); recordErr != nil {
 				return recordErr
 			}
-			epoch, err = r.config.Sessions.CurrentContextEpoch(ctx, r.id)
+			epoch, err = r.config.Sessions.CurrentContextEpoch(ctx, r.dto.ID)
 			if err != nil {
 				return err
 			}
-			history, err = r.config.Sessions.ListModelHistory(ctx, r.id, epoch.HistoryCutoff)
+			history, err = r.config.Sessions.ListModelHistory(ctx, r.dto.ID, epoch.HistoryCutoff)
 			if err != nil {
 				return err
 			}
@@ -351,7 +352,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				return err
 			}
 			if r.config.Goals != nil {
-				goal, err := r.config.Goals.Get(ctx, r.id)
+				goal, err := r.config.Goals.Get(ctx, r.dto.ID)
 				if errors.Is(err, session.ErrGoalNotFound) {
 					continue
 				}
@@ -365,7 +366,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			continue
 		}
 		if finish == protocol.FinishStop || finish == protocol.FinishLength || finish == protocol.FinishContentFilter || finish == protocol.FinishIncomplete {
-			queued, err := r.config.Sessions.PromoteNextQueue(ctx, r.id)
+			queued, err := r.config.Sessions.PromoteNextQueue(ctx, r.dto.ID)
 			if err != nil {
 				return err
 			}
@@ -380,7 +381,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 
 func (r *agentSession) publishStatusPromptInjected() {
 	if r.config.Live != nil {
-		r.config.Live.Publish(r.id, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
+		r.config.Live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
 	}
 }
 
@@ -391,11 +392,11 @@ func (r *agentSession) prepareContinuation(ctx context.Context) (bool, error) {
 	if r.config.Goals == nil {
 		return false, nil
 	}
-	goal, active, err := r.config.Goals.Active(ctx, r.id)
+	goal, active, err := r.config.Goals.Active(ctx, r.dto.ID)
 	if err != nil || !active {
 		return false, err
 	}
-	selected, err := r.config.Sessions.Get(ctx, r.id)
+	selected, err := r.config.Sessions.Get(ctx, r.dto.ID)
 	if err != nil {
 		return false, err
 	}
@@ -413,7 +414,7 @@ func (r *agentSession) prepareContinuation(ctx context.Context) (bool, error) {
 		remaining = fmt.Sprintf("%d", *value)
 	}
 	message := fmt.Sprintf("Continue working autonomously toward the active goal: %s\n\nThis is an automatic goal continuation turn. Remaining token budget: %s. Use get_goal to inspect current state. Mark the goal complete only when achieved; mark it blocked only for a genuine recurring blocker.", goal.Objective, remaining)
-	_, err = r.config.Sessions.AppendMessage(ctx, r.id, protocol.Message{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: message}}})
+	_, err = r.config.Sessions.AppendMessage(ctx, r.dto.ID, protocol.Message{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: message}}})
 	return err == nil, err
 }
 
@@ -435,12 +436,12 @@ func (e *providerTurnFailure) Unwrap() error { return e.err }
 func (r *agentSession) loggedProviderTurn(ctx context.Context, providerID string, turn int, client provider.Provider, model provider.Model, request protocol.Request) ([]completedCall, protocol.FinishReason, error) {
 	started := time.Now()
 	diagnostics.Event("provider_turn_started",
-		"session_id", r.id, "provider", providerID, "model", request.Model, "turn", turn,
+		"session_id", r.dto.ID, "provider", providerID, "model", request.Model, "turn", turn,
 		"message_count", len(request.Messages), "tool_count", len(request.Tools),
 	)
 	calls, finish, err := r.providerTurn(ctx, client, model, request)
 	attributes := []any{
-		"session_id", r.id, "provider", providerID, "model", request.Model, "turn", turn,
+		"session_id", r.dto.ID, "provider", providerID, "model", request.Model, "turn", turn,
 		"finish_reason", finish, "tool_call_count", len(calls), "duration_ms", time.Since(started).Milliseconds(),
 	}
 	if err != nil {
@@ -452,13 +453,13 @@ func (r *agentSession) loggedProviderTurn(ctx context.Context, providerID string
 }
 
 func (r *agentSession) providerTurn(ctx context.Context, client provider.Provider, model provider.Model, request protocol.Request) ([]completedCall, protocol.FinishReason, error) {
-	assistant, err := r.config.Sessions.StartAssistant(ctx, r.id)
+	assistant, err := r.config.Sessions.StartAssistant(ctx, r.dto.ID)
 	if err != nil {
 		return nil, "", err
 	}
 	stream, err := provider.StreamWithRetry(ctx, client, request, func(notice provider.RetryNotice) {
 		if r.config.Live != nil {
-			r.config.Live.Publish(r.id, protocol.Event{Type: protocol.EventProviderRetry, Text: notice.String()})
+			r.config.Live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventProviderRetry, Text: notice.String()})
 		}
 	})
 	if err != nil {
@@ -499,7 +500,7 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		}
 		if r.config.Live != nil {
 			item.MessageID = assistant.ID
-			r.config.Live.Publish(r.id, item)
+			r.config.Live.Publish(r.dto.ID, item)
 		}
 		switch item.Type {
 		case protocol.EventTextDelta:
@@ -543,7 +544,7 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 	}
 	parts := finalParts(text.String(), preferredReasoning(reasoning.String(), reasoningSummary.String()), calls)
 	final := session.AssistantFinal{Parts: parts, Usage: usage, FinishReason: finish, Status: "complete"}
-	if err := r.config.Sessions.FinishAssistant(ctx, r.id, assistant.ID, final); err != nil {
+	if err := r.config.Sessions.FinishAssistant(ctx, r.dto.ID, assistant.ID, final); err != nil {
 		if ctx.Err() != nil {
 			final.Status = "interrupted"
 			final.FinishReason = protocol.FinishError
@@ -555,12 +556,12 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		return nil, finish, err
 	}
 	if r.config.Goals != nil {
-		if _, err := r.config.Goals.AccountUsage(ctx, r.id, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+		if _, err := r.config.Goals.AccountUsage(ctx, r.dto.ID, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
 			return nil, finish, err
 		}
 	}
 	for _, call := range calls {
-		if _, err := r.config.Sessions.AddToolCall(ctx, r.id, assistant.ID, call.call); err != nil {
+		if _, err := r.config.Sessions.AddToolCall(ctx, r.dto.ID, assistant.ID, call.call); err != nil {
 			return nil, finish, err
 		}
 	}
@@ -789,21 +790,21 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.UserSe
 				return
 			}
 			defer func() { <-sem }()
-			if err := r.config.Sessions.StartTool(ctx, r.id, call.call.ID); err != nil {
+			if err := r.config.Sessions.StartTool(ctx, r.dto.ID, call.call.ID); err != nil {
 				outcomes[i] = toolOutcome{call: call, persistErr: err}
 				return
 			}
 			var onPanic func(recovered any, stack []byte)
 			if logger := r.config.ToolPanicLogger; logger != nil {
 				onPanic = func(recovered any, stack []byte) {
-					logger(ctx, r.id, call.call.Name, recovered, stack)
+					logger(ctx, r.dto.ID, call.call.Name, recovered, stack)
 				}
 			}
 			taskID := ""
 			if r.config.TaskIDFor != nil {
-				taskID = r.config.TaskIDFor(r.id)
+				taskID = r.config.TaskIDFor(r.dto.ID)
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.id, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.id, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusinfo.Query{SessionID: r.id, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, StatusProvider: newProfileStatus(profile)}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusinfo.Query{SessionID: r.dto.ID, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, StatusProvider: newProfileStatus(profile)}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {
@@ -817,7 +818,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.UserSe
 				settleCtx, cancel = context.WithTimeout(context.Background(), r.config.CleanupTimeout)
 				defer cancel()
 			}
-			settleErr := settleTool(settleCtx, r.config.Sessions, r.id, call.call.ID, status, result, errorText)
+			settleErr := settleTool(settleCtx, r.config.Sessions, r.dto.ID, call.call.ID, status, result, errorText)
 			outcome.settled = settleErr == nil
 			outcome.persistErr = settleErr
 			outcomes[i] = outcome
@@ -833,7 +834,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.UserSe
 				if outcomes[i].err == nil {
 					outcomes[i].err = ctx.Err()
 				}
-				if err := r.config.Sessions.SettleTool(cleanup, r.id, outcomes[i].call.call.ID, "interrupted", "", ctx.Err().Error()); err != nil {
+				if err := r.config.Sessions.SettleTool(cleanup, r.dto.ID, outcomes[i].call.call.ID, "interrupted", "", ctx.Err().Error()); err != nil {
 					outcomes[i].persistErr = err
 				} else {
 					outcomes[i].settled = true
@@ -849,7 +850,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.UserSe
 			// Provider protocols require one result for every completed call. Use
 			// the cleanup context so Ctrl-C cannot leave an orphaned function_call
 			// that makes the provider reject the user's next prompt.
-			_, err := r.config.Sessions.AppendMessage(cleanup, r.id, toolResultMessage(outcome))
+			_, err := r.config.Sessions.AppendMessage(cleanup, r.dto.ID, toolResultMessage(outcome))
 			if err != nil {
 				resultErr = errors.Join(resultErr, err)
 			}
@@ -865,7 +866,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.UserSe
 		}
 	}
 	for _, outcome := range outcomes {
-		_, err := r.config.Sessions.AppendMessage(ctx, r.id, toolResultMessage(outcome))
+		_, err := r.config.Sessions.AppendMessage(ctx, r.dto.ID, toolResultMessage(outcome))
 		if err != nil {
 			return err
 		}
@@ -894,7 +895,7 @@ func (r *agentSession) finishOnCleanup(messageID string, parts []protocol.Conten
 func (r *agentSession) finishAssistantOnCleanup(messageID string, final session.AssistantFinal) error {
 	ctx, cancel := context.WithTimeout(context.Background(), r.config.CleanupTimeout)
 	defer cancel()
-	return r.config.Sessions.FinishAssistant(ctx, r.id, messageID, final)
+	return r.config.Sessions.FinishAssistant(ctx, r.dto.ID, messageID, final)
 }
 
 func toolDefinitions(snapshot tool.Snapshot) []protocol.ToolDefinition {

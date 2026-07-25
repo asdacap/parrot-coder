@@ -328,7 +328,8 @@ type testAgentSession struct {
 	id         string
 }
 
-func (s testAgentSession) ID() string { return s.id }
+func (s testAgentSession) ID() string                 { return s.id }
+func (s testAgentSession) Parent() agent.AgentSession { return nil }
 func (s testAgentSession) Prompt(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")
 }
