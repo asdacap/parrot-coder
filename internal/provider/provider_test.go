@@ -447,16 +447,28 @@ func TestUsageLimitClassificationUsesOnlyStructuredPermanentCodes(t *testing.T) 
 }
 
 func TestNonSuccessErrorWithoutStructuredMessageFallsBackToBody(t *testing.T) {
-	for _, testCase := range []struct{ name, body, want string }{
-		{"plain text", "upstream rejected the request", "upstream rejected the request"},
-		{"unknown json shape", `{"detail":"model \"m\" is unknown"}`, `{"detail":"model \"m\" is unknown"}`},
-		{"multiline body", "invalid request\nfield: model", "invalid requestfield: model"},
-		{"empty body", "", http.StatusText(http.StatusBadRequest)},
-		{"only a secret", "secret-token", "[REDACTED]"},
+	for _, testCase := range []struct {
+		name, body, want, wantResponse string
+		status                         int
+	}{
+		{name: "plain text", body: "upstream rejected the request", want: "upstream rejected the request"},
+		{name: "unknown json shape", body: `{"detail":"model \"m\" is unknown"}`, want: `{"detail":"model \"m\" is unknown"}`},
+		{name: "multiline body", body: "invalid request\nfield: model", want: "invalid requestfield: model"},
+		{name: "empty body", want: http.StatusText(http.StatusBadRequest)},
+		{name: "only a secret", body: "secret-token", want: "[REDACTED]"},
+		{
+			name: "internal error includes whole redacted response", status: http.StatusInternalServerError,
+			body: `{"error":{"type":"server_error","message":"Internal server error","request_id":"req_123","detail":{"reason":"secret-token failed"}}}`,
+			want: "Internal server error", wantResponse: `{"error":{"type":"server_error","message":"Internal server error","request_id":"req_123","detail":{"reason":"[REDACTED] failed"}}}`,
+		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-				response.WriteHeader(http.StatusBadRequest)
+				status := testCase.status
+				if status == 0 {
+					status = http.StatusBadRequest
+				}
+				response.WriteHeader(status)
 				_, _ = io.WriteString(response, testCase.body)
 			}))
 			defer server.Close()
@@ -469,8 +481,11 @@ func TestNonSuccessErrorWithoutStructuredMessageFallsBackToBody(t *testing.T) {
 			}
 			_, err = value.Stream(context.Background(), protocol.Request{Model: "m"})
 			var providerError *HTTPError
-			if !errors.As(err, &providerError) || providerError.Message != testCase.want {
+			if !errors.As(err, &providerError) || providerError.Message != testCase.want || providerError.Response != testCase.wantResponse {
 				t.Fatalf("error = %#v", err)
+			}
+			if testCase.wantResponse != "" && !strings.Contains(err.Error(), "Response: "+testCase.wantResponse) {
+				t.Fatalf("displayed error = %q", err)
 			}
 		})
 	}
