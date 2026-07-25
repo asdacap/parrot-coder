@@ -7,6 +7,7 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 type LifecycleObserver interface {
@@ -55,6 +56,7 @@ type AgentSession interface {
 	ResolveChild(string) (AgentSession, error)
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
+	SendAgentMessage(context.Context, tool.AgentMessage) (string, error)
 	Wake()
 	Resume(context.Context) error
 	Interrupt(context.Context) error
@@ -153,7 +155,16 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 // Send admits steer input and wakes the session without waiting for it to idle.
 func (s *agentSession) Send(ctx context.Context, content string) (string, error) {
 	if s.user != nil && s.parent != nil {
-		return s.sendManagedTurn(ctx, content)
+		return s.sendManagedTurn(ctx, content, content)
+	}
+	messageID, _, err := s.admitAndStart(ctx, content)
+	return messageID, err
+}
+
+func (s *agentSession) SendAgentMessage(ctx context.Context, message tool.AgentMessage) (string, error) {
+	content := message.String()
+	if s.user != nil && s.parent != nil {
+		return s.sendManagedTurn(ctx, content, message.Content)
 	}
 	messageID, _, err := s.admitAndStart(ctx, content)
 	return messageID, err

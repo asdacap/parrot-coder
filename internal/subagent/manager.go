@@ -528,10 +528,20 @@ func (o *Observer) Wait(ctx context.Context) (Task, error) {
 
 // Send delivers a steer message to an active agent without ending its turn.
 func (m *Manager) Send(ctx context.Context, callerSession, id, message string) (string, error) {
-	if strings.TrimSpace(message) == "" {
+	return m.send(ctx, callerSession, id, message, message)
+}
+
+// SendAttributed delivers an attributed agent message while applying the
+// configured prompt limit to the original caller content.
+func (m *Manager) SendAttributed(ctx context.Context, callerSession, id, message, measuredMessage string) (string, error) {
+	return m.send(ctx, callerSession, id, message, measuredMessage)
+}
+
+func (m *Manager) send(ctx context.Context, callerSession, id, message, measuredMessage string) (string, error) {
+	if strings.TrimSpace(measuredMessage) == "" {
 		return "", ErrInvalid
 	}
-	if len(message) > m.config.MaxPromptBytes {
+	if len(measuredMessage) > m.config.MaxPromptBytes {
 		return "", ErrRequestLimit
 	}
 	sender, ok := m.executor.(MessageSender)
@@ -560,10 +570,20 @@ func (m *Manager) Send(ctx context.Context, callerSession, id, message string) (
 
 // FollowUp starts another turn in the same child session.
 func (m *Manager) FollowUp(callerSession, id string, request Request) (Task, error) {
-	if strings.TrimSpace(request.Prompt) == "" {
+	return m.followUp(callerSession, id, request, request.Prompt)
+}
+
+// FollowUpAttributed starts a turn with attributed content while applying the
+// configured prompt limit to the original caller content.
+func (m *Manager) FollowUpAttributed(callerSession, id string, request Request, measuredPrompt string) (Task, error) {
+	return m.followUp(callerSession, id, request, measuredPrompt)
+}
+
+func (m *Manager) followUp(callerSession, id string, request Request, measuredPrompt string) (Task, error) {
+	if strings.TrimSpace(measuredPrompt) == "" {
 		return Task{}, ErrInvalid
 	}
-	if len(request.Prompt) > m.config.MaxPromptBytes {
+	if len(measuredPrompt) > m.config.MaxPromptBytes {
 		return Task{}, ErrRequestLimit
 	}
 	state, err := m.lookup(callerSession, id)

@@ -190,11 +190,11 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	}
 }
 
-func (s *agentSession) sendManagedTurn(ctx context.Context, content string) (string, error) {
-	if strings.TrimSpace(content) == "" {
+func (s *agentSession) sendManagedTurn(ctx context.Context, content, measuredContent string) (string, error) {
+	if strings.TrimSpace(measuredContent) == "" {
 		return "", ErrInvalidChildRequest
 	}
-	if len(content) > s.user.config.MaxChildPromptBytes {
+	if len(measuredContent) > s.user.config.MaxChildPromptBytes {
 		return "", ErrChildRequestLimit
 	}
 retry:

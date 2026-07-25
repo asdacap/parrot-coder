@@ -790,6 +790,94 @@ providers:
 	t.Fatalf("agent tools did not return child output; messages=%#v sessions=%#v", messages.Items, sessions.Items)
 }
 
+func TestReadOnlyChildCanSendToWritableDirectParent(t *testing.T) {
+	var parentID atomic.Value
+	releaseChild := make(chan struct{})
+	provider := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch {
+		case bytes.Contains(body, []byte("call_send")) && bytes.Contains(body, []byte("function_call_output")):
+			if bytes.Contains(body, []byte("cannot message writable agent")) || bytes.Contains(body, []byte("not found")) {
+				t.Errorf("child agent_send failed: %s", body)
+			}
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"child sent report\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		case bytes.Contains(body, []byte(`Agent message from child-reporter:\n\nreport from child`)):
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.output_text.delta\",\"delta\":\"parent received child steer\"}\n\ndata: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		case bytes.Contains(body, []byte("child report prompt")) && !bytes.Contains(body, []byte("function_call_output")):
+			<-releaseChild
+			id, _ := parentID.Load().(string)
+			arguments := fmt.Sprintf(`{"session_id":%q,"message":"report from child"}`, id)
+			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_send\",\"type\":\"function_call\",\"call_id\":\"call_send\",\"name\":\"agent_send\",\"arguments\":%q}}\n\n", arguments)
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		case bytes.Contains(body, []byte("call_spawn")) && bytes.Contains(body, []byte("function_call_output")):
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+			close(releaseChild)
+		default:
+			arguments := `{"prompt":"child report prompt","agent":"explorer","name":"child-reporter"}`
+			fmt.Fprintf(w, "data: {\"type\":\"response.output_item.added\",\"item\":{\"id\":\"item_spawn\",\"type\":\"function_call\",\"call_id\":\"call_spawn\",\"name\":\"agent_spawn\",\"arguments\":%q}}\n\n", arguments)
+			_, _ = io.WriteString(w, "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n")
+		}
+	}))
+	defer provider.Close()
+
+	root := t.TempDir()
+	configHome := filepath.Join(root, "config")
+	configDir := filepath.Join(configHome, "parrot")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	configuration := fmt.Sprintf(`model: local/model
+providers:
+  local:
+    type: compatible
+    protocol: responses
+    base_url: %q
+    api_key_env: PARROT_TASK_KEY
+    allow_insecure_localhost: true
+    models:
+      model:
+        tools: true
+`, provider.URL+"/v1")
+	if err := os.WriteFile(filepath.Join(configDir, "parrot.yaml"), []byte(configuration), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PARROT_TASK_KEY", "secret")
+	paths := appdirs.Overrides{Home: root, ConfigHome: configHome, DataHome: filepath.Join(root, "data"), StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache")}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	parent, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{ProjectID: runtime.Project.ID, Title: "parent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentID.Store(parent.ID)
+	if _, err := runtime.Client.Prompt(context.Background(), parent.ID, v1.PromptRequest{MessageID: "msg_parent_send", Content: "delegate upward report", Delivery: "steer"}); err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		messages, err := runtime.Client.Messages(context.Background(), parent.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, message := range messages.Items {
+			if message.Role == "assistant" && message.Content == "parent received child steer" {
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	messages, _ := runtime.Client.Messages(context.Background(), parent.ID)
+	t.Fatalf("parent did not receive child steer; messages=%#v", messages.Items)
+}
+
 func TestMigrateLegacyCredentials(t *testing.T) {
 	for _, testCase := range []struct {
 		name           string

@@ -632,6 +632,79 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	}
 }
 
+func TestAgentToolSessionResolvesDirectParentAndDescendantsOnly(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		prompt := request.Messages[len(request.Messages)-1].Content[0].Text
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + prompt},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	root := mustGetAgentSession(t, h.agentSessions, h.sessionID)
+	createCompleted := func(parent AgentSession, prompt, name, agent string) AgentSession {
+		t.Helper()
+		child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: prompt, Agent: agent, Name: name})
+		if err != nil {
+			t.Fatal(err)
+		}
+		observation, err := child.Observe()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := observation.Wait(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+		return child
+	}
+	parent := createCompleted(root, "parent", "direct-parent", WorkerID)
+	subject := createCompleted(parent, "subject", "subject", ExplorerID)
+	descendant := createCompleted(subject, "descendant", "descendant", WorkerID)
+	sibling := createCompleted(parent, "sibling", "sibling", ExplorerID)
+	unrelated := createCompleted(root, "unrelated", "unrelated", ExplorerID)
+	session := agentToolSession{session: subject.(*agentSession)}
+
+	for _, testCase := range []struct {
+		identifier   string
+		wantID       string
+		relationship tool.AgentRelationship
+	}{
+		{identifier: parent.ID(), wantID: parent.ID(), relationship: tool.AgentRelationshipParent},
+		{identifier: "direct-parent", wantID: parent.ID(), relationship: tool.AgentRelationshipParent},
+		{identifier: descendant.ID(), wantID: descendant.ID(), relationship: tool.AgentRelationshipDescendant},
+		{identifier: "descendant", wantID: descendant.ID(), relationship: tool.AgentRelationshipDescendant},
+	} {
+		resolved, err := session.ResolveAgent(testCase.identifier)
+		if err != nil || resolved.Agent.Status().SessionID != testCase.wantID || resolved.Relationship != testCase.relationship {
+			t.Fatalf("ResolveAgent(%q) = %#v, %v", testCase.identifier, resolved, err)
+		}
+	}
+	for _, identifier := range []string{sibling.ID(), "sibling", unrelated.ID(), "unrelated", root.ID()} {
+		if _, err := session.ResolveAgent(identifier); err == nil {
+			t.Fatalf("ResolveAgent(%q) unexpectedly succeeded", identifier)
+		}
+	}
+
+	send := &tool.AgentTool{Kind: "agent_send", Session: session, Agents: func(string) (bool, error) { return false, nil }}
+	call := tool.CallContext{SessionID: subject.ID(), Agent: ExplorerID}
+	plan, err := send.Plan(context.Background(), json.RawMessage(`{"session_id":"direct-parent","message":"report upward"}`), call)
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := send.Execute(context.Background(), plan, call)
+	if err != nil || result.Metadata["message_id"] != nil || result.Metadata["session_id"] != parent.ID() || result.Metadata["status"] != "running" {
+		t.Fatalf("Execute() = %#v, %v", result, err)
+	}
+	observation, err := parent.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err := observation.Wait(context.Background())
+	if err != nil || completed.Output != "answer-Agent message from subject:\n\nreport upward" {
+		t.Fatalf("parent follow-up = %#v, %v", completed, err)
+	}
+}
+
 func TestManagedAgentSessionInterruptsItself(t *testing.T) {
 	started := make(chan struct{})
 	fake := &fakeProvider{stream: func(_ int, ctx context.Context, _ protocol.Request) (provider.Stream, error) {

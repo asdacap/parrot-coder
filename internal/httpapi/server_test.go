@@ -20,6 +20,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/tool"
 	"github.com/amirulashraf/parrot-coder/internal/transport/inproc"
 )
 
@@ -351,6 +352,9 @@ func (s testAgentSession) Prompt(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")
 }
 func (s testAgentSession) Send(context.Context, string) (string, error) {
+	return "", errors.New("not implemented")
+}
+func (s testAgentSession) SendAgentMessage(context.Context, tool.AgentMessage) (string, error) {
 	return "", errors.New("not implemented")
 }
 func (s testAgentSession) Wake() { s.controller.wake(s.id) }

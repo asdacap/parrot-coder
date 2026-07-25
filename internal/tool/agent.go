@@ -26,9 +26,18 @@ type AgentTask struct {
 	Error     string
 }
 
+type AgentMessage struct {
+	Sender  string
+	Content string
+}
+
+func (m AgentMessage) String() string {
+	return fmt.Sprintf("Agent message from %s:\n\n%s", m.Sender, m.Content)
+}
+
 type ChildAgent interface {
 	Status() AgentTask
-	Send(context.Context, string) (AgentTask, string, error)
+	Send(context.Context, AgentMessage) (AgentTask, string, error)
 }
 
 type AgentChildren interface {
@@ -63,8 +72,8 @@ func AgentDescriptor(kind string) Descriptor {
 		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"name":{"type":"string","description":"Optional UI name. It is lowercased and sanitized to letters, digits, and hyphens; omitted or empty names are generated."}},"required":["prompt","agent"],"additionalProperties":false}`)
 		descriptor.Presentation = Presentation{Subagent: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"name", "agent"}}}}, CompletedInput: CompletedInputSpec{Fields: []string{"name", "agent", "model", "prompt"}, TerminalOnly: true}}
 	case agentSendID:
-		descriptor.Description = "Send a message to a child agent session by canonical ID or friendly name. Running agents are steered; idle agents start a follow-up turn."
-		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{"session_id":{"type":"string","description":"Canonical child session ID or friendly name."},"message":{"type":"string"}},"required":["session_id","message"],"additionalProperties":false}`)
+		descriptor.Description = "Send a message to an accessible agent session (a direct parent or descendant) by canonical ID or friendly name. Running agents are steered; idle agents start a follow-up turn."
+		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{"session_id":{"type":"string","description":"Canonical session ID or friendly name of an accessible direct parent or descendant."},"message":{"type":"string"}},"required":["session_id","message"],"additionalProperties":false}`)
 		descriptor.Presentation = Presentation{Subagent: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"session_id"}, TaskName: true}, {Names: []string{"message"}}}}}
 	default:
 		descriptor.Description = "Manage a reusable child agent task."
@@ -86,7 +95,7 @@ func (t *AgentTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	case agentSpawnID:
 		return fmt.Sprintf("Start %q agent", input.Agent), nil
 	case agentSendID:
-		return fmt.Sprintf("Send input to child session %q", input.SessionID), nil
+		return fmt.Sprintf("Send input to agent session %q", input.SessionID), nil
 	default:
 		return "Manage child agent", nil
 	}
@@ -95,12 +104,14 @@ func (t *AgentTool) DescribeRequest(raw json.RawMessage) (string, error) {
 func (t *AgentTool) JSONSchema() json.RawMessage { return t.Descriptor().Schema }
 
 type agentInput struct {
-	Prompt    string `json:"prompt"`
-	Agent     string `json:"agent"`
-	Model     string `json:"model"`
-	Name      string `json:"name"`
-	SessionID string `json:"session_id"`
-	Message   string `json:"message"`
+	Prompt     string        `json:"prompt"`
+	Agent      string        `json:"agent"`
+	Model      string        `json:"model"`
+	Name       string        `json:"name"`
+	SessionID  string        `json:"session_id"`
+	Message    string        `json:"message"`
+	Target     ResolvedAgent `json:"-"`
+	SenderName string        `json:"-"`
 }
 
 func decodeAgentInput(raw json.RawMessage) (agentInput, error) {
@@ -144,17 +155,24 @@ func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContex
 		if err != nil {
 			return Plan{}, err
 		}
-		child, err := t.resolve(call.SessionID, input.SessionID)
+		target, err := t.resolve(call.SessionID, input.SessionID)
 		if err != nil {
 			return Plan{}, err
 		}
-		task := child.Status()
+		task := target.Agent.Status()
 		input.SessionID = task.SessionID
+		input.Target = target
+		input.SenderName = call.SessionID
+		if t.Session != nil {
+			if name := t.Session.SessionName(); name != "" {
+				input.SenderName = name
+			}
+		}
 		targetReadOnly, err := t.Agents(task.Agent)
 		if err != nil {
 			return Plan{}, err
 		}
-		if callerReadOnly && !targetReadOnly {
+		if callerReadOnly && !targetReadOnly && target.Relationship != AgentRelationshipParent {
 			return Plan{}, fmt.Errorf("agent_send: read-only agent %q cannot message writable agent %q", call.Agent, task.Agent)
 		}
 	default:
@@ -184,11 +202,10 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 		task := child.Status()
 		return agentResult(task), nil
 	case agentSendID:
-		child, err := t.resolve(call.SessionID, input.SessionID)
-		if err != nil {
-			return Result{}, err
+		if input.Target.Agent == nil {
+			return Result{}, errors.New("agent_send: planned target is required")
 		}
-		task, messageID, err := child.Send(ctx, input.Message)
+		task, messageID, err := input.Target.Agent.Send(ctx, AgentMessage{Sender: input.SenderName, Content: input.Message})
 		if err != nil {
 			return Result{}, err
 		}
@@ -202,11 +219,12 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	}
 }
 
-func (t *AgentTool) resolve(parentSession, identifier string) (ChildAgent, error) {
+func (t *AgentTool) resolve(parentSession, identifier string) (ResolvedAgent, error) {
 	if t.Session != nil {
 		return t.Session.ResolveAgent(identifier)
 	}
-	return t.Children.Resolve(parentSession, identifier)
+	child, err := t.Children.Resolve(parentSession, identifier)
+	return ResolvedAgent{Agent: child, Relationship: AgentRelationshipDescendant}, err
 }
 
 func agentResult(task AgentTask) Result {
