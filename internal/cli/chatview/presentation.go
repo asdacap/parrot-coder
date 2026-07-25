@@ -30,6 +30,9 @@ const (
 	ToolResultTodos = "todos"
 )
 
+// Failure renderers, mirroring tool.FailureRender.
+const ToolFailureErrorBlock = "error_block"
+
 // Presentations holds the display metadata declared by the connected server's
 // tools, so renderers branch on what a tool does rather than on its identity.
 //
@@ -201,6 +204,9 @@ func (p Presentations) Output(name string) string {
 	}
 	return legacyOutput(name)
 }
+
+// Failure reports how a failed invocation's error should render.
+func (p Presentations) Failure(name string) string { return p.For(name).Failure }
 
 // legacyResult and legacyOutput reproduce the behaviour of the tool-ID switch
 // this package used before tools declared their own presentation. They apply

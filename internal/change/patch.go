@@ -50,6 +50,26 @@ type PatchOperation struct {
 
 type Patch struct{ Operations []PatchOperation }
 
+type patchPlanningError struct{ errors []error }
+
+func (e *patchPlanningError) Error() string {
+	var message strings.Builder
+	fmt.Fprintf(&message, "patch planning failed with %d errors:", len(e.errors))
+	for i, err := range e.errors {
+		fmt.Fprintf(&message, "\n\n[%d/%d] %v", i+1, len(e.errors), err)
+	}
+	return message.String()
+}
+
+func (e *patchPlanningError) Unwrap() []error { return append([]error(nil), e.errors...) }
+
+func newPatchPlanningError(planningErrors ...error) error {
+	if len(planningErrors) == 0 {
+		return nil
+	}
+	return &patchPlanningError{errors: planningErrors}
+}
+
 // Aider format block markers.
 const (
 	patchSearchMarker  = "<<<<<<< SEARCH"
@@ -231,6 +251,8 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 	var mutations []Mutation
 	var directories []string
 	var diff strings.Builder
+	var planErrors []error
+operations:
 	for _, operation := range patch.Operations {
 		if err := ctx.Err(); err != nil {
 			return Plan{}, err
@@ -239,51 +261,62 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 		case PatchAdd:
 			path, err := ws.ResolveCreate(operation.Path)
 			if err != nil {
-				return Plan{}, err
+				planErrors = append(planErrors, patchOperationErrors(operation, err)...)
+				continue
 			}
 			parents, err := missingParentDirectories(path)
 			if err != nil {
-				return Plan{}, err
+				planErrors = append(planErrors, patchOperationErrors(operation, err)...)
+				continue
 			}
-			directories = append(directories, parents...)
 			if int64(len(operation.Data)) > s.config.MaxFileBytes {
-				return Plan{}, errors.New("change: file byte limit exceeded")
+				planErrors = append(planErrors, patchOperationErrors(operation, errors.New("file byte limit exceeded"))...)
+				continue
 			}
 			before, err := s.readState(path)
 			if err != nil {
-				return Plan{}, err
+				planErrors = append(planErrors, patchOperationErrors(operation, err)...)
+				continue
 			}
 			mode := os.FileMode(0o600)
 			if before.Exists {
 				if before.SymlinkTarget != "" || !before.Mode.IsRegular() {
-					return Plan{}, errors.New("change: patches require regular files")
+					planErrors = append(planErrors, patchOperationErrors(operation, errors.New("patches require regular files"))...)
+					continue operations
 				}
 				if len(before.Data) != 0 {
-					return Plan{}, fmt.Errorf("change: create %q: %w: empty SEARCH only matches an empty file", operation.Path, ErrConflict)
+					planErrors = append(planErrors, patchOperationErrors(operation, fmt.Errorf("%w: empty SEARCH only matches an empty file", ErrConflict))...)
+					continue operations
 				}
 				mode = before.Mode
 			}
 			after := regularState(path, []byte(operation.Data), mode)
+			directories = append(directories, parents...)
 			mutations = append(mutations, Mutation{operation.Path, path, before, after})
 			diff.WriteString(unifiedDiff(ws.Root(), before, after))
 		case PatchUpdate:
 			path, err := ws.ResolveRead(operation.Path)
 			if err != nil {
-				return Plan{}, fmt.Errorf("change: source %q is missing: %w", operation.Path, err)
+				planErrors = append(planErrors, patchOperationErrors(operation, fmt.Errorf("source is missing: %w", err))...)
+				continue
 			}
 			before, err := s.readState(path)
 			if err != nil {
-				return Plan{}, err
+				planErrors = append(planErrors, patchOperationErrors(operation, err)...)
+				continue
 			}
 			if before.SymlinkTarget != "" || !before.Mode.IsRegular() {
-				return Plan{}, errors.New("change: patches require regular files")
+				planErrors = append(planErrors, patchOperationErrors(operation, errors.New("patches require regular files"))...)
+				continue
 			}
 			data, err := applyHunks(before.Data, operation.Hunks)
 			if err != nil {
-				return Plan{}, fmt.Errorf("change: update %q: %w", operation.Path, err)
+				planErrors = append(planErrors, patchOperationErrors(operation, err)...)
+				continue
 			}
 			if int64(len(data)) > s.config.MaxFileBytes {
-				return Plan{}, errors.New("change: file byte limit exceeded")
+				planErrors = append(planErrors, patchOperationErrors(operation, errors.New("file byte limit exceeded"))...)
+				continue
 			}
 			after := regularState(path, data, before.Mode)
 			mutations = append(mutations, Mutation{operation.Path, path, before, after})
@@ -291,23 +324,40 @@ func (s *Service) PlanPatch(ctx context.Context, ws *workspace.Workspace, text s
 		case PatchDelete:
 			path, err := ws.ResolveRead(operation.Path)
 			if err != nil {
-				return Plan{}, fmt.Errorf("change: source %q is missing: %w", operation.Path, err)
+				planErrors = append(planErrors, patchOperationErrors(operation, fmt.Errorf("source is missing: %w", err))...)
+				continue
 			}
 			before, err := s.readState(path)
 			if err != nil {
-				return Plan{}, err
+				planErrors = append(planErrors, patchOperationErrors(operation, err)...)
+				continue
 			}
 			if before.SymlinkTarget != "" || !before.Mode.IsRegular() {
-				return Plan{}, errors.New("change: patches require regular files")
+				planErrors = append(planErrors, patchOperationErrors(operation, errors.New("patches require regular files"))...)
+				continue
 			}
 			after := FileState{Path: path}
 			mutations = append(mutations, Mutation{operation.Path, path, before, after})
 			diff.WriteString(unifiedDiff(ws.Root(), before, after))
 		}
 	}
+	if err := newPatchPlanningError(planErrors...); err != nil {
+		return Plan{}, err
+	}
 	sort.Slice(mutations, func(i, j int) bool { return mutations[i].Path < mutations[j].Path })
 	directories = uniquePaths(directories)
 	return Plan{Mutations: mutations, Directories: directories, Diff: diff.String()}, nil
+}
+
+func patchOperationErrors(operation PatchOperation, err error) []error {
+	if aggregate, ok := err.(*patchPlanningError); ok {
+		result := make([]error, 0, len(aggregate.errors))
+		for _, detail := range aggregate.errors {
+			result = append(result, fmt.Errorf("change: %s %q: %w", operation.Kind, operation.Path, detail))
+		}
+		return result
+	}
+	return []error{fmt.Errorf("change: %s %q: %w", operation.Kind, operation.Path, err)}
 }
 
 func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
@@ -331,12 +381,14 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 		lines []string
 	}
 	var replacements []replacement
+	var matchErrors []error
 	lineIndex := 0
-	for _, hunk := range hunks {
+	for hunkIndex, hunk := range hunks {
 		if hunk.Context != "" {
 			contextIndex, err := seekPatchSequence(lines, []string{hunk.Context}, lineIndex, false)
 			if err != nil {
-				return nil, fmt.Errorf("hunk context %q: %w", hunk.Context, err)
+				matchErrors = append(matchErrors, fmt.Errorf("hunk %d context %q: %w", hunkIndex+1, hunk.Context, err))
+				continue
 			}
 			lineIndex = contextIndex + 1
 		}
@@ -355,10 +407,14 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 		}
 		found, err := seekPatchSequence(lines, oldLines, lineIndex, hunk.EndOfFile)
 		if err != nil {
-			return nil, err
+			matchErrors = append(matchErrors, fmt.Errorf("hunk %d: %w", hunkIndex+1, err))
+			continue
 		}
 		replacements = append(replacements, replacement{start: found, old: len(oldLines), lines: newLines})
 		lineIndex = found + len(oldLines)
+	}
+	if err := newPatchPlanningError(matchErrors...); err != nil {
+		return nil, err
 	}
 	sort.SliceStable(replacements, func(i, j int) bool {
 		return replacements[i].start < replacements[j].start

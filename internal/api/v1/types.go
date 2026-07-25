@@ -323,6 +323,7 @@ type ToolPresentation struct {
 	Muted             bool               `json:"muted,omitempty"`
 	Result            string             `json:"result,omitempty"`
 	Output            string             `json:"output,omitempty"`
+	Failure           string             `json:"failure,omitempty"`
 	Subagent          bool               `json:"subagent,omitempty"`
 	Modeline          bool               `json:"modeline,omitempty"`
 	LabelInPermission bool               `json:"label_in_permission,omitempty"`

@@ -23,7 +23,10 @@ func NewApplyPatchTool(changes *change.Service) *ApplyPatchTool {
 
 func (*ApplyPatchTool) ID() string { return "apply_patch" }
 func (*ApplyPatchTool) Presentation() Presentation {
-	return Presentation{Label: LabelSpec{Kind: LabelPatchTargets, Source: []string{"patchText", "patch"}}}
+	return Presentation{
+		Label:   LabelSpec{Kind: LabelPatchTargets, Source: []string{"patchText", "patch"}},
+		Failure: FailureErrorBlock,
+	}
 }
 
 func (*ApplyPatchTool) Description() string {

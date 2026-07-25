@@ -18,6 +18,8 @@ type Presentation struct {
 	// concerns deliberately: it suppresses both streamed deltas and error text,
 	// because both follow from a tool having nothing displayable to show.
 	Output OutputMode `json:"output,omitempty"`
+	// Failure selects how a failed invocation's error is rendered.
+	Failure FailureRender `json:"failure,omitempty"`
 	// Subagent marks a tool whose invocations create child task activity, so a
 	// renderer can nest that activity beneath the invoking row.
 	Subagent bool `json:"subagent,omitempty"`
@@ -95,6 +97,16 @@ const (
 	// OutputNone suppresses streamed deltas and error text entirely, for tools
 	// whose output would disclose a redacted value.
 	OutputNone OutputMode = "none"
+)
+
+// FailureRender selects how a failed invocation's error is rendered.
+type FailureRender string
+
+const (
+	// FailureRequest retains the generic failed-request block and status detail.
+	FailureRequest FailureRender = ""
+	// FailureErrorBlock renders the full error in a dedicated permanent block.
+	FailureErrorBlock FailureRender = "error_block"
 )
 
 // ResultRender selects how a successful result body is rendered.

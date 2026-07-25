@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -140,6 +141,59 @@ func FormatFailedToolRequest(input map[string]any) string {
 		lines = append(lines, "  "+line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+var (
+	aggregateDiagnosticHeader  = regexp.MustCompile(`^patch planning failed with \d+ errors:$`)
+	aggregateDiagnosticHeading = regexp.MustCompile(`^\[(\d+)/(\d+)\](?:\s|$)`)
+)
+
+// FormatFailureErrorBlock makes a full tool error visually distinct without
+// changing its text. Numbered aggregate headings are preserved exactly and
+// separated by the blank lines supplied by the producer.
+func FormatFailureErrorBlock(errorText string) string {
+	errorText = strings.TrimSpace(strings.ReplaceAll(errorText, "\r\n", "\n"))
+	if errorText == "" {
+		return ""
+	}
+	sections, aggregate := aggregateDiagnosticSections(errorText)
+	if !aggregate {
+		return "✗ Error\n" + errorText
+	}
+	for i, section := range sections {
+		sections[i] = "✗ " + section
+	}
+	return strings.Join(sections, "\n\n")
+}
+
+// FailureErrorSummary returns only status-row-safe text for a dedicated error
+// block. The body itself remains exclusively in the permanent block.
+func FailureErrorSummary(errorText string) string {
+	sections, aggregate := aggregateDiagnosticSections(strings.TrimSpace(strings.ReplaceAll(errorText, "\r\n", "\n")))
+	if !aggregate {
+		return ""
+	}
+	first, _, _ := strings.Cut(sections[0], "\n")
+	matches := aggregateDiagnosticHeading.FindStringSubmatch(first)
+	if len(matches) == 3 {
+		return matches[2] + " errors"
+	}
+	return fmt.Sprintf("%d errors", len(sections))
+}
+
+func aggregateDiagnosticSections(errorText string) ([]string, bool) {
+	sections := strings.Split(errorText, "\n\n")
+	if len(sections) < 2 || !aggregateDiagnosticHeader.MatchString(sections[0]) {
+		return sections, false
+	}
+	sections = sections[1:]
+	for _, section := range sections {
+		first, _, _ := strings.Cut(section, "\n")
+		if !aggregateDiagnosticHeading.MatchString(first) {
+			return sections, false
+		}
+	}
+	return sections, true
 }
 
 // RedactToolInputForDisplay returns a presentation-only copy. Exact tool input
@@ -535,12 +589,13 @@ func firstString(raw map[string]any, keys ...string) string {
 }
 
 type streamToolCall struct {
-	name   string
-	input  map[string]any
-	style  terminal.TextStyle
-	result string
-	stream string
-	output ShellOutputTail
+	name    string
+	input   map[string]any
+	style   terminal.TextStyle
+	result  string
+	stream  string
+	failure string
+	output  ShellOutputTail
 }
 
 type StreamToolTracker struct {
@@ -1377,6 +1432,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		call.style = t.Presentation.Style(name)
 		call.result = t.Presentation.Result(name)
 		call.stream = t.Presentation.Output(name)
+		call.failure = t.Presentation.Failure(name)
 	}
 	if input != nil {
 		call.input = input
@@ -1396,6 +1452,8 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		if formatted, _, ok := FormatTodoWriteBlock(result, call.input); ok {
 			block = formatted
 		}
+	} else if status == "failure" && call.failure == ToolFailureErrorBlock {
+		block = FormatFailureErrorBlock(ToolActivityError(item.Data))
 	} else if status == "failure" && call.input != nil {
 		block = TruncateToolBlock(FormatFailedToolRequest(call.input), MaxToolBlockLines)
 	}
@@ -1430,6 +1488,9 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		delete(t.calls, callID)
 	}
 	errorText := ToolActivityError(item.Data)
+	if call.failure == ToolFailureErrorBlock {
+		errorText = FailureErrorSummary(errorText)
+	}
 	if call.stream == ToolOutputNone {
 		errorText, block = "", ""
 	}

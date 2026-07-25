@@ -36,6 +36,24 @@ func TestCompletedInputPresentation(t *testing.T) {
 	}
 }
 
+func TestFailureErrorBlockPresentation(t *testing.T) {
+	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "custom_editor", Presentation: v1.ToolPresentation{Failure: ToolFailureErrorBlock},
+	}}})
+	tracker := StreamToolTracker{Presentation: presentations}
+	tracker.DescribeReport(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"call","name":"custom_editor","input":{"patch":"original request"}}`)})
+	errorText := "patch planning failed with 2 errors:\n\n[1/2] first conflict\n<<<<<<< SEARCH\nfirst\n=======\n\n[2/2] second conflict\n<<<<<<< SEARCH\nsecond\n======="
+	data, err := json.Marshal(map[string]any{"call_id": "call", "name": "custom_editor", "error": errorText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	report := tracker.DescribeReport(v1.Event{Type: "session.tool.failure", Data: data})
+	wantBlock := "✗ [1/2] first conflict\n<<<<<<< SEARCH\nfirst\n=======\n\n✗ [2/2] second conflict\n<<<<<<< SEARCH\nsecond\n======="
+	if report.Line != "✗ tool: 2 errors" || report.Block != wantBlock || strings.Contains(report.Block, "original request") {
+		t.Fatalf("failure report = %#v, want concise status and separately headed error sections", report)
+	}
+}
+
 func TestPresentationResolvesFriendlyTaskNames(t *testing.T) {
 	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "control", Presentation: v1.ToolPresentation{Label: v1.ToolLabel{Fields: []v1.ToolLabelPart{{Names: []string{"task_id"}, TaskName: true}}}},

@@ -282,6 +282,49 @@ func TestApplyPatchReportsProblematicSearchBlock(t *testing.T) {
 	}
 }
 
+func TestApplyPatchPlanReportsAllConflictBlocks(t *testing.T) {
+	ctx, ws, changes := workspaceToolHarness(t)
+	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("existing\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	searches := []string{"missing first", "missing second", "missing third"}
+	patchText := ""
+	for i, search := range searches {
+		path := ""
+		if i == 0 {
+			path = "file"
+		}
+		patchText += changeAiderBlock(path, search, "replacement")
+	}
+	raw, err := json.Marshal(map[string]string{"patchText": patchText})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := NewApplyPatchTool(changes).Plan(ctx, raw, CallContext{Workspace: ws})
+	if !errors.Is(err, change.ErrConflict) {
+		t.Fatalf("error = %v, want ErrConflict", err)
+	}
+	if plan.ToolID != "" || len(plan.CanonicalInput) != 0 || plan.Data != nil || len(plan.Permissions) != 0 || len(plan.Review) != 0 {
+		t.Fatalf("plan = %#v, want zero Plan", plan)
+	}
+	position := -1
+	for _, search := range searches {
+		next := strings.Index(err.Error(), search)
+		if next <= position {
+			t.Fatalf("error = %q, want conflict block %q after byte %d", err, search, position)
+		}
+		position = next
+	}
+}
+
+func changeAiderBlock(path, search, replace string) string {
+	if path != "" {
+		path += "\n"
+	}
+	return path + "<<<<<<< SEARCH\n" + search + "\n=======\n" + replace + "\n>>>>>>> REPLACE\n"
+}
+
 func TestApplyPatchFormatParameter(t *testing.T) {
 	_, ws, changes := workspaceToolHarness(t)
 	tool := NewApplyPatchTool(changes)

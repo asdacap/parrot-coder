@@ -126,10 +126,16 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	}
 	if terminalEvent && status == "failure" {
 		for i := range r.activity {
-			if r.activity[i].id == callID && r.activity[i].input != nil {
-				r.activity[i].block = truncateToolBlock(formatFailedToolRequest(r.activity[i].input), maxToolBlockLines)
-				break
+			if r.activity[i].id != callID {
+				continue
 			}
+			if presentation.Failure(r.activity[i].toolName) == chatview.ToolFailureErrorBlock {
+				r.activity[i].error = chatview.FailureErrorSummary(errorText)
+				r.activity[i].block = chatview.FormatFailureErrorBlock(errorText)
+			} else if r.activity[i].input != nil {
+				r.activity[i].block = truncateToolBlock(formatFailedToolRequest(r.activity[i].input), maxToolBlockLines)
+			}
+			break
 		}
 	}
 	if terminalEvent {
