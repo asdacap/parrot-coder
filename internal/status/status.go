@@ -14,11 +14,13 @@ import (
 )
 
 type Query struct {
-	SessionID string
-	Agent     string
-	Provider  string
-	Model     string
-	Variant   string
+	SessionID         string
+	ParentSessionID   string
+	ParentSessionName string
+	Agent             string
+	Provider          string
+	Model             string
+	Variant           string
 }
 
 type Observation struct {
@@ -83,6 +85,13 @@ func (Selection) Observe(_ context.Context, query Query) (Observation, error) {
 	lines := []string{"Active profile: " + query.Agent, "Model: " + query.Provider + "/" + query.Model}
 	if query.Variant != "" {
 		lines = append(lines, "Variant: "+query.Variant)
+	}
+	if query.ParentSessionID != "" {
+		parent := query.ParentSessionID
+		if name := strings.TrimSpace(query.ParentSessionName); name != "" {
+			parent += " (" + name + ")"
+		}
+		lines = append(lines, "Parent session: "+parent)
 	}
 	return Observation{Available: true, Text: strings.Join(lines, "\n")}, nil
 }

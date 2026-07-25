@@ -99,11 +99,36 @@ func TestActiveTasksStatus(t *testing.T) {
 }
 
 func TestSelectionStatus(t *testing.T) {
-	observation, err := (Selection{}).Observe(context.Background(), Query{Agent: "worker", Provider: "openai", Model: "gpt", Variant: "high"})
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name  string
+		query Query
+		want  string
+	}{
+		{
+			name:  "root with variant",
+			query: Query{Agent: "worker", Provider: "openai", Model: "gpt", Variant: "high"},
+			want:  "Active profile: worker\nModel: openai/gpt\nVariant: high",
+		},
+		{
+			name:  "named parent",
+			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "main-task", Agent: "worker", Provider: "openai", Model: "gpt"},
+			want:  "Active profile: worker\nModel: openai/gpt\nParent session: ses_parent (main-task)",
+		},
+		{
+			name:  "unnamed parent",
+			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "  ", Agent: "worker", Provider: "openai", Model: "gpt"},
+			want:  "Active profile: worker\nModel: openai/gpt\nParent session: ses_parent",
+		},
 	}
-	if observation.Text != "Active profile: worker\nModel: openai/gpt\nVariant: high" {
-		t.Fatalf("selection = %q", observation.Text)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observation, err := (Selection{}).Observe(context.Background(), test.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if observation.Text != test.want {
+				t.Fatalf("selection = %q, want %q", observation.Text, test.want)
+			}
+		})
 	}
 }

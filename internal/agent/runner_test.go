@@ -84,6 +84,73 @@ func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
 	}
 }
 
+type failingGetSessionRuntime struct{ SessionRuntime }
+
+func (failingGetSessionRuntime) Get(context.Context, string) (session.AgentSessionDto, error) {
+	return session.AgentSessionDto{}, session.ErrNotFound
+}
+
+func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
+	runner := &agentSession{
+		dto:    session.AgentSessionDto{ID: "ses_child"},
+		config: AgentSessionConfig{Sessions: failingGetSessionRuntime{}},
+	}
+	query := runner.statusQuery(context.Background(), session.AgentSessionDto{
+		ParentSessionID: "ses_deleted_parent",
+		Provider:        "openai",
+		Model:           "gpt",
+	}, Profile{ID: "build"})
+	if query.ParentSessionID != "ses_deleted_parent" || query.ParentSessionName != "" {
+		t.Fatalf("parent status = %q (%q), want %q with no name", query.ParentSessionID, query.ParentSessionName, "ses_deleted_parent")
+	}
+}
+
+func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if !containsRoleSubstring(request.Messages, protocol.RoleSystem, "Parent session: ") {
+			return nil, fmt.Errorf("request missing parent status: %#v", request.Messages)
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	parent := h.agentSessions.Get(h.sessionID)
+	child, err := h.agentSessions.CreateChild(context.Background(), parent, ChildSessionRequest{
+		ProjectID: h.runner.dto.ProjectID, Name: "inspect", Agent: BuildID,
+		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nested, err := h.agentSessions.CreateChild(context.Background(), child, ChildSessionRequest{
+		ProjectID: h.runner.dto.ProjectID, Name: "nested", Agent: BuildID,
+		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry, err := statusinfo.NewRegistry(statusinfo.Selection{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	nestedRunner := nested.(*agentSession)
+	nestedRunner.config.Status = registry
+	if _, err := nested.Prompt(context.Background(), "work"); err != nil {
+		t.Fatal(err)
+	}
+
+	requests := fake.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	want := "Parent session: " + child.ID() + " (inspect)"
+	if !containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, want) {
+		t.Fatalf("status does not contain %q: %#v", want, requests[0].Messages)
+	}
+	if containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent session: "+h.sessionID) {
+		t.Fatalf("status contains root instead of direct parent: %#v", requests[0].Messages)
+	}
+}
+
 func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "done"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
@@ -1223,6 +1290,20 @@ func containsRoleText(messages []protocol.Message, role protocol.Role, want stri
 	for _, message := range messages {
 		if message.Role == role && containsText([]protocol.Message{message}, want) {
 			return true
+		}
+	}
+	return false
+}
+
+func containsRoleSubstring(messages []protocol.Message, role protocol.Role, want string) bool {
+	for _, message := range messages {
+		if message.Role != role {
+			continue
+		}
+		for _, part := range message.Content {
+			if strings.Contains(part.Text, want) {
+				return true
+			}
 		}
 	}
 	return false
