@@ -173,16 +173,15 @@ func ParsePatch(text string) (Patch, error) {
 	return finalizePatch(patch)
 }
 
-// patchLines rejects NUL bytes and splits text into carriage-return-free lines.
+// patchLines rejects NUL bytes and splits text into lines independently of the
+// newline convention used to submit the patch.
 func patchLines(text string) ([]string, error) {
 	if strings.ContainsRune(text, 0) {
 		return nil, fmt.Errorf("%w: NUL byte", ErrInvalidPatch)
 	}
-	lines := strings.Split(strings.TrimSpace(text), "\n")
-	for i := range lines {
-		lines[i] = strings.TrimSuffix(lines[i], "\r")
-	}
-	return lines, nil
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
+	return strings.Split(strings.TrimSpace(text), "\n"), nil
 }
 
 // finalizePatch applies the checks every format shares, so both parsers reject
@@ -360,58 +359,127 @@ func patchOperationErrors(operation PatchOperation, err error) []error {
 	return []error{fmt.Errorf("change: %s %q: %w", operation.Kind, operation.Path, err)}
 }
 
+type fileLine struct {
+	text       string
+	terminator string
+}
+
+func splitFileLines(data []byte) []fileLine {
+	var lines []fileLine
+	for len(data) > 0 {
+		index := bytes.IndexAny(data, "\r\n")
+		if index < 0 {
+			return append(lines, fileLine{text: string(data)})
+		}
+		end := index + 1
+		if data[index] == '\r' && end < len(data) && data[end] == '\n' {
+			end++
+		}
+		lines = append(lines, fileLine{text: string(data[:index]), terminator: string(data[index:end])})
+		data = data[end:]
+	}
+	return lines
+}
+
+func lineTexts(lines []fileLine) []string {
+	texts := make([]string, len(lines))
+	for i := range lines {
+		texts[i] = lines[i].text
+	}
+	return texts
+}
+
+func lineEndingAt(lines []fileLine, index int) string {
+	if index < len(lines) && lines[index].terminator != "" {
+		return lines[index].terminator
+	}
+	for i := index - 1; i >= 0; i-- {
+		if lines[i].terminator != "" {
+			return lines[i].terminator
+		}
+	}
+	for i := index + 1; i < len(lines); i++ {
+		if lines[i].terminator != "" {
+			return lines[i].terminator
+		}
+	}
+	return "\n"
+}
+
+func replacementLines(hunk PatchHunk, matched []fileLine, lineEnding string) []fileLine {
+	result := make([]fileLine, 0, len(hunk.Lines))
+	oldIndex := 0
+	matchedDeletion := false
+	for _, line := range hunk.Lines {
+		switch line.Kind {
+		case ' ':
+			// Context is not replaced, so preserve its original terminator too.
+			result = append(result, matched[oldIndex])
+			oldIndex++
+		case '-':
+			if !matchedDeletion && matched[oldIndex].terminator != "" {
+				lineEnding = matched[oldIndex].terminator
+			}
+			matchedDeletion = true
+			oldIndex++
+		case '+':
+			result = append(result, fileLine{text: line.Text, terminator: lineEnding})
+		}
+	}
+	if len(matched) > 0 && matched[len(matched)-1].terminator == "" && len(result) > 0 {
+		// Keep an unterminated final source line unterminated. Earlier inserted
+		// lines still need the target separator to remain distinct lines.
+		result[len(result)-1].terminator = ""
+	}
+	return result
+}
+
 func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 	bom := []byte(nil)
 	if bytes.HasPrefix(data, []byte{0xef, 0xbb, 0xbf}) {
 		bom = []byte{0xef, 0xbb, 0xbf}
 		data = data[len(bom):]
 	}
-	lineEnding := "\n"
-	if bytes.Contains(data, []byte("\r\n")) && !bytes.Contains(bytes.ReplaceAll(data, []byte("\r\n"), nil), []byte("\n")) {
-		lineEnding = "\r\n"
-	}
-	text := strings.ReplaceAll(string(data), "\r\n", "\n")
-	lines := strings.Split(text, "\n")
-	if len(lines) > 0 && lines[len(lines)-1] == "" {
-		lines = lines[:len(lines)-1]
-	}
+	lines := splitFileLines(data)
+	texts := lineTexts(lines)
 	type replacement struct {
 		start int
 		old   int
-		lines []string
+		lines []fileLine
 	}
 	var replacements []replacement
 	var matchErrors []error
 	lineIndex := 0
 	for hunkIndex, hunk := range hunks {
 		if hunk.Context != "" {
-			contextIndex, err := seekPatchSequence(lines, []string{hunk.Context}, lineIndex, false)
+			contextIndex, err := seekPatchSequence(texts, []string{hunk.Context}, lineIndex, false)
 			if err != nil {
 				matchErrors = append(matchErrors, fmt.Errorf("hunk %d context %q: %w", hunkIndex+1, hunk.Context, err))
 				continue
 			}
 			lineIndex = contextIndex + 1
 		}
-		var oldLines, newLines []string
+		var oldLines []string
 		for _, line := range hunk.Lines {
 			if line.Kind != '+' {
 				oldLines = append(oldLines, line.Text)
 			}
-			if line.Kind != '-' {
-				newLines = append(newLines, line.Text)
+		}
+		found := len(lines)
+		if len(oldLines) > 0 {
+			var err error
+			found, err = seekPatchSequence(texts, oldLines, lineIndex, hunk.EndOfFile)
+			if err != nil {
+				matchErrors = append(matchErrors, fmt.Errorf("hunk %d: %w", hunkIndex+1, err))
+				continue
 			}
+			lineIndex = found + len(oldLines)
 		}
-		if len(oldLines) == 0 {
-			replacements = append(replacements, replacement{start: len(lines), lines: newLines})
-			continue
-		}
-		found, err := seekPatchSequence(lines, oldLines, lineIndex, hunk.EndOfFile)
-		if err != nil {
-			matchErrors = append(matchErrors, fmt.Errorf("hunk %d: %w", hunkIndex+1, err))
-			continue
-		}
-		replacements = append(replacements, replacement{start: found, old: len(oldLines), lines: newLines})
-		lineIndex = found + len(oldLines)
+		replacements = append(replacements, replacement{
+			start: found,
+			old:   len(oldLines),
+			lines: replacementLines(hunk, lines[found:found+len(oldLines)], lineEndingAt(lines, found)),
+		})
 	}
 	if err := newPatchPlanningError(matchErrors...); err != nil {
 		return nil, err
@@ -419,18 +487,20 @@ func applyHunks(data []byte, hunks []PatchHunk) ([]byte, error) {
 	sort.SliceStable(replacements, func(i, j int) bool {
 		return replacements[i].start < replacements[j].start
 	})
-	result := append([]string(nil), lines...)
+	result := append([]fileLine(nil), lines...)
 	for i := len(replacements) - 1; i >= 0; i-- {
 		replacement := replacements[i]
-		tail := append([]string(nil), result[replacement.start+replacement.old:]...)
+		tail := append([]fileLine(nil), result[replacement.start+replacement.old:]...)
 		result = append(result[:replacement.start], replacement.lines...)
 		result = append(result, tail...)
 	}
-	var output string
-	if len(result) > 0 {
-		output = strings.Join(result, lineEnding) + lineEnding
+	var output bytes.Buffer
+	output.Write(bom)
+	for _, line := range result {
+		output.WriteString(line.text)
+		output.WriteString(line.terminator)
 	}
-	return append(bom, []byte(output)...), nil
+	return output.Bytes(), nil
 }
 
 // seekPatchSequence locates the single place pattern occurs at or after start.
