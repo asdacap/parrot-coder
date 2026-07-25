@@ -461,7 +461,6 @@ func (r *agentSession) statusQuery(ctx context.Context, selected session.AgentSe
 	if selected.ParentSessionID != "" {
 		if parent, err := r.config.Sessions.Get(ctx, selected.ParentSessionID); err == nil {
 			query.ParentSessionName = parent.Name
-			query.ParentAgent = parent.Agent
 		}
 	}
 	return query

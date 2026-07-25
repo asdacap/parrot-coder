@@ -48,6 +48,34 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	}
 }
 
+func TestRootSessionNamesAreGeneratedWithoutOverridingExplicitOrChildNames(t *testing.T) {
+	ctx := context.Background()
+	registry := store.NewRegistry(t.TempDir(), "host-test")
+	defer registry.Close()
+	service := session.NewService(registry, event.NewRepository(registry))
+
+	generated, err := service.Create(ctx, session.CreateParams{ProjectID: "project", Title: "generated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	explicit, err := service.Create(ctx, session.CreateParams{Name: "main-task", Title: "explicit"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := service.Create(ctx, session.CreateParams{ParentSessionID: generated.ID, ProjectID: "project", Title: "child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	loaded, err := service.Get(ctx, generated.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if generated.Name == "" || loaded.Name != generated.Name || explicit.Name != "main-task" || child.Name != "" {
+		t.Fatalf("session names: generated=%q loaded=%q explicit=%q child=%q", generated.Name, loaded.Name, explicit.Name, child.Name)
+	}
+}
+
 func TestParentSessionPersistsAndRequiresSameProject(t *testing.T) {
 	ctx := context.Background()
 	state := t.TempDir()

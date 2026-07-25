@@ -7,12 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/store"
+	petname "github.com/dustinkirkland/golang-petname"
 )
 
 var (
@@ -139,6 +141,9 @@ func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selec
 func (s *Service) create(ctx context.Context, params CreateParams, selection Selection) (AgentSessionDto, error) {
 	if err := s.validateParent(params); err != nil {
 		return AgentSessionDto{}, err
+	}
+	if params.ParentSessionID == "" && strings.TrimSpace(params.Name) == "" {
+		params.Name = petname.Generate(3, "-")
 	}
 	sessionID, err := id.New("ses")
 	if err != nil {

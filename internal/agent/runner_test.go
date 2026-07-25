@@ -101,8 +101,8 @@ func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 		Provider:        "openai",
 		Model:           "gpt",
 	}, Profile{ID: "build"})
-	if query.ParentSessionID != "ses_deleted_parent" || query.ParentSessionName != "" || query.ParentAgent != "" {
-		t.Fatalf("parent status = %q (%q, agent %q), want %q with no details", query.ParentSessionID, query.ParentSessionName, query.ParentAgent, "ses_deleted_parent")
+	if query.ParentSessionID != "ses_deleted_parent" || query.ParentSessionName != "" {
+		t.Fatalf("parent status = %q (%q), want %q with no details", query.ParentSessionID, query.ParentSessionName, "ses_deleted_parent")
 	}
 }
 
@@ -153,10 +153,10 @@ func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
 	if !containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, want) {
 		t.Fatalf("status does not contain %q: %#v", want, requests[0].Messages)
 	}
-	if !containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent agent: direct-parent-agent") {
-		t.Fatalf("status does not contain direct parent agent: %#v", requests[0].Messages)
+	if containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent agent:") {
+		t.Fatalf("status contains parent agent profile: %#v", requests[0].Messages)
 	}
-	if containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent session: "+h.sessionID) || containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent agent: root-agent") {
+	if containsRoleSubstring(requests[0].Messages, protocol.RoleSystem, "Parent session: "+h.sessionID) {
 		t.Fatalf("status contains root instead of direct parent: %#v", requests[0].Messages)
 	}
 }

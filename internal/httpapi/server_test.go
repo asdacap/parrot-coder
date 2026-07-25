@@ -292,7 +292,7 @@ func TestDefaultCreationAndTypedPartialSelectionUpdate(t *testing.T) {
 	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
 	ctx := context.Background()
 	created, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{Title: "default"})
-	if err != nil || created.Agent != "build" || created.Provider != "local" || created.Model != "code" {
+	if err != nil || created.Name == "" || created.Agent != "build" || created.Provider != "local" || created.Model != "code" {
 		t.Fatalf("default CreateSession = %#v, %v", created, err)
 	}
 	selected, err := apiClient.UpdateSessionSelection(ctx, created.ID, v1.UpdateSessionSelectionRequest{Agent: "plan"})
