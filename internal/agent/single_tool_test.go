@@ -157,13 +157,15 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	if err != nil {
 		t.Fatal(err)
 	}
-	toolRegistry := tool.NewRegistry()
+	providersList := make([]tool.ToolProvider, 0, len(tools))
 	for _, item := range tools {
-		if err := toolRegistry.Register(item); err != nil {
-			t.Fatal(err)
-		}
+		item := item
+		providersList = append(providersList, &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(item), CreateTool: func(tool.SessionState) (tool.Tool, error) { return item, nil }})
 	}
-	snapshot := toolRegistry.Materialize()
+	toolProviders, err := tool.NewProviders(providersList...)
+	if err != nil {
+		t.Fatal(err)
+	}
 	contextRegistry, _ := systemcontext.NewRegistry(source)
 	agentSessions, err := NewUserSession(ctx, UserSessionConfig{AgentSession: AgentSessionConfig{
 		Sessions:           sessions,
@@ -171,8 +173,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,
-		ToolSnapshot:       func() tool.Snapshot { return snapshot },
-		ToolExecutor:       func(snapshot tool.Snapshot) tool.Executor { return tool.Executor{Snapshot: snapshot} },
+		ToolProviders:      toolProviders,
 		Goals:              goals,
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
@@ -180,7 +181,11 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner := agentSessions.Get(created.ID).(*agentSession)
+	runtime, err := agentSessions.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runner := runtime.(*agentSession)
 	sessionDB, err := db.Session(ctx, created.ID)
 	if err != nil {
 		t.Fatal(err)

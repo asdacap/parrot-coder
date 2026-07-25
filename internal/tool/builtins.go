@@ -2,7 +2,6 @@ package tool
 
 import (
 	"errors"
-	"fmt"
 	"sort"
 
 	"github.com/amirulashraf/parrot-coder/internal/change"
@@ -12,6 +11,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/skill"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
 )
 
@@ -30,60 +30,82 @@ type BuiltinServices struct {
 	MCP       MCPCaller
 	MCPTools  []mcp.ToolDefinition
 	WebFetch  *webfetch.Service
-	Children  AgentChildren
 	Agents    AgentLookup
 	ConfigDir string // Parrot config directory for writing global parrot.yaml
 	Status    *statusinfo.Registry
 }
 
-// RegisterBuiltins registers the complete built-in tool set. MCP and
-// subagent tools are added only when those integrations are configured.
-func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
-	if registry == nil {
-		return errors.New("tool: registry is required")
+// BuiltinProviders assembles one provider per enabled built-in tool. Providers
+// retain shared services and allocate a new tool for every bound agent session.
+func BuiltinProviders(services BuiltinServices) (Providers, error) {
+	if services.Skills == nil || services.WebFetch == nil || services.Agents == nil || services.Status == nil {
+		return Providers{}, errors.New("tool: built-in services are required")
 	}
-	if services.Skills == nil || services.WebFetch == nil || services.Children == nil || services.Agents == nil || services.Status == nil {
-		return errors.New("tool: built-in services are required")
+	constructors := []func() Tool{
+		func() Tool { return NewReadTool(ReadConfig{}) },
+		func() Tool { return NewShowTool(ReadConfig{}) },
+		func() Tool { return NewGlobTool(GlobConfig{}) },
+		func() Tool { return NewRgTool(RgConfig{}) },
+		func() Tool { return NewApplyPatchTool(services.Changes) },
+		func() Tool { return NewExecCommandTool(services.Processes) },
+		func() Tool { return NewWritePermissionTool(services.Processes) },
+		func() Tool { return NewWriteStdinTool(services.Processes) },
+		func() Tool { return NewTodoReadTool(services.Todos) },
+		func() Tool { return NewTodoWriteTool(services.Todos) },
+		func() Tool { return NewGetGoalTool(services.Goals) },
+		func() Tool { return NewCreateGoalTool(services.Goals) },
+		func() Tool { return NewUpdateGoalTool(services.Goals) },
+		func() Tool { return NewQuestionTool(services.Questions) },
+		func() Tool { return NewSkillTool(services.Skills) },
+		func() Tool { return NewWebFetchTool(services.WebFetch) },
+		func() Tool { return NewGitDiffTool() },
+		func() Tool { return NewSetConfigTool(services.ConfigDir) },
+		func() Tool { return NewStatusTool(services.Status) },
 	}
-
-	items := []Tool{
-		NewReadTool(ReadConfig{}),
-		NewShowTool(ReadConfig{}),
-		NewGlobTool(GlobConfig{}),
-		NewRgTool(RgConfig{}),
-		NewApplyPatchTool(services.Changes),
-		NewExecCommandTool(services.Processes),
-		NewWritePermissionTool(services.Processes),
-		NewWriteStdinTool(services.Processes),
-		NewTodoReadTool(services.Todos),
-		NewTodoWriteTool(services.Todos),
-		NewGetGoalTool(services.Goals),
-		NewCreateGoalTool(services.Goals),
-		NewUpdateGoalTool(services.Goals),
-		NewQuestionTool(services.Questions),
-		NewSkillTool(services.Skills),
-		NewWebFetchTool(services.WebFetch),
-		NewGitDiffTool(),
-		NewSetConfigTool(services.ConfigDir),
-		NewStatusTool(services.Status),
+	for _, kind := range []string{"task_list_active", "task_interrupt"} {
+		kind := kind
+		constructors = append(constructors, func() Tool { return &TaskTool{Kind: kind, Controller: services.Tasks} })
 	}
-	items = append(items, NewTaskTools(services.Tasks)...)
-	items = append(items, NewAgentTools(services.Children, services.Agents)...)
-
+	for _, kind := range []managedtask.Kind{managedtask.KindShell, managedtask.KindAgent} {
+		kind := kind
+		constructors = append(constructors, func() Tool { return &WaitTool{Kind: kind, Controller: services.Tasks} })
+	}
+	items := make([]ToolProvider, 0, len(constructors)+2+len(services.MCPTools))
+	for _, constructor := range constructors {
+		constructor := constructor
+		items = append(items, providerFor(constructor))
+	}
+	for _, kind := range []string{agentSpawnID, agentSendID} {
+		kind := kind
+		items = append(items, &ProviderFunc{ToolDescriptor: AgentDescriptor(kind), CreateTool: func(state SessionState) (Tool, error) {
+			if state == nil {
+				return nil, errors.New("agent session state is required")
+			}
+			return &AgentTool{Kind: kind, Session: state, Agents: services.Agents}, nil
+		}})
+	}
 	definitions := append([]mcp.ToolDefinition(nil), services.MCPTools...)
 	sort.Slice(definitions, func(i, j int) bool { return definitions[i].Name < definitions[j].Name })
 	for _, definition := range definitions {
-		item, err := NewMCPTool(services.MCP, definition)
+		definition := definition
+		prototype, err := NewMCPTool(services.MCP, definition)
 		if err != nil {
-			return err
+			return Providers{}, err
 		}
-		items = append(items, item)
+		items = append(items, &ProviderFunc{ToolDescriptor: DescriptorOf(prototype), CreateTool: func(SessionState) (Tool, error) { return NewMCPTool(services.MCP, definition) }})
 	}
+	return NewProviders(items...)
+}
 
-	for _, item := range items {
-		if err := registry.Register(item); err != nil {
-			return fmt.Errorf("tool: register %s: %w", item.ID(), err)
-		}
-	}
-	return nil
+type sessionTool struct {
+	Tool
+	identity byte
+}
+
+func (t *sessionTool) UnwrapTool() Tool { return t.Tool }
+
+func providerFor(constructor func() Tool) ToolProvider {
+	return &ProviderFunc{ToolDescriptor: DescriptorOf(constructor()), CreateTool: func(SessionState) (Tool, error) {
+		return &sessionTool{Tool: constructor()}, nil
+	}}
 }

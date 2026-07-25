@@ -41,7 +41,9 @@ type DomainBackend struct {
 	ProviderResolver   agent.ProviderResolver
 	CompactSessionFunc func(context.Context, string) (v1.Compaction, error)
 	Processes          ProcessLifecycle
-	Tools              tool.Snapshot
+	Tools              interface {
+		Presentations() []tool.PresentationEntry
+	}
 }
 
 func (b *DomainBackend) GetGoal(ctx context.Context, id string) (v1.Goal, error) {
@@ -96,7 +98,7 @@ func goalDTO(goal session.Goal) v1.Goal {
 }
 
 type AgentSessionController interface {
-	Get(string) agent.AgentSession
+	Get(string) (agent.AgentSession, error)
 	Active() []agent.Active
 	Status(string) agent.AgentStatus
 	Interrupt(context.Context, string) error
@@ -347,7 +349,11 @@ func (b *DomainBackend) Wake(id string) {
 	if b.AgentSessions == nil {
 		return
 	}
-	b.AgentSessions.Get(id).Wake()
+	runtime, err := b.AgentSessions.Get(id)
+	if err != nil {
+		return
+	}
+	runtime.Wake()
 	if b.Events != nil {
 		data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 		b.Events.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})

@@ -421,8 +421,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
 	notifications := subagent.NewCompletionNotifier()
 	result.notifications = notifications
-	children := &appAgentChildren{}
-
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
 		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Name: item.Name, Kind: string(managedtask.KindShell), Error: item.Error}
 		eventType := managedtask.EventStart
@@ -439,7 +437,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		data, _ := json.Marshal(payload)
 		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
 	})
-	tools := tool.NewRegistry()
 	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks))
 	if err != nil {
 		return nil, fmt.Errorf("app: status registry: %w", err)
@@ -448,19 +445,16 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		profile, err := profileResolver.GetProfile(id)
 		return profile.ReadOnly, err
 	}
-	if err := tool.RegisterBuiltins(tools, tool.BuiltinServices{
+	toolProviders, err := tool.BuiltinProviders(tool.BuiltinServices{
 		Changes: changes, Processes: processes, Tasks: &managedTaskController{tasks: tasks}, Todos: todos, Goals: goals, Questions: questions,
-		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web,
-		Children: children, Agents: agentLookup,
+		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web, Agents: agentLookup,
 		ConfigDir: paths.Config, Status: statusRegistry,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("app: register built-in tools: %w", err)
 	}
-	toolSnapshot := tools.Materialize()
-	if len(loaded.Config.ToolBlacklist) > 0 {
-		toolSnapshot = toolSnapshot.Without(loaded.Config.ToolBlacklist)
-	}
-	toolSystemGuidance := toolSnapshot.SystemPromptGuidance()
+	toolProviders = toolProviders.Without(loaded.Config.ToolBlacklist)
+	toolSystemGuidance := toolProviders.SystemPromptGuidance()
 	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
 	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
@@ -500,10 +494,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	userSession, err := agent.NewUserSession(ctx, agent.UserSessionConfig{
 		AgentSession: agent.AgentSessionConfig{
 			Sessions: sessions, Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
-			ToolSnapshot: func() tool.Snapshot { return toolSnapshot },
-			ToolExecutor: func(snapshot tool.Snapshot) tool.Executor {
-				return tool.Executor{Snapshot: snapshot, Permissions: permissions, ErrorAdvisor: pathErrorAdvisor}
-			},
+			ToolProviders: toolProviders, ToolPermissionAuthorizer: permissions, ToolErrorAdvisor: pathErrorAdvisor,
 			Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
 				return live.TaskIDFor(sessionID, managedtask.MainTaskID)
 			}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
@@ -541,13 +532,15 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
 	}
-	reporter.sessionFor = userSession.Get
+	reporter.sessionFor = func(id string) agent.AgentSession {
+		runtime, _ := userSession.Get(id)
+		return runtime
+	}
 	notifications.SetLookup(func(sessionID string) (subagent.NotificationSession, bool) {
 		session, ok := userSession.Lookup(sessionID)
 		return session, ok
 	})
 	processes.SetAgentSessions(processAgentSessionsAdapter{userSession})
-	children.userSession = userSession
 	live.SetSessionHierarchy(userSession)
 	userSession.AddChildCreatedObserver(childSessionObserver{live})
 	result.userSession = userSession
@@ -555,7 +548,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, AgentSessions: userSession, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
 		Events: live, DefaultSelection: defaultSelection, Processes: processLifecycle{notifications: notifications, processes: processes},
-		ProviderResolver: providerRegistry, Tools: toolSnapshot,
+		ProviderResolver: providerRegistry, Tools: toolProviders,
 	}
 	backend.CompactSessionFunc = func(ctx context.Context, sessionID string) (v1.Compaction, error) {
 		for _, active := range userSession.Active() {
@@ -579,7 +572,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return v1.Compaction{}, err
 		}
 		definitions := make([]protocol.ToolDefinition, 0)
-		for _, definition := range toolSnapshot.Definitions() {
+		for _, definition := range toolProviders.Definitions() {
 			definitions = append(definitions, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
 		}
 		instructions := profile.Prompt
@@ -784,7 +777,8 @@ func (l processLifecycle) DeleteSession(sessionID string) error {
 type processAgentSessionsAdapter struct{ sessions agent.UserSession }
 
 func (a processAgentSessionsAdapter) Get(sessionID string) process.AgentSession {
-	return a.sessions.Get(sessionID)
+	runtime, _ := a.sessions.Get(sessionID)
+	return runtime
 }
 
 type compositionBackend struct {
@@ -792,7 +786,9 @@ type compositionBackend struct {
 }
 
 func (b *compositionBackend) Wake(sessionID string) {
-	b.AgentSessions.Get(sessionID).Wake()
+	if runtime, err := b.AgentSessions.Get(sessionID); err == nil {
+		runtime.Wake()
+	}
 }
 
 type statusReporter struct {
@@ -916,7 +912,12 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		h.userSession.Get(id).Wake()
+		runtime, err := h.userSession.Get(id)
+		if err != nil {
+			http.Error(w, "bind agent session", http.StatusInternalServerError)
+			return
+		}
+		runtime.Wake()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -1232,43 +1233,6 @@ type childSessionObserver struct{ events *event.Broker }
 
 func (o childSessionObserver) ChildCreated(child agent.ChildSession) {
 	o.events.ObserveSession(child.SessionID)
-}
-
-type appAgentChildren struct{ userSession agent.UserSession }
-
-type appChildAgent struct{ session agent.AgentSession }
-
-func (c *appAgentChildren) Create(ctx context.Context, parentSession, _ string, prompt, target, model, name string) (tool.ChildAgent, error) {
-	if c.userSession == nil {
-		return nil, errors.New("app: agent user session is unavailable")
-	}
-	child, err := c.userSession.Get(parentSession).CreateChild(ctx, agent.ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name})
-	if err != nil {
-		return nil, err
-	}
-	return appChildAgent{session: child}, nil
-}
-
-func (c *appAgentChildren) Resolve(parentSession, identifier string) (tool.ChildAgent, error) {
-	if c.userSession == nil {
-		return nil, errors.New("app: agent user session is unavailable")
-	}
-	child, err := c.userSession.Get(parentSession).ResolveChild(identifier)
-	if err != nil {
-		return nil, err
-	}
-	return appChildAgent{session: child}, nil
-}
-
-func (c appChildAgent) Status() tool.AgentTask { return toolAgentTask(c.session.Status()) }
-
-func (c appChildAgent) Send(ctx context.Context, message string) (tool.AgentTask, string, error) {
-	task, messageID, err := c.session.SendChild(ctx, agent.ChildRequest{Prompt: message})
-	return toolAgentTask(task), messageID, err
-}
-
-func toolAgentTask(task agent.Status) tool.AgentTask {
-	return tool.AgentTask{SessionID: task.SessionID, Agent: task.Agent, Name: task.Name, Status: string(task.State), Turn: task.Turn, Depth: task.Depth, Output: task.Output, Error: task.Error}
 }
 
 func childNotificationTask(task agent.Status) subagent.Task {

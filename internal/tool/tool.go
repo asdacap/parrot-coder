@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -79,7 +80,179 @@ type Result struct {
 	Metadata  map[string]any `json:"metadata,omitempty"`
 }
 
+// Descriptor is the immutable, session-independent description of one tool.
+// Providers expose descriptors so callers can advertise tools without creating
+// execution-capable instances.
+type Descriptor struct {
+	ID                   string
+	Description          string
+	Schema               json.RawMessage
+	Presentation         Presentation
+	SystemPromptGuidance string
+}
+
+func (d Descriptor) clone() Descriptor {
+	d.Schema = append(json.RawMessage(nil), d.Schema...)
+	d.Presentation = d.Presentation.clone()
+	return d
+}
+
+// SessionState is the agent-session capability passed to tool providers. It is
+// deliberately owned by this package so tool does not depend on agent.
+type SessionState interface {
+	SessionID() string
+	CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error)
+	ResolveAgent(string) (ChildAgent, error)
+}
+
+type ToolProvider interface {
+	Descriptor() Descriptor
+	// Create returns a fresh executable instance bound to the supplied session.
+	Create(SessionState) (Tool, error)
+}
+
+type ProviderFunc struct {
+	ToolDescriptor Descriptor
+	CreateTool     func(SessionState) (Tool, error)
+}
+
+func (p *ProviderFunc) Descriptor() Descriptor { return p.ToolDescriptor.clone() }
+func (p *ProviderFunc) Create(state SessionState) (Tool, error) {
+	if p == nil || p.CreateTool == nil {
+		return nil, errors.New("tool: provider create function is required")
+	}
+	return p.CreateTool(state)
+}
+
+type catalogProvider struct {
+	descriptor Descriptor
+	create     func(SessionState) (Tool, error)
+}
+
+func (p catalogProvider) Descriptor() Descriptor                  { return p.descriptor.clone() }
+func (p catalogProvider) Create(state SessionState) (Tool, error) { return p.create(state) }
+
+// Providers is a validated, immutable provider catalog.
+type Providers struct {
+	items     []catalogProvider
+	validated bool
+}
+
+func NewProviders(items ...ToolProvider) (Providers, error) {
+	seen := make(map[string]struct{}, len(items))
+	copied := make([]catalogProvider, 0, len(items))
+	for i, provider := range items {
+		if provider == nil {
+			return Providers{}, fmt.Errorf("tool: provider %d is nil", i)
+		}
+		descriptor := provider.Descriptor()
+		if descriptor.ID == "" {
+			return Providers{}, fmt.Errorf("tool: provider %d ID is required", i)
+		}
+		if _, exists := seen[descriptor.ID]; exists {
+			return Providers{}, fmt.Errorf("duplicate tool ID %q", descriptor.ID)
+		}
+		if _, err := parseSchema(descriptor.Schema); err != nil {
+			return Providers{}, fmt.Errorf("tool %s schema: %w", descriptor.ID, err)
+		}
+		seen[descriptor.ID] = struct{}{}
+		descriptor = descriptor.clone()
+		create := provider.Create
+		if providerFunc, ok := provider.(*ProviderFunc); ok {
+			create = providerFunc.CreateTool
+		}
+		if create == nil {
+			return Providers{}, fmt.Errorf("tool: provider %s create function is required", descriptor.ID)
+		}
+		copied = append(copied, catalogProvider{descriptor: descriptor, create: create})
+	}
+	return Providers{items: copied, validated: true}, nil
+}
+
+func (p Providers) Valid() bool { return p.validated }
+
+func (p Providers) Without(blacklisted []string) Providers {
+	if len(blacklisted) == 0 {
+		return p
+	}
+	excluded := make(map[string]bool, len(blacklisted))
+	for _, id := range blacklisted {
+		excluded[id] = true
+	}
+	items := make([]catalogProvider, 0, len(p.items))
+	for _, provider := range p.items {
+		if !excluded[provider.Descriptor().ID] {
+			items = append(items, provider)
+		}
+	}
+	return Providers{items: items, validated: p.validated}
+}
+
+func (p Providers) Descriptors() []Descriptor {
+	out := make([]Descriptor, 0, len(p.items))
+	for _, provider := range p.items {
+		out = append(out, provider.Descriptor())
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+func (p Providers) Definitions() []Definition { return descriptorDefinitions(p.Descriptors()) }
+func (p Providers) Presentations() []PresentationEntry {
+	out := make([]PresentationEntry, 0, len(p.items))
+	for _, descriptor := range p.Descriptors() {
+		out = append(out, PresentationEntry{ID: descriptor.ID, Presentation: descriptor.Presentation})
+	}
+	return out
+}
+func (p Providers) SystemPromptGuidance() string {
+	var entries []string
+	for _, descriptor := range p.Descriptors() {
+		if descriptor.SystemPromptGuidance != "" {
+			entries = append(entries, descriptor.SystemPromptGuidance)
+		}
+	}
+	sort.Strings(entries)
+	return strings.Join(entries, "\n\n")
+}
+
+func (p Providers) Materialize(state SessionState) (Snapshot, error) {
+	tools := make(map[string]Tool, len(p.items))
+	for _, provider := range p.items {
+		descriptor := provider.Descriptor()
+		created, err := provider.Create(state)
+		if err != nil {
+			return Snapshot{}, fmt.Errorf("tool: create %s: %w", descriptor.ID, err)
+		}
+		if created == nil {
+			return Snapshot{}, fmt.Errorf("tool: provider %s returned nil", descriptor.ID)
+		}
+		if created.ID() != descriptor.ID || created.Description() != descriptor.Description || !bytes.Equal(created.JSONSchema(), descriptor.Schema) || !reflect.DeepEqual(created.Presentation(), descriptor.Presentation) || created.SystemPromptGuidance() != descriptor.SystemPromptGuidance {
+			return Snapshot{}, fmt.Errorf("tool: provider %s returned inconsistent tool", descriptor.ID)
+		}
+		tools[descriptor.ID] = created
+	}
+	return Snapshot{tools: tools, definitions: definitions(tools)}, nil
+}
+
+func DescriptorOf(t Tool) Descriptor {
+	if descriptor := t.Descriptor(); descriptor.ID != "" {
+		return descriptor.clone()
+	}
+	return Descriptor{ID: t.ID(), Description: t.Description(), Schema: append(json.RawMessage(nil), t.JSONSchema()...), Presentation: t.Presentation().clone(), SystemPromptGuidance: t.SystemPromptGuidance()}
+}
+
+func descriptorDefinitions(descriptors []Descriptor) []Definition {
+	out := make([]Definition, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		out = append(out, Definition{ID: descriptor.ID, Description: descriptor.Description, Schema: append(json.RawMessage(nil), descriptor.Schema...)})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
 type Tool interface {
+	Descriptor() Descriptor
 	ID() string
 	Description() string
 	// DescribeRequest decodes this tool's parameters and returns concise,
@@ -99,6 +272,22 @@ type Tool interface {
 	SystemPromptGuidance() string
 	Plan(context.Context, json.RawMessage, CallContext) (Plan, error)
 	Execute(context.Context, Plan, CallContext) (Result, error)
+}
+
+type toolUnwrapper interface{ UnwrapTool() Tool }
+
+func unwrapTool(t Tool) Tool {
+	for {
+		wrapper, ok := t.(toolUnwrapper)
+		if !ok {
+			return t
+		}
+		next := wrapper.UnwrapTool()
+		if next == nil || next == t {
+			return t
+		}
+		t = next
+	}
 }
 
 func NewPlan(toolID string, input json.RawMessage, requests []permission.Request, review json.RawMessage, data any) (Plan, error) {
@@ -227,6 +416,8 @@ func definitions(tools map[string]Tool) []Definition {
 	return out
 }
 
+// Authorizer resolves the permission request produced while planning a tool
+// call. The executor uses it before invoking the tool's Execute method.
 type Authorizer interface {
 	Authorize(context.Context, permission.Request) (permission.Decision, error)
 }
@@ -367,7 +558,7 @@ func (e Executor) advise(ctx context.Context, err error, raw json.RawMessage, ta
 	if e.ErrorAdvisor == nil {
 		return err
 	}
-	provider, ok := target.(ErrorAdviceProvider)
+	provider, ok := unwrapTool(target).(ErrorAdviceProvider)
 	if !ok {
 		return err
 	}

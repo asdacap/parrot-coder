@@ -326,8 +326,8 @@ func newTestSessionController(drainer testDrainer) *testSessionController {
 	return &testSessionController{drainer: drainer, active: make(map[string]*testDrainState)}
 }
 
-func (c *testSessionController) Get(id string) agent.AgentSession {
-	return testAgentSession{controller: c, id: id}
+func (c *testSessionController) Get(id string) (agent.AgentSession, error) {
+	return testAgentSession{controller: c, id: id}, nil
 }
 
 type testAgentSession struct {
@@ -462,7 +462,8 @@ func TestSelectionRejectsActiveSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend.AgentSessions.Get(created.ID).Wake()
+	runtime, _ := backend.AgentSessions.Get(created.ID)
+	runtime.Wake()
 	select {
 	case <-started:
 	case <-time.After(time.Second):
@@ -537,7 +538,8 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backend.AgentSessions.Get(created.ID).Wake()
+	runtime, _ := backend.AgentSessions.Get(created.ID)
+	runtime.Wake()
 	select {
 	case <-drainer.started:
 	case <-time.After(time.Second):
@@ -570,7 +572,8 @@ func TestInterruptDoesNotAutoResumeWithoutPendingInputs(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	backend.AgentSessions.Get(created.ID).Wake()
+	runtime, _ := backend.AgentSessions.Get(created.ID)
+	runtime.Wake()
 	select {
 	case <-drainer.started:
 	case <-time.After(time.Second):

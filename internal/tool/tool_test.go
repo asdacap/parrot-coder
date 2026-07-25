@@ -20,12 +20,14 @@ import (
 
 type testTool struct {
 	BasePresentation
-	id     string
-	result *Result
+	id           string
+	result       *Result
+	presentation Presentation
 }
 
 func (t testTool) ID() string                                    { return t.id }
 func (testTool) Description() string                             { return "test" }
+func (t testTool) Presentation() Presentation                    { return t.presentation }
 func (testTool) DescribeRequest(json.RawMessage) (string, error) { return "Test request", nil }
 func (testTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}`)
@@ -38,6 +40,84 @@ func (t testTool) Execute(_ context.Context, _ Plan, _ CallContext) (Result, err
 		return *t.result, nil
 	}
 	return Result{Text: "ok", ModelText: "ok"}, nil
+}
+
+func TestProvidersAreDeeplyImmutable(t *testing.T) {
+	created := testTool{id: "immutable", presentation: Presentation{
+		Redact: []string{"secret"}, Label: LabelSpec{Source: []string{"source"}, Fields: []LabelField{{Names: []string{"name"}, Item: []string{"item"}}}},
+		CompletedInput: CompletedInputSpec{Fields: []string{"done"}},
+	}}
+	descriptor := DescriptorOf(created)
+	provider := &ProviderFunc{ToolDescriptor: descriptor, CreateTool: func(SessionState) (Tool, error) { return created, nil }}
+	providers, err := NewProviders(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	descriptor.Schema[0] = 'x'
+	descriptor.Presentation.Redact[0] = "changed"
+	descriptor.Presentation.Label.Source[0] = "changed"
+	descriptor.Presentation.Label.Fields[0].Names[0] = "changed"
+	descriptor.Presentation.Label.Fields[0].Item[0] = "changed"
+	descriptor.Presentation.CompletedInput.Fields[0] = "changed"
+	provider.ToolDescriptor.ID = "changed"
+	provider.CreateTool = func(SessionState) (Tool, error) { return testTool{id: "changed"}, nil }
+
+	got := providers.Descriptors()[0]
+	if got.ID != "immutable" || got.Presentation.Redact[0] != "secret" || got.Presentation.Label.Source[0] != "source" || got.Presentation.Label.Fields[0].Names[0] != "name" || got.Presentation.Label.Fields[0].Item[0] != "item" || got.Presentation.CompletedInput.Fields[0] != "done" {
+		t.Fatalf("catalog changed through source aliases: %#v", got)
+	}
+	got.Schema[0] = 'x'
+	got.Presentation.Redact[0] = "changed"
+	presentations := providers.Presentations()
+	presentations[0].Presentation.Label.Fields[0].Names[0] = "changed"
+	again := providers.Descriptors()[0]
+	if again.Schema[0] != '{' || again.Presentation.Redact[0] != "secret" || again.Presentation.Label.Fields[0].Names[0] != "name" {
+		t.Fatalf("catalog changed through output aliases: %#v", again)
+	}
+	if _, err := providers.Materialize(nil); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestProvidersValidateAndMaterializeFreshTools(t *testing.T) {
+	newProvider := func(id string, create func(SessionState) (Tool, error)) ToolProvider {
+		prototype := testTool{id: id}
+		return &ProviderFunc{ToolDescriptor: DescriptorOf(prototype), CreateTool: create}
+	}
+	if _, err := NewProviders(nil); err == nil {
+		t.Fatal("nil provider accepted")
+	}
+	duplicate := newProvider("duplicate", func(SessionState) (Tool, error) { return testTool{id: "duplicate"}, nil })
+	if _, err := NewProviders(duplicate, duplicate); err == nil {
+		t.Fatal("duplicate provider accepted")
+	}
+
+	created := make([]Tool, 0, 2)
+	provider := newProvider("fresh", func(SessionState) (Tool, error) {
+		item := &testTool{id: "fresh"}
+		created = append(created, item)
+		return item, nil
+	})
+	providers, err := NewProviders(provider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := providers.Materialize(nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(created) != 2 || created[0] == created[1] {
+		t.Fatalf("created tools = %#v, want distinct instances", created)
+	}
+
+	invalid, err := NewProviders(newProvider("expected", func(SessionState) (Tool, error) { return testTool{id: "other"}, nil }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := invalid.Materialize(nil); err == nil {
+		t.Fatal("inconsistent provider output accepted")
+	}
 }
 
 func TestRegistryDuplicateAndDeterministicDefinitions(t *testing.T) {

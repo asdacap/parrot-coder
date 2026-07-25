@@ -11,7 +11,7 @@ type PermissionChoicer interface {
 
 // ChoicesFor returns the answers a tool offers for its authorization.
 func ChoicesFor(t Tool) []permission.Choice {
-	if chooser, ok := t.(PermissionChoicer); ok {
+	if chooser, ok := unwrapTool(t).(PermissionChoicer); ok {
 		if choices := chooser.PermissionChoices(); len(choices) > 0 {
 			return choices
 		}
