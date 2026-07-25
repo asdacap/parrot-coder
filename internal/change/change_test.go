@@ -168,6 +168,82 @@ func TestPatchAddUpdateAndStrictRejections(t *testing.T) {
 	}
 }
 
+func TestPatchUpdateLineEndingsPreserveExactBytes(t *testing.T) {
+	bom := []byte{0xef, 0xbb, 0xbf}
+	tests := []struct {
+		name       string
+		format     PatchFormat
+		before     []byte
+		patchLines string
+		want       []byte
+	}{
+		{
+			name:       "aider LF patch updates CRLF file with BOM",
+			format:     PatchFormatAider,
+			before:     append(append([]byte(nil), bom...), []byte("keep\r\nold\r\ntail\r\n")...),
+			patchLines: "file\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n",
+			want:       append(append([]byte(nil), bom...), []byte("keep\r\nnew\r\ntail\r\n")...),
+		},
+		{
+			name:       "aider CRLF patch updates LF file",
+			format:     PatchFormatAider,
+			before:     []byte("keep\nold\ntail\n"),
+			patchLines: "file\r\n<<<<<<< SEARCH\r\nold\r\n=======\r\nnew\r\n>>>>>>> REPLACE\r\n",
+			want:       []byte("keep\nnew\ntail\n"),
+		},
+		{
+			name:       "aider preserves mixed untouched terminators and uses matched terminator",
+			format:     PatchFormatAider,
+			before:     []byte("first\r\nold\rsecond\nlast\r\n"),
+			patchLines: "file\n<<<<<<< SEARCH\nold\n=======\nnew\nextra\n>>>>>>> REPLACE\n",
+			want:       []byte("first\r\nnew\rextra\rsecond\nlast\r\n"),
+		},
+		{
+			name:       "unified LF patch updates mixed file with BOM",
+			format:     PatchFormatUnified,
+			before:     append(append([]byte(nil), bom...), []byte("before\r\nold\rafter\n")...),
+			patchLines: "--- a/file\n+++ b/file\n@@ -1,3 +1,3 @@\n before\n-old\n+new\n after\n",
+			want:       append(append([]byte(nil), bom...), []byte("before\r\nnew\rafter\n")...),
+		},
+		{
+			name:       "unified CR patch updates CRLF file",
+			format:     PatchFormatUnified,
+			before:     []byte("before\r\nold\r\nafter\r\n"),
+			patchLines: "--- a/file\r+++ b/file\r@@ -1,3 +1,3 @@\r before\r-old\r+new\r after\r",
+			want:       []byte("before\r\nnew\r\nafter\r\n"),
+		},
+		{
+			name:       "aider preserves unterminated final line",
+			format:     PatchFormatAider,
+			before:     []byte("before\r\nold"),
+			patchLines: "file\n<<<<<<< SEARCH\nold\n=======\nnew\nextra\n>>>>>>> REPLACE\n",
+			want:       []byte("before\r\nnew\r\nextra"),
+		},
+		{
+			name:       "unified preserves unterminated final line",
+			format:     PatchFormatUnified,
+			before:     []byte("before\nold"),
+			patchLines: "--- a/file\n+++ b/file\n@@ -2 +2,2 @@\n-old\n+new\n+extra\n",
+			want:       []byte("before\nnew\nextra"),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := testWorkspace(t)
+			if err := os.WriteFile(filepath.Join(ws.Root(), "file"), tc.before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			plan, err := NewService(Config{}).PlanPatch(context.Background(), ws, tc.patchLines, tc.format)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := plan.Mutations[0].After.Data; !bytes.Equal(got, tc.want) {
+				t.Fatalf("after bytes = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPatchUpdateSemantics(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)

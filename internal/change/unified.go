@@ -13,14 +13,16 @@ import (
 // A source of /dev/null creates the file and a target of /dev/null deletes it.
 // Renames, copies and binary patches are rejected.
 //
-// The "\ No newline at end of file" marker is accepted and ignored: applyHunks
-// always writes a trailing newline, so a diff whose only change is the presence
-// of a final newline is a no-op.
+// The "\ No newline at end of file" marker is accepted and ignored; existing
+// terminators are otherwise preserved by applyHunks.
 func ParseUnifiedDiff(text string) (Patch, error) {
-	// Reject NUL bytes.
+	// Reject NUL bytes, then normalize patch syntax only. Target file line
+	// endings remain byte-exact in applyHunks.
 	if strings.ContainsRune(text, 0) {
 		return Patch{}, fmt.Errorf("%w: NUL byte", ErrInvalidPatch)
 	}
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 
 	// Reject quoted paths (not supported by the workspace resolver).
 	if containsQuotedPath(text) {

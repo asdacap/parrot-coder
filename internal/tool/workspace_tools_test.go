@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -148,6 +149,11 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	if !strings.Contains(schema, `"required":["patchText"]`) || strings.Contains(schema, `"required":["patch"]`) {
 		t.Fatalf("apply_patch schema is not OpenCode-compatible: %s", schema)
 	}
+	for _, documentation := range []string{"line-ending agnostic", "matched-location line ending", "UTF-8 BOM"} {
+		if !strings.Contains(tool.Description()+schema, documentation) {
+			t.Fatalf("apply_patch documentation is missing %q", documentation)
+		}
+	}
 	raw := json.RawMessage(`{"patchText":"file\n<<<<<<< SEARCH\n=======\ncontent\n>>>>>>> REPLACE\n"}`)
 	planned, err := tool.Plan(context.Background(), raw, CallContext{Workspace: ws})
 	if err != nil {
@@ -155,6 +161,62 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	}
 	if len(planned.Permissions) != 0 {
 		t.Fatalf("plan = %#v", planned)
+	}
+}
+
+func TestApplyPatchPreservesTargetLineEndings(t *testing.T) {
+	tests := []struct {
+		name   string
+		format string
+		before []byte
+		patch  string
+		want   []byte
+	}{
+		{
+			name:   "aider",
+			before: []byte("keep\r\nold\r\ntail\n"),
+			patch:  "file\n<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n",
+			want:   []byte("keep\r\nnew\r\ntail\n"),
+		},
+		{
+			name:   "unified",
+			format: "unified",
+			before: append([]byte{0xef, 0xbb, 0xbf}, []byte("keep\r\nold\rtail\n")...),
+			patch:  "--- a/file\r\n+++ b/file\r\n@@ -1,3 +1,3 @@\r\n keep\r\n-old\r\n+new\r\n tail\r\n",
+			want:   append([]byte{0xef, 0xbb, 0xbf}, []byte("keep\r\nnew\rtail\n")...),
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, ws, changes := workspaceToolHarness(t)
+			path := filepath.Join(ws.Root(), "file")
+			if err := os.WriteFile(path, tc.before, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			input := map[string]string{"patchText": tc.patch}
+			if tc.format != "" {
+				input["format"] = tc.format
+			}
+			raw, err := json.Marshal(input)
+			if err != nil {
+				t.Fatal(err)
+			}
+			applyPatch := NewApplyPatchTool(changes)
+			plan, err := applyPatch.Plan(ctx, raw, CallContext{Workspace: ws})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := applyPatch.Execute(ctx, plan, CallContext{Workspace: ws}); err != nil {
+				t.Fatal(err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, tc.want) {
+				t.Fatalf("file bytes = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
