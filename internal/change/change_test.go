@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -165,6 +166,25 @@ func TestPatchAddUpdateAndStrictRejections(t *testing.T) {
 	}
 	if got, err := os.ReadFile(target); err != nil || string(got) != "untouched\n" {
 		t.Fatalf("symlink target = %q, %v", got, err)
+	}
+}
+
+func TestPatchDiffShowsOnlyChangedLinesWithContext(t *testing.T) {
+	ws := testWorkspace(t)
+	var before strings.Builder
+	for line := 1; line <= 20; line++ {
+		fmt.Fprintf(&before, "line %d\r\n", line)
+	}
+	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte(before.String()), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := NewService(Config{}).PlanPatch(context.Background(), ws, aiderBlock("file", "line 10", "changed 10"), PatchFormatAider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "--- a/file\n+++ b/file\n@@ -7,7 +7,7 @@\n line 7\n line 8\n line 9\n-line 10\n+changed 10\n line 11\n line 12\n line 13\n"
+	if plan.Diff != want {
+		t.Fatalf("diff =\n%s\nwant:\n%s", plan.Diff, want)
 	}
 }
 
