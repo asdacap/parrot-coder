@@ -50,46 +50,54 @@ func applyChildDefaults(config *UserSessionConfig) {
 	}
 }
 
-func (s *userSession) createChild(ctx context.Context, parent *agentSession, request ChildRequest) (AgentSession, error) {
-	if err := parent.reserveChildCreation(); err != nil {
+func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (AgentSession, error) {
+	if s.user == nil {
+		return nil, ErrChildNotFound
+	}
+	if err := s.reserveChildCreation(); err != nil {
 		return nil, err
 	}
-	defer parent.releaseChildCreation()
-	s.childMu.Lock()
-	defer s.childMu.Unlock()
-	if s.closed {
+	defer s.releaseChildCreation()
+
+	user := s.user
+	user.childMu.Lock()
+	defer user.childMu.Unlock()
+	if user.closed {
 		return nil, ErrUserSessionClosed
 	}
-	lineage := []string{parent.dto.Agent}
-	root := parent.ID()
-	if task, ok := parent.ChildTask(); ok {
-		lineage = append(append([]string(nil), task.Lineage...), task.Agent)
-		root = task.RootSession
+
+	s.mu.Lock()
+	lineage := []string{s.dto.Agent}
+	root := s.dto.ID
+	if s.child != nil {
+		lineage = append(append([]string(nil), s.child.task.Lineage...), s.child.task.Agent)
+		root = s.child.task.RootSession
 	}
-	if err := s.validateChild(parent.ID(), lineage, request); err != nil {
+	s.mu.Unlock()
+	if err := user.validateChild(s.ID(), lineage, request); err != nil {
 		return nil, err
 	}
-	name := s.uniqueChildName(request)
+	name := user.uniqueChildName(request)
 	request.Name = name
-	child, err := s.repository.CreateChild(ctx, parent, ChildSessionRequest{ProjectID: s.config.ProjectID, Name: name, Agent: request.Agent, Model: request.Model, DefaultSelection: s.config.DefaultSelection})
+	child, err := user.repository.CreateChild(ctx, s, ChildSessionRequest{ProjectID: user.config.ProjectID, Name: name, Agent: request.Agent, Model: request.Model, DefaultSelection: user.config.DefaultSelection})
 	if err != nil {
 		return nil, err
 	}
-	permit, err := s.admitChildTurn(parent)
+	permit, err := user.admitChildTurn(s)
 	if err != nil {
-		return nil, errors.Join(err, s.discardChild(context.WithoutCancel(ctx), child.ID()))
+		return nil, errors.Join(err, user.discardChild(context.WithoutCancel(ctx), child.ID()))
 	}
 	created := child.(*agentSession)
 	now := time.Now().UTC()
 	turnCtx, cancel := context.WithCancel(context.Background())
 	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), permit: permit}
-	created.child = &childState{task: ChildTask{SessionID: child.ID(), ParentSession: parent.ID(), RootSession: root, Agent: request.Agent, Model: request.Model, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, Status: ChildStatusRunning, StartedAt: now, ToolCallID: request.ToolCallID}, request: request, turn: turn, cancel: cancel}
-	if err := s.registerChild(created); err != nil {
+	created.child = &childState{task: ChildTask{SessionID: child.ID(), ParentSession: s.ID(), RootSession: root, Agent: request.Agent, Model: request.Model, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, Status: ChildStatusRunning, StartedAt: now, ToolCallID: request.ToolCallID}, request: request, turn: turn, cancel: cancel}
+	if err := user.registerChild(created); err != nil {
 		permit.Release()
-		return nil, errors.Join(err, s.discardChild(context.WithoutCancel(ctx), child.ID()))
+		return nil, errors.Join(err, user.discardChild(context.WithoutCancel(ctx), child.ID()))
 	}
-	s.workers.Add(1)
-	s.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleStart, Task: created.childTaskSnapshot()})
+	user.workers.Add(1)
+	user.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleStart, Task: created.childTaskSnapshot()})
 	go created.runChild(turn)
 	return child, nil
 }

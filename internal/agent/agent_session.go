@@ -63,12 +63,6 @@ type AgentSession interface {
 func (s *agentSession) ID() string           { return s.dto.ID }
 func (s *agentSession) Name() string         { return s.dto.Name }
 func (s *agentSession) Parent() AgentSession { return s.parent }
-func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (AgentSession, error) {
-	if s.user == nil {
-		return nil, ErrChildNotFound
-	}
-	return s.user.createChild(ctx, s, request)
-}
 
 func (s *agentSession) ChildTask() (ChildTask, bool) {
 	if s.user == nil {
