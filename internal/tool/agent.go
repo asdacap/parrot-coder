@@ -68,8 +68,8 @@ func AgentDescriptor(kind string) Descriptor {
 	descriptor := Descriptor{ID: kind, SystemPromptGuidance: ""}
 	switch kind {
 	case agentSpawnID:
-		descriptor.Description = "Start a reusable child agent in an isolated session and return its session ID immediately."
-		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"name":{"type":"string","description":"Optional UI name. It is lowercased and sanitized to letters, digits, and hyphens; omitted or empty names are generated."}},"required":["prompt","agent"],"additionalProperties":false}`)
+		descriptor.Description = "Start a reusable child agent in an isolated session and return its session ID immediately. The final result will automatically be sent to the caller when the child agent finishes."
+		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"name":{"type":"string","description":"Optional friendly name for easy identification. It is lowercased and sanitized to letters, digits, and hyphens; omitted or empty names are generated."}},"required":["prompt","agent"],"additionalProperties":false}`)
 		descriptor.Presentation = Presentation{Subagent: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"name", "agent"}}}}, CompletedInput: CompletedInputSpec{Fields: []string{"name", "agent", "model", "prompt"}, TerminalOnly: true}}
 	case agentSendID:
 		descriptor.Description = "Send a message to an accessible agent session (a direct parent or descendant) by canonical ID or friendly name. Running agents are steered; idle agents start a follow-up turn."

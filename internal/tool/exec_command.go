@@ -14,7 +14,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
-const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"name":{"type":"string","description":"Optional friendly name for the shell task. A name is generated if the command remains running."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["current_security_context","disable_sandbox"],"description":"Per-command sandbox override. Defaults to \u0060current_security_context\u0060; use \u0060disable_sandbox\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060disable_sandbox\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
+const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"name":{"type":"string","description":"Optional friendly name for the shell task. A name is generated if the command remains running."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms. The result will automatically be sent once done after the yield."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["current_security_context","disable_sandbox"],"description":"Per-command sandbox override. Defaults to \u0060current_security_context\u0060; use \u0060disable_sandbox\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060disable_sandbox\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
 
 type ExecCommandTool struct {
 	BasePresentation
@@ -188,12 +188,12 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 }
 
 func formatPersistentResult(result process.PersistentResult) string {
+	if result.ProcessID != nil {
+		return fmt.Sprintf("Waiting for process %s yielded.", result.Name)
+	}
 	text := fmt.Sprintf("Chunk ID: %s\nWall time: %.4f seconds", result.ChunkID, result.WallTime.Seconds())
 	if result.ExitCode != nil {
 		text += fmt.Sprintf("\nProcess exited with code %d", *result.ExitCode)
-	}
-	if result.ProcessID != nil {
-		text += fmt.Sprintf("\nShell task %s running with task ID %s", result.Name, *result.ProcessID)
 	}
 	text += fmt.Sprintf("\nOriginal token count: %d\nOutput:\n%s", result.OriginalTokenCount, result.Output)
 	if result.Truncated && result.OutputPath != "" {

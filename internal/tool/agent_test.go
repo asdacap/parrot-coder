@@ -214,6 +214,12 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 	}
 	call := CallContext{SessionID: "root", Agent: "build", ToolCallID: "call-1"}
 	spawn := tools[agentSpawnID]
+	if description := spawn.Description(); !strings.Contains(description, "final result will automatically be sent to the caller") {
+		t.Fatalf("agent_spawn description = %q", description)
+	}
+	if schema := string(spawn.JSONSchema()); !strings.Contains(schema, "friendly name for easy identification") || strings.Contains(schema, "UI name") {
+		t.Fatalf("agent_spawn schema = %s", schema)
+	}
 	if _, err := spawn.Plan(context.Background(), json.RawMessage(`{"prompt":"write","agent":"build"}`), CallContext{SessionID: "root", Agent: "plan"}); err == nil {
 		t.Fatal("read-only caller delegated to writable agent")
 	}
