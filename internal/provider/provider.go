@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -88,13 +89,16 @@ func usageLimitValue(value string) bool {
 	}
 }
 
-// IsEngineOverloadedError reports a transient provider failure. Both HTTP
-// failures and errors delivered inside a successful response stream are
-// recognized from structured fields or a known retryable provider message.
+// IsEngineOverloadedError reports a transient provider failure. HTTP 503
+// failures are always retryable; other HTTP and in-stream errors are recognized
+// from structured fields or a known retryable provider message.
 func IsEngineOverloadedError(err error) bool {
 	var kind, code, message string
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
+		if httpErr.StatusCode == http.StatusServiceUnavailable {
+			return true
+		}
 		kind, code, message = httpErr.Type, httpErr.Code, httpErr.Message
 	} else {
 		var responseErr *ResponseError
