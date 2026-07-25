@@ -252,7 +252,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				return err
 			}
 			if pending {
-				statusPrompt, err := r.config.Status.Observe(ctx, statusinfo.Query{SessionID: r.dto.ID, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, newProfileStatus(profile))
+				statusPrompt, err := r.config.Status.Observe(ctx, r.statusQuery(ctx, selected, profile), newProfileStatus(profile))
 				if err != nil {
 					return err
 				}
@@ -377,6 +377,23 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		}
 		return nil
 	}
+}
+
+func (r *agentSession) statusQuery(ctx context.Context, selected session.AgentSessionDto, profile Profile) statusinfo.Query {
+	query := statusinfo.Query{
+		SessionID:       r.dto.ID,
+		ParentSessionID: selected.ParentSessionID,
+		Agent:           profile.ID,
+		Provider:        selected.Provider,
+		Model:           selected.Model,
+		Variant:         selected.Variant,
+	}
+	if selected.ParentSessionID != "" {
+		if parent, err := r.config.Sessions.Get(ctx, selected.ParentSessionID); err == nil {
+			query.ParentSessionName = parent.Name
+		}
+	}
+	return query
 }
 
 func (r *agentSession) publishStatusPromptInjected() {
@@ -773,6 +790,7 @@ func executeToolCall(ctx context.Context, executor tool.Executor, call completed
 
 func (r *agentSession) executeTools(ctx context.Context, selected session.AgentSessionDto, profile Profile, snapshot tool.Snapshot, calls []completedCall) error {
 	executor := r.config.ToolExecutor(snapshot)
+	statusQuery := r.statusQuery(ctx, selected, profile)
 	sem := make(chan struct{}, r.config.MaxConcurrentTools)
 	outcomes := make([]toolOutcome, len(calls))
 	var wg sync.WaitGroup
@@ -804,7 +822,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 			if r.config.TaskIDFor != nil {
 				taskID = r.config.TaskIDFor(r.dto.ID)
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusinfo.Query{SessionID: r.dto.ID, Agent: profile.ID, Provider: selected.Provider, Model: selected.Model, Variant: selected.Variant}, StatusProvider: newProfileStatus(profile)}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: profile.GetSecurityProfile(), StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile)}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {
