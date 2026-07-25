@@ -636,6 +636,78 @@ func TestGrepMatchesAndTruncatesOversizedLines(t *testing.T) {
 	}
 }
 
+func TestGrepIncludeFiltersCandidateFiles(t *testing.T) {
+	w, e, call := toolHarness(t)
+	if err := os.Mkdir(filepath.Join(w.Root(), "nested"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string]string{
+		"top.sql":          "session top\n",
+		"top.go":           "session go\n",
+		"nested/child.sql": "session child\n",
+		"nested/child.go":  "session nested go\n",
+	} {
+		if err := os.WriteFile(filepath.Join(w.Root(), filepath.FromSlash(name)), []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, test := range []struct {
+		name      string
+		input     string
+		want      string
+		wantFiles int
+	}{
+		{
+			name:      "basename glob applies recursively",
+			input:     `{"pattern":"session","include":"*.sql"}`,
+			want:      "nested/child.sql:1:session child\ntop.sql:1:session top\n",
+			wantFiles: 2,
+		},
+		{
+			name:      "path-aware glob",
+			input:     `{"pattern":"session","include":"nested/*.sql"}`,
+			want:      "nested/child.sql:1:session child\n",
+			wantFiles: 1,
+		},
+		{
+			name:      "include omitted",
+			input:     `{"pattern":"session"}`,
+			want:      "nested/child.go:1:session nested go\nnested/child.sql:1:session child\ntop.go:1:session go\ntop.sql:1:session top\n",
+			wantFiles: 4,
+		},
+		{
+			name:      "explicit file path-aware glob",
+			input:     `{"pattern":"session","path":"nested/child.sql","include":"nested/*.sql"}`,
+			want:      "nested/child.sql:1:session child\n",
+			wantFiles: 1,
+		},
+		{
+			name:      "explicit file excluded",
+			input:     `{"pattern":"session","path":"top.go","include":"*.sql"}`,
+			wantFiles: 0,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result, err := e.Execute(context.Background(), "grep", json.RawMessage(test.input), call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Text != test.want || result.Metadata["files"] != test.wantFiles {
+				t.Fatalf("grep result = %q, metadata = %#v; want %q and %d files", result.Text, result.Metadata, test.want, test.wantFiles)
+			}
+		})
+	}
+
+	grep := NewGrepTool(GrepConfig{})
+	if !strings.Contains(string(grep.JSONSchema()), `"include"`) {
+		t.Fatalf("grep schema does not expose include: %s", grep.JSONSchema())
+	}
+	if _, err := grep.Plan(context.Background(), json.RawMessage(`{"pattern":"session","include":"../*.sql"}`), call); err == nil {
+		t.Fatal("grep accepted a traversing include glob")
+	}
+}
+
 func TestGrepDefaultLimits(t *testing.T) {
 	grep := NewGrepTool(GrepConfig{})
 	if grep.Config.MaxFiles != 100000 {

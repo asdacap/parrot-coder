@@ -59,7 +59,7 @@ func (*GrepTool) Presentation() Presentation {
 }
 
 func (*GrepTool) Description() string {
-	return "Search text files with Go RE2 regular expressions. Relative paths resolve within the workspace."
+	return "Search text files with Go RE2 regular expressions. Relative paths resolve within the workspace; include optionally filters files with a glob."
 }
 func (*GrepTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input grepInput
@@ -73,7 +73,7 @@ func (*GrepTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	return fmt.Sprintf("Search %q for pattern %q", path, input.Pattern), nil
 }
 func (*GrepTool) JSONSchema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"}},"required":["pattern"],"additionalProperties":false}`)
+	return json.RawMessage(`{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"include":{"type":"string","description":"Optional glob selecting files to search."}},"required":["pattern"],"additionalProperties":false}`)
 }
 func (*GrepTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
 	var input grepInput
@@ -89,11 +89,25 @@ func (*GrepTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
 type grepInput struct {
 	Pattern string `json:"pattern"`
 	Path    string `json:"path"`
+	Include string `json:"include"`
 }
 type grepPlan struct {
-	Input grepInput
-	Root  string
-	Regex *regexp.Regexp
+	Input       grepInput
+	Root        string
+	Regex       *regexp.Regexp
+	Include     *regexp.Regexp
+	IncludeBase bool
+}
+
+func (p grepPlan) includes(path string) bool {
+	if p.Include == nil {
+		return true
+	}
+	candidate := filepath.ToSlash(path)
+	if p.IncludeBase {
+		candidate = filepath.Base(path)
+	}
+	return p.Include.MatchString(candidate)
 }
 
 type grepLineReader struct {
@@ -167,6 +181,13 @@ func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err != nil {
 		return Plan{}, err
 	}
+	var include *regexp.Regexp
+	if input.Include != "" {
+		include, err = compileGlob(input.Include)
+		if err != nil {
+			return Plan{}, err
+		}
+	}
 	path := input.Path
 	if path == "" {
 		path = "."
@@ -175,7 +196,13 @@ func (t *GrepTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err != nil {
 		return Plan{}, err
 	}
-	return NewPlan(t.ID(), raw, nil, nil, grepPlan{input, root, rx})
+	return NewPlan(t.ID(), raw, nil, nil, grepPlan{
+		Input:       input,
+		Root:        root,
+		Regex:       rx,
+		Include:     include,
+		IncludeBase: !strings.Contains(filepath.ToSlash(input.Include), "/"),
+	})
 }
 func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 
@@ -199,7 +226,9 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		return Result{}, err
 	}
 	if !info.IsDir() {
-		files = []string{p.Root}
+		if p.includes(p.Input.Path) {
+			files = []string{p.Root}
+		}
 	} else {
 		visited := 0
 		err = filepath.WalkDir(p.Root, func(path string, d os.DirEntry, e error) error {
@@ -214,6 +243,10 @@ func (t *GrepTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 				return errors.New("grep traversal limit exceeded")
 			}
 			if d.Type().IsRegular() {
+				rel, e := filepath.Rel(p.Root, path)
+				if e != nil || !p.includes(rel) {
+					return nil
+				}
 				resolved, e := call.Workspace.ResolveReadOnlyWithin(p.Root, path)
 				if e == nil {
 					files = append(files, resolved)
