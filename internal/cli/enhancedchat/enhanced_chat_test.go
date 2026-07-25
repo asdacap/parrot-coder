@@ -1872,24 +1872,14 @@ func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {
 	}
 }
 
-func TestEnhancedEditTruncatesDiffAfterTenLines(t *testing.T) {
+func TestEnhancedEditTruncatesDiffAfterOneHundredRows(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
 	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "apply_patch", "input": map[string]any{"path": "file.go"}})
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
-	diffLines := []string{
-		"--- a/file.go",
-		"+++ b/file.go",
-		"@@ -1,6 +1,6 @@",
-		"-old 1",
-		"+new 1",
-		"-old 2",
-		"+new 2",
-		"-old 3",
-		"+new 3",
-		"-old 4",
-		"+new 4",
-		" context",
+	diffLines := []string{"--- a/file.go", "+++ b/file.go", "@@ -1,101 +1,101 @@"}
+	for index := 1; index <= 101; index++ {
+		diffLines = append(diffLines, fmt.Sprintf(" context %d", index))
 	}
 	success, _ := json.Marshal(map[string]string{
 		"call_id": "edit_call", "tool_name": "apply_patch", "status": "success", "result": strings.Join(diffLines, "\n") + "\n",
@@ -1897,11 +1887,11 @@ func TestEnhancedEditTruncatesDiffAfterTenLines(t *testing.T) {
 	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
 
 	got := output.String()
-	if !strings.Contains(got, strings.Join(diffLines[:10], "\n")+"\n… 2 omitted") {
-		t.Fatalf("edit block did not contain the bounded diff and omitted line count: %q", got)
+	if !strings.Contains(got, "context 97") || !strings.Contains(got, "… 4 omitted") {
+		t.Fatalf("edit block did not contain the bounded diff and omitted row count: %q", got)
 	}
-	if strings.Contains(got, diffLines[10]) || strings.Contains(got, diffLines[11]) {
-		t.Fatalf("edit block included lines after the preview: %q", got)
+	if strings.Contains(got, "context 98") || strings.Contains(got, "context 101") {
+		t.Fatalf("edit block included rows after the preview: %q", got)
 	}
 }
 
