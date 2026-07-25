@@ -233,6 +233,27 @@ func TestLiveBrokerPublishesToolOutput(t *testing.T) {
 	}
 }
 
+func TestLiveBrokerPublishesAndProjectsCodeDisplay(t *testing.T) {
+	broker := event.NewBroker(nil, nil, fakeHierarchy{"child": "parent"})
+	child, closeChild := broker.Subscribe("child", 1)
+	defer closeChild()
+	parent, closeParent := broker.Subscribe("parent", 1)
+	defer closeParent()
+	broker.Publish("child", protocol.Event{Type: protocol.EventCodeDisplay, CodeDisplay: &protocol.CodeDisplay{
+		ToolCallID: "call", Source: "package main\n", Path: "main.go", Language: "go", StartLine: 2,
+	}})
+	for _, item := range []v1.Event{<-child, <-parent} {
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		display := payload.(*v1.CodeDisplay)
+		if item.Type != v1.EventCodeDisplay || display.ToolCallID != "call" || display.Source != "package main\n" || display.StartLine != 2 {
+			t.Fatalf("code display = %#v, payload = %#v", item, display)
+		}
+	}
+}
+
 func TestLiveBrokerDropsToolOutputWithoutClosingSlowSubscriber(t *testing.T) {
 	broker := event.NewBroker(nil, nil, nil)
 	events, closeSubscription := broker.Subscribe("ses_test", 1)

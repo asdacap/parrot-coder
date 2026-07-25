@@ -27,6 +27,7 @@ const (
 	EventTaskIdle             = "task.idle"
 	EventTaskFinished         = "task.finished"
 	EventToolOutputDelta      = "tool.output.delta"
+	EventCodeDisplay          = "tool.code.display"
 )
 
 // Event is used for both durable and disposable live events. Sequence and
@@ -77,6 +78,15 @@ type TaskProgress struct {
 type ToolOutputDelta struct {
 	ToolCallID string `json:"tool_call_id"`
 	Delta      string `json:"delta"`
+}
+
+// CodeDisplay is an atomic source block emitted by a tool for presentation.
+type CodeDisplay struct {
+	ToolCallID string `json:"tool_call_id"`
+	Source     string `json:"source"`
+	Path       string `json:"path,omitempty"`
+	Language   string `json:"language,omitempty"`
+	StartLine  int    `json:"start_line,omitempty"`
 }
 
 // TaskEvent is the flat lifecycle record every task emits. Every task belongs
@@ -157,6 +167,7 @@ var EventManifest = []EventDefinition{
 	{Name: EventTaskIdle, Payload: "TaskEvent"},
 	{Name: EventTaskFinished, Payload: "TaskEvent"},
 	{Name: EventToolOutputDelta, Payload: "ToolOutputDelta"},
+	{Name: EventCodeDisplay, Payload: "CodeDisplay"},
 	{Name: "session.selection.changed", Durable: true, Payload: "object"},
 	{Name: "session.context.initialized", Durable: true, Payload: "object"},
 	{Name: "session.context.observed", Durable: true, Payload: "object"},
@@ -221,6 +232,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &TaskEvent{}
 	case EventToolOutputDelta:
 		target = &ToolOutputDelta{}
+	case EventCodeDisplay:
+		target = &CodeDisplay{}
 	default:
 		if !KnownEvent(event.Type) {
 			return nil, errors.New("v1: unknown event type")

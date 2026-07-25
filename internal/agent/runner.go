@@ -89,6 +89,21 @@ func (w *toolOutputWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+type toolDisplayPublisher struct {
+	live      LivePublisher
+	sessionID string
+	callID    string
+}
+
+func (p toolDisplayPublisher) DisplayCode(display tool.CodeDisplay) {
+	if p.live == nil {
+		return
+	}
+	p.live.Publish(p.sessionID, protocol.Event{Type: protocol.EventCodeDisplay, CodeDisplay: &protocol.CodeDisplay{
+		ToolCallID: p.callID, Source: display.Source, Path: display.Path, Language: display.Language, StartLine: display.StartLine,
+	}})
+}
+
 type Compactor interface {
 	Compact(context.Context, compaction.Request) (compaction.Result, error)
 }
@@ -871,7 +886,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 			if r.config.TaskIDFor != nil {
 				taskID = r.config.TaskIDFor(r.dto.ID)
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile)}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile)}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

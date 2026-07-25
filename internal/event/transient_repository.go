@@ -126,6 +126,12 @@ func protocolEvent(sessionID string, item protocol.Event) (v1.Event, bool) {
 		eventType, payload = v1.EventSessionStatus, v1.SessionStatus{MessageID: item.MessageID, Kind: "router_metadata", Message: message}
 	case protocol.EventToolOutputDelta:
 		eventType, payload = v1.EventToolOutputDelta, v1.ToolOutputDelta{ToolCallID: item.ToolCallID, Delta: item.Text}
+	case protocol.EventCodeDisplay:
+		if item.CodeDisplay == nil {
+			return v1.Event{}, false
+		}
+		display := item.CodeDisplay
+		eventType, payload = v1.EventCodeDisplay, v1.CodeDisplay{ToolCallID: display.ToolCallID, Source: display.Source, Path: display.Path, Language: display.Language, StartLine: display.StartLine}
 	default:
 		return v1.Event{}, false
 	}

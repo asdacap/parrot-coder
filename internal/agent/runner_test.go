@@ -255,6 +255,20 @@ func (p *recordingPublisher) Publish(_ string, item protocol.Event) {
 	p.events = append(p.events, item)
 }
 
+func TestToolDisplayPublisherAddsExecutionIdentity(t *testing.T) {
+	live := &recordingPublisher{}
+	toolDisplayPublisher{live: live, sessionID: "session", callID: "call"}.DisplayCode(tool.CodeDisplay{
+		Source: "package main\n", Path: "main.go", Language: "go", StartLine: 3,
+	})
+	if len(live.events) != 1 || live.events[0].Type != protocol.EventCodeDisplay || live.events[0].CodeDisplay == nil {
+		t.Fatalf("events = %#v", live.events)
+	}
+	display := live.events[0].CodeDisplay
+	if display.ToolCallID != "call" || display.Source != "package main\n" || display.Path != "main.go" || display.StartLine != 3 {
+		t.Fatalf("display = %#v", display)
+	}
+}
+
 // The live usage event is the only carrier of cost to clients, so it must be
 // priced before publication rather than afterwards on a copy the runner keeps.
 func TestRunnerPublishesPricedUsage(t *testing.T) {

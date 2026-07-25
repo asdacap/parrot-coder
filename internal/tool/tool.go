@@ -25,6 +25,21 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
+// CodeDisplay describes source a tool wants a client to present. The publisher
+// supplies execution identity such as the session and tool call IDs.
+type CodeDisplay struct {
+	Source    string
+	Path      string
+	Language  string
+	StartLine int
+}
+
+// DisplayPublisher is the presentation boundary available to tools. Publishing
+// is best-effort and does not change the tool's authoritative result.
+type DisplayPublisher interface {
+	DisplayCode(CodeDisplay)
+}
+
 type CallContext struct {
 	Workspace       *workspace.Workspace
 	Outputs         *OutputStore
@@ -37,6 +52,7 @@ type CallContext struct {
 	Agent           string
 	ToolCallID      string
 	Output          io.Writer
+	Displays        DisplayPublisher
 	SecurityProfile security.SecurityProfile
 	StatusQuery     statusinfo.Query
 	StatusProvider  statusinfo.Provider

@@ -145,6 +145,7 @@ const (
 	EventProviderRetry         EventType = "provider_retry"
 	EventStatusPromptInjected  EventType = "status_prompt_injected"
 	EventToolOutputDelta       EventType = "tool_output_delta"
+	EventCodeDisplay           EventType = "code_display"
 	EventRouterMetadata        EventType = "router_metadata"
 )
 
@@ -153,6 +154,15 @@ type ToolInputDelta struct {
 	ID    string
 	Name  string
 	Delta string
+}
+
+// CodeDisplay is an atomic source block a tool asks clients to present.
+type CodeDisplay struct {
+	ToolCallID string
+	Source     string
+	Path       string
+	Language   string
+	StartLine  int
 }
 
 // ProviderError is a safe, structured provider failure.
@@ -183,5 +193,6 @@ type Event struct {
 	FinishReason   FinishReason
 	ProviderError  *ProviderError
 	ToolCallID     string
+	CodeDisplay    *CodeDisplay
 	RouterMetadata *RouterMetadata
 }

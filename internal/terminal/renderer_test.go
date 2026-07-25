@@ -890,6 +890,81 @@ func TestLiveRendererNarrowDividerDoesNotWrap(t *testing.T) {
 	}
 }
 
+func TestLiveRendererCommitCodeBlock(t *testing.T) {
+	tests := []struct {
+		name         string
+		status       StyledText
+		language     string
+		code         string
+		color        bool
+		want         []string
+		wantANSI     bool
+		wantMaxWidth int
+	}{
+		{
+			name:     "highlighted and sanitized",
+			status:   MutedText("↳ Code · main.go:4"),
+			language: "go",
+			code:     "package main\nvar value = \"safe\x1b[31m\"\n",
+			color:    true,
+			want:     []string{"↳ Code · main.go:4", "package main", `var value = "safe[31m"`},
+			wantANSI: true,
+		},
+		{
+			name:         "unknown language falls back and wraps",
+			language:     "unknown-language",
+			code:         "abcdefghijkl",
+			color:        true,
+			want:         []string{"abcdefgh", "ijkl"},
+			wantMaxWidth: 8,
+		},
+		{
+			name:     "color disabled",
+			language: "go",
+			code:     "package main",
+			want:     []string{"package main"},
+		},
+		{
+			name: "trailing blank source line",
+			code: "first\n\n",
+			want: []string{"first\n\n"},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			writer := &atomicDiffWriter{}
+			columns := 80
+			if test.wantMaxWidth > 0 {
+				columns = test.wantMaxWidth
+			}
+			renderer := NewLiveRenderer(writer, RendererConfig{TTY: true, Color: test.color, Columns: columns})
+			if err := renderer.CommitCodeBlock(test.status, test.code, test.language); err != nil {
+				t.Fatal(err)
+			}
+			if writer.writes != 1 {
+				t.Fatalf("writes = %d, want 1", writer.writes)
+			}
+			output := writer.text.String()
+			plain := regexp.MustCompile("\\x1b\\[[0-9;]*m").ReplaceAllString(output, "")
+			for _, value := range test.want {
+				if !strings.Contains(plain, value) {
+					t.Errorf("output does not contain %q: %q", value, output)
+				}
+			}
+			if got := strings.Contains(output, "\x1b["); got != test.wantANSI {
+				t.Errorf("ANSI presence = %v, want %v: %q", got, test.wantANSI, output)
+			}
+			if test.wantMaxWidth > 0 {
+				for _, row := range strings.Split(strings.TrimSuffix(plain, "\n"), "\n") {
+					if width := displayWidth(row); width > test.wantMaxWidth {
+						t.Errorf("row width = %d, want <= %d: %q", width, test.wantMaxWidth, row)
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestLiveRendererSpacesBlockAndCompactCommits(t *testing.T) {
 	var output bytes.Buffer
 	renderer := NewLiveRenderer(&output, RendererConfig{Columns: 80})

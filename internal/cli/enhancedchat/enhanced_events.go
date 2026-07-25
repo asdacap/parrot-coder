@@ -283,6 +283,9 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 			if report.blockKind == chatview.ToolResultDiff {
 				styled.Text = report.line
 				err = r.shell.renderer.CommitDiffBlock(styled, report.block)
+			} else if report.blockKind == chatview.ToolResultCode {
+				styled.Text = report.line
+				err = r.shell.renderer.CommitCodeBlock(styled, report.block, report.blockLanguage)
 			} else if report.block != "" {
 				err = r.shell.renderer.CommitStyledBlock(styled)
 			} else {
@@ -470,6 +473,18 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			return err
 		}
 		r.status = "working"
+	case v1.EventCodeDisplay:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		display := payload.(*v1.CodeDisplay)
+		if r.shell != nil && r.shell.renderer != nil {
+			if err := r.shell.renderer.CommitCodeBlock(terminal.MutedText(chatview.CodeDisplayStatus(*display)), display.Source, display.Language); err != nil {
+				return err
+			}
+			r.borderCommitted = false
+		}
 	case v1.EventToolOutputDelta:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {

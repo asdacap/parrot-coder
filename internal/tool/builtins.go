@@ -48,6 +48,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 
 	items := []Tool{
 		NewReadTool(ReadConfig{}),
+		NewShowTool(ReadConfig{}),
 		NewGlobTool(GlobConfig{}),
 		NewRgTool(RgConfig{}),
 		NewReadOutputTool(1 << 20),

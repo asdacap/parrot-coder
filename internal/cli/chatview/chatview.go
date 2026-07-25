@@ -637,6 +637,7 @@ type TaskReport struct {
 	Line            string
 	Block           string
 	BlockKind       string
+	BlockLanguage   string
 	Terminal        bool
 	EmitPlain       bool
 	Skip            bool
@@ -913,6 +914,24 @@ func (t *TaskTracker) nodeCumulativeUsage(node *taskNode) TaskUsage {
 		}
 	}
 	return total
+}
+
+// CodeDisplayStatus formats the transcript row introducing an atomic source
+// block. Location metadata belongs in the status rather than in the source so
+// the latter can be passed unchanged to syntax highlighting.
+func CodeDisplayStatus(display v1.CodeDisplay) string {
+	location := strings.NewReplacer("\n", " ", "\r", " ", "\t", " ").Replace(terminal.Sanitize(display.Path))
+	if display.StartLine > 0 {
+		if location == "" {
+			location = fmt.Sprintf("line %d", display.StartLine)
+		} else {
+			location += fmt.Sprintf(":%d", display.StartLine)
+		}
+	}
+	if location == "" {
+		return "↳ Code"
+	}
+	return "↳ Code · " + location
 }
 
 // IsTaskEvent reports whether an event belongs to the task tree rather than to
@@ -1218,6 +1237,17 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			block = prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", block)
 		}
 		return []TaskReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, BlockKind: report.BlockKind, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
+	case v1.EventCodeDisplay:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return nil, err
+		}
+		display := payload.(*v1.CodeDisplay)
+		return []TaskReport{{
+			ID: scope + "code:" + display.ToolCallID, Line: t.eventLine(node, CodeDisplayStatus(*display)),
+			Block: display.Source, BlockKind: ToolResultCode, BlockLanguage: display.Language,
+			Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted,
+		}}, nil
 	case v1.EventToolOutputDelta:
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}

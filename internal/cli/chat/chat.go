@@ -605,14 +605,15 @@ func streamToolReportFromView(report chatview.StreamToolReport) streamToolReport
 }
 
 type taskReport struct {
-	id        string
-	line      string
-	block     string
-	blockKind string
-	terminal  bool
-	emitPlain bool
-	skip      bool
-	style     terminal.TextStyle
+	id            string
+	line          string
+	block         string
+	blockKind     string
+	blockLanguage string
+	terminal      bool
+	emitPlain     bool
+	skip          bool
+	style         terminal.TextStyle
 }
 
 // taskStreamTracker adapts the shared task tree tracker to the plain chat
@@ -647,7 +648,7 @@ func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport
 	}
 	result := make([]taskReport, len(reports))
 	for i, report := range reports {
-		result[i] = taskReport{id: report.ID, line: report.Line, block: report.Block, blockKind: report.BlockKind, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
+		result[i] = taskReport{id: report.ID, line: report.Line, block: report.Block, blockKind: report.BlockKind, blockLanguage: report.BlockLanguage, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
 	}
 	return result, nil
 }
@@ -679,6 +680,9 @@ func writeStreamTaskEvent(options streamOptions, tracker *taskStreamTracker, ite
 				if report.blockKind == chatview.ToolResultDiff {
 					styled.Text = report.line
 					err = options.renderer.CommitDiffBlock(styled, report.block)
+				} else if report.blockKind == chatview.ToolResultCode {
+					styled.Text = report.line
+					err = options.renderer.CommitCodeBlock(styled, report.block, report.blockLanguage)
 				} else if report.block != "" {
 					err = options.renderer.CommitStyledBlock(styled)
 				} else {
@@ -703,6 +707,15 @@ func toolActivityStyle(presentation chatview.Presentations, name string) termina
 }
 func toolActivityLabel(presentation chatview.Presentations, name string, input map[string]any) string {
 	return presentation.Label(name, input)
+}
+
+func writeStreamCodeDisplay(options streamOptions, display *v1.CodeDisplay) error {
+	status := chatview.CodeDisplayStatus(*display)
+	if options.renderer != nil {
+		return options.renderer.CommitCodeBlock(terminal.MutedText(status), display.Source, display.Language)
+	}
+	_, err := fmt.Fprintln(options.stderr, terminal.Sanitize(status+"\n"+display.Source))
+	return err
 }
 
 func writeStreamToolOutput(options streamOptions, tracker *streamToolTracker, item *v1.ToolOutputDelta) error {
@@ -951,6 +964,13 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 						finished.err = nil
 					}
 					return finished
+				}
+			case *v1.CodeDisplay:
+				if options.format != "jsonl" {
+					subagentTracker.liveID = ""
+					if err := writeStreamCodeDisplay(options, value); err != nil {
+						return streamResult{err: err}
+					}
 				}
 			case *v1.ToolOutputDelta:
 				if options.format != "jsonl" {

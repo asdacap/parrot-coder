@@ -1062,6 +1062,31 @@ func (r *LiveRenderer) CommitStyledBlock(text StyledText) error {
 	return r.commitRowsAsRich(content.rows, styles, content.spans, commitBlock)
 }
 
+// CommitCodeBlock atomically appends a styled status and syntax-highlighted code
+// as one transcript block. Unknown and plain-text languages fall back to
+// unstyled code.
+func (r *LiveRenderer) CommitCodeBlock(status StyledText, code, language string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return errRendererClosed
+	}
+	r.syncColumns()
+	content, styles := r.layoutStyledTextAtColumns(status, r.columns)
+	// A final newline terminates the last source line rather than introducing
+	// another row. Remove only that terminator so selected trailing blank lines
+	// remain visible.
+	clean := strings.TrimSuffix(Sanitize(code), "\n")
+	codeRows := renderCodeBlock("", markdownState{
+		lexer:     lexerForLanguage(Sanitize(language)),
+		code:      strings.Split(clean, "\n"),
+		codeBytes: len(clean),
+	}, r.columns, r.color)
+	content.append(codeRows)
+	styles = append(styles, repeatedStyle(TextStyleDefault, len(codeRows.rows))...)
+	return r.commitRowsAsRich(content.rows, styles, content.spans, commitBlock)
+}
+
 // CommitDiffBlock atomically appends a styled status and a bounded rendering of
 // raw unified diff text as one transcript block.
 func (r *LiveRenderer) CommitDiffBlock(status StyledText, rawDiff string) error {

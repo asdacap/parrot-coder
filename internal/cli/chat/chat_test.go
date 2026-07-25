@@ -911,6 +911,32 @@ func TestStreamTaskEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	}
 }
 
+func TestStreamCodeDisplayOutput(t *testing.T) {
+	display := &v1.CodeDisplay{Source: "package main\n", Path: "cmd/main.go", Language: "go", StartLine: 12}
+	for _, test := range []struct {
+		name     string
+		renderer bool
+		want     string
+	}{
+		{name: "plain", want: "↳ Code · cmd/main.go:12\npackage main\n\n"},
+		{name: "renderer", renderer: true, want: "↳ Code · cmd/main.go:12\npackage main\n"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			options := streamOptions{stderr: &output}
+			if test.renderer {
+				options.renderer = terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})
+			}
+			if err := writeStreamCodeDisplay(options, display); err != nil {
+				t.Fatal(err)
+			}
+			if got := output.String(); got != test.want {
+				t.Fatalf("code display output = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestStreamTaskEventSkipsEmptyCompletedResponse(t *testing.T) {
 	var output bytes.Buffer
 	tracker := newTaskStreamTracker(chatview.Presentations{})

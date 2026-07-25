@@ -70,6 +70,48 @@ func TestDiffPresentationPreservesRawResultThroughTaskReports(t *testing.T) {
 	}
 }
 
+func TestTaskCodeDisplayReportCarriesRenderingMetadata(t *testing.T) {
+	tracker := NewTaskTracker()
+	startMainTask(tracker)
+	if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
+		TaskID: "child", SessionID: "child", ParentSessionID: "session-main", Kind: "agent", Agent: "worker",
+	}), false); err != nil {
+		t.Fatal(err)
+	}
+	data, _ := json.Marshal(v1.CodeDisplay{ToolCallID: "call", Source: "package main\n", Path: "cmd/main.go", Language: "go", StartLine: 12})
+	reports, err := tracker.Apply(v1.Event{Type: v1.EventCodeDisplay, TaskID: "child", Data: data}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reports) != 1 {
+		t.Fatalf("code display reports = %#v", reports)
+	}
+	report := reports[0]
+	if report.ID != "child:code:call" || report.TaskID != "child" || report.SessionID != "child" || report.ParentSessionID != "session-main" || report.Line != "  • [worker] ↳ Code · cmd/main.go:12" || report.Block != "package main\n" || report.BlockKind != ToolResultCode || report.BlockLanguage != "go" || !report.Terminal || !report.EmitPlain {
+		t.Fatalf("code display report = %#v", report)
+	}
+}
+
+func TestCodeDisplayStatus(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		item v1.CodeDisplay
+		want string
+	}{
+		{name: "path and line", item: v1.CodeDisplay{Path: "main.go", StartLine: 7}, want: "↳ Code · main.go:7"},
+		{name: "path", item: v1.CodeDisplay{Path: "main.go"}, want: "↳ Code · main.go"},
+		{name: "line", item: v1.CodeDisplay{StartLine: 7}, want: "↳ Code · line 7"},
+		{name: "anonymous", want: "↳ Code"},
+		{name: "single-line location", item: v1.CodeDisplay{Path: "main.go\n✓ completed\t"}, want: "↳ Code · main.go ✓ completed "},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := CodeDisplayStatus(test.item); got != test.want {
+				t.Fatalf("CodeDisplayStatus() = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestLiveOnlyPresentationDiscardsTerminalReport(t *testing.T) {
 	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "wait", Presentation: v1.ToolPresentation{LiveOnly: true},

@@ -1852,6 +1852,18 @@ func (s staticMessageClient) Messages(context.Context, string) (v1.MessageList, 
 	return s.items, nil
 }
 
+func TestEnhancedChatRuntimeRendersCodeDisplay(t *testing.T) {
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
+	data, _ := json.Marshal(v1.CodeDisplay{ToolCallID: "call", Source: "package main\n", Path: "cmd/main.go", Language: "go", StartLine: 12})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventCodeDisplay, Data: data}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "↳ Code · cmd/main.go:12\npackage main\n"; got != want {
+		t.Fatalf("code display output = %q, want %q", got, want)
+	}
+}
+
 func TestEnhancedEditCommitsConfiguredDiffAsBlock(t *testing.T) {
 	for _, test := range []struct {
 		name       string

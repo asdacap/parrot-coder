@@ -28,6 +28,7 @@ const (
 const (
 	ToolResultText  = "text"
 	ToolResultDiff  = "diff"
+	ToolResultCode  = "code"
 	ToolResultTodos = "todos"
 )
 

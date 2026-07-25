@@ -46,6 +46,11 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			want:  &v1.MessagePartDelta{MessageID: "msg_1", PartID: "reasoning_1:2", Kind: "reasoning_summary", Delta: "Checking tests"},
 		},
 		{
+			name:  "code display",
+			event: v1.Event{Type: v1.EventCodeDisplay, Data: json.RawMessage(`{"tool_call_id":"call_1","source":"package main\n","path":"main.go","language":"go","start_line":4}`)},
+			want:  &v1.CodeDisplay{ToolCallID: "call_1", Source: "package main\n", Path: "main.go", Language: "go", StartLine: 4},
+		},
+		{
 			name:  "message part done",
 			event: v1.Event{Type: v1.EventMessagePartDelta, Data: json.RawMessage(`{"message_id":"msg_1","part_id":"reasoning_1:2","kind":"reasoning_summary","delta":"","done":true}`)},
 			want:  &v1.MessagePartDelta{MessageID: "msg_1", PartID: "reasoning_1:2", Kind: "reasoning_summary", Done: true},
@@ -81,6 +86,7 @@ func TestDecodeSessionInputEventDataRejectsUnknownFields(t *testing.T) {
 		{Type: v1.EventSessionInputPromoted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","extra":true}`)},
 		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","agent":"explore","status":"running","usage":{},"tool_uses":0,"extra":true}`)},
 		{Type: v1.EventTaskStart, Data: json.RawMessage(`{"task_id":"task_1","kind":"agent","extra":true}`)},
+		{Type: v1.EventCodeDisplay, Data: json.RawMessage(`{"tool_call_id":"call_1","source":"x","extra":true}`)},
 	} {
 		if _, err := v1.DecodeEventData(event); err == nil {
 			t.Fatalf("DecodeEventData(%q) accepted an unknown field", event.Type)
