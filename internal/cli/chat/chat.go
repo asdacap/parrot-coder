@@ -442,11 +442,14 @@ func command(ctx context.Context, config Config) int {
 					if shell.api != runtime.Client {
 						return "", errors.New("oversized paste storage is unavailable for remote connections")
 					}
-					stored, err := runtime.StoreOutput(ctx, reader)
+					if shell.current.ID == "" {
+						return "", errors.New("oversized paste storage requires an active session")
+					}
+					stored, err := runtime.StoreOutput(ctx, shell.current.ID, reader)
 					if err != nil {
 						return "", err
 					}
-					return fmt.Sprintf("[Pasted content stored as output %s; use read_output to read it.]", stored.ID), nil
+					return fmt.Sprintf("[Pasted content stored at %s.]", stored.Path), nil
 				})
 				shell.editor = terminal.NewEditorDecoder(shell.decoder, stdout,
 					terminal.WithCompletions(chatCompletionCandidates(runtime.Commands)),

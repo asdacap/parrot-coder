@@ -196,5 +196,8 @@ func formatPersistentResult(result process.PersistentResult) string {
 		text += fmt.Sprintf("\nShell task %s running with task ID %s", result.Name, *result.ProcessID)
 	}
 	text += fmt.Sprintf("\nOriginal token count: %d\nOutput:\n%s", result.OriginalTokenCount, result.Output)
+	if result.Truncated && result.OutputPath != "" {
+		text += "\nFull output saved to " + result.OutputPath
+	}
 	return text
 }

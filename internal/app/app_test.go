@@ -1095,69 +1095,20 @@ func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
 func TestStoreOutput(t *testing.T) {
 	outputs, err := tool.NewOutputStore(tool.OutputConfig{
 		Directory: t.TempDir(), PreviewBytes: 16, PreviewLines: 4,
-		PerOutput: 1024, Total: 4096, Retention: time.Hour,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	application := &App{outputs: outputs}
-	stored, err := application.StoreOutput(context.Background(), strings.NewReader("oversized paste"))
+	stored, err := application.StoreOutput(context.Background(), "ses_test", strings.NewReader("oversized paste"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := outputs.Read(stored.ID, 0, stored.Size)
+	data, err := os.ReadFile(stored.Path)
 	if err != nil || string(data) != "oversized paste" {
 		t.Fatalf("stored output = %q, %v", data, err)
 	}
-	if _, err := (*App)(nil).StoreOutput(context.Background(), strings.NewReader("unused")); err == nil {
+	if _, err := (*App)(nil).StoreOutput(context.Background(), "ses_test", strings.NewReader("unused")); err == nil {
 		t.Fatal("nil App StoreOutput() succeeded")
-	}
-}
-
-func TestMaintainCleansOnlyManagedOutputs(t *testing.T) {
-	ctx := context.Background()
-	root := t.TempDir()
-	outputDir := filepath.Join(root, "outputs")
-	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: outputDir, PreviewBytes: 16, PreviewLines: 4, PerOutput: 1024, Total: 4096, Retention: time.Hour})
-	if err != nil {
-		t.Fatal(err)
-	}
-	now := time.Now().UTC()
-	old := now.Add(-48 * time.Hour)
-	files := map[string]time.Time{
-		"0123456789abcdef0123456789abcdef": old,
-		".parrot-output-stale":             old,
-		".parrot-output-fresh":             now,
-		"unmanaged":                        old,
-	}
-	for name, modified := range files {
-		path := filepath.Join(outputDir, name)
-		if err := os.WriteFile(path, []byte("x"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chtimes(path, modified, modified); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	application := &App{outputs: outputs}
-	report, err := application.Maintain(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if report.OutputsRemoved != 2 {
-		t.Fatalf("report = %#v", report)
-	}
-	for _, name := range []string{".parrot-output-fresh", "unmanaged"} {
-		if _, err := os.Stat(filepath.Join(outputDir, name)); err != nil {
-			t.Fatalf("preserved file %s: %v", name, err)
-		}
-	}
-	second, err := application.Maintain(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if second != (MaintenanceReport{}) {
-		t.Fatalf("second maintenance was not a no-op: %#v", second)
 	}
 }

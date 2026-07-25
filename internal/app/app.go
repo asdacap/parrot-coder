@@ -375,7 +375,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: commands: %w", err)
 	}
 	result.Skills, result.Commands = skills, commands
-	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: filepath.Join(paths.Cache, "outputs"), PreviewBytes: 32 << 10, PreviewLines: 400, PerOutput: 10 << 20, Total: 256 << 20, Retention: 7 * 24 * time.Hour})
+	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: filepath.Join(paths.State, "session"), PreviewBytes: 32 << 10, PreviewLines: 400})
 	if err != nil {
 		return nil, fmt.Errorf("app: outputs: %w", err)
 	}
@@ -668,18 +668,15 @@ func (o compactionContextObserver) ObserveFull(ctx context.Context) (compaction.
 	return compaction.FullContext{Baseline: observed.Baseline, Sources: observed.Sources}, err
 }
 
-// StoreOutput stores a stream in the managed output store so it can be read by
-// the read_output tool.
-func (a *App) StoreOutput(ctx context.Context, reader io.Reader) (tool.StoredOutput, error) {
+// StoreOutput stores a stream as a text file in the session's private state.
+func (a *App) StoreOutput(ctx context.Context, sessionID string, reader io.Reader) (tool.StoredOutput, error) {
 	if a == nil || a.outputs == nil {
-		return tool.StoredOutput{}, errors.New("managed output store is unavailable")
+		return tool.StoredOutput{}, errors.New("large output storage is unavailable")
 	}
-	return a.outputs.Store(ctx, reader)
+	return a.outputs.Store(ctx, sessionID, reader)
 }
 
-type MaintenanceReport struct {
-	OutputsRemoved int
-}
+type MaintenanceReport struct{}
 
 // Maintain performs bounded, idempotent cleanup. Durable events, messages,
 // context epochs, and compaction records are never deleted.
@@ -688,18 +685,10 @@ func (a *App) Maintain(ctx context.Context) (MaintenanceReport, error) {
 	diagnostics.Event("maintenance_started")
 	var report MaintenanceReport
 	var maintenanceErr error
-	if a.outputs != nil {
-		removed, err := a.outputs.Maintain(time.Now(), 24*time.Hour, 2000)
-		report.OutputsRemoved = removed
-		maintenanceErr = errors.Join(maintenanceErr, err)
-	}
 	// Abandoned compaction attempts are repaired per session when that session
 	// is opened. Sweeping every session here would repair sessions belonging to
 	// other machines, interrupting compactions those machines are still running.
-	attributes := []any{
-		"duration_ms", time.Since(started).Milliseconds(),
-		"outputs_removed", report.OutputsRemoved,
-	}
+	attributes := []any{"duration_ms", time.Since(started).Milliseconds()}
 	if maintenanceErr != nil {
 		diagnostics.Error("maintenance_finished", append(attributes, "status", "error", "error_type", diagnostics.ErrorType(maintenanceErr))...)
 	} else {

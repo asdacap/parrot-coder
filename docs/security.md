@@ -133,6 +133,8 @@ requests are not retried automatically.
 ## Resource Limits
 
 Request bodies, tool-input JSON depth, SSE events, tool arguments, file reads,
-search results, process output, managed output, concurrent tools, subagents, MCP
-calls, and provider streams have explicit bounds. Slow live subscribers are
-disconnected rather than allowed to grow an unbounded queue.
+search results, model-facing process output, concurrent tools, subagents, MCP
+calls, and provider streams have explicit bounds. Complete large outputs are
+stored as files in the owning session state directory and are removed with that
+session. Slow live subscribers are disconnected rather than allowed to grow an
+unbounded queue.

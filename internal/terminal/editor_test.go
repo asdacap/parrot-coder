@@ -156,10 +156,10 @@ func TestKeyDecoderStoresOversizedPasteAndKeepsInputSynchronized(t *testing.T) {
 	decoder.SetOversizedPasteHandler(func(_ context.Context, reader io.Reader) (string, error) {
 		data, err := io.ReadAll(reader)
 		stored = string(data)
-		return "[use read_output id opaque]", err
+		return "[paste stored at /tmp/large-output.txt]", err
 	})
 	value, err := editor.Read(context.Background())
-	if err != nil || stored != payload || value != "before[use read_output id opaque]after" {
+	if err != nil || stored != payload || value != "before[paste stored at /tmp/large-output.txt]after" {
 		t.Fatalf("oversized paste: stored=%q value=%q err=%v", stored, value, err)
 	}
 

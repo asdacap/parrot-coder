@@ -22,7 +22,7 @@ import (
 
 type memoryOutputStore struct {
 	data []byte
-	omit int64
+	path string
 }
 
 type memoryManagedOutput struct {
@@ -35,15 +35,14 @@ func (o *memoryManagedOutput) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-func (o *memoryManagedOutput) ID() string { return "stored" }
+func (o *memoryManagedOutput) Path() string { return o.store.path }
 
 func (o *memoryManagedOutput) Finalize(context.Context) (StoredOutput, error) {
-	data := o.data
-	if o.store.omit > 0 && int64(len(data)) > o.store.omit {
-		data = data[o.store.omit:]
+	o.store.data = append([]byte(nil), o.data...)
+	if err := os.WriteFile(o.store.path, o.data, 0o600); err != nil {
+		return StoredOutput{}, err
 	}
-	o.store.data = append([]byte(nil), data...)
-	return StoredOutput{ID: "stored", Size: int64(len(data)), OmittedBytes: o.store.omit}, nil
+	return StoredOutput{Path: o.store.path, Size: int64(len(o.data))}, nil
 }
 
 func (o *memoryManagedOutput) Discard() {}
@@ -259,15 +258,16 @@ func TestRunSandboxAllowsExternalWorkingDirectory(t *testing.T) {
 	}
 }
 
-func (s *memoryOutputStore) Create(context.Context) (ManagedOutput, error) {
-	return &memoryManagedOutput{store: s}, nil
-}
-
-func (s *memoryOutputStore) Read(_ string, offset, limit int64) ([]byte, error) {
-	if offset < 0 || limit < 0 || offset > int64(len(s.data)) {
-		return nil, errors.New("invalid output read")
+func (s *memoryOutputStore) Create(context.Context, string) (Output, error) {
+	if s.path == "" {
+		file, err := os.CreateTemp("", "parrot-output-test-*.txt")
+		if err != nil {
+			return nil, err
+		}
+		s.path = file.Name()
+		_ = file.Close()
 	}
-	return append([]byte(nil), s.data[offset:min(offset+limit, int64(len(s.data)))]...), nil
+	return &memoryManagedOutput{store: s}, nil
 }
 
 func testRunner(t *testing.T, config Config) *Runner {
@@ -283,7 +283,9 @@ func testRunner(t *testing.T, config Config) *Runner {
 		config.Timeout = 2 * time.Second
 	}
 	if config.OutputStore == nil {
-		config.OutputStore = &memoryOutputStore{}
+		config.OutputStore = &memoryOutputStore{path: filepath.Join(root, "output.txt")}
+	} else if store, ok := config.OutputStore.(*memoryOutputStore); ok && store.path == "" {
+		store.path = filepath.Join(root, "output.txt")
 	}
 	runner, err := NewRunner(config)
 	if err != nil {
@@ -331,7 +333,7 @@ func TestStreamsFullOutputToStoreAndBoundsModelOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "12\n... 6 bytes omitted ...\n90" || !result.Truncated || result.OutputID != "stored" || result.OutputSize != 10 {
+	if result.Output != "12\n... 6 bytes omitted ...\n90" || !result.Truncated || result.OutputPath != store.path || result.OutputSize != 10 {
 		t.Fatalf("result = %#v", result)
 	}
 	if !bytes.Equal(store.data, []byte("1234567890")) {
@@ -358,14 +360,14 @@ func TestRunRequiresOutputStore(t *testing.T) {
 	}
 }
 
-func TestRunReportsBytesLostFromStartOfStoredOutput(t *testing.T) {
-	store := &memoryOutputStore{omit: 4}
+func TestRunStoresCompleteOutput(t *testing.T) {
+	store := &memoryOutputStore{}
 	runner := testRunner(t, Config{OutputStore: store})
 	result, err := runner.Run(context.Background(), Request{Shell: "/bin/sh", Command: `printf 0123456789`})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Output != "... first 4 bytes of output were lost ...\n456789" || !result.Truncated || result.OutputSize != 6 {
+	if result.Output != "0123456789" || result.Truncated || result.OutputSize != 10 {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -444,7 +446,7 @@ func TestTimeoutAndCancellationCleanDescendants(t *testing.T) {
 	t.Fatal("descendant survived cancellation")
 }
 
-func TestStartFailureClosesManagedOutput(t *testing.T) {
+func TestStartFailureClosesLargeOutput(t *testing.T) {
 	t.Parallel()
 
 	root := t.TempDir()
@@ -464,7 +466,7 @@ func TestStartFailureClosesManagedOutput(t *testing.T) {
 	select {
 	case <-store.done:
 	case <-time.After(time.Second):
-		t.Fatal("managed output reader was not closed after start failure")
+		t.Fatal("large output writer was not closed after start failure")
 	}
 }
 
@@ -790,10 +792,10 @@ type recordingManagedOutput struct {
 }
 
 func (o *recordingManagedOutput) Write(p []byte) (int, error) { return len(p), nil }
-func (o *recordingManagedOutput) ID() string                  { return "recording" }
+func (o *recordingManagedOutput) Path() string                { return "/tmp/recording.txt" }
 func (o *recordingManagedOutput) Finalize(context.Context) (StoredOutput, error) {
 	o.once.Do(func() { close(o.store.done) })
-	return StoredOutput{ID: "recording"}, nil
+	return StoredOutput{Path: "/tmp/recording.txt"}, nil
 }
 func (o *recordingManagedOutput) Discard() { o.once.Do(func() { close(o.store.done) }) }
 
@@ -834,7 +836,7 @@ func TestPersistentEnvironmentOverridesHygieneDefaultsAndRejectsUnsafeNames(t *t
 	}
 }
 
-func (s *recordingStore) Create(context.Context) (ManagedOutput, error) {
+func (s *recordingStore) Create(context.Context, string) (Output, error) {
 	return &recordingManagedOutput{store: s}, nil
 }
 

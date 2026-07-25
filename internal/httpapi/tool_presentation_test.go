@@ -18,7 +18,6 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 		tool.NewReadTool(tool.ReadConfig{}),
 		tool.NewGlobTool(tool.GlobConfig{}),
 		tool.NewRgTool(tool.RgConfig{}),
-		tool.NewReadOutputTool(0),
 		tool.NewApplyPatchTool(nil),
 		tool.NewExecCommandTool(nil),
 		tool.NewWriteStdinTool(nil),

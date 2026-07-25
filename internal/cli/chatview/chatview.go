@@ -429,8 +429,6 @@ func ToolActivityLabel(name string, input map[string]any) string {
 			path = "."
 		}
 		add(path)
-	case "read_output":
-		add(firstString(input, "id"))
 	case "apply_patch":
 		details = append(details, patchActivityTargets(firstString(input, "patchText", "patch"))...)
 	case "exec_command":

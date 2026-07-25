@@ -165,7 +165,6 @@ func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	reader := bufio.NewReader(io.TeeReader(f, hash))
 	var b strings.Builder
 	lineNo, returned := 0, 0
-	var scanned int64
 	for {
 		if err := ctx.Err(); err != nil {
 			return Result{}, err
@@ -173,10 +172,6 @@ func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		line, readErr := readBoundedLine(reader, t.Config.MaxBytes)
 		if readErr != nil && readErr != io.EOF {
 			return Result{}, readErr
-		}
-		scanned += int64(len(line))
-		if scanned > t.Config.MaxBytes {
-			return Result{}, errors.New("read scan byte limit exceeded")
 		}
 		if len(line) > 0 {
 			lineNo++
