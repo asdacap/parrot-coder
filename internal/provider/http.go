@@ -53,6 +53,7 @@ type HTTPError struct {
 	Type       string
 	Code       string
 	Message    string
+	Response   string
 }
 
 func (e *HTTPError) Error() string {
@@ -65,6 +66,9 @@ func (e *HTTPError) Error() string {
 	}
 	if e.Message != "" {
 		message += ": " + e.Message
+	}
+	if e.StatusCode == http.StatusInternalServerError && e.Response != "" && e.Response != e.Message {
+		message += "\nResponse: " + e.Response
 	}
 	return message
 }
@@ -320,6 +324,9 @@ func parseHTTPError(response *http.Response, secrets []string) error {
 		result.Code = sanitize(fmt.Sprint(envelope.Code), secrets, 128)
 	}
 	result.Message = sanitize(envelope.Message, secrets, 1024)
+	if response.StatusCode == http.StatusInternalServerError {
+		result.Response = sanitizeResponse(string(data), secrets)
+	}
 	if result.Message == "" {
 		result.Message = sanitize(string(data), secrets, 1024)
 	}
@@ -346,6 +353,17 @@ func sanitize(value string, secrets []string, limit int) string {
 		value = value[:len(value)-1]
 	}
 	return value
+}
+
+func sanitizeResponse(value string, secrets []string) string {
+	value = redact(value, secrets)
+	value = strings.Map(func(character rune) rune {
+		if unicode.IsControl(character) && character != '\t' && character != '\n' && character != '\r' {
+			return -1
+		}
+		return character
+	}, value)
+	return strings.TrimSpace(value)
 }
 
 func redact(value string, secrets []string) string {
