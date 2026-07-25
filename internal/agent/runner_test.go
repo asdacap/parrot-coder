@@ -616,6 +616,29 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	}
 }
 
+func TestManagedAgentSessionInterruptsItself(t *testing.T) {
+	started := make(chan struct{})
+	fake := &fakeProvider{stream: func(_ int, ctx context.Context, _ protocol.Request) (provider.Stream, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	child, err := h.agentSessions.Get(h.sessionID).CreateChild(context.Background(), ChildRequest{Prompt: "initial", Agent: BuildID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+
+	if err := child.Interrupt(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	status := child.Status()
+	if status.State != StatusCanceled || status.Error != ErrChildCanceled.Error() {
+		t.Fatalf("status = %#v", status)
+	}
+}
+
 func TestAgentSessionPromptAndSendOwnAdmissionAndResultHandling(t *testing.T) {
 	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
 		want := []string{"initial", "steer"}[index]

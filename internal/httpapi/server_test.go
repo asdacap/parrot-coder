@@ -350,9 +350,6 @@ func (s testAgentSession) ResolveChild(string) (agent.AgentSession, error) {
 func (s testAgentSession) SendChild(context.Context, agent.ChildRequest) (agent.Status, string, error) {
 	return agent.Status{}, "", errors.New("not implemented")
 }
-func (s testAgentSession) InterruptChild(context.Context) (agent.Status, error) {
-	return agent.Status{}, errors.New("not implemented")
-}
 func (s testAgentSession) Forget() error { return errors.New("not implemented") }
 func (s testAgentSession) Prompt(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")

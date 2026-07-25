@@ -54,7 +54,6 @@ type AgentSession interface {
 	Observe() (ChildTurnObserver, error)
 	ResolveChild(string) (AgentSession, error)
 	SendChild(context.Context, ChildRequest) (Status, string, error)
-	InterruptChild(context.Context) (Status, error)
 	Forget() error
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
@@ -121,13 +120,6 @@ func (s *agentSession) SendChild(ctx context.Context, request ChildRequest) (Sta
 	return s.sendChild(ctx, request)
 }
 
-func (s *agentSession) InterruptChild(ctx context.Context) (Status, error) {
-	if s.user == nil || s.parent == nil {
-		return Status{}, ErrChildNotFound
-	}
-	return s.interruptChild(ctx)
-}
-
 func (s *agentSession) Forget() error {
 	if s.user == nil || s.parent == nil {
 		return ErrChildNotFound
@@ -153,7 +145,7 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 	if err := s.wait(ctx, state); err != nil {
 		if ctx.Err() != nil {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = s.Interrupt(cleanup)
+			_ = s.interruptExecution(cleanup)
 			cancel()
 		}
 		return "", err
@@ -246,6 +238,23 @@ func (s *agentSession) wait(ctx context.Context, state *drainState) error {
 }
 
 func (s *agentSession) Interrupt(ctx context.Context) error {
+	s.mu.Lock()
+	if s.child != nil && (s.child.status.State == StatusRunning || s.child.status.State == StatusPending) {
+		s.child.cancel()
+		done := s.child.turn.done
+		s.mu.Unlock()
+		select {
+		case <-done:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	s.mu.Unlock()
+	return s.interruptExecution(ctx)
+}
+
+func (s *agentSession) interruptExecution(ctx context.Context) error {
 	s.mu.Lock()
 	state := s.drain
 	if state == nil {

@@ -257,31 +257,6 @@ retry:
 	return task, "", nil
 }
 
-func (s *agentSession) interruptChild(ctx context.Context) (Status, error) {
-	s.mu.Lock()
-	state := s.child
-	if state == nil {
-		s.mu.Unlock()
-		return Status{}, ErrChildNotFound
-	}
-	if state.status.State != StatusRunning && state.status.State != StatusPending {
-		task := cloneStatus(state.status)
-		s.mu.Unlock()
-		return task, nil
-	}
-	if state.cancel != nil {
-		state.cancel()
-	}
-	turn := state.turn
-	s.mu.Unlock()
-	select {
-	case <-turn.done:
-		return cloneStatus(turn.result), nil
-	case <-ctx.Done():
-		return Status{}, ctx.Err()
-	}
-}
-
 func (s *userSession) resolveChild(callerSessionID, identifier string) (AgentSession, error) {
 	if identifier == "" {
 		return nil, ErrChildNotFound
@@ -407,8 +382,8 @@ func (t managedChildTask) Observe() managedtask.Task {
 	return managedChildTurn{child: t.child, turn: turn}
 }
 func (t managedChildTask) Interrupt(ctx context.Context) (managedtask.Snapshot, error) {
-	item, err := t.child.InterruptChild(ctx)
-	return childSnapshot(item), err
+	err := t.child.Interrupt(ctx)
+	return childSnapshot(t.child.Status()), err
 }
 func (t managedChildTurn) Snapshot() managedtask.Snapshot {
 	select {
