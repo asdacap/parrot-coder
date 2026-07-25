@@ -27,24 +27,40 @@ type diffRow struct {
 	heading string
 }
 
+type inlineDiffRow struct {
+	oldLine int64
+	newLine int64
+	text    string
+	op      gitdiff.LineOp
+	heading string
+}
+
 // formatDiff lays out a unified diff without introducing terminal escape
 // sequences. Styling remains metadata owned by the renderer.
-func formatDiff(raw string, columns int) richRows {
+func formatDiff(raw string, columns int, inline bool) richRows {
 	clean, sourceOmitted := boundedDiffSource(raw)
 	clean = strings.TrimRight(Sanitize(clean), "\n")
 	if strings.TrimSpace(clean) == "" {
 		return richRows{}
 	}
 	files, preamble, err := gitdiff.Parse(strings.NewReader(clean + "\n"))
-	if err != nil || len(files) == 0 || strings.TrimSpace(preamble) != "" || columns < minSideBySideColumns {
+	if err != nil || len(files) == 0 || strings.TrimSpace(preamble) != "" {
+		return boundedUnifiedDiff(clean, columns, sourceOmitted)
+	}
+	for _, file := range files {
+		if file.IsBinary || len(file.TextFragments) == 0 {
+			return boundedUnifiedDiff(clean, columns, sourceOmitted)
+		}
+	}
+	if inline {
+		return renderInlineDiff(files, columns, sourceOmitted)
+	}
+	if columns < minSideBySideColumns {
 		return boundedUnifiedDiff(clean, columns, sourceOmitted)
 	}
 
 	rows := make([]diffRow, 0)
 	for _, file := range files {
-		if file.IsBinary || len(file.TextFragments) == 0 {
-			return boundedUnifiedDiff(clean, columns, sourceOmitted)
-		}
 		rows = append(rows, diffRow{heading: diffFileHeading(file.OldName, file.NewName)})
 		for _, fragment := range file.TextFragments {
 			rows = append(rows, diffRow{heading: fmt.Sprintf("@@ -%d,%d +%d,%d @@", fragment.OldPosition, fragment.OldLines, fragment.NewPosition, fragment.NewLines)})
@@ -129,6 +145,82 @@ func alignedFragmentRows(fragment *gitdiff.TextFragment) []diffRow {
 
 func trimDiffLine(line string) string {
 	return strings.TrimSuffix(line, "\n")
+}
+
+func renderInlineDiff(files []*gitdiff.File, columns int, sourceOmitted bool) richRows {
+	rows := make([]inlineDiffRow, 0)
+	lineDigits := 1
+	for _, file := range files {
+		rows = append(rows, inlineDiffRow{heading: diffFileHeading(file.OldName, file.NewName)})
+		for _, fragment := range file.TextFragments {
+			rows = append(rows, inlineDiffRow{heading: fmt.Sprintf("@@ -%d,%d +%d,%d @@", fragment.OldPosition, fragment.OldLines, fragment.NewPosition, fragment.NewLines)})
+			oldLine, newLine := fragment.OldPosition, fragment.NewPosition
+			for _, line := range fragment.Lines {
+				row := inlineDiffRow{text: trimDiffLine(line.Line), op: line.Op}
+				switch line.Op {
+				case gitdiff.OpContext:
+					row.oldLine, row.newLine = oldLine, newLine
+					oldLine++
+					newLine++
+				case gitdiff.OpDelete:
+					row.oldLine = oldLine
+					oldLine++
+				case gitdiff.OpAdd:
+					row.newLine = newLine
+					newLine++
+				}
+				lineDigits = max(lineDigits, len(strconv.FormatInt(max(row.oldLine, row.newLine), 10)))
+				rows = append(rows, row)
+			}
+		}
+	}
+
+	if columns <= 0 {
+		columns = 1
+	}
+	limit := min(len(rows), maxRenderedDiffRows)
+	result := richRows{rows: make([]string, 0, limit+1), spans: make([][]textSpan, 0, limit+1)}
+	for _, row := range rows[:limit] {
+		if row.heading != "" {
+			result.rows = append(result.rows, truncateWidth(row.heading, columns))
+			result.spans = append(result.spans, []textSpan{{start: 0, end: len(result.rows[len(result.rows)-1]), style: ansiStyle{dim: true}}})
+			continue
+		}
+		oldNumber, newNumber, marker := "", "", " "
+		if row.oldLine != 0 {
+			oldNumber = strconv.FormatInt(row.oldLine, 10)
+		}
+		if row.newLine != 0 {
+			newNumber = strconv.FormatInt(row.newLine, 10)
+		}
+		if row.op == gitdiff.OpDelete {
+			marker = "-"
+		} else if row.op == gitdiff.OpAdd {
+			marker = "+"
+		}
+		prefix := fmt.Sprintf("%*s %*s %s", lineDigits, oldNumber, lineDigits, newNumber, marker)
+		line := truncateWidth(prefix+expandDiffTabs(row.text), columns)
+		result.rows = append(result.rows, line)
+		var style ansiStyle
+		if row.op == gitdiff.OpDelete {
+			style.color = "31"
+		} else if row.op == gitdiff.OpAdd {
+			style.color = "32"
+		}
+		if style == (ansiStyle{}) || len(line) <= len(prefix) {
+			result.spans = append(result.spans, nil)
+		} else {
+			result.spans = append(result.spans, []textSpan{{start: len(prefix), end: len(line), style: style}})
+		}
+	}
+	if omitted := len(rows) - limit; omitted > 0 {
+		result.rows = append(result.rows, truncateWidth(fmt.Sprintf("… %d diff rows omitted", omitted), columns))
+		result.spans = append(result.spans, []textSpan{{start: 0, end: len(result.rows[len(result.rows)-1]), style: ansiStyle{dim: true}}})
+	} else if sourceOmitted {
+		result.rows = append(result.rows, truncateWidth("… additional diff text omitted", columns))
+		result.spans = append(result.spans, nil)
+	}
+	return result
 }
 
 func renderSideBySide(diffRows []diffRow, columns int) richRows {

@@ -116,6 +116,7 @@ providers:
     models:
       large:
         max_tokens: 500
+inline_diff: false
 tool_blacklist:
   - monitor
   - web_fetch
@@ -149,6 +150,9 @@ tool_blacklist:
 	}
 	if got := result.Provenance["providers.openai.models.large.max_tokens"]; got != nestedFile {
 		t.Fatalf("max_tokens provenance = %q", got)
+	}
+	if result.Config.InlineDiff || result.Provenance["inline_diff"] != nestedFile {
+		t.Fatalf("InlineDiff = %v, provenance = %q", result.Config.InlineDiff, result.Provenance["inline_diff"])
 	}
 	if got := result.Config.ToolBlacklist; len(got) != 2 || got[0] != "monitor" || got[1] != "web_fetch" {
 		t.Fatalf("ToolBlacklist = %#v", got)
@@ -209,6 +213,9 @@ func TestLoadSubagentDefaults(t *testing.T) {
 	}
 	if result.Config.Subagents.MaxConcurrent != 8 || result.Config.Subagents.MaxConcurrentPerParent != 4 || result.Config.Subagents.MaxDepth != 4 {
 		t.Fatalf("Subagents = %#v", result.Config.Subagents)
+	}
+	if !result.Config.InlineDiff || result.Provenance["inline_diff"] != PredefinedFileName {
+		t.Fatalf("InlineDiff = %v, provenance = %q", result.Config.InlineDiff, result.Provenance["inline_diff"])
 	}
 	if result.Provenance["subagents.max_concurrent"] != PredefinedFileName || result.Provenance["subagents.max_concurrent_per_parent"] != PredefinedFileName || result.Provenance["subagents.max_depth"] != PredefinedFileName {
 		t.Fatalf("provenance = %#v", result.Provenance)

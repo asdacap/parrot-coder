@@ -1852,23 +1852,40 @@ func (s staticMessageClient) Messages(context.Context, string) (v1.MessageList, 
 	return s.items, nil
 }
 
-func TestEnhancedEditCommitsStatusAndDiffAsBlock(t *testing.T) {
-	var output bytes.Buffer
-	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
-	if err := runtime.shell.renderer.Commit("✓ Done: read · README.md"); err != nil {
-		t.Fatal(err)
-	}
-	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "apply_patch", "input": map[string]any{"path": "file.go"}})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
-	diff := "--- a/file.go\n+++ b/file.go\n@@ -1,1 +1,1 @@\n-before\n+after\n"
-	success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "tool_name": "apply_patch", "status": "success", "result": diff})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
-	got := output.String()
-	if !strings.Contains(got, "README.md\n\n✓ apply_patch ·") {
-		t.Fatalf("edit block was not separated from compact output: %q", got)
-	}
-	if !strings.Contains(got, "1 -before") || !strings.Contains(got, "│ 1 +after") {
-		t.Fatalf("edit block omitted its side-by-side before/after diff: %q", got)
+func TestEnhancedEditCommitsConfiguredDiffAsBlock(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		inline     bool
+		want       []string
+		wantGutter bool
+	}{
+		{name: "inline", inline: true, want: []string{"1   -before", "  1 +after"}},
+		{name: "side by side", want: []string{"1 -before", "│ 1 +after"}, wantGutter: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80, InlineDiff: test.inline})}}
+			if err := runtime.shell.renderer.Commit("✓ Done: read · README.md"); err != nil {
+				t.Fatal(err)
+			}
+			pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "apply_patch", "input": map[string]any{"path": "file.go"}})
+			runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+			diff := "--- a/file.go\n+++ b/file.go\n@@ -1,1 +1,1 @@\n-before\n+after\n"
+			success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "tool_name": "apply_patch", "status": "success", "result": diff})
+			runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+			got := output.String()
+			if !strings.Contains(got, "README.md\n\n✓ apply_patch ·") {
+				t.Fatalf("edit block was not separated from compact output: %q", got)
+			}
+			for _, want := range test.want {
+				if !strings.Contains(got, want) {
+					t.Errorf("edit block omitted %q: %q", want, got)
+				}
+			}
+			if strings.Contains(got, "│") != test.wantGutter {
+				t.Errorf("gutter presence = %v in %q", strings.Contains(got, "│"), got)
+			}
+		})
 	}
 }
 

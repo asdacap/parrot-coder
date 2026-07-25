@@ -26,6 +26,7 @@ type Config struct {
 	Prompt         string              `json:"prompt,omitempty"`
 	DefaultModel   string              `json:"model,omitempty"`
 	DefaultVariant string              `json:"variant,omitempty"`
+	InlineDiff     bool                `json:"inline_diff,omitempty"`
 	Providers      map[string]Provider `json:"providers,omitempty"`
 	MCP            map[string]MCP      `json:"mcp,omitempty"`
 	WebFetch       WebFetch            `json:"web_fetch,omitempty"`
@@ -432,6 +433,9 @@ model: ""
 # Default model variant (the reasoning effort name exposed by the model).
 variant: ""
 
+# Render changed lines inline. Set to false for a side-by-side diff viewer.
+inline_diff: true
+
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
 #   - web_fetch
@@ -572,6 +576,9 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 # model: provider/model
 # Default model variant (the reasoning effort name exposed by the model).
 # variant: high
+
+# Render changed lines inline. Set to false for a side-by-side diff viewer.
+# inline_diff: true
 
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
