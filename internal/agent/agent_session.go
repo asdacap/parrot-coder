@@ -30,12 +30,6 @@ type Active struct {
 	Status    Status
 }
 
-// AgentSessionDto identifies an agent runtime and its direct parent.
-type AgentSessionDto struct {
-	ID       string
-	ParentID string
-}
-
 type drainState struct {
 	done   chan struct{}
 	cancel context.CancelFunc
@@ -49,6 +43,7 @@ type drainState struct {
 // is active for its bound session ID.
 type AgentSession interface {
 	ID() string
+	Name() string
 	Parent() AgentSession
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
@@ -59,6 +54,7 @@ type AgentSession interface {
 }
 
 func (s *agentSession) ID() string           { return s.dto.ID }
+func (s *agentSession) Name() string         { return s.dto.Name }
 func (s *agentSession) Parent() AgentSession { return s.parent }
 
 // Prompt admits input, runs the session to idle, and returns the assistant

@@ -111,6 +111,7 @@ type agentSessionRepository struct {
 	observers      []LifecycleObserver
 	childObservers []ChildCreatedObserver
 	sessions       map[string]*agentSession
+	dtos           map[string]session.AgentSessionDto
 	children       map[string]ChildSession
 }
 
@@ -124,9 +125,10 @@ func newAgentSessionRepository(ctx context.Context, config AgentSessionConfig, o
 	}
 	repository := &agentSessionRepository{
 		config: config, observers: observers,
-		sessions: make(map[string]*agentSession), children: make(map[string]ChildSession),
+		sessions: make(map[string]*agentSession), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession),
 	}
 	for _, item := range items {
+		repository.dtos[item.ID] = item
 		if item.ParentSessionID != "" {
 			repository.children[item.ID] = ChildSession{SessionID: item.ID, ParentSessionID: item.ParentSessionID}
 		}
@@ -183,6 +185,7 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	}
 	child, err := r.config.Sessions.CreateSelected(ctx, session.CreateParams{
 		ParentSessionID: selectedParent.ID,
+		Name:            request.Name,
 		ProjectID:       selectedParent.ProjectID,
 		ProjectRoot:     selectedParent.ProjectRoot,
 		Title:           "Subtask " + request.Name + " [" + request.Agent + "]",
@@ -196,9 +199,10 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 		r.children = make(map[string]ChildSession)
 	}
 	r.children[child.ID] = relation
+	r.dtos[child.ID] = child
 	observers := append([]ChildCreatedObserver(nil), r.childObservers...)
 	r.mu.Unlock()
-	runtime := r.bind(AgentSessionDto{ID: child.ID, ParentID: selectedParent.ID}, parent)
+	runtime := r.bind(child, parent)
 	for _, observer := range observers {
 		if observer != nil {
 			observer.ChildCreated(relation)
@@ -271,6 +275,7 @@ func (r *agentSessionRepository) ForgetChild(sessionID string) error {
 		delete(r.sessions, sessionID)
 	}
 	delete(r.children, sessionID)
+	delete(r.dtos, sessionID)
 	return nil
 }
 
@@ -285,6 +290,7 @@ func (r *agentSessionRepository) DiscardChild(ctx context.Context, sessionID str
 	r.mu.Lock()
 	delete(r.sessions, sessionID)
 	delete(r.children, sessionID)
+	delete(r.dtos, sessionID)
 	r.mu.Unlock()
 	return nil
 }
@@ -296,25 +302,37 @@ func (r *agentSessionRepository) Get(sessionID string) AgentSession {
 		return existing
 	}
 	relation, child := r.children[sessionID]
+	dto, known := r.dtos[sessionID]
 	r.mu.Unlock()
 
-	var parent AgentSession
-	parentID := ""
-	if child {
-		parentID = relation.ParentSessionID
-		parent = r.Get(parentID)
+	if !known && r.config.Sessions != nil {
+		if loaded, err := r.config.Sessions.Get(context.Background(), sessionID); err == nil {
+			dto, known = loaded, true
+		}
 	}
-	return r.bind(AgentSessionDto{ID: sessionID, ParentID: parentID}, parent)
+	if !known {
+		dto.ID = sessionID
+	}
+	var parent AgentSession
+	if child {
+		dto.ParentSessionID = relation.ParentSessionID
+		parent = r.Get(relation.ParentSessionID)
+	}
+	return r.bind(dto, parent)
 }
 
-func (r *agentSessionRepository) bind(dto AgentSessionDto, parent AgentSession) AgentSession {
+func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentSession) AgentSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.dtos == nil {
+		r.dtos = make(map[string]session.AgentSessionDto)
+	}
 	if existing := r.sessions[dto.ID]; existing != nil {
 		return existing
 	}
 	created := &agentSession{dto: dto, parent: parent, config: r.config, observers: r.observers}
 	r.sessions[dto.ID] = created
+	r.dtos[dto.ID] = dto
 	return created
 }
 

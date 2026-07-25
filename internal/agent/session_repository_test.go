@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
 func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
@@ -94,7 +96,7 @@ func TestAgentSessionConcurrentResumeJoinsLifecycle(t *testing.T) {
 	var mu sync.Mutex
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	session := &agentSession{dto: AgentSessionDto{ID: "same"}, execute: func(context.Context) error {
+	session := &agentSession{dto: session.AgentSessionDto{ID: "same"}, execute: func(context.Context) error {
 		mu.Lock()
 		calls++
 		if calls == 1 {

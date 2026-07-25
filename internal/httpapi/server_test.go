@@ -256,6 +256,13 @@ func TestSelectedCreationIsValidatedAndAtomic(t *testing.T) {
 	}
 }
 
+func TestSessionDTOIncludesName(t *testing.T) {
+	item := sessionDTO(session.AgentSessionDto{ID: "ses_child", Name: "inspect", Title: "Subtask inspect [build]"})
+	if item.Name != "inspect" || item.Title != "Subtask inspect [build]" {
+		t.Fatalf("session DTO = %#v", item)
+	}
+}
+
 func TestChildCreationMapsAndValidatesParent(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
@@ -329,6 +336,7 @@ type testAgentSession struct {
 }
 
 func (s testAgentSession) ID() string                 { return s.id }
+func (s testAgentSession) Name() string               { return "" }
 func (s testAgentSession) Parent() agent.AgentSession { return nil }
 func (s testAgentSession) Prompt(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")

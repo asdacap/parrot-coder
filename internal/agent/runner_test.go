@@ -431,14 +431,14 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected.ParentSessionID != parent.ID || selected.Agent != BuildID || selected.Provider != "fake" || selected.Model != "model" || selected.Title != "Subtask inspect [build]" {
+	if selected.ParentSessionID != parent.ID || selected.Name != "inspect" || selected.Agent != BuildID || selected.Provider != "fake" || selected.Model != "model" || selected.Title != "Subtask inspect [build]" {
 		t.Fatalf("child = %#v", selected)
 	}
 	if bound, ok := h.agentSessions.Lookup(selected.ID); !ok || bound != child {
 		t.Fatal("created child was not bound in the repository")
 	}
-	if child.Parent() != parentRuntime {
-		t.Fatal("created child does not reference its parent runtime")
+	if child.Name() != "inspect" || child.Parent() != parentRuntime {
+		t.Fatalf("created child name/parent = %q, %#v", child.Name(), child.Parent())
 	}
 	wantRelation := ChildSession{SessionID: selected.ID, ParentSessionID: parent.ID}
 	if observed != wantRelation {
@@ -488,10 +488,11 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 		t.Fatal(err)
 	}
 	selection := session.Selection{Agent: BuildID, Provider: "fake", Model: "model"}
-	createChild := func(parentID, title string) session.UserSessionDto {
+	createChild := func(parentID, title string) session.AgentSessionDto {
 		t.Helper()
 		child, err := h.sessions.CreateSelected(ctx, session.CreateParams{
 			ParentSessionID: parentID,
+			Name:            title,
 			ProjectID:       parent.ProjectID,
 			ProjectRoot:     parent.ProjectRoot,
 			Title:           title,
@@ -534,6 +535,9 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 		t.Fatalf("HasChildSessions = parent:%t child:%t nested:%t", restarted.HasChildSessions(parent.ID), restarted.HasChildSessions(childA.ID), restarted.HasChildSessions(nested.ID))
 	}
 	nestedRuntime := restarted.Get(nested.ID)
+	if nestedRuntime.Name() != "nested" || restarted.Get(childA.ID).Name() != "child a" {
+		t.Fatalf("restored names = nested:%q child:%q", nestedRuntime.Name(), restarted.Get(childA.ID).Name())
+	}
 	childRuntime := nestedRuntime.Parent()
 	if childRuntime == nil || childRuntime.ID() != childA.ID || childRuntime != restarted.Get(childA.ID) {
 		t.Fatalf("restored nested parent = %#v, want canonical runtime %q", childRuntime, childA.ID)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/atomicfile"
@@ -36,6 +37,7 @@ var ErrForeignHost = errors.New("store: session belongs to another host")
 type Meta struct {
 	Version         int    `json:"version"`
 	ID              string `json:"id"`
+	Name            string `json:"name,omitempty"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
 	ProjectID       string `json:"project_id"`
 	ProjectRoot     string `json:"project_root"`
@@ -95,7 +97,22 @@ func ReadMeta(state, sessionID string) (Meta, error) {
 	if meta.Version != MetaVersion {
 		return Meta{}, fmt.Errorf("store: session %s index version %d is unsupported", sessionID, meta.Version)
 	}
+	if meta.Name == "" {
+		meta.Name = legacySessionName(meta.Title, meta.Agent)
+	}
 	return meta, nil
+}
+
+func legacySessionName(title, agent string) string {
+	prefix, suffix := "Subtask ", " ["+agent+"]"
+	if agent == "" || !strings.HasPrefix(title, prefix) || !strings.HasSuffix(title, suffix) {
+		return ""
+	}
+	name := strings.TrimSuffix(strings.TrimPrefix(title, prefix), suffix)
+	if name == "" {
+		return ""
+	}
+	return name
 }
 
 // ListMeta reads every published session index entry, newest first.

@@ -39,6 +39,7 @@ type RuntimeSession struct {
 type Session struct {
 	ID              string    `json:"id"`
 	ParentSessionID string    `json:"parent_session_id,omitempty"`
+	Name            string    `json:"name,omitempty"`
 	ProjectID       string    `json:"project_id,omitempty"`
 	Title           string    `json:"title"`
 	Agent           string    `json:"agent,omitempty"`

@@ -158,6 +158,38 @@ func TestOpenSessionOwnedRejectsForeignHost(t *testing.T) {
 	owned.Close()
 }
 
+func TestMetaNameRemainsOptionalAtVersionOne(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	if err := CreateSessionDir(state, "ses_old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(MetaPath(state, "ses_old"), []byte(`{"version":1,"id":"ses_old","title":"Subtask inspect [build]","agent":"build"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old, err := ReadMeta(state, "ses_old")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if old.Version != MetaVersion || old.Name != "inspect" {
+		t.Fatalf("legacy meta = %#v", old)
+	}
+
+	if err := CreateSessionDir(state, "ses_new"); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteMeta(state, Meta{ID: "ses_new", Name: "review"}); err != nil {
+		t.Fatal(err)
+	}
+	current, err := ReadMeta(state, "ses_new")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Version != 1 || current.Name != "review" {
+		t.Fatalf("current meta = %#v", current)
+	}
+}
+
 func TestListMetaOrdersNewestFirstAndSkipsUnreadable(t *testing.T) {
 	t.Parallel()
 	state := t.TempDir()

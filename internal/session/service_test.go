@@ -17,7 +17,7 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	state := t.TempDir()
 	db := store.NewRegistry(state, "host-test")
 	service := session.NewService(db, event.NewRepository(db))
-	created, err := service.Create(ctx, session.CreateParams{Title: "durable"})
+	created, err := service.Create(ctx, session.CreateParams{Name: "inspect", Title: "durable"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,11 +33,11 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Title != "durable" {
-		t.Fatalf("title = %q", got.Title)
+	if got.Title != "durable" || got.Name != "inspect" {
+		t.Fatalf("session = %#v", got)
 	}
 	listed, err := service.List(ctx)
-	if err != nil || len(listed) != 1 {
+	if err != nil || len(listed) != 1 || listed[0].Name != "inspect" {
 		t.Fatalf("List = %#v, %v", listed, err)
 	}
 	if err := service.Delete(ctx, created.ID); err != nil {
