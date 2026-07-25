@@ -1248,6 +1248,8 @@ type appSubagentExecutor struct {
 	events           *event.Broker
 }
 
+var _ subagent.TurnAdmitter = (*appSubagentExecutor)(nil)
+
 type appChildTurnPermit struct {
 	user   agent.ChildTurnPermit
 	parent agent.ChildTurnPermit
@@ -1258,11 +1260,12 @@ func (p appChildTurnPermit) Release() {
 	p.user.Release()
 }
 
+// TryAdmitTurn implements subagent.TurnAdmitter for Manager spawn and follow-up admission.
 func (e *appSubagentExecutor) TryAdmitTurn(parentSessionID string) (subagent.TurnPermit, bool, error) {
 	if e.userSession == nil {
 		return nil, false, errors.New("app: subagent user session is unavailable")
 	}
-	userPermit, ok := e.userSession.TryAcquireChildTurn()
+	userPermit, ok := e.userSession.TryAcquireAgentTurn()
 	if !ok {
 		return nil, false, nil
 	}

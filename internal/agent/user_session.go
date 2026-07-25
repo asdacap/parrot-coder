@@ -29,7 +29,7 @@ type ChildCreatedObserver interface {
 // UserSession is the runtime aggregate for a user. It owns the agent runtimes
 // participating in that user's session hierarchy.
 type UserSession interface {
-	TryAcquireChildTurn() (ChildTurnPermit, bool)
+	TryAcquireAgentTurn() (ChildTurnPermit, bool)
 	CreateChild(context.Context, AgentSession, ChildSessionRequest) (AgentSession, error)
 	AddChildCreatedObserver(ChildCreatedObserver)
 	ChildRelation(sessionID string) (string, bool)
@@ -71,7 +71,7 @@ func NewUserSession(ctx context.Context, config UserSessionConfig, observers ...
 	return &userSession{config: config, repository: repository, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}, nil
 }
 
-func (s *userSession) TryAcquireChildTurn() (ChildTurnPermit, bool) {
+func (s *userSession) TryAcquireAgentTurn() (ChildTurnPermit, bool) {
 	return s.childTurns.tryAcquire()
 }
 
