@@ -621,10 +621,10 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 			t.Fatalf("ResolveChild(%q) = %#v, %v", identifier, resolved, err)
 		}
 	}
-	if err := nested.Forget(); err != nil {
+	if err := nested.(*agentSession).forget(); err != nil {
 		t.Fatal(err)
 	}
-	if err := child.Forget(); err != nil {
+	if err := child.(*agentSession).forget(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := parent.ResolveChild(child.ID()); !errors.Is(err, ErrChildNotFound) {
@@ -949,7 +949,7 @@ func TestForgetAndRemoveDoNotDeadlock(t *testing.T) {
 		}
 		start := make(chan struct{})
 		results := make(chan error, 2)
-		go func() { <-start; results <- child.Forget() }()
+		go func() { <-start; results <- child.(*agentSession).forget() }()
 		go func() { <-start; results <- h.agentSessions.Remove(child.ID()) }()
 		close(start)
 		for range 2 {

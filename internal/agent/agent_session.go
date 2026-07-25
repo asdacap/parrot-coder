@@ -53,7 +53,6 @@ type AgentSession interface {
 	Status() Status
 	Observe() (ChildTurnObserver, error)
 	ResolveChild(string) (AgentSession, error)
-	Forget() error
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
 	Wake()
@@ -110,13 +109,6 @@ func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
 		return nil, ErrChildNotFound
 	}
 	return s.user.resolveChild(s.ID(), identifier)
-}
-
-func (s *agentSession) Forget() error {
-	if s.user == nil || s.parent == nil {
-		return ErrChildNotFound
-	}
-	return s.forget()
 }
 
 // Prompt admits input, runs the session to idle, and returns the assistant
