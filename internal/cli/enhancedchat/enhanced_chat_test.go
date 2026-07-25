@@ -1012,8 +1012,8 @@ func TestEnhancedReasoningSummariesFlushBeforeFirstAnswerRow(t *testing.T) {
 	}
 
 	got := output.String()
-	first := strings.Index(got, "Inspecting code")
-	second := strings.Index(got, "Running tests")
+	first := strings.Index(got, "✦ Inspecting code")
+	second := strings.Index(got, "✦ Running tests")
 	answerRow := strings.Index(got, "A sufficiently")
 	if first < 0 || second < first || answerRow < second {
 		t.Fatalf("flush order first=%d second=%d answer=%d; output=%q", first, second, answerRow, got)

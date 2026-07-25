@@ -378,8 +378,9 @@ func (r *enhancedChatRuntime) markActivityMessage(activityID, messageID string) 
 }
 
 // finishReasoningSummaryPart commits a provider-finalized summary immediately.
-// Another part merely receiving a delta is not enough to produce a checkmark;
-// explicit completion (or the later answer/assistant boundary fallback) is.
+// Another part merely receiving a delta is not enough to produce a finalized
+// marker; explicit completion (or the later answer/assistant boundary fallback)
+// is.
 func (r *enhancedChatRuntime) finishReasoningSummaryPart(messageID, partID string) error {
 	if messageID == "" {
 		messageID = "assistant"
