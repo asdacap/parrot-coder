@@ -380,8 +380,12 @@ func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 			relation = ChildSession{SessionID: dto.ID, ParentSessionID: dto.ParentSessionID}
 			child = true
 			r.mu.Lock()
-			if r.dtos == nil { r.dtos = make(map[string]session.AgentSessionDto) }
-			if r.children == nil { r.children = make(map[string]ChildSession) }
+			if r.dtos == nil {
+				r.dtos = make(map[string]session.AgentSessionDto)
+			}
+			if r.children == nil {
+				r.children = make(map[string]ChildSession)
+			}
 			r.dtos[dto.ID] = dto
 			r.children[dto.ID] = relation
 			r.mu.Unlock()
@@ -461,7 +465,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		return nil, err
 	}
 	candidate.toolSnapshot = snapshot
-	candidate.toolExecutor = tool.Executor{Snapshot: snapshot, Permissions: r.config.ToolPermissions, ErrorAdvisor: r.config.ToolErrorAdvisor, MaxInputBytes: r.config.ToolMaxInputBytes, MaxOutputBytes: r.config.ToolMaxOutputBytes}
+	candidate.toolExecutor = tool.Executor{Snapshot: snapshot, Permissions: r.config.ToolPermissionAuthorizer, ErrorAdvisor: r.config.ToolErrorAdvisor, MaxInputBytes: r.config.ToolMaxInputBytes, MaxOutputBytes: r.config.ToolMaxOutputBytes}
 	return candidate, nil
 }
 

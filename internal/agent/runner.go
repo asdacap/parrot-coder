@@ -113,27 +113,27 @@ type ProfileResolver interface {
 }
 
 type AgentSessionConfig struct {
-	Sessions           SessionRuntime
-	Contexts           ContextRuntime
-	StateDirectories   UserSessionStateDirectories
-	Agents             *Registry
-	Profiles           ProfileResolver
-	Providers          ProviderResolver
-	ToolProviders      tool.Providers
-	ToolPermissions    tool.Authorizer
-	ToolErrorAdvisor   tool.ErrorAdvisor
-	ToolMaxInputBytes  int
-	ToolMaxOutputBytes int
-	Workspace          *workspace.Workspace
-	Outputs            *tool.OutputStore
-	Processes          *process.Runner
-	TaskIDFor          func(string) string
-	Live               LivePublisher
-	Compactor          Compactor
-	Goals              *session.GoalService
-	Status             StatusObserver
-	MaxConcurrentTools int
-	CleanupTimeout     time.Duration
+	Sessions                 SessionRuntime
+	Contexts                 ContextRuntime
+	StateDirectories         UserSessionStateDirectories
+	Agents                   *Registry
+	Profiles                 ProfileResolver
+	Providers                ProviderResolver
+	ToolProviders            tool.Providers
+	ToolPermissionAuthorizer tool.Authorizer
+	ToolErrorAdvisor         tool.ErrorAdvisor
+	ToolMaxInputBytes        int
+	ToolMaxOutputBytes       int
+	Workspace                *workspace.Workspace
+	Outputs                  *tool.OutputStore
+	Processes                *process.Runner
+	TaskIDFor                func(string) string
+	Live                     LivePublisher
+	Compactor                Compactor
+	Goals                    *session.GoalService
+	Status                   StatusObserver
+	MaxConcurrentTools       int
+	CleanupTimeout           time.Duration
 	// ToolPanicLogger, when set, receives diagnostics for a tool call whose
 	// Plan or Execute panicked and was recovered into a failure. It is purely
 	// an observability seam: the panic is always reported to the model as a

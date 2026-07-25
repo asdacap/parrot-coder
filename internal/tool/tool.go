@@ -416,6 +416,8 @@ func definitions(tools map[string]Tool) []Definition {
 	return out
 }
 
+// Authorizer resolves the permission request produced while planning a tool
+// call. The executor uses it before invoking the tool's Execute method.
 type Authorizer interface {
 	Authorize(context.Context, permission.Request) (permission.Decision, error)
 }

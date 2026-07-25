@@ -494,7 +494,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	userSession, err := agent.NewUserSession(ctx, agent.UserSessionConfig{
 		AgentSession: agent.AgentSessionConfig{
 			Sessions: sessions, Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
-			ToolProviders: toolProviders, ToolPermissions: permissions, ToolErrorAdvisor: pathErrorAdvisor,
+			ToolProviders: toolProviders, ToolPermissionAuthorizer: permissions, ToolErrorAdvisor: pathErrorAdvisor,
 			Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
 				return live.TaskIDFor(sessionID, managedtask.MainTaskID)
 			}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
