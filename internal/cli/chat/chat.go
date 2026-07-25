@@ -909,7 +909,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					streamed.WriteString(value.Delta)
 					if options.renderer != nil {
 						subagentTracker.liveID = ""
-						if err := options.renderer.UpdateMessage("● ", streamed.String()); err != nil {
+						if err := options.renderer.UpdateMessage(chatview.AssistantMessageIcon+" ", streamed.String()); err != nil {
 							return streamResult{err: err}
 						}
 					}
@@ -928,7 +928,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				// instead of buffering it into the assistant stream.
 				label := "status: " + value.Kind
 				if (value.Kind == "provider_retry" || value.Kind == "status_prompt") && value.Message != "" {
-					label = chatview.EventLine(0, "", "↻ "+value.Message)
+					label = chatview.EventLine(0, "", chatview.StatusNoticeIcon+" "+value.Message)
 				}
 				if value.Kind == "router_metadata" && value.Message != "" {
 					label = value.Message
@@ -1030,18 +1030,18 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 	}
 	if options.chat {
 		if options.renderer != nil {
-			if err := options.renderer.CommitMessage("● ", final, false); err != nil {
+			if err := options.renderer.CommitMessage(chatview.AssistantMessageIcon+" ", final, false); err != nil {
 				return streamResult{err: err}
 			}
 		} else if final = strings.TrimRight(final, "\r\n"); final != "" {
 			plain := terminal.NewLiveRenderer(options.stdout, terminal.RendererConfig{Columns: terminal.Columns(options.stdout)})
-			if err := plain.CommitMessage("● ", final, false); err != nil {
+			if err := plain.CommitMessage(chatview.AssistantMessageIcon+" ", final, false); err != nil {
 				return streamResult{err: err}
 			}
 		}
 	}
 	if finalError != "" {
-		line := "✗ Error: " + finalError
+		line := chatview.FailureIcon + " Error: " + finalError
 		if options.renderer != nil {
 			_ = options.renderer.Commit(line)
 		} else {
@@ -1665,10 +1665,10 @@ func (s *chatShell) createSession(title string, forceNew bool) (v1.Session, erro
 func (s *chatShell) commitUser(text string) error {
 	text = strings.TrimRight(text, "\r\n")
 	if s.renderer != nil {
-		return s.renderer.CommitUserMessage("$ ", text)
+		return s.renderer.CommitUserMessage(chatview.UserPromptIcon+" ", text)
 	}
 	if !s.inputEchoed || !s.outputTTY {
-		fmt.Fprintln(s.stdout, "$ "+strings.ReplaceAll(text, "\n", "\n  "))
+		fmt.Fprintln(s.stdout, chatview.UserPromptIcon+" "+strings.ReplaceAll(text, "\n", "\n  "))
 	}
 	return nil
 }
@@ -1680,7 +1680,7 @@ func (s *chatShell) readPrompt(initial string) (string, error) {
 		return s.editor.ReadInitial(s.ctx, initial)
 	}
 	if s.inputTTY {
-		fmt.Fprint(s.stdout, "$ ")
+		fmt.Fprint(s.stdout, chatview.UserPromptIcon+" ")
 	}
 	s.inputEchoed = s.inputEcho
 	line, err := s.reader.ReadString('\n')
@@ -1691,7 +1691,7 @@ func (s *chatShell) readPrompt(initial string) (string, error) {
 }
 
 func (s *chatShell) promptLabel() string {
-	return "$ "
+	return chatview.UserPromptIcon + " "
 }
 
 func (s *chatShell) streamOptions(resume bool) streamOptions {
@@ -1709,7 +1709,7 @@ func (s *chatShell) commit(text string) {
 }
 
 func (s *chatShell) commitError(text string) {
-	line := "✗ Error: " + terminal.Sanitize(text)
+	line := chatview.FailureIcon + " Error: " + terminal.Sanitize(text)
 	if s.renderer != nil {
 		_ = s.renderer.Commit(line)
 		return

@@ -143,11 +143,11 @@ func formatModelineActivity(item enhancedActivityItem, now time.Time) string {
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
+	frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
 	if item.status == "thinking" {
-		return fmt.Sprintf("%s Thinking…%s · %.1fs", spinnerFrames[frame], formatActivityUsage(item), elapsed.Seconds())
+		return fmt.Sprintf("%s Thinking…%s · %.1fs", chatview.SpinnerFrames[frame], formatActivityUsage(item), elapsed.Seconds())
 	}
-	return fmt.Sprintf("%s Working: %s%s · %.1fs", spinnerFrames[frame], item.label, formatActivityUsage(item), elapsed.Seconds())
+	return fmt.Sprintf("%s Working: %s%s · %.1fs", chatview.SpinnerFrames[frame], item.label, formatActivityUsage(item), elapsed.Seconds())
 }
 
 func (r *enhancedChatRuntime) isModelineActivity(item enhancedActivityItem) bool {
@@ -165,8 +165,8 @@ func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns i
 	if elapsed < 0 {
 		elapsed = 0
 	}
-	frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-	header := spinnerFrames[frame] + " Thinking:"
+	frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
+	header := chatview.SpinnerFrames[frame] + " Thinking:"
 
 	lines := strings.Split(item.label, "\n")
 	nonEmpty := make([]string, 0, 3)
@@ -198,8 +198,8 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 			if elapsed < 0 {
 				elapsed = 0
 			}
-			frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-			return strings.Replace(item.rendered, spinnerFrames[0], spinnerFrames[frame], 1)
+			frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
+			return strings.Replace(item.rendered, chatview.SpinnerFrames[0], chatview.SpinnerFrames[frame], 1)
 		}
 		return item.rendered
 	}
@@ -297,13 +297,13 @@ func formatCost(cost float64) string {
 func activityTitle(status string, elapsed time.Duration) string {
 	switch status {
 	case "thinking":
-		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-		return spinnerFrames[frame] + " Thought"
+		frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
+		return chatview.SpinnerFrames[frame] + " Thought"
 	case "pending":
 		return chatview.PendingIcon + " Queued tool"
 	case "running":
-		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
-		return spinnerFrames[frame] + " Working"
+		frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
+		return chatview.SpinnerFrames[frame] + " Working"
 	case "success":
 		return chatview.SuccessIcon
 	case "failure":

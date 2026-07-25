@@ -315,15 +315,15 @@ func renderTodoActivityItems(items []todoActivityItem) string {
 func todoActivityMarker(status string) string {
 	switch status {
 	case "pending":
-		return "○"
+		return chatview.TodoPendingIcon
 	case "in_progress":
-		return "◐"
+		return chatview.TodoInProgressIcon
 	case "completed":
-		return "✓"
+		return chatview.TodoCompletedIcon
 	case "cancelled":
-		return "■"
+		return chatview.TodoCancelledIcon
 	default:
-		return "•"
+		return chatview.TodoUnknownStatusIcon
 	}
 }
 

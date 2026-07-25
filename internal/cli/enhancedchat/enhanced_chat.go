@@ -17,7 +17,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
-var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 var errInvalidModalAnswer = errors.New("invalid modal answer")
 
 const (
@@ -492,7 +491,7 @@ func (s *chatShell) runEnhanced(first string) int {
 		case <-ticker.C:
 			ticks++
 			if runtime.busy {
-				runtime.spinner = (runtime.spinner + 1) % len(spinnerFrames)
+				runtime.spinner = (runtime.spinner + 1) % len(chatview.SpinnerFrames)
 			}
 			if runtime.busy && ticks%5 == 0 {
 				runtime.detectModal()
@@ -539,7 +538,7 @@ func (r *enhancedChatRuntime) render() error {
 	message := r.streamed.String()
 	var stream *terminal.StreamMessage
 	if message != "" && r.streamMessageID != "" {
-		stream = &terminal.StreamMessage{ID: r.streamMessageID, Prefix: "● ", Text: message}
+		stream = &terminal.StreamMessage{ID: r.streamMessageID, Prefix: chatview.AssistantMessageIcon + " ", Text: message}
 	}
 	prompt := r.state.PromptState()
 	if r.modal != nil {
@@ -570,7 +569,7 @@ func (r *enhancedChatRuntime) render() error {
 		TaskID: managedtask.MainTaskID, MainStatus: true,
 		Stream: stream, PromptContext: r.modalContext(), Pending: pending,
 		InputLeft: r.inputModeLabel(), InputCenter: r.modelineActivity(now), InputRight: right,
-		Prompt: prompt, Busy: busy, Spinner: spinnerFrames[r.spinner],
+		Prompt: prompt, Busy: busy, Spinner: chatview.SpinnerFrames[r.spinner],
 		ShowDivider: r.modal != nil || message != "" || len(r.activity) > 0 || !r.borderCommitted,
 	})
 	return r.shell.renderer.Frames(frames)

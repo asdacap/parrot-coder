@@ -283,7 +283,7 @@ func (s *chatShell) commitUser(value string) error {
 		return s.config.CommitUser(value)
 	}
 	if s.renderer != nil {
-		return s.renderer.CommitUserMessage("$ ", strings.TrimRight(value, "\r\n"))
+		return s.renderer.CommitUserMessage(chatview.UserPromptIcon+" ", strings.TrimRight(value, "\r\n"))
 	}
 	return nil
 }
@@ -293,12 +293,12 @@ func (s *chatShell) commitError(value string) {
 		return
 	}
 	if s.renderer != nil {
-		_ = s.renderer.Commit("✗ Error: " + terminal.Sanitize(value))
+		_ = s.renderer.Commit(chatview.FailureIcon + " Error: " + terminal.Sanitize(value))
 	}
 }
 func (s *chatShell) commitNotice(value string) {
 	if s.renderer != nil {
-		_ = s.renderer.Commit(chatview.EventLine(0, "", "↻ "+terminal.Sanitize(value)))
+		_ = s.renderer.Commit(chatview.EventLine(0, "", chatview.StatusNoticeIcon+" "+terminal.Sanitize(value)))
 	}
 }
 func (s *chatShell) slash(name, arguments string) (bool, int) {
