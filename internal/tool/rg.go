@@ -71,7 +71,7 @@ func (*RgTool) Presentation() Presentation {
 }
 
 func (*RgTool) Description() string {
-	return "Search text files with regular expressions. Relative paths resolve within the workspace; include optionally filters files with a glob. Uses the rg CLI when available and falls back to an internal Go RE2 search."
+	return "Search text files for a fixed string. Relative paths resolve within the workspace; include optionally filters files with a glob. Uses the rg CLI when available and falls back to an internal Go search."
 }
 func (*RgTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input rgInput
@@ -192,7 +192,7 @@ func (t *RgTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext
 	var rx *regexp.Regexp
 	var err error
 	if t.command == nil || !t.command.Available() {
-		rx, err = regexp.Compile(input.Pattern)
+		rx, err = regexp.Compile(regexp.QuoteMeta(input.Pattern))
 		if err != nil {
 			return Plan{}, err
 		}
@@ -369,7 +369,7 @@ func (c cliRgCommand) Search(ctx context.Context, workspaceRoot string, files []
 			end++
 		}
 		args := []string{
-			"--no-config", "--line-number", "--no-heading", "--with-filename", "--color=never", "--no-messages", "--threads=1",
+			"--no-config", "--fixed-strings", "--line-number", "--no-heading", "--with-filename", "--color=never", "--no-messages", "--threads=1",
 			"--max-count", strconv.Itoa(config.MaxMatches - matches),
 			"--max-columns", strconv.FormatInt(config.MaxLineBytes, 10), "--max-columns-preview",
 			"--", input.Pattern,

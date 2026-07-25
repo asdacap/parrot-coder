@@ -723,7 +723,7 @@ func TestRgPrefersAvailableCommandAndFallsBackInternally(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(w.Root(), "file.txt"), []byte("internal match\n"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(w.Root(), "file.txt"), []byte("internal match[\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	call := CallContext{Workspace: w}
@@ -735,13 +735,13 @@ func TestRgPrefersAvailableCommandAndFallsBackInternally(t *testing.T) {
 		called    bool
 	}{
 		{name: "available command", available: true, want: "cli\n", called: true},
-		{name: "internal fallback", want: "file.txt:1:internal match\n"},
+		{name: "internal fallback", want: "file.txt:1:internal match[\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			command := &fakeRgCommand{available: test.available}
 			tool := NewRgTool(RgConfig{})
 			tool.command = command
-			plan, err := tool.Plan(context.Background(), json.RawMessage(`{"pattern":"match"}`), call)
+			plan, err := tool.Plan(context.Background(), json.RawMessage(`{"pattern":"match["}`), call)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -764,10 +764,10 @@ func TestCliRgCommandSearch(t *testing.T) {
 	root := t.TempDir()
 	first := filepath.Join(root, "a.txt")
 	second := filepath.Join(root, "b.txt")
-	if err := os.WriteFile(first, []byte("match one\nignore\n"), 0o600); err != nil {
+	if err := os.WriteFile(first, []byte("match[ one\nignore\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(second, []byte("match two and a long suffix\n"), 0o600); err != nil {
+	if err := os.WriteFile(second, []byte("match[ two and a long suffix\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	config := filepath.Join(t.TempDir(), "ripgrep.conf")
@@ -776,11 +776,11 @@ func TestCliRgCommandSearch(t *testing.T) {
 	}
 	t.Setenv("RIPGREP_CONFIG_PATH", config)
 
-	result, err := (cliRgCommand{path: path}).Search(context.Background(), root, []string{first, second}, rgInput{Pattern: "match"}, RgConfig{MaxMatches: 10, MaxLineBytes: 8})
+	result, err := (cliRgCommand{path: path}).Search(context.Background(), root, []string{first, second}, rgInput{Pattern: "match["}, RgConfig{MaxMatches: 10, MaxLineBytes: 8})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != "a.txt:1:match on [... omitted end of long line]\nb.txt:1:match tw [... omitted end of long line]\n" || result.Metadata["matches"] != 2 || result.Metadata["truncated"] != true {
+	if result.Text != "a.txt:1:match[ o [... omitted end of long line]\nb.txt:1:match[ t [... omitted end of long line]\n" || result.Metadata["matches"] != 2 || result.Metadata["truncated"] != true {
 		t.Fatalf("result = %#v", result)
 	}
 }
