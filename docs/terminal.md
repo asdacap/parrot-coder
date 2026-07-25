@@ -87,7 +87,7 @@ $ User message
 ```
 
 The `$` marker is the user accent, and editable user input is green. User
-messages use a dark-blue background with pale-yellow text. The `-` marker is the
+messages use a dark-blue background with green text. The `-` marker is the
 assistant accent, and assistant messages use a dark-green background with
 pale-cyan text. Neither message has a leading divider. The divider after an
 assistant response is the input area's top border.

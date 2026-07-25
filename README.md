@@ -324,8 +324,8 @@ replies; without it a prompt is denied. `serve` refuses non-loopback addresses b
 authentication layer.
 
 On a real terminal, chat uses a bounded inline editor without an alternate
-screen. User messages start with `$` and use a dark-blue background with pale
-yellow text; assistant messages start with `-` and use a dark-green background
+screen. User messages start with `$` and use a dark-blue background with green
+text; assistant messages start with `-` and use a dark-green background
 with pale-cyan text. Editable user input is green. The input area has a separate
 top border. The editor remains active while the agent works:
 Enter steers the active turn at the next safe provider-turn boundary, safe slash

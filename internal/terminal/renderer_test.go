@@ -287,7 +287,7 @@ func TestLiveRendererStylesUserMessageAfterEmptyLine(t *testing.T) {
 	if err := renderer.CommitUserMessage("$ ", "request"); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := output.String(), "\n\x1b[38;5;230m$ reques\x1b[0m\n\x1b[38;5;230m  t\x1b[0m\n"; got != want {
+	if got, want := output.String(), "\n\x1b[32m$ reques\x1b[0m\n\x1b[32m  t\x1b[0m\n"; got != want {
 		t.Fatalf("colored user message = %q; want %q", got, want)
 	}
 }

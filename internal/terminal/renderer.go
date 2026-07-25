@@ -1656,7 +1656,7 @@ func (r *LiveRenderer) decorateRichOnSurface(row string, style TextStyle, spans 
 	case textStyleGreen:
 		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: "32"}))
 	case textStyleUserMessage:
-		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: "38;5;230"}))
+		return ansiStyled(row, mergeANSIStyle(base, ansiStyle{color: "32"}))
 	case textStyleAssistantMessage:
 		base.color = "38;5;195"
 	}
