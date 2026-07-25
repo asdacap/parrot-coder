@@ -722,7 +722,7 @@ func EventLine(indent int, agent, event string) string {
 	}
 	icon, event := splitEventIcon(event)
 	if icon == "" {
-		icon = "•"
+		icon = ActivityIcon
 	}
 	indentation := strings.Repeat("  ", indent)
 	agent = strings.TrimSpace(agent)
@@ -753,7 +753,7 @@ func prefixTaskText(prefix, text string) string {
 
 func splitEventIcon(event string) (string, string) {
 	trimmed := strings.TrimLeft(event, " ")
-	icons := append([]string{"•", "○", "◌", "◐", "✓", "✗", "■", "↻"}, SpinnerFrames...)
+	icons := append([]string{ActivityIcon, PendingIcon, "◌", "◐", SuccessIcon, FailureIcon, InterruptedIcon, "↻", FinalizedReasoningSummaryIcon, CompletedReasoningIcon}, SpinnerFrames...)
 	for _, icon := range icons {
 		if rest, ok := strings.CutPrefix(trimmed, icon+" "); ok {
 			return icon, rest
@@ -1128,7 +1128,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			}
 			icon := SpinnerFrames[0]
 			if delta.Done {
-				icon = "✓"
+				icon = FinalizedReasoningSummaryIcon
 			}
 			line := t.eventLine(node, icon+" Thought: "+SingleLineReasoningSummary(state.reasoning.String()))
 			return []TaskReport{{ID: key + ":reasoning", Line: line, Terminal: delta.Done, EmitPlain: delta.Done, Style: terminal.TextStyleMuted}}, nil
@@ -1190,7 +1190,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 				if state.reasoningSummary {
 					label = "Thought: "
 				}
-				reasoning.Line = t.eventLine(node, "✓ "+label+SingleLineReasoningSummary(state.reasoning.String()))
+				reasoning.Line = t.eventLine(node, CompletedReasoningIcon+" "+label+SingleLineReasoningSummary(state.reasoning.String()))
 				reasoning.EmitPlain = true
 				reasoning.Skip = false
 			}

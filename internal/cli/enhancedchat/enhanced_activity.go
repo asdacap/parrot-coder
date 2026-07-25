@@ -300,16 +300,16 @@ func activityTitle(status string, elapsed time.Duration) string {
 		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
 		return spinnerFrames[frame] + " Thought"
 	case "pending":
-		return "○ Queued tool"
+		return chatview.PendingIcon + " Queued tool"
 	case "running":
 		frame := int(elapsed/(100*time.Millisecond)) % len(spinnerFrames)
 		return spinnerFrames[frame] + " Working"
 	case "success":
-		return "✓"
+		return chatview.SuccessIcon
 	case "failure":
-		return "✗"
+		return chatview.FailureIcon
 	case "interrupted":
-		return "■ Interrupted"
+		return chatview.InterruptedIcon + " Interrupted"
 	default:
 		return "Status"
 	}
@@ -401,7 +401,7 @@ func (r *enhancedChatRuntime) finishReasoningSummaryPart(messageID, partID strin
 			return nil
 		}
 		if singleLineReasoningSummary(item.label) != "" {
-			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
+			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: chatview.FinalizedReasoningSummaryIcon + " ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
 				return err
 			}
 			r.borderCommitted = false
@@ -602,7 +602,7 @@ func (r *enhancedChatRuntime) finishAssistantActivity(id string, noContent bool)
 		if r.shouldFlushActivityItem(r.activity[i], noContent) && r.shell != nil && r.shell.renderer != nil {
 			var err error
 			if r.activity[i].reasoningSummary {
-				err = r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: r.activity[i].label, Style: r.activity[i].style, Markdown: true})
+				err = r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: chatview.FinalizedReasoningSummaryIcon + " ", Text: r.activity[i].label, Style: r.activity[i].style, Markdown: true})
 			} else {
 				err = r.shell.renderer.Commit(formatActivity(r.activity[i], time.Now()))
 			}
@@ -745,7 +745,7 @@ func (r *enhancedChatRuntime) flushReasoningBeforeAnswer(messageID string) error
 			item.status = "success"
 			item.terminal = true
 			item.ended = now
-			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: "· ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
+			if err := r.shell.renderer.CommitStyled(terminal.StyledText{Prefix: chatview.FinalizedReasoningSummaryIcon + " ", Text: item.label, Style: item.style, Markdown: true}); err != nil {
 				return err
 			}
 			r.borderCommitted = false

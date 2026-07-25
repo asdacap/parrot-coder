@@ -1003,7 +1003,7 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reports) != 2 || !reports[0].terminal || reports[0].skip || reports[0].line != "  ✓ [review] Reasoning: Checking the change" || !reports[1].terminal || !reports[1].skip {
+	if len(reports) != 2 || !reports[0].terminal || reports[0].skip || reports[0].line != "  · [review] Reasoning: Checking the change" || !reports[1].terminal || !reports[1].skip {
 		t.Fatalf("completion reports = %#v", reports)
 	}
 }
@@ -1032,7 +1032,7 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 		case "reasoning_summary":
 			want := "  ⠋ [explore] Thought: Inspecting the UI"
 			if delta.Done {
-				want = "  ✓ [explore] Thought: Inspecting the UI"
+				want = "  ✦ [explore] Thought: Inspecting the UI"
 			}
 			if len(reports) != 1 || reports[0].line != want || reports[0].terminal != delta.Done {
 				t.Fatalf("reasoning summary reports = %#v, want line %q terminal %t", reports, want, delta.Done)
