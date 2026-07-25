@@ -589,13 +589,14 @@ func firstString(raw map[string]any, keys ...string) string {
 }
 
 type streamToolCall struct {
-	name    string
-	input   map[string]any
-	style   terminal.TextStyle
-	result  string
-	stream  string
-	failure string
-	output  ShellOutputTail
+	name     string
+	input    map[string]any
+	style    terminal.TextStyle
+	result   string
+	stream   string
+	failure  string
+	liveOnly bool
+	output   ShellOutputTail
 }
 
 type StreamToolTracker struct {
@@ -613,6 +614,7 @@ type StreamToolReport struct {
 	Block    string
 	Terminal bool
 	Hidden   bool
+	LiveOnly bool
 	Style    terminal.TextStyle
 }
 
@@ -1216,7 +1218,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if report.Block != "" {
 			block = prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
 		}
-		return []TaskReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, Terminal: report.Terminal, EmitPlain: true, Skip: report.Hidden, Style: report.Style}}, nil
+		return []TaskReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
 	case v1.EventToolOutputDelta:
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}
@@ -1433,6 +1435,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		call.result = t.Presentation.Result(name)
 		call.stream = t.Presentation.Output(name)
 		call.failure = t.Presentation.Failure(name)
+		call.liveOnly = t.Presentation.LiveOnly(name)
 	}
 	if input != nil {
 		call.input = input
@@ -1496,7 +1499,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	}
 	return StreamToolReport{
 		Line: StreamToolStatus(status, errorText), Label: t.Presentation.Label(call.name, call.input), Block: block,
-		Terminal: terminalEvent, Hidden: !terminalEvent && t.Presentation.TerminalOnly(call.name), Style: style,
+		Terminal: terminalEvent, Hidden: !terminalEvent && t.Presentation.TerminalOnly(call.name), LiveOnly: call.liveOnly, Style: style,
 	}
 }
 

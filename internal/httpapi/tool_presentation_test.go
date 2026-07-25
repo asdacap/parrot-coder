@@ -66,7 +66,7 @@ func TestModelinePresentationSurvivesToolAPIProjection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(list.Items) != 1 || !list.Items[0].Presentation.Modeline || !chatview.NewPresentations(list).Modeline("wait_agent") {
+	if len(list.Items) != 1 || !list.Items[0].Presentation.Modeline || !list.Items[0].Presentation.LiveOnly || !chatview.NewPresentations(list).Modeline("wait_agent") || !chatview.NewPresentations(list).LiveOnly("wait_agent") {
 		t.Fatalf("wait_agent presentation = %#v", list.Items)
 	}
 }

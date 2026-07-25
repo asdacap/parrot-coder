@@ -247,6 +247,10 @@ func (p Presentations) Subagent(name string) bool {
 // transient modeline status rather than in the activity rows.
 func (p Presentations) Modeline(name string) bool { return p.For(name).Modeline }
 
+// LiveOnly reports whether a tool's terminal event should remove its live
+// activity without committing a permanent transcript row.
+func (p Presentations) LiveOnly(name string) bool { return p.For(name).LiveOnly }
+
 // TerminalOnly reports whether a tool suppresses its transient activity row.
 func (p Presentations) TerminalOnly(name string) bool {
 	return p.For(name).CompletedInput.TerminalOnly

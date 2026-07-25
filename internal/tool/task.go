@@ -157,7 +157,7 @@ func (t *WaitTool) Presentation() Presentation {
 	if t.Kind == managedtask.KindAgent {
 		field = "session_id"
 	}
-	return Presentation{Subagent: t.Kind == managedtask.KindAgent, Modeline: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{field}, TaskName: true}}}}
+	return Presentation{Subagent: t.Kind == managedtask.KindAgent, Modeline: true, LiveOnly: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{field}, TaskName: true}}}}
 }
 
 func (t *WaitTool) JSONSchema() json.RawMessage {

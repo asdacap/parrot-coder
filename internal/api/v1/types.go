@@ -327,6 +327,7 @@ type ToolPresentation struct {
 	Failure           string             `json:"failure,omitempty"`
 	Subagent          bool               `json:"subagent,omitempty"`
 	Modeline          bool               `json:"modeline,omitempty"`
+	LiveOnly          bool               `json:"live_only,omitempty"`
 	LabelInPermission bool               `json:"label_in_permission,omitempty"`
 	CompletedInput    ToolCompletedInput `json:"completed_input,omitempty"`
 }

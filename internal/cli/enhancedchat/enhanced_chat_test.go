@@ -1389,6 +1389,33 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	}
 }
 
+func TestEnhancedLiveOnlyToolIsRemovedWithoutCommit(t *testing.T) {
+	presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "wait", Presentation: v1.ToolPresentation{LiveOnly: true},
+	}}})
+	var output bytes.Buffer
+	runtime := &enhancedChatRuntime{shell: &chatShell{
+		config:   &Config{Presentation: func() chatview.Presentations { return presentation }},
+		renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{}),
+	}}
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"wait-call","name":"wait"}`)})
+	if len(runtime.activity) != 1 {
+		t.Fatalf("live activity = %#v", runtime.activity)
+	}
+	before, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "wait-call", Delta: "temporary"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventToolOutputDelta, Data: before}); err != nil {
+		t.Fatal(err)
+	}
+	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"wait-call"}`)})
+	late, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "wait-call", Delta: "late"})
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventToolOutputDelta, Data: late}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 || len(runtime.completedTools) != 0 || len(runtime.pendingToolOutput) != 0 || output.Len() != 0 || !runtime.completedToolIDs["wait-call"] {
+		t.Fatalf("completed live-only tool: activity=%#v queued=%#v pending=%#v output=%q completed=%#v", runtime.activity, runtime.completedTools, runtime.pendingToolOutput, output.String(), runtime.completedToolIDs)
+	}
+}
+
 func TestShellOutputTailStreamsAndCommitsLastTenLines(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
