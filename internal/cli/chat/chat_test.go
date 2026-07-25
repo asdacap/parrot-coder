@@ -810,6 +810,26 @@ func TestStreamToolTrackerCommitsEditAndFailureBlocks(t *testing.T) {
 	}
 }
 
+func TestLiveOnlyToolDoesNotEnterPlainTranscript(t *testing.T) {
+	presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "wait", Presentation: v1.ToolPresentation{LiveOnly: true},
+	}}})
+	var output bytes.Buffer
+	tracker := streamToolTracker{tracker: chatview.StreamToolTracker{Presentation: presentation}}
+	options := streamOptions{stderr: &output}
+	for _, event := range []v1.Event{
+		{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"wait-call","name":"wait"}`)},
+		{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"wait-call"}`)},
+	} {
+		if err := writeStreamToolEvent(options, &tracker, event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if output.Len() != 0 {
+		t.Fatalf("live-only plain output = %q", output.String())
+	}
+}
+
 func TestJSONLRedactorOnlyRedactsWriteStdinAndKeepsLateOutputPrivate(t *testing.T) {
 	redactor := &jsonlRedactor{}
 	deltaEvent := func(callID, name, value string) v1.Event {

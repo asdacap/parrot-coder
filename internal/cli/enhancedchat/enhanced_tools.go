@@ -164,6 +164,29 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
+	liveOnly := presentation.LiveOnly(name)
+	if terminalEvent && !liveOnly {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				liveOnly = presentation.LiveOnly(r.activity[i].toolName)
+				break
+			}
+		}
+	}
+	if terminalEvent && liveOnly {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				r.activity = append(r.activity[:i], r.activity[i+1:]...)
+				break
+			}
+		}
+		if r.completedToolIDs == nil {
+			r.completedToolIDs = make(map[string]bool)
+		}
+		r.completedToolIDs[callID] = true
+		delete(r.pendingToolOutput, callID)
+		return
+	}
 	if terminalEvent {
 		if r.completedToolIDs == nil {
 			r.completedToolIDs = make(map[string]bool)

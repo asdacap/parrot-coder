@@ -159,5 +159,8 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 		if schema := strings.ToLower(string(item.JSONSchema())); !strings.Contains(schema, test.identifier) {
 			t.Errorf("%s schema = %s", item.ID(), schema)
 		}
+		if presentation := item.Presentation(); !presentation.Modeline || !presentation.LiveOnly {
+			t.Errorf("%s presentation = %#v", item.ID(), presentation)
+		}
 	}
 }

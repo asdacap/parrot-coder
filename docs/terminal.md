@@ -122,7 +122,9 @@ The live region and permanent scrollback have explicit ownership boundaries:
    multiline lexer state. The live preview remains bounded to six rows.
 3. Completed tool reports are queued while an assistant message is open. After
    the answer suffix is committed, reports are flushed in completion order. This
-   prevents a tool status from splitting the assistant response.
+   prevents a tool status from splitting the assistant response. Tools declaring
+   `live_only` remain visible while active but are removed at completion instead
+   of entering the queue or permanent scrollback.
 
 Thus the permanent order for a turn is reasoning summaries, assistant answer,
 then any tool reports that completed while that answer was open.

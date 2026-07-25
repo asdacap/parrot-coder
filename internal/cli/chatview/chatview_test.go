@@ -47,6 +47,44 @@ func TestCompletedInputPresentation(t *testing.T) {
 	}
 }
 
+func TestLiveOnlyPresentationDiscardsTerminalReport(t *testing.T) {
+	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "wait", Presentation: v1.ToolPresentation{LiveOnly: true},
+	}}})
+	tracker := StreamToolTracker{Presentation: presentations}
+
+	pending := tracker.DescribeReport(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"call","name":"wait"}`)})
+	success := tracker.DescribeReport(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"call"}`)})
+	if !presentations.LiveOnly("wait") || !pending.LiveOnly || pending.Terminal || !success.LiveOnly || !success.Terminal {
+		t.Fatalf("live-only reports: pending=%#v success=%#v", pending, success)
+	}
+}
+
+func TestTaskLiveOnlyToolRemovesActiveRowWithoutPlainOutput(t *testing.T) {
+	tracker := NewTaskTracker()
+	tracker.Presentation = NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "wait", Presentation: v1.ToolPresentation{LiveOnly: true},
+	}}})
+	startMainTask(tracker)
+	if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{
+		TaskID: "child", SessionID: "child", ParentSessionID: "session-main", Kind: "agent", Agent: "worker",
+	}), false); err != nil {
+		t.Fatal(err)
+	}
+
+	pending, err := tracker.Apply(v1.Event{Type: "session.tool.pending", TaskID: "child", Data: json.RawMessage(`{"call_id":"call","name":"wait"}`)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, err := tracker.Apply(v1.Event{Type: "session.tool.failure", TaskID: "child", Data: json.RawMessage(`{"call_id":"call","error":"stopped"}`)}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Skip || pending[0].Terminal || len(terminal) != 1 || !terminal[0].Skip || !terminal[0].Terminal || terminal[0].EmitPlain {
+		t.Fatalf("task live-only reports: pending=%#v terminal=%#v", pending, terminal)
+	}
+}
+
 func TestFailureErrorBlockPresentation(t *testing.T) {
 	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "custom_editor", Presentation: v1.ToolPresentation{Failure: ToolFailureErrorBlock},

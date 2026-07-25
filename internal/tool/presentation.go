@@ -26,6 +26,9 @@ type Presentation struct {
 	// Modeline moves a running invocation in the top-level session from the
 	// activity rows into the transient modeline status.
 	Modeline bool `json:"modeline,omitempty"`
+	// LiveOnly keeps an invocation in the redrawable live surface while active
+	// and discards its terminal report instead of committing it to scrollback.
+	LiveOnly bool `json:"live_only,omitempty"`
 	// LabelInPermission asks a permission prompt to show Label rather than the
 	// tool's own request description, for tools whose description would echo a
 	// redacted value.
