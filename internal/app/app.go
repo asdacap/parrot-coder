@@ -530,9 +530,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		ObserveChildProgress: func(sessionID string, report func(agent.ChildProgress)) func() {
 			return live.ObserveTransient(sessionID, func(item v1.Event) { reportChildEvent(report, item) })
 		},
-		OnChildComplete: func(task agent.ChildTask) { notifications.Notify(childNotificationTask(task)) },
-		OnChildProgress: func(task agent.ChildTask) {
-			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.Status), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
+		OnChildComplete: func(task agent.Status) { notifications.Notify(childNotificationTask(task)) },
+		OnChildProgress: func(task agent.Status) {
+			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, ToolCallID: task.ToolCallID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 			live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
 		},
 		OnChildLifecycle: func(item agent.ChildLifecycleEvent) { publishChildLifecycle(live, item) },
@@ -1271,22 +1271,19 @@ func (c *appAgentChildren) Resolve(parentSession, identifier string) (tool.Child
 	return appChildAgent{session: child}, nil
 }
 
-func (c appChildAgent) Task() (tool.AgentTask, bool) {
-	task, ok := c.session.ChildTask()
-	return toolAgentTask(task), ok
-}
+func (c appChildAgent) Status() tool.AgentTask { return toolAgentTask(c.session.Status()) }
 
 func (c appChildAgent) Send(ctx context.Context, message, toolCallID string) (tool.AgentTask, string, error) {
 	task, messageID, err := c.session.SendChild(ctx, agent.ChildRequest{Prompt: message, ToolCallID: toolCallID})
 	return toolAgentTask(task), messageID, err
 }
 
-func toolAgentTask(task agent.ChildTask) tool.AgentTask {
-	return tool.AgentTask{SessionID: task.SessionID, Agent: task.Agent, Name: task.Name, Status: string(task.Status), Turn: task.Turn, Depth: task.Depth, Output: task.Output, Error: task.Error}
+func toolAgentTask(task agent.Status) tool.AgentTask {
+	return tool.AgentTask{SessionID: task.SessionID, Agent: task.Agent, Name: task.Name, Status: string(task.State), Turn: task.Turn, Depth: task.Depth, Output: task.Output, Error: task.Error}
 }
 
-func childNotificationTask(task agent.ChildTask) subagent.Task {
-	return subagent.Task{SessionID: task.SessionID, ParentSession: task.ParentSession, Agent: task.Agent, Name: task.Name, Turn: task.Turn, Status: subagent.Status(task.Status), Output: task.Output, Error: task.Error}
+func childNotificationTask(task agent.Status) subagent.Task {
+	return subagent.Task{SessionID: task.SessionID, ParentSession: task.ParentSession, Agent: task.Agent, Name: task.Name, Turn: task.Turn, Status: subagent.Status(task.State), Output: task.Output, Error: task.Error}
 }
 
 // publishChildLifecycle publishes one flat task lifecycle event for an agent
@@ -1322,7 +1319,7 @@ func publishChildLifecycle(live *event.Broker, item agent.ChildLifecycleEvent) {
 		eventType = managedtask.EventIdle
 	case agent.ChildLifecycleFinished:
 		eventType = managedtask.EventFinished
-		payload.Status = string(task.Status)
+		payload.Status = string(task.State)
 		payload.Error = task.Error
 	default:
 		return

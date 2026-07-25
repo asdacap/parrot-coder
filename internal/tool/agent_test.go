@@ -87,9 +87,9 @@ func (c managerAgentChildren) Resolve(parentSession, identifier string) (ChildAg
 	return managerChildAgent{manager: c.manager, parentSession: parentSession, sessionID: task.SessionID}, nil
 }
 
-func (c managerChildAgent) Task() (AgentTask, bool) {
-	task, err := c.manager.Status(c.parentSession, c.sessionID)
-	return testAgentTask(task), err == nil
+func (c managerChildAgent) Status() AgentTask {
+	task, _ := c.manager.Status(c.parentSession, c.sessionID)
+	return testAgentTask(task)
 }
 
 func (c managerChildAgent) Send(ctx context.Context, message, toolCallID string) (AgentTask, string, error) {

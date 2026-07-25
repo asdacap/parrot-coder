@@ -17,24 +17,28 @@ type LifecycleStartObserver interface {
 	LifecycleStarted(sessionID string)
 }
 
-type Status string
+type AgentStatus string
 
 const (
-	StatusIdle         Status = "idle"
-	StatusRunning      Status = "running"
-	StatusInterrupting Status = "interrupting"
+	StatusIdle         AgentStatus = "idle"
+	StatusPending      AgentStatus = "pending"
+	StatusRunning      AgentStatus = "running"
+	StatusInterrupting AgentStatus = "interrupting"
+	StatusSucceeded    AgentStatus = "succeeded"
+	StatusFailed       AgentStatus = "failed"
+	StatusCanceled     AgentStatus = "canceled"
 )
 
 type Active struct {
 	SessionID string
-	Status    Status
+	Status    AgentStatus
 }
 
 type drainState struct {
 	done   chan struct{}
 	cancel context.CancelFunc
 	wake   bool
-	status Status
+	status AgentStatus
 	err    error
 }
 
@@ -46,29 +50,54 @@ type AgentSession interface {
 	Name() string
 	Parent() AgentSession
 	CreateChild(context.Context, ChildRequest) (AgentSession, error)
-	ChildTask() (ChildTask, bool)
+	Status() Status
 	Observe() (ChildTurnObserver, error)
 	ResolveChild(string) (AgentSession, error)
-	SendChild(context.Context, ChildRequest) (ChildTask, string, error)
-	InterruptChild(context.Context) (ChildTask, error)
+	SendChild(context.Context, ChildRequest) (Status, string, error)
+	InterruptChild(context.Context) (Status, error)
 	Forget() error
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
 	Wake()
 	Resume(context.Context) error
 	Interrupt(context.Context) error
-	Status() Status
 }
 
 func (s *agentSession) ID() string           { return s.dto.ID }
 func (s *agentSession) Name() string         { return s.dto.Name }
 func (s *agentSession) Parent() AgentSession { return s.parent }
 
-func (s *agentSession) ChildTask() (ChildTask, bool) {
-	if s.user == nil {
-		return ChildTask{}, false
+func (s *agentSession) Status() Status {
+	s.mu.Lock()
+	if s.child != nil {
+		status := cloneStatus(s.child.status)
+		s.mu.Unlock()
+		return status
 	}
-	return s.user.childTask(s.dto.ID)
+	state := StatusIdle
+	if s.drain != nil {
+		state = s.drain.status
+	}
+	s.mu.Unlock()
+
+	status := Status{SessionID: s.dto.ID, RootSession: s.dto.ID, Agent: s.dto.Agent, Model: s.dto.Model, Name: s.dto.Name, State: state}
+	if s.parent != nil {
+		parent := s.parent.Status()
+		status.ParentSession = parent.SessionID
+		status.RootSession = parent.RootSession
+		status.Lineage = append(parent.Lineage, parent.Agent)
+		status.Depth = parent.Depth + 1
+	}
+	return status
+}
+
+func (s *agentSession) executionStatus() AgentStatus {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.drain != nil {
+		return s.drain.status
+	}
+	return StatusIdle
 }
 
 func (s *agentSession) Observe() (ChildTurnObserver, error) {
@@ -85,16 +114,16 @@ func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
 	return s.user.resolveChild(s.ID(), identifier)
 }
 
-func (s *agentSession) SendChild(ctx context.Context, request ChildRequest) (ChildTask, string, error) {
+func (s *agentSession) SendChild(ctx context.Context, request ChildRequest) (Status, string, error) {
 	if s.user == nil || s.parent == nil {
-		return ChildTask{}, "", ErrChildNotFound
+		return Status{}, "", ErrChildNotFound
 	}
 	return s.sendChild(ctx, request)
 }
 
-func (s *agentSession) InterruptChild(ctx context.Context) (ChildTask, error) {
+func (s *agentSession) InterruptChild(ctx context.Context) (Status, error) {
 	if s.user == nil || s.parent == nil {
-		return ChildTask{}, ErrChildNotFound
+		return Status{}, ErrChildNotFound
 	}
 	return s.interruptChild(ctx)
 }
@@ -236,15 +265,6 @@ func (s *agentSession) Interrupt(ctx context.Context) error {
 	}
 }
 
-func (s *agentSession) Status() Status {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.drain != nil {
-		return s.drain.status
-	}
-	return StatusIdle
-}
-
 func (s *agentSession) startOrJoinLocked(requestWake bool) *drainState {
 	if s.drain != nil {
 		if requestWake {
@@ -284,7 +304,7 @@ func (s *agentSession) removeIfIdle(remove func() error) error {
 	if s.removed {
 		return nil
 	}
-	if s.drain != nil || s.childCreations != 0 || s.child != nil && (s.child.task.Status == ChildStatusRunning || s.child.task.Status == ChildStatusPending) {
+	if s.drain != nil || s.childCreations != 0 || s.child != nil && (s.child.status.State == StatusRunning || s.child.status.State == StatusPending) {
 		return ErrAgentSessionActive
 	}
 	if err := remove(); err != nil {

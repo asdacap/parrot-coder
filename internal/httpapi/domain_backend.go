@@ -98,7 +98,7 @@ func goalDTO(goal session.Goal) v1.Goal {
 type AgentSessionController interface {
 	Get(string) agent.AgentSession
 	Active() []agent.Active
-	Status(string) agent.Status
+	Status(string) agent.AgentStatus
 	Interrupt(context.Context, string) error
 	Remove(string) error
 }

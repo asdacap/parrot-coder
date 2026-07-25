@@ -41,7 +41,7 @@ type UserSession interface {
 	Lookup(sessionID string) (AgentSession, bool)
 	Active() []Active
 	Interrupt(context.Context, string) error
-	Status(sessionID string) Status
+	Status(sessionID string) AgentStatus
 	Remove(sessionID string) error
 	Shutdown(context.Context) error
 }
@@ -61,8 +61,8 @@ type UserSessionConfig struct {
 	ProjectID                        string
 	DefaultSelection                 session.Selection
 	ObserveChildProgress             func(sessionID string, report func(ChildProgress)) func()
-	OnChildProgress                  func(ChildTask)
-	OnChildComplete                  func(ChildTask)
+	OnChildProgress                  func(Status)
+	OnChildComplete                  func(Status)
 	OnChildLifecycle                 func(ChildLifecycleEvent)
 	OnChildDiscard                   func(string)
 }
@@ -121,7 +121,7 @@ func (s *userSession) Interrupt(ctx context.Context, sessionID string) error {
 	return s.repository.Interrupt(ctx, sessionID)
 }
 
-func (s *userSession) Status(sessionID string) Status { return s.repository.Status(sessionID) }
+func (s *userSession) Status(sessionID string) AgentStatus { return s.repository.Status(sessionID) }
 
 func (s *userSession) Remove(sessionID string) error { return s.repository.Remove(sessionID) }
 
@@ -400,7 +400,7 @@ func (r *agentSessionRepository) Active() []Active {
 
 	result := make([]Active, 0, len(items))
 	for _, item := range items {
-		if status := item.Status(); status != StatusIdle {
+		if status := item.executionStatus(); status != StatusIdle {
 			result = append(result, Active{SessionID: item.ID(), Status: status})
 		}
 	}
@@ -416,12 +416,12 @@ func (r *agentSessionRepository) Interrupt(ctx context.Context, sessionID string
 	return item.Interrupt(ctx)
 }
 
-func (r *agentSessionRepository) Status(sessionID string) Status {
+func (r *agentSessionRepository) Status(sessionID string) AgentStatus {
 	item, ok := r.Lookup(sessionID)
 	if !ok {
 		return StatusIdle
 	}
-	return item.Status()
+	return item.(*agentSession).executionStatus()
 }
 
 func (r *agentSessionRepository) Remove(sessionID string) error {
