@@ -10,7 +10,6 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/process"
-	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -50,25 +49,26 @@ func (o *retainedManagedOutput) Finalize(context.Context) (process.StoredOutput,
 }
 func (*retainedManagedOutput) Discard() {}
 
-type recordingAdmitter struct{ admitted chan session.AdmitParams }
-
-func (a *recordingAdmitter) Admit(_ context.Context, _ string, params session.AdmitParams) (session.Admission, error) {
-	a.admitted <- params
-	return session.Admission{}, nil
+type sentMessage struct {
+	sessionID string
+	content   string
 }
 
-type recordingAgentSessions struct{ woken chan string }
+type recordingAgentSessions struct{ sent chan sentMessage }
 
 func (s *recordingAgentSessions) Get(sessionID string) AgentSession {
-	return recordingAgentSession{id: sessionID, woken: s.woken}
+	return recordingAgentSession{id: sessionID, sent: s.sent}
 }
 
 type recordingAgentSession struct {
-	id    string
-	woken chan string
+	id   string
+	sent chan sentMessage
 }
 
-func (s recordingAgentSession) Wake() { s.woken <- s.id }
+func (s recordingAgentSession) Send(_ context.Context, content string) (string, error) {
+	s.sent <- sentMessage{sessionID: s.id, content: content}
+	return "msg_recorded", nil
+}
 
 type recordingLifecycle struct{ events chan v1.Event }
 
@@ -86,11 +86,10 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	}
 	defer runner.Close()
 
-	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 2)}
-	waker := &recordingAgentSessions{woken: make(chan string, 2)}
+	agents := &recordingAgentSessions{sent: make(chan sentMessage, 2)}
 	lifecycle := &recordingLifecycle{events: make(chan v1.Event, 4)}
-	service := NewService(runner, tasks, admitter, lifecycle)
-	service.SetAgentSessions(waker)
+	service := NewService(runner, tasks, lifecycle)
+	service.SetAgentSessions(agents)
 	defer service.Close(context.Background())
 
 	exited, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
@@ -118,21 +117,13 @@ func TestServiceNotifiesOnExitAndTimeoutWithoutConsumingOrStoppingProcess(t *tes
 	contents := make([]string, 0, 2)
 	for range 2 {
 		select {
-		case params := <-admitter.admitted:
-			if params.MessageID == "" || params.Delivery != session.DeliverySteer {
-				t.Fatalf("admission = %#v", params)
+		case sent := <-agents.sent:
+			if sent.sessionID != "session" {
+				t.Fatalf("sent session = %q", sent.sessionID)
 			}
-			contents = append(contents, params.Content)
+			contents = append(contents, sent.content)
 		case <-time.After(2 * time.Second):
 			t.Fatal("monitor notification timed out")
-		}
-		select {
-		case sessionID := <-waker.woken:
-			if sessionID != "session" {
-				t.Fatalf("woken session = %q", sessionID)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("session was not woken")
 		}
 	}
 	started, finished := map[string]bool{}, map[string]string{}
@@ -239,8 +230,8 @@ func TestServiceRequiresAgentSessionsAndStopsNotificationsOnClose(t *testing.T) 
 		t.Fatal(err)
 	}
 	defer runner.Close()
-	admitter := &recordingAdmitter{admitted: make(chan session.AdmitParams, 1)}
-	service := NewService(runner, tasks, admitter, nil)
+	agents := &recordingAgentSessions{sent: make(chan sentMessage, 1)}
+	service := NewService(runner, tasks, nil)
 	running, err := runner.RunPersistent(context.Background(), process.PersistentRequest{
 		Shell: "/bin/sh", Command: "sleep 5", SessionID: "session", Yield: process.MinYieldTime, Unrestricted: true,
 	})
@@ -250,7 +241,7 @@ func TestServiceRequiresAgentSessionsAndStopsNotificationsOnClose(t *testing.T) 
 	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err == nil || !strings.Contains(err.Error(), "agent sessions") {
 		t.Fatalf("start without agent sessions error = %v", err)
 	}
-	service.SetAgentSessions(&recordingAgentSessions{woken: make(chan string, 1)})
+	service.SetAgentSessions(agents)
 	if err := service.Start(Request{SessionID: "session", TaskID: *running.ProcessID, Timeout: 0}); err != nil {
 		t.Fatal(err)
 	}
@@ -281,8 +272,8 @@ func TestServiceRequiresAgentSessionsAndStopsNotificationsOnClose(t *testing.T) 
 		t.Fatalf("start after close error = %v", err)
 	}
 	select {
-	case notification := <-admitter.admitted:
-		t.Fatalf("close admitted notification: %#v", notification)
+	case notification := <-agents.sent:
+		t.Fatalf("close sent notification: %#v", notification)
 	default:
 	}
 }

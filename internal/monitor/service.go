@@ -12,20 +12,14 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
-	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/process"
-	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 )
-
-type sessionAdmitter interface {
-	Admit(context.Context, string, session.AdmitParams) (session.Admission, error)
-}
 
 // AgentSession is the object-level capability monitors need after resolving a
 // session ID. Composition adapts the application's richer agent session type.
 type AgentSession interface {
-	Wake()
+	Send(context.Context, string) (string, error)
 }
 
 type agentSessionResolver interface {
@@ -59,7 +53,6 @@ type activeMonitor struct {
 type Service struct {
 	processes *process.Runner
 	tasks     *managedtask.Manager
-	sessions  sessionAdmitter
 	lifecycle lifecyclePublisher
 
 	mu     sync.Mutex
@@ -72,10 +65,10 @@ type Service struct {
 	wg     sync.WaitGroup
 }
 
-func NewService(processes *process.Runner, tasks *managedtask.Manager, sessions sessionAdmitter, lifecycle lifecyclePublisher) *Service {
+func NewService(processes *process.Runner, tasks *managedtask.Manager, lifecycle lifecyclePublisher) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Service{
-		processes: processes, tasks: tasks, sessions: sessions, lifecycle: lifecycle, ctx: ctx, cancel: cancel,
+		processes: processes, tasks: tasks, lifecycle: lifecycle, ctx: ctx, cancel: cancel,
 		active: make(map[monitorKey]*activeMonitor), paused: make(map[string]int),
 	}
 }
@@ -90,7 +83,7 @@ func (s *Service) SetAgentSessions(agents agentSessionResolver) {
 // Start validates and captures the task before returning, then waits in the
 // background and eventually steers a notification into the caller session.
 func (s *Service) Start(request Request) error {
-	if s == nil || s.tasks == nil || s.sessions == nil {
+	if s == nil || s.tasks == nil {
 		return errors.New("monitor: service is unavailable")
 	}
 	if request.SessionID == "" || request.TaskID == "" || request.Timeout < 0 {
@@ -210,10 +203,6 @@ func (s *Service) publishLifecycle(eventType string, request Request, status, er
 }
 
 func (s *Service) notify(monitorCtx context.Context, sessionID, content string) error {
-	messageID, err := id.New("msg")
-	if err != nil {
-		return err
-	}
 	s.mu.Lock()
 	paused := s.paused[sessionID] > 0
 	agents := s.agents
@@ -221,25 +210,13 @@ func (s *Service) notify(monitorCtx context.Context, sessionID, content string) 
 	if paused {
 		return context.Canceled
 	}
-	ctx, cancel := context.WithTimeout(monitorCtx, 5*time.Second)
-	defer cancel()
-	if _, err := s.sessions.Admit(ctx, sessionID, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
-		return err
-	}
-	s.mu.Lock()
-	paused = s.paused[sessionID] > 0
-	s.mu.Unlock()
-	if paused {
-		return context.Canceled
-	}
-	if err := monitorCtx.Err(); err != nil {
-		return err
-	}
 	if agents == nil {
 		return errors.New("monitor: agent sessions are unavailable")
 	}
-	agents.Get(sessionID).Wake()
-	return nil
+	ctx, cancel := context.WithTimeout(monitorCtx, 5*time.Second)
+	defer cancel()
+	_, err := agents.Get(sessionID).Send(ctx, content)
+	return err
 }
 
 // SuspendSession prevents new observations and stops outstanding observations
