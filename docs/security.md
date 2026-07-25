@@ -36,7 +36,7 @@ login, device login, refresh, text generation, and tool-call canaries.
 - New paths validate the nearest existing parent.
 - Paths and preimage hashes are revalidated immediately before mutation.
 - External roots require explicit canonical capabilities.
-- `read` and `grep` accept explicit absolute host paths for bounded read-only
+- `read` and `rg` accept explicit absolute host paths for bounded read-only
   access; relative paths remain confined to the workspace.
 - Mutating structured file tools remain confined by canonical workspace
   capabilities.

@@ -50,7 +50,7 @@ func RegisterBuiltins(registry *Registry, services BuiltinServices) error {
 	items := []Tool{
 		NewReadTool(ReadConfig{}),
 		NewGlobTool(GlobConfig{}),
-		NewGrepTool(GrepConfig{}),
+		NewRgTool(RgConfig{}),
 		NewReadOutputTool(1 << 20),
 		NewApplyPatchTool(services.Changes),
 		NewExecCommandTool(services.Processes),

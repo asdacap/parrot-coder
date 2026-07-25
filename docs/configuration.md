@@ -314,7 +314,7 @@ agent: explorer
 model: local/code-model
 allowed-tools:
   - read
-  - grep
+  - rg
 ---
 Review the requested code and report concrete findings first.
 ```

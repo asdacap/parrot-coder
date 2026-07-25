@@ -26,7 +26,7 @@ func TestSkillToolLoadsExactBodyAndMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := "Use exact review instructions.\n"
-	if err := os.WriteFile(path, []byte("---\nname: review\ndescription: Review changes\nagent: explorer\nmodel: local/model\nallowed-tools: [read, grep]\n---\n"+body), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte("---\nname: review\ndescription: Review changes\nagent: explorer\nmodel: local/model\nallowed-tools: [read, rg]\n---\n"+body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	registry, err := skill.Discover(skill.Options{ProjectRoot: root, CWD: root})
