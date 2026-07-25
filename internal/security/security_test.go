@@ -25,8 +25,10 @@ func TestCanWriteAppliesDefaultsAndOrderedRules(t *testing.T) {
 		{"component boundary", testProfile{readOnly: true, rules: []Rule{{Path: "/work/file", Action: ActionAllowWrite}}}, "/work/file.other", false},
 		{"later deny", testProfile{readOnly: true, rules: []Rule{{Path: "/work", Action: ActionAllowWrite}, {Path: "/work/private", Action: ActionDenyWrite}}}, "/work/private/file", false},
 		{"later allow", testProfile{readOnly: true, rules: []Rule{{Path: "/work", Action: ActionDenyWrite}, {Path: "/work/file", Action: ActionAllowWrite}}}, "/work/file", true},
-		{"first reverse match decides", testProfile{readOnly: true, rules: []Rule{{Path: "/work/file", Action: ActionAllowWrite}, {Path: "/other", Action: ActionAllowWrite}, {Path: "/work", Action: ActionDenyWrite}}}, "/work/file", false},
-		{"allow read revokes write", testProfile{rules: []Rule{{Path: "/work/file", Action: ActionAllowRead}}}, "/work/file", false},
+		{"later matching rule decides", testProfile{readOnly: true, rules: []Rule{{Path: "/work/file", Action: ActionAllowWrite}, {Path: "/other", Action: ActionAllowWrite}, {Path: "/work", Action: ActionDenyWrite}}}, "/work/file", false},
+		{"allow read preserves writable default", testProfile{rules: []Rule{{Path: "/work/file", Action: ActionAllowRead}}}, "/work/file", true},
+		{"allow read preserves prior allow write", testProfile{readOnly: true, rules: []Rule{{Path: "/work", Action: ActionAllowWrite}, {Path: "/work/file", Action: ActionAllowRead}}}, "/work/file", true},
+		{"allow read preserves read-only default", testProfile{readOnly: true, rules: []Rule{{Path: "/work/file", Action: ActionAllowRead}}}, "/work/file", false},
 		{"deny read revokes write", testProfile{rules: []Rule{{Path: "/work/file", Action: ActionDenyRead}}}, "/work/file", false},
 	}
 	for _, test := range tests {
