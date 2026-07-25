@@ -42,17 +42,6 @@ func (r *enhancedChatRuntime) cycleMode() error {
 	return nil
 }
 
-func (r *enhancedChatRuntime) ensureInputBorder() error {
-	if r.borderCommitted {
-		return nil
-	}
-	if err := r.shell.renderer.CommitDivider(); err != nil {
-		return err
-	}
-	r.borderCommitted = true
-	return nil
-}
-
 func (r *enhancedChatRuntime) commitUser(content string) error {
 	if err := r.shell.commitUser(content); err != nil {
 		return err
@@ -64,7 +53,6 @@ func (r *enhancedChatRuntime) commitUser(content string) error {
 func (r *enhancedChatRuntime) commitError(message string) {
 	r.shell.commitError(message)
 	r.borderCommitted = false
-	_ = r.ensureInputBorder()
 }
 
 func (r *enhancedChatRuntime) detectModal() {
