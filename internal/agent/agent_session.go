@@ -53,7 +53,6 @@ type AgentSession interface {
 	Status() Status
 	Observe() (ChildTurnObserver, error)
 	ResolveChild(string) (AgentSession, error)
-	SendChild(context.Context, ChildRequest) (Status, string, error)
 	Forget() error
 	Prompt(context.Context, string) (string, error)
 	Send(context.Context, string) (string, error)
@@ -113,13 +112,6 @@ func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
 	return s.user.resolveChild(s.ID(), identifier)
 }
 
-func (s *agentSession) SendChild(ctx context.Context, request ChildRequest) (Status, string, error) {
-	if s.user == nil || s.parent == nil {
-		return Status{}, "", ErrChildNotFound
-	}
-	return s.sendChild(ctx, request)
-}
-
 func (s *agentSession) Forget() error {
 	if s.user == nil || s.parent == nil {
 		return ErrChildNotFound
@@ -168,6 +160,9 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 
 // Send admits steer input and wakes the session without waiting for it to idle.
 func (s *agentSession) Send(ctx context.Context, content string) (string, error) {
+	if s.user != nil && s.parent != nil {
+		return s.sendManagedTurn(ctx, content)
+	}
 	messageID, _, err := s.admitAndStart(ctx, content)
 	return messageID, err
 }

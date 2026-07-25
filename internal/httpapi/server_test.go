@@ -347,9 +347,6 @@ func (s testAgentSession) Observe() (agent.ChildTurnObserver, error) {
 func (s testAgentSession) ResolveChild(string) (agent.AgentSession, error) {
 	return nil, errors.New("not implemented")
 }
-func (s testAgentSession) SendChild(context.Context, agent.ChildRequest) (agent.Status, string, error) {
-	return agent.Status{}, "", errors.New("not implemented")
-}
 func (s testAgentSession) Forget() error { return errors.New("not implemented") }
 func (s testAgentSession) Prompt(context.Context, string) (string, error) {
 	return "", errors.New("not implemented")

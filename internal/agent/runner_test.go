@@ -471,7 +471,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, agentSessions: agentSessions, sessionID: created.ID, runner: runner}
 }
 
-func TestRunningSendChildCannotEscapeCompletingManagedTurn(t *testing.T) {
+func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
@@ -510,25 +510,25 @@ func TestRunningSendChildCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 
 	type sendResult struct {
-		task      Status
+		status    Status
 		messageID string
 		err       error
 	}
 	sent := make(chan sendResult, 1)
 	go func() {
-		task, messageID, sendErr := child.SendChild(context.Background(), ChildRequest{Prompt: "follow-up"})
-		sent <- sendResult{task: task, messageID: messageID, err: sendErr}
+		messageID, sendErr := child.Send(context.Background(), "follow-up")
+		sent <- sendResult{status: child.Status(), messageID: messageID, err: sendErr}
 	}()
 	select {
 	case result := <-sent:
 		item.childOp.Unlock()
-		t.Fatalf("SendChild escaped managed completion: %#v", result)
+		t.Fatalf("Send escaped managed completion: %#v", result)
 	case <-time.After(20 * time.Millisecond):
 	}
 	item.childOp.Unlock()
 	result := <-sent
-	if result.err != nil || result.messageID != "" || result.task.Turn != 2 || result.task.State != StatusRunning {
-		t.Fatalf("serialized SendChild = %#v", result)
+	if result.err != nil || result.messageID != "" || result.status.Turn != 2 || result.status.State != StatusRunning {
+		t.Fatalf("serialized Send = %#v", result)
 	}
 	observation, err := child.Observe()
 	if err != nil {
@@ -575,20 +575,22 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		t.Fatal("child turn did not start")
 	}
 
-	task, messageID, err := child.SendChild(context.Background(), ChildRequest{Prompt: "steer"})
-	if err != nil || messageID == "" || task.Turn != 1 || task.State != StatusRunning {
-		t.Fatalf("running SendChild = %#v, %q, %v", task, messageID, err)
+	messageID, err := child.Send(context.Background(), "steer")
+	status := child.Status()
+	if err != nil || messageID == "" || status.Turn != 1 || status.State != StatusRunning {
+		t.Fatalf("running Send = %#v, %q, %v", status, messageID, err)
 	}
 	close(release)
 	completed, err := observation.Wait(context.Background())
-	status := child.Status()
+	status = child.Status()
 	if err != nil || completed.State != StatusSucceeded || completed.Output != "answer-steer" || status.State != StatusSucceeded || status.Output != completed.Output || status.SessionID != child.ID() || status.ParentSession != parent.ID() || status.RootSession != parent.ID() {
 		t.Fatalf("first turn = %#v, status = %#v, %v", completed, status, err)
 	}
 
-	task, messageID, err = child.SendChild(context.Background(), ChildRequest{Prompt: "follow-up"})
-	if err != nil || messageID != "" || task.Turn != 2 || task.State != StatusRunning {
-		t.Fatalf("follow-up SendChild = %#v, %q, %v", task, messageID, err)
+	messageID, err = child.Send(context.Background(), "follow-up")
+	status = child.Status()
+	if err != nil || messageID != "" || status.Turn != 2 || status.State != StatusRunning {
+		t.Fatalf("follow-up Send = %#v, %q, %v", status, messageID, err)
 	}
 	observation, err = child.Observe()
 	if err != nil {

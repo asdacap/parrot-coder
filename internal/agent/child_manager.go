@@ -190,12 +190,12 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	}
 }
 
-func (s *agentSession) sendChild(ctx context.Context, request ChildRequest) (Status, string, error) {
-	if strings.TrimSpace(request.Prompt) == "" {
-		return Status{}, "", ErrInvalidChildRequest
+func (s *agentSession) sendManagedTurn(ctx context.Context, content string) (string, error) {
+	if strings.TrimSpace(content) == "" {
+		return "", ErrInvalidChildRequest
 	}
-	if len(request.Prompt) > s.user.config.MaxChildPromptBytes {
-		return Status{}, "", ErrChildRequestLimit
+	if len(content) > s.user.config.MaxChildPromptBytes {
+		return "", ErrChildRequestLimit
 	}
 retry:
 	s.childOp.Lock()
@@ -204,7 +204,7 @@ retry:
 	if state == nil {
 		s.mu.Unlock()
 		s.childOp.Unlock()
-		return Status{}, "", ErrChildNotFound
+		return "", ErrChildNotFound
 	}
 	if state.status.State == StatusRunning || state.status.State == StatusPending {
 		if s.drain == nil {
@@ -215,49 +215,46 @@ retry:
 			case <-turn.done:
 				goto retry
 			case <-ctx.Done():
-				return Status{}, "", ctx.Err()
+				return "", ctx.Err()
 			}
 		}
-		messageID, err := s.admitLocked(ctx, request.Prompt)
+		messageID, err := s.admitLocked(ctx, content)
 		if err == nil {
 			s.drain.wake = true
 		}
-		task := cloneStatus(state.status)
 		s.mu.Unlock()
 		s.childOp.Unlock()
-		return task, messageID, err
+		return messageID, err
 	}
 	s.mu.Unlock()
 	defer s.childOp.Unlock()
 	s.user.childMu.Lock()
 	defer s.user.childMu.Unlock()
 	if s.user.closed {
-		return Status{}, "", ErrUserSessionClosed
+		return "", ErrUserSessionClosed
 	}
 	permit, err := s.user.admitChildTurn(s.parent.(*agentSession))
 	if err != nil {
-		return Status{}, "", err
+		return "", err
 	}
 	s.mu.Lock()
 	if s.removed {
 		s.mu.Unlock()
 		permit.Release()
-		return Status{}, "", ErrAgentSessionRemoved
+		return "", ErrAgentSessionRemoved
 	}
 	state.status.Turn++
 	state.status.State, state.status.StartedAt, state.status.FinishedAt = StatusRunning, time.Now().UTC(), time.Time{}
 	state.status.Output, state.status.Error, state.status.Truncated = "", "", false
 	state.status.Usage, state.status.ToolUses = ChildUsage{}, 0
-	request.Agent, request.Model, request.Name = state.status.Agent, state.status.Model, state.status.Name
-	state.request = request
+	state.request = ChildRequest{Prompt: content, Agent: state.status.Agent, Model: state.status.Model, Name: state.status.Name}
 	turnCtx, cancel := context.WithCancel(context.Background())
 	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), permit: permit}
 	state.turn, state.cancel = turn, cancel
-	task := cloneStatus(state.status)
 	s.mu.Unlock()
 	s.user.workers.Add(1)
 	go s.runChild(turn)
-	return task, "", nil
+	return "", nil
 }
 
 func (s *userSession) resolveChild(callerSessionID, identifier string) (AgentSession, error) {

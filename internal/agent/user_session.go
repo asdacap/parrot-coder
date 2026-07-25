@@ -491,8 +491,8 @@ type agentToolChild struct{ session AgentSession }
 
 func (c agentToolChild) Status() tool.AgentTask { return toolAgentTask(c.session.Status()) }
 func (c agentToolChild) Send(ctx context.Context, message string) (tool.AgentTask, string, error) {
-	status, messageID, err := c.session.SendChild(ctx, ChildRequest{Prompt: message})
-	return toolAgentTask(status), messageID, err
+	messageID, err := c.session.Send(ctx, message)
+	return c.Status(), messageID, err
 }
 
 func toolAgentTask(status Status) tool.AgentTask {
