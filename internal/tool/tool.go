@@ -97,9 +97,9 @@ func (d Descriptor) clone() Descriptor {
 	return d
 }
 
-// SessionState is the agent-session capability passed to tool providers. It is
+// AgentSession is the agent-session capability passed to tool providers. It is
 // deliberately owned by this package so tool does not depend on agent.
-type SessionState interface {
+type AgentSession interface {
 	SessionID() string
 	CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error)
 	ResolveAgent(string) (ChildAgent, error)
@@ -108,16 +108,16 @@ type SessionState interface {
 type ToolProvider interface {
 	Descriptor() Descriptor
 	// Create returns a fresh executable instance bound to the supplied session.
-	Create(SessionState) (Tool, error)
+	Create(AgentSession) (Tool, error)
 }
 
 type ProviderFunc struct {
 	ToolDescriptor Descriptor
-	CreateTool     func(SessionState) (Tool, error)
+	CreateTool     func(AgentSession) (Tool, error)
 }
 
 func (p *ProviderFunc) Descriptor() Descriptor { return p.ToolDescriptor.clone() }
-func (p *ProviderFunc) Create(state SessionState) (Tool, error) {
+func (p *ProviderFunc) Create(state AgentSession) (Tool, error) {
 	if p == nil || p.CreateTool == nil {
 		return nil, errors.New("tool: provider create function is required")
 	}
@@ -126,11 +126,11 @@ func (p *ProviderFunc) Create(state SessionState) (Tool, error) {
 
 type catalogProvider struct {
 	descriptor Descriptor
-	create     func(SessionState) (Tool, error)
+	create     func(AgentSession) (Tool, error)
 }
 
 func (p catalogProvider) Descriptor() Descriptor                  { return p.descriptor.clone() }
-func (p catalogProvider) Create(state SessionState) (Tool, error) { return p.create(state) }
+func (p catalogProvider) Create(state AgentSession) (Tool, error) { return p.create(state) }
 
 // Providers is a validated, immutable provider catalog.
 type Providers struct {
@@ -216,7 +216,7 @@ func (p Providers) SystemPromptGuidance() string {
 	return strings.Join(entries, "\n\n")
 }
 
-func (p Providers) Materialize(state SessionState) (Snapshot, error) {
+func (p Providers) Materialize(state AgentSession) (Snapshot, error) {
 	tools := make(map[string]Tool, len(p.items))
 	for _, provider := range p.items {
 		descriptor := provider.Descriptor()

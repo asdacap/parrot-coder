@@ -160,7 +160,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	providersList := make([]tool.ToolProvider, 0, len(tools))
 	for _, item := range tools {
 		item := item
-		providersList = append(providersList, &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(item), CreateTool: func(tool.SessionState) (tool.Tool, error) { return item, nil }})
+		providersList = append(providersList, &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(item), CreateTool: func(tool.AgentSession) (tool.Tool, error) { return item, nil }})
 	}
 	toolProviders, err := tool.NewProviders(providersList...)
 	if err != nil {

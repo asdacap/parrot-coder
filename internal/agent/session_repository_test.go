@@ -115,7 +115,7 @@ func TestAgentSessionRepositoryProviderBindingLifecycle(t *testing.T) {
 	panics := map[string]int{"panic": 1, "panic-wait": 1}
 	entered, release := make(chan struct{}), make(chan struct{})
 	panicEntered, panicRelease := make(chan struct{}), make(chan struct{})
-	provider := &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(&fakeTool{id: "bound"}), CreateTool: func(state tool.SessionState) (tool.Tool, error) {
+	provider := &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(&fakeTool{id: "bound"}), CreateTool: func(state tool.AgentSession) (tool.Tool, error) {
 		mu.Lock()
 		calls[state.SessionID()]++
 		call := calls[state.SessionID()]
@@ -200,7 +200,7 @@ func TestAgentSessionRepositoryProviderBindingLifecycle(t *testing.T) {
 
 func TestAgentSessionRepositoryRestoredChildPropagatesParentBindFailure(t *testing.T) {
 	providerErr := errors.New("parent tools failed")
-	provider := &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(&fakeTool{id: "bound"}), CreateTool: func(state tool.SessionState) (tool.Tool, error) {
+	provider := &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(&fakeTool{id: "bound"}), CreateTool: func(state tool.AgentSession) (tool.Tool, error) {
 		if state.SessionID() == "parent" {
 			return nil, providerErr
 		}

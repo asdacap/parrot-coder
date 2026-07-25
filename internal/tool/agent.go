@@ -40,7 +40,7 @@ type AgentTool struct {
 	BasePresentation
 	Kind     string
 	Children AgentChildren // retained for direct construction in focused tests
-	Session  SessionState
+	Session  AgentSession
 	Agents   AgentLookup
 }
 

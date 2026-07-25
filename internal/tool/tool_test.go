@@ -48,7 +48,7 @@ func TestProvidersAreDeeplyImmutable(t *testing.T) {
 		CompletedInput: CompletedInputSpec{Fields: []string{"done"}},
 	}}
 	descriptor := DescriptorOf(created)
-	provider := &ProviderFunc{ToolDescriptor: descriptor, CreateTool: func(SessionState) (Tool, error) { return created, nil }}
+	provider := &ProviderFunc{ToolDescriptor: descriptor, CreateTool: func(AgentSession) (Tool, error) { return created, nil }}
 	providers, err := NewProviders(provider)
 	if err != nil {
 		t.Fatal(err)
@@ -60,7 +60,7 @@ func TestProvidersAreDeeplyImmutable(t *testing.T) {
 	descriptor.Presentation.Label.Fields[0].Item[0] = "changed"
 	descriptor.Presentation.CompletedInput.Fields[0] = "changed"
 	provider.ToolDescriptor.ID = "changed"
-	provider.CreateTool = func(SessionState) (Tool, error) { return testTool{id: "changed"}, nil }
+	provider.CreateTool = func(AgentSession) (Tool, error) { return testTool{id: "changed"}, nil }
 
 	got := providers.Descriptors()[0]
 	if got.ID != "immutable" || got.Presentation.Redact[0] != "secret" || got.Presentation.Label.Source[0] != "source" || got.Presentation.Label.Fields[0].Names[0] != "name" || got.Presentation.Label.Fields[0].Item[0] != "item" || got.Presentation.CompletedInput.Fields[0] != "done" {
@@ -80,20 +80,20 @@ func TestProvidersAreDeeplyImmutable(t *testing.T) {
 }
 
 func TestProvidersValidateAndMaterializeFreshTools(t *testing.T) {
-	newProvider := func(id string, create func(SessionState) (Tool, error)) ToolProvider {
+	newProvider := func(id string, create func(AgentSession) (Tool, error)) ToolProvider {
 		prototype := testTool{id: id}
 		return &ProviderFunc{ToolDescriptor: DescriptorOf(prototype), CreateTool: create}
 	}
 	if _, err := NewProviders(nil); err == nil {
 		t.Fatal("nil provider accepted")
 	}
-	duplicate := newProvider("duplicate", func(SessionState) (Tool, error) { return testTool{id: "duplicate"}, nil })
+	duplicate := newProvider("duplicate", func(AgentSession) (Tool, error) { return testTool{id: "duplicate"}, nil })
 	if _, err := NewProviders(duplicate, duplicate); err == nil {
 		t.Fatal("duplicate provider accepted")
 	}
 
 	created := make([]Tool, 0, 2)
-	provider := newProvider("fresh", func(SessionState) (Tool, error) {
+	provider := newProvider("fresh", func(AgentSession) (Tool, error) {
 		item := &testTool{id: "fresh"}
 		created = append(created, item)
 		return item, nil
@@ -111,7 +111,7 @@ func TestProvidersValidateAndMaterializeFreshTools(t *testing.T) {
 		t.Fatalf("created tools = %#v, want distinct instances", created)
 	}
 
-	invalid, err := NewProviders(newProvider("expected", func(SessionState) (Tool, error) { return testTool{id: "other"}, nil }))
+	invalid, err := NewProviders(newProvider("expected", func(AgentSession) (Tool, error) { return testTool{id: "other"}, nil }))
 	if err != nil {
 		t.Fatal(err)
 	}

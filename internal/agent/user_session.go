@@ -460,7 +460,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		r.mu.Unlock()
 	}()
 
-	snapshot, err := r.config.ToolProviders.Materialize(agentToolSessionState{candidate})
+	snapshot, err := r.config.ToolProviders.Materialize(agentToolSession{candidate})
 	if err != nil {
 		return nil, err
 	}
@@ -469,17 +469,17 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	return candidate, nil
 }
 
-type agentToolSessionState struct{ session *agentSession }
+type agentToolSession struct{ session *agentSession }
 
-func (s agentToolSessionState) SessionID() string { return s.session.ID() }
-func (s agentToolSessionState) CreateAgent(ctx context.Context, callerAgent, prompt, target, model, name string) (tool.ChildAgent, error) {
+func (s agentToolSession) SessionID() string { return s.session.ID() }
+func (s agentToolSession) CreateAgent(ctx context.Context, callerAgent, prompt, target, model, name string) (tool.ChildAgent, error) {
 	child, err := s.session.CreateChild(ctx, ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name})
 	if err != nil {
 		return nil, err
 	}
 	return agentToolChild{session: child}, nil
 }
-func (s agentToolSessionState) ResolveAgent(identifier string) (tool.ChildAgent, error) {
+func (s agentToolSession) ResolveAgent(identifier string) (tool.ChildAgent, error) {
 	child, err := s.session.ResolveChild(identifier)
 	if err != nil {
 		return nil, err

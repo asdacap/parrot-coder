@@ -437,7 +437,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	providersList := make([]tool.ToolProvider, 0, len(tools))
 	for _, item := range tools {
 		item := item
-		providersList = append(providersList, &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(item), CreateTool: func(tool.SessionState) (tool.Tool, error) { return item, nil }})
+		providersList = append(providersList, &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(item), CreateTool: func(tool.AgentSession) (tool.Tool, error) { return item, nil }})
 	}
 	toolProviders, err := tool.NewProviders(providersList...)
 	if err != nil {
@@ -750,7 +750,7 @@ func (r deleteFailSessionRuntime) Delete(context.Context, string) error { return
 func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	providerErr := errors.New("child provider failed")
-	provider := &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(&fakeTool{id: "bound"}), CreateTool: func(state tool.SessionState) (tool.Tool, error) {
+	provider := &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(&fakeTool{id: "bound"}), CreateTool: func(state tool.AgentSession) (tool.Tool, error) {
 		if state.SessionID() != h.sessionID {
 			return nil, providerErr
 		}

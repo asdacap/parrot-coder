@@ -77,7 +77,7 @@ func BuiltinProviders(services BuiltinServices) (Providers, error) {
 	}
 	for _, kind := range []string{agentSpawnID, agentSendID} {
 		kind := kind
-		items = append(items, &ProviderFunc{ToolDescriptor: AgentDescriptor(kind), CreateTool: func(state SessionState) (Tool, error) {
+		items = append(items, &ProviderFunc{ToolDescriptor: AgentDescriptor(kind), CreateTool: func(state AgentSession) (Tool, error) {
 			if state == nil {
 				return nil, errors.New("agent session state is required")
 			}
@@ -92,7 +92,7 @@ func BuiltinProviders(services BuiltinServices) (Providers, error) {
 		if err != nil {
 			return Providers{}, err
 		}
-		items = append(items, &ProviderFunc{ToolDescriptor: DescriptorOf(prototype), CreateTool: func(SessionState) (Tool, error) { return NewMCPTool(services.MCP, definition) }})
+		items = append(items, &ProviderFunc{ToolDescriptor: DescriptorOf(prototype), CreateTool: func(AgentSession) (Tool, error) { return NewMCPTool(services.MCP, definition) }})
 	}
 	return NewProviders(items...)
 }
@@ -105,7 +105,7 @@ type sessionTool struct {
 func (t *sessionTool) UnwrapTool() Tool { return t.Tool }
 
 func providerFor(constructor func() Tool) ToolProvider {
-	return &ProviderFunc{ToolDescriptor: DescriptorOf(constructor()), CreateTool: func(SessionState) (Tool, error) {
+	return &ProviderFunc{ToolDescriptor: DescriptorOf(constructor()), CreateTool: func(AgentSession) (Tool, error) {
 		return &sessionTool{Tool: constructor()}, nil
 	}}
 }

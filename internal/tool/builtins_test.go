@@ -19,13 +19,13 @@ func (a *recordingErrorAdvisor) Advise(_ context.Context, err error, advice Erro
 	return err
 }
 
-type builtinTestSessionState struct{}
+type builtinTestAgentSession struct{}
 
-func (builtinTestSessionState) SessionID() string { return "session" }
-func (builtinTestSessionState) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
+func (builtinTestAgentSession) SessionID() string { return "session" }
+func (builtinTestAgentSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
 	return nil, errors.New("not implemented")
 }
-func (builtinTestSessionState) ResolveAgent(string) (ChildAgent, error) {
+func (builtinTestAgentSession) ResolveAgent(string) (ChildAgent, error) {
 	return nil, errors.New("not implemented")
 }
 
@@ -48,7 +48,7 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := builtinTestSessionState{}
+	state := builtinTestAgentSession{}
 	first, err := providers.Materialize(state)
 	if err != nil {
 		t.Fatal(err)
