@@ -256,9 +256,74 @@ type ChildCreatedObserver interface {
 	ChildCreated(ChildSession)
 }
 
-// AgentSessionRepository owns the one runtime AgentSession object associated
+// UserSession is the runtime aggregate for a user. It owns the repository of
+// agent runtimes participating in that user's session hierarchy.
+type UserSession struct {
+	repository *agentSessionRepository
+}
+
+// NewUserSession creates a user runtime with its own agent-session repository.
+func NewUserSession(ctx context.Context, config AgentSessionConfig, observers ...LifecycleObserver) (*UserSession, error) {
+	repository, err := newAgentSessionRepository(ctx, config, observers...)
+	if err != nil {
+		return nil, err
+	}
+	return &UserSession{repository: repository}, nil
+}
+
+func (s *UserSession) CreateChild(ctx context.Context, request ChildSessionRequest) (AgentSession, error) {
+	return s.repository.CreateChild(ctx, request)
+}
+
+func (s *UserSession) AddChildCreatedObserver(observer ChildCreatedObserver) {
+	s.repository.AddChildCreatedObserver(observer)
+}
+
+func (s *UserSession) ChildRelation(sessionID string) (string, bool) {
+	return s.repository.ChildRelation(sessionID)
+}
+
+func (s *UserSession) ChildSessions(parentSessionID string) []ChildSession {
+	return s.repository.ChildSessions(parentSessionID)
+}
+
+func (s *UserSession) HasChildSessions(parentSessionID string) bool {
+	return s.repository.HasChildSessions(parentSessionID)
+}
+
+func (s *UserSession) ForgetChild(sessionID string) error {
+	return s.repository.ForgetChild(sessionID)
+}
+
+func (s *UserSession) DiscardChild(ctx context.Context, sessionID string) error {
+	return s.repository.DiscardChild(ctx, sessionID)
+}
+
+func (s *UserSession) Get(sessionID string) AgentSession { return s.repository.Get(sessionID) }
+
+func (s *UserSession) Lookup(sessionID string) (AgentSession, bool) {
+	return s.repository.Lookup(sessionID)
+}
+
+func (s *UserSession) Active() []Active { return s.repository.Active() }
+
+func (s *UserSession) Wake(sessionID string) { s.repository.Wake(sessionID) }
+
+func (s *UserSession) Resume(ctx context.Context, sessionID string) error {
+	return s.repository.Resume(ctx, sessionID)
+}
+
+func (s *UserSession) Interrupt(ctx context.Context, sessionID string) error {
+	return s.repository.Interrupt(ctx, sessionID)
+}
+
+func (s *UserSession) Status(sessionID string) Status { return s.repository.Status(sessionID) }
+
+func (s *UserSession) Remove(sessionID string) error { return s.repository.Remove(sessionID) }
+
+// agentSessionRepository owns the one runtime AgentSession object associated
 // with each persisted session ID. Persistent state remains in SessionRuntime.
-type AgentSessionRepository struct {
+type agentSessionRepository struct {
 	mu             sync.Mutex
 	config         AgentSessionConfig
 	observers      []LifecycleObserver
@@ -267,7 +332,7 @@ type AgentSessionRepository struct {
 	children       map[string]ChildSession
 }
 
-func NewAgentSessionRepository(ctx context.Context, config AgentSessionConfig, observers ...LifecycleObserver) (*AgentSessionRepository, error) {
+func newAgentSessionRepository(ctx context.Context, config AgentSessionConfig, observers ...LifecycleObserver) (*agentSessionRepository, error) {
 	if err := validateAgentSessionConfig(&config); err != nil {
 		return nil, err
 	}
@@ -275,7 +340,7 @@ func NewAgentSessionRepository(ctx context.Context, config AgentSessionConfig, o
 	if err != nil {
 		return nil, fmt.Errorf("agent: list sessions: %w", err)
 	}
-	repository := &AgentSessionRepository{
+	repository := &agentSessionRepository{
 		config: config, observers: observers,
 		sessions: make(map[string]*agentSession), children: make(map[string]ChildSession),
 	}
@@ -297,7 +362,7 @@ type ChildSessionRequest struct {
 }
 
 // CreateChild persists a selected child session and returns its bound runtime.
-func (r *AgentSessionRepository) CreateChild(ctx context.Context, request ChildSessionRequest) (AgentSession, error) {
+func (r *agentSessionRepository) CreateChild(ctx context.Context, request ChildSessionRequest) (AgentSession, error) {
 	parent, err := r.config.Sessions.Get(ctx, request.ParentSessionID)
 	if err != nil {
 		return nil, fmt.Errorf("agent: child parent session: %w", err)
@@ -357,7 +422,7 @@ func (r *AgentSessionRepository) CreateChild(ctx context.Context, request ChildS
 // AddChildCreatedObserver registers an observer and replays the current child
 // snapshot. Notifications are synchronous and occur outside the repository
 // lock, after each relationship can be queried.
-func (r *AgentSessionRepository) AddChildCreatedObserver(observer ChildCreatedObserver) {
+func (r *agentSessionRepository) AddChildCreatedObserver(observer ChildCreatedObserver) {
 	if observer == nil {
 		return
 	}
@@ -375,7 +440,7 @@ func (r *AgentSessionRepository) AddChildCreatedObserver(observer ChildCreatedOb
 }
 
 // ChildRelation returns the direct parent for sessionID.
-func (r *AgentSessionRepository) ChildRelation(sessionID string) (parentSessionID string, ok bool) {
+func (r *agentSessionRepository) ChildRelation(sessionID string) (parentSessionID string, ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	relation, ok := r.children[sessionID]
@@ -383,7 +448,7 @@ func (r *AgentSessionRepository) ChildRelation(sessionID string) (parentSessionI
 }
 
 // ChildSessions returns a stable snapshot of a parent's direct children.
-func (r *AgentSessionRepository) ChildSessions(parentSessionID string) []ChildSession {
+func (r *agentSessionRepository) ChildSessions(parentSessionID string) []ChildSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	result := make([]ChildSession, 0)
@@ -396,7 +461,7 @@ func (r *AgentSessionRepository) ChildSessions(parentSessionID string) []ChildSe
 	return result
 }
 
-func (r *AgentSessionRepository) HasChildSessions(parentSessionID string) bool {
+func (r *agentSessionRepository) HasChildSessions(parentSessionID string) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	for _, relation := range r.children {
@@ -408,7 +473,7 @@ func (r *AgentSessionRepository) HasChildSessions(parentSessionID string) bool {
 }
 
 // ForgetChild removes the relationship for sessionID.
-func (r *AgentSessionRepository) ForgetChild(sessionID string) error {
+func (r *agentSessionRepository) ForgetChild(sessionID string) error {
 	r.mu.Lock()
 	delete(r.children, sessionID)
 	r.mu.Unlock()
@@ -419,7 +484,7 @@ func (r *AgentSessionRepository) ForgetChild(sessionID string) error {
 // task admission fails immediately after creation. The runtime hierarchy is
 // retained if durable deletion fails, so a persisted child never becomes
 // unreachable from its parent.
-func (r *AgentSessionRepository) DiscardChild(ctx context.Context, sessionID string) error {
+func (r *agentSessionRepository) DiscardChild(ctx context.Context, sessionID string) error {
 	if err := r.config.Sessions.Delete(ctx, sessionID); err != nil {
 		return err
 	}
@@ -430,7 +495,7 @@ func (r *AgentSessionRepository) DiscardChild(ctx context.Context, sessionID str
 	return nil
 }
 
-func (r *AgentSessionRepository) Get(sessionID string) AgentSession {
+func (r *agentSessionRepository) Get(sessionID string) AgentSession {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if existing := r.sessions[sessionID]; existing != nil {
@@ -441,14 +506,14 @@ func (r *AgentSessionRepository) Get(sessionID string) AgentSession {
 	return created
 }
 
-func (r *AgentSessionRepository) Lookup(sessionID string) (AgentSession, bool) {
+func (r *agentSessionRepository) Lookup(sessionID string) (AgentSession, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	item, ok := r.sessions[sessionID]
 	return item, ok
 }
 
-func (r *AgentSessionRepository) Active() []Active {
+func (r *agentSessionRepository) Active() []Active {
 	r.mu.Lock()
 	items := make([]*agentSession, 0, len(r.sessions))
 	for _, item := range r.sessions {
@@ -466,13 +531,13 @@ func (r *AgentSessionRepository) Active() []Active {
 	return result
 }
 
-func (r *AgentSessionRepository) Wake(sessionID string) { r.Get(sessionID).Wake() }
+func (r *agentSessionRepository) Wake(sessionID string) { r.Get(sessionID).Wake() }
 
-func (r *AgentSessionRepository) Resume(ctx context.Context, sessionID string) error {
+func (r *agentSessionRepository) Resume(ctx context.Context, sessionID string) error {
 	return r.Get(sessionID).Resume(ctx)
 }
 
-func (r *AgentSessionRepository) Interrupt(ctx context.Context, sessionID string) error {
+func (r *agentSessionRepository) Interrupt(ctx context.Context, sessionID string) error {
 	item, ok := r.Lookup(sessionID)
 	if !ok {
 		return nil
@@ -480,7 +545,7 @@ func (r *AgentSessionRepository) Interrupt(ctx context.Context, sessionID string
 	return item.Interrupt(ctx)
 }
 
-func (r *AgentSessionRepository) Status(sessionID string) Status {
+func (r *agentSessionRepository) Status(sessionID string) Status {
 	item, ok := r.Lookup(sessionID)
 	if !ok {
 		return StatusIdle
@@ -488,7 +553,7 @@ func (r *AgentSessionRepository) Status(sessionID string) Status {
 	return item.Status()
 }
 
-func (r *AgentSessionRepository) Remove(sessionID string) error {
+func (r *agentSessionRepository) Remove(sessionID string) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	item := r.sessions[sessionID]

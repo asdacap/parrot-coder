@@ -10,7 +10,7 @@ import (
 )
 
 func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
-	repository := &AgentSessionRepository{sessions: make(map[string]*agentSession)}
+	repository := &agentSessionRepository{sessions: make(map[string]*agentSession)}
 	first := repository.Get("a")
 	if first != repository.Get("a") || first == repository.Get("b") {
 		t.Fatal("repository did not preserve one runtime object per session ID")
@@ -57,7 +57,7 @@ func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
 }
 
 func TestAgentSessionRepositoryChildHierarchy(t *testing.T) {
-	repository := &AgentSessionRepository{children: map[string]ChildSession{
+	repository := &agentSessionRepository{children: map[string]ChildSession{
 		"child-b": {SessionID: "child-b", ParentSessionID: "parent"},
 		"nested":  {SessionID: "nested", ParentSessionID: "child-a"},
 		"child-a": {SessionID: "child-a", ParentSessionID: "parent"},

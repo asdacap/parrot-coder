@@ -45,8 +45,8 @@ func (s *Service) SetSelection(ctx context.Context, sessionID string, selection 
 // UpdateSelection carries omitted values forward and persists the resulting
 // complete selection in the same aggregate transaction. The validator runs
 // after the current values are read and before an event or projection is made.
-func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch SelectionPatch, validate SelectionValidator) (UserSession, error) {
-	var updated UserSession
+func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch SelectionPatch, validate SelectionValidator) (UserSessionDto, error) {
+	var updated UserSessionDto
 	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		current, err := scanSession(tx.QueryRowContext(ctx, `
 			SELECT id, parent_session_id, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
@@ -108,12 +108,12 @@ func (s *Service) UpdateSelection(ctx context.Context, sessionID string, patch S
 		return []event.NewEvent{{Type: "session.selection.changed", Data: data}}, project, nil
 	})
 	if err != nil {
-		return UserSession{}, err
+		return UserSessionDto{}, err
 	}
 	// The selection is indexed, so the published entry has to follow the commit
 	// for LatestSelection on any host to see it.
 	if err := s.publish(updated); err != nil {
-		return UserSession{}, err
+		return UserSessionDto{}, err
 	}
 	return updated, nil
 }
