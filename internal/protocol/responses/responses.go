@@ -74,15 +74,19 @@ func EncodeRequest(request protocol.Request) ([]byte, error) {
 		}{"function", definition.Name, definition.Description, schema, false})
 	}
 	body := struct {
-		Model        string            `json:"model"`
-		Instructions string            `json:"instructions,omitempty"`
-		Input        []any             `json:"input"`
-		Tools        []any             `json:"tools,omitempty"`
-		Stream       bool              `json:"stream"`
-		Store        bool              `json:"store"`
-		Reasoning    *reasoningOptions `json:"reasoning,omitempty"`
-		Provider     json.RawMessage   `json:"provider,omitempty"`
-	}{Model: request.Model, Instructions: request.Instructions, Input: input, Tools: tools, Stream: true, Store: false}
+		Model              string            `json:"model"`
+		Instructions       string            `json:"instructions,omitempty"`
+		Input              []any             `json:"input"`
+		Tools              []any             `json:"tools,omitempty"`
+		Stream             bool              `json:"stream"`
+		Store              bool              `json:"store"`
+		Reasoning          *reasoningOptions `json:"reasoning,omitempty"`
+		Provider           json.RawMessage   `json:"provider,omitempty"`
+		PreviousResponseID string            `json:"previous_response_id,omitempty"`
+	}{
+		Model: request.Model, Instructions: request.Instructions, Input: input, Tools: tools,
+		Stream: true, Store: false, PreviousResponseID: request.PreviousResponseID,
+	}
 	if request.Reasoning != nil && (request.Reasoning.Effort != "" || request.Reasoning.Summary != "") {
 		body.Reasoning = &reasoningOptions{Effort: request.Reasoning.Effort, Summary: request.Reasoning.Summary}
 	}
@@ -110,11 +114,12 @@ type toolAccumulator struct {
 
 // Parser converts a Responses API SSE stream into canonical events.
 type Parser struct {
-	decoder *sse.Decoder
-	tools   map[string]*toolAccumulator
-	aliases map[string]string
-	pending []protocol.Event
-	done    bool
+	decoder           *sse.Decoder
+	tools             map[string]*toolAccumulator
+	aliases           map[string]string
+	pending           []protocol.Event
+	responseIDEmitted bool
+	done              bool
 }
 
 // NewParser creates a streaming parser.
@@ -174,6 +179,7 @@ func (p *Parser) consume(data []byte) error {
 		} `json:"item"`
 		Error    *wireError `json:"error"`
 		Response struct {
+			ID                string     `json:"id"`
 			Status            string     `json:"status"`
 			Error             *wireError `json:"error"`
 			IncompleteDetails struct {
@@ -187,6 +193,8 @@ func (p *Parser) consume(data []byte) error {
 	}
 
 	switch event.Type {
+	case "response.created":
+		p.appendResponseID(event.Response.ID)
 	case "response.output_text.delta":
 		if event.Delta != "" {
 			p.pending = append(p.pending, protocol.Event{Type: protocol.EventTextDelta, Text: event.Delta})
@@ -239,6 +247,7 @@ func (p *Parser) consume(data []byte) error {
 			}
 		}
 	case "response.completed":
+		p.appendResponseID(event.Response.ID)
 		if err := p.finalizeAll(); err != nil {
 			return err
 		}
@@ -250,6 +259,7 @@ func (p *Parser) consume(data []byte) error {
 		p.pending = append(p.pending, protocol.Event{Type: protocol.EventFinish, FinishReason: reason})
 		p.done = true
 	case "response.incomplete":
+		p.appendResponseID(event.Response.ID)
 		if err := p.finalizeAll(); err != nil {
 			return err
 		}
@@ -257,6 +267,7 @@ func (p *Parser) consume(data []byte) error {
 		p.pending = append(p.pending, protocol.Event{Type: protocol.EventFinish, FinishReason: incompleteReason(event.Response.IncompleteDetails.Reason)})
 		p.done = true
 	case "response.failed":
+		p.appendResponseID(event.Response.ID)
 		p.appendUsage(event.Response.Usage)
 		failure := event.Response.Error
 		if failure == nil {
@@ -383,6 +394,14 @@ func toolID(item *toolAccumulator) string {
 		return item.callID
 	}
 	return item.itemID
+}
+
+func (p *Parser) appendResponseID(responseID string) {
+	if responseID == "" || p.responseIDEmitted {
+		return
+	}
+	p.responseIDEmitted = true
+	p.pending = append(p.pending, protocol.Event{Type: protocol.EventResponseID, ResponseID: responseID})
 }
 
 func (p *Parser) appendUsage(usage *wireUsage) {

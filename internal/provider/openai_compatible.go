@@ -82,6 +82,7 @@ type OpenAICompatible struct {
 	stream              *http.Client
 	headerTimeout       time.Duration
 	providerPreferences json.RawMessage
+	responses           responseChain
 }
 
 // NewOpenAICompatible validates options before retaining any credentials.
@@ -339,6 +340,10 @@ func effortVariants(efforts []string, defaultEffort string) []Variant {
 }
 
 func (p *OpenAICompatible) Stream(ctx context.Context, request protocol.Request) (Stream, error) {
+	fullRequest := request
+	if p.protocol == ProtocolResponses {
+		request = p.responses.prepare(request)
+	}
 	request.ProviderPreferences = p.providerPreferences
 	request.IncludeRouterMetadata = len(p.providerPreferences) > 0
 	var body []byte
@@ -357,5 +362,12 @@ func (p *OpenAICompatible) Stream(ctx context.Context, request protocol.Request)
 	}
 	headers := p.headers.Clone()
 	headers.Set("Authorization", "Bearer "+p.apiKey.Value())
-	return startStream(ctx, p.stream, p.endpoint, body, headers, []string{p.apiKey.Value()}, p.headerTimeout, parser)
+	stream, err := startStream(ctx, p.stream, p.endpoint, body, headers, []string{p.apiKey.Value()}, p.headerTimeout, parser)
+	if err != nil {
+		return nil, err
+	}
+	if p.protocol == ProtocolResponses {
+		stream = p.responses.observe(stream, fullRequest)
+	}
+	return stream, nil
 }
