@@ -56,7 +56,13 @@ func TestAdoptLegacySplitsSessionsAndSetsFileAside(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := legacy.SQL().ExecContext(ctx, `UPDATE session SET name='inspect', parent_session_id='ses_1' WHERE id='ses_2'`); err != nil {
+	if _, err := legacy.SQL().ExecContext(ctx, `
+		UPDATE session SET name='inspect', parent_session_id='ses_1' WHERE id='ses_2';
+		INSERT INTO session_compaction_epoch VALUES('epoch-0','ses_1',0,'',0,'2026-01-01T00:00:00Z');
+		INSERT INTO session_compaction_epoch VALUES('epoch-1','ses_1',1,'compacted prompt',2,'2026-01-01T00:01:00Z');
+		INSERT INTO compaction_attempt VALUES('attempt-1','ses_1','epoch-0',0,1,2,'provider','model',0,'completed','','2026-01-01T00:00:30Z','2026-01-01T00:01:00Z');
+		INSERT INTO compaction_record VALUES('record-1','attempt-1','ses_1','epoch-0','epoch-1',0,1,2,'summary','{}','provider','model','2026-01-01T00:01:00Z');
+	`); err != nil {
 		t.Fatal(err)
 	}
 	if err := legacy.Close(); err != nil {
@@ -100,14 +106,23 @@ func TestAdoptLegacySplitsSessionsAndSetsFileAside(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		var events, next int
+		var events, next, epochs, attempts, records int
 		var parent, name string
-		if err := db.SQL().QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM event), (SELECT next_sequence FROM event_sequence), (SELECT parent_session_id FROM session), (SELECT name FROM session)`).Scan(&events, &next, &parent, &name); err != nil {
+		if err := db.SQL().QueryRowContext(ctx, `
+			SELECT (SELECT COUNT(*) FROM event), (SELECT next_sequence FROM event_sequence),
+			       (SELECT parent_session_id FROM session), (SELECT name FROM session),
+			       (SELECT COUNT(*) FROM session_compaction_epoch),
+			       (SELECT COUNT(*) FROM compaction_attempt), (SELECT COUNT(*) FROM compaction_record)
+		`).Scan(&events, &next, &parent, &name, &epochs, &attempts, &records); err != nil {
 			t.Fatal(err)
 		}
 		db.Close()
-		if events != 1 || next != 1 || parent != wantParent || name != wantName {
-			t.Fatalf("session %s carried %d events, next=%d, parent=%q, name=%q", meta.ID, events, next, parent, name)
+		wantEpochs, wantCompactions := 0, 0
+		if meta.ID == "ses_1" {
+			wantEpochs, wantCompactions = 2, 1
+		}
+		if events != 1 || next != 1 || parent != wantParent || name != wantName || epochs != wantEpochs || attempts != wantCompactions || records != wantCompactions {
+			t.Fatalf("session %s carried events=%d, next=%d, parent=%q, name=%q, epochs=%d, attempts=%d, records=%d", meta.ID, events, next, parent, name, epochs, attempts, records)
 		}
 	}
 

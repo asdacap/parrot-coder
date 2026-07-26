@@ -80,7 +80,7 @@ func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
 	if got, want := observation.Text, "profile prompt\n\nHard rules:\n- rule\n\nprofile status"; got != want {
 		t.Fatalf("profile status = %q, want %q", got, want)
 	}
-	if got, want := runnerInstructions("baseline", "/state/session/ses_test/scratch", false), "baseline\n\nScratch directory: /state/session/ses_test/scratch"; got != want {
+	if got, want := runnerInstructions("baseline", "", "/state/session/ses_test/scratch", false), "baseline\n\nScratch directory: /state/session/ses_test/scratch"; got != want {
 		t.Fatalf("runner instructions = %q, want %q", got, want)
 	}
 }
@@ -178,7 +178,7 @@ func TestUpdateSelectionSynchronizesRuntimeAndRepositoryStatus(t *testing.T) {
 
 func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
-	created, err := NewUserSession(t.Context(), failingGetSessionRuntime{SessionRuntime: h.sessions, sessionID: "ses_deleted_parent"}, h.agentSessions.config)
+	created, err := NewUserSession(t.Context(), failingGetSessionRuntime{SessionRuntime: h.sessions, sessionID: "ses_deleted_parent"}, h.agentSessions.systemContext, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -533,8 +533,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		t.Fatal(err)
 	}
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
-	createdAgentSessions, err := NewUserSession(ctx, sessions, UserSessionConfig{AgentSession: AgentSessionConfig{
-		Contexts:           systemcontext.Manager{Registry: contextRegistry},
+	createdAgentSessions, err := NewUserSession(ctx, sessions, contextRegistry, UserSessionConfig{AgentSession: AgentSessionConfig{
 		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,
@@ -645,7 +644,7 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
-	other, err := NewUserSession(t.Context(), h.sessions, h.agentSessions.config)
+	other, err := NewUserSession(t.Context(), h.sessions, h.agentSessions.systemContext, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -937,7 +936,7 @@ func (r deleteFailUserSession) Delete(context.Context) error { return r.err }
 func TestAgentSessionsResolvePersistenceOnceWhenBound(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	recording := &recordingSessionRuntime{SessionRuntime: h.sessions}
-	created, err := NewUserSession(t.Context(), recording, h.agentSessions.config)
+	created, err := NewUserSession(t.Context(), recording, h.agentSessions.systemContext, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1020,7 +1019,7 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	cleanupErr := errors.New("delete failed")
 	cleanupConfig := h.agentSessions.config
 	cleanupConfig.AgentSession.ToolProviders = providers
-	created, err := NewUserSession(t.Context(), deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}, cleanupConfig)
+	created, err := NewUserSession(t.Context(), deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}, h.agentSessions.systemContext, cleanupConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1207,7 +1206,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 
 	restartedConfig := h.agentSessions.config
 	restartedConfig.MaxChildTasks = 1
-	createdRestarted, err := NewUserSession(ctx, h.sessions, restartedConfig)
+	createdRestarted, err := NewUserSession(ctx, h.sessions, h.agentSessions.systemContext, restartedConfig)
 	if err != nil {
 		t.Fatal(err)
 	}

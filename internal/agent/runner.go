@@ -28,9 +28,8 @@ type StatusObserver interface {
 	Observe(context.Context, statusinfo.Query, statusinfo.Provider) (string, error)
 }
 
-type ContextRuntime interface {
-	Initialize(context.Context, session.ContextSession, int64) (session.ContextEpoch, error)
-	Reconcile(context.Context, session.ContextSession) (session.ContextEpoch, error)
+type SystemContextPrompt interface {
+	GetSystemContextPrompt(context.Context) (string, error)
 }
 
 type LivePublisher interface {
@@ -90,7 +89,6 @@ type ProfileResolver interface {
 }
 
 type AgentSessionConfig struct {
-	Contexts                 ContextRuntime
 	StateDirectories         UserSessionStateDirectories
 	Agents                   *Registry
 	Profiles                 ProfileResolver
@@ -123,6 +121,7 @@ type agentSession struct {
 	user                   UserSession
 	agentSessionRepository *agentSessionRepository
 	store                  session.AgentSessionStore
+	systemContext          SystemContextPrompt
 	config                 AgentSessionConfig
 	securityProfile        *agentSessionSecurityProfile
 	mu                     sync.Mutex
@@ -152,6 +151,7 @@ func newAgentSession(
 	user UserSession,
 	repository *agentSessionRepository,
 	store session.AgentSessionStore,
+	systemContext SystemContextPrompt,
 	config AgentSessionConfig,
 	maxConcurrentChildTurns int,
 	observers []LifecycleObserver,
@@ -161,7 +161,7 @@ func newAgentSession(
 	onChildLifecycle func(ChildLifecycleEvent),
 ) *agentSession {
 	return &agentSession{
-		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, config: config,
+		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, config: config,
 		childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
 		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
 		observeChildProgress: observeChildProgress, onChildProgress: onChildProgress,
@@ -246,28 +246,9 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if err != nil {
 			return err
 		}
-		epoch, epochErr := r.store.CurrentContextEpoch(ctx)
-		initial := errors.Is(epochErr, session.ErrNotFound)
-		if epochErr != nil && !initial {
-			return epochErr
-		}
-		if initial {
-			if r.config.Contexts == nil {
-				return errors.New("agent: context runtime is required for initialization")
-			}
-			epoch, err = r.config.Contexts.Initialize(ctx, r, cutoff)
-			if err != nil {
-				return err
-			}
-		}
-		if !initial && r.config.Contexts != nil {
-			reconciled, reconcileErr := r.config.Contexts.Reconcile(ctx, r)
-			if reconcileErr != nil && reconciled.ID == "" {
-				return reconcileErr
-			}
-			if reconciled.ID != "" {
-				epoch = reconciled
-			}
+		epoch, err := r.store.CurrentCompactionEpoch(ctx)
+		if err != nil {
+			return err
 		}
 		promoted, err := r.store.PromoteSteers(ctx, cutoff)
 		if err != nil {
@@ -304,17 +285,9 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			return err
 		}
 		ready := len(promoted) > 0
-		// ReconcileContext may append a "system" message after the last user or
-		// tool message. A system message is context metadata, not a turn that
-		// waits for a response, so it must not gate the continuation: scan back
-		// over trailing system messages to find the last meaningful role.
-		for i := len(history) - 1; i >= 0 && !ready; i-- {
-			role := history[i].Role
-			if role == protocol.RoleSystem {
-				continue
-			}
-			ready = role == protocol.RoleUser || role == protocol.RoleTool
-			break
+		if len(history) > 0 {
+			role := history[len(history)-1].Role
+			ready = ready || role == protocol.RoleUser || role == protocol.RoleTool
 		}
 		if !ready {
 			queued, err := r.store.PromoteNextQueue(ctx)
@@ -348,11 +321,18 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				}
 			}
 		}
+		if r.systemContext == nil {
+			return errors.New("agent: system context prompt is required")
+		}
+		systemPrompt, err := r.systemContext.GetSystemContextPrompt(ctx)
+		if err != nil {
+			return err
+		}
 
 		definitions := toolDefinitions(r.toolSnapshot)
 		turn++
 		maxTurnsReached := turn >= profile.MaxTurns
-		instructions := runnerInstructions(epoch.Baseline, scratchPath, maxTurnsReached)
+		instructions := runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, maxTurnsReached)
 		if maxTurnsReached {
 			definitions = nil
 			r.publishMaxTurnsReached(profile.MaxTurns)
@@ -360,13 +340,13 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if r.config.Compactor != nil {
 			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
 				SessionID: r.dto.ID, ProviderID: selected.Provider, Model: model,
-				Instructions: finalTurnInstructions(turn >= profile.MaxTurns), Tools: definitions,
+				Instructions: instructions, Tools: definitions,
 			})
 			if compactErr != nil {
 				return compactErr
 			}
 			if result.Status == "complete" {
-				epoch, err = r.store.CurrentContextEpoch(ctx)
+				epoch, err = r.store.CurrentCompactionEpoch(ctx)
 				if err != nil {
 					return err
 				}
@@ -374,7 +354,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				if err != nil {
 					return err
 				}
-				instructions = runnerInstructions(epoch.Baseline, scratchPath, turn >= profile.MaxTurns)
+				instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, turn >= profile.MaxTurns)
 			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
@@ -393,7 +373,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
 				SessionID: r.dto.ID, ProviderID: selected.Provider, Model: model,
-				Instructions: finalTurnInstructions(turn >= profile.MaxTurns), Tools: definitions, Force: true,
+				Instructions: instructions, Tools: definitions, Force: true,
 			})
 			if compactErr != nil || result.Status != "complete" {
 				if compactErr != nil {
@@ -404,7 +384,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if recordErr := r.store.RecordCompactionRetry(ctx, failure.code, result.RecordID); recordErr != nil {
 				return recordErr
 			}
-			epoch, err = r.store.CurrentContextEpoch(ctx)
+			epoch, err = r.store.CurrentCompactionEpoch(ctx)
 			if err != nil {
 				return err
 			}
@@ -412,7 +392,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
-			request.Instructions = runnerInstructions(epoch.Baseline, scratchPath, turn >= profile.MaxTurns)
+			request.Instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, turn >= profile.MaxTurns)
 			request.Messages = history
 			calls, finish, err = r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 			if err != nil {
@@ -702,9 +682,9 @@ func overflowMessage(message string) bool {
 	return false
 }
 
-func runnerInstructions(baseline, scratchPath string, final bool) string {
-	sections := make([]string, 0, 3)
-	for _, section := range []string{baseline, "Scratch directory: " + scratchPath, finalTurnInstructions(final)} {
+func runnerInstructions(systemPrompt, summaryPrompt, scratchPath string, final bool) string {
+	sections := make([]string, 0, 4)
+	for _, section := range []string{systemPrompt, summaryPrompt, "Scratch directory: " + scratchPath, finalTurnInstructions(final)} {
 		if section != "" {
 			sections = append(sections, section)
 		}

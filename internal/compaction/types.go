@@ -2,18 +2,16 @@
 package compaction
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 )
 
-type Epoch struct {
+type CompactionEpoch struct {
 	ID            string
 	Ordinal       int
-	Baseline      string
-	Sources       json.RawMessage
+	SummaryPrompt string
 	HistoryCutoff int64
 }
 
@@ -28,8 +26,8 @@ type Message struct {
 }
 
 type State struct {
-	Epoch    Epoch
-	Messages []Message
+	Checkpoint CompactionEpoch
+	Messages   []Message
 }
 
 type Plan struct {
@@ -47,7 +45,9 @@ type Estimate struct {
 	ProviderContextTokens int `json:"provider_context_tokens"`
 }
 
-func (e Estimate) Total() int { return max(e.MeasuredTokens+e.HeuristicTokens, e.ProviderContextTokens) }
+func (e Estimate) Total() int {
+	return max(e.MeasuredTokens+e.HeuristicTokens, e.ProviderContextTokens)
+}
 
 type Request struct {
 	SessionID    string
@@ -110,9 +110,4 @@ type SummaryRequest struct {
 type SummaryResult struct {
 	Summary string
 	Usage   protocol.Usage
-}
-
-type FullContext struct {
-	Baseline string
-	Sources  json.RawMessage
 }

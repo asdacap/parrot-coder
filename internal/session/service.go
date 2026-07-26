@@ -162,13 +162,24 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 	if err != nil {
 		return AgentSessionDto{}, err
 	}
+	epochID, err := id.New("ctx")
+	if err != nil {
+		_ = s.sessions.Remove(sessionID)
+		return AgentSessionDto{}, fmt.Errorf("session: generate compaction epoch ID: %w", err)
+	}
 	now := time.Now().UTC()
 	result := AgentSessionDto{
 		ID: sessionID, ParentSessionID: params.ParentSessionID, Name: params.Name, ProjectID: params.ProjectID, ProjectRoot: params.ProjectRoot, Title: params.Title,
 		Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: selection.Variant,
 		CreatedAt: now, UpdatedAt: now,
 	}
-	err = db.WithImmediate(ctx, func(tx *sql.Tx) error { return insertSession(ctx, tx, result) })
+	err = db.WithImmediate(ctx, func(tx *sql.Tx) error {
+		if err := insertSession(ctx, tx, result); err != nil {
+			return err
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO session_compaction_epoch(id,session_id,ordinal,summary_prompt,history_cutoff,created_at) VALUES(?,?,0,'',0,?)`, epochID, sessionID, formatTime(now))
+		return err
+	})
 	if err != nil {
 		// A session whose row was never written would be listed from its
 		// directory but fail to open, so remove it rather than leave a shell.

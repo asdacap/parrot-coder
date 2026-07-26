@@ -30,13 +30,13 @@ func (r *Repository) Load(ctx context.Context, sessionID string) (State, error) 
 		return State{}, err
 	}
 	var state State
-	if err := db.SQL().QueryRowContext(ctx, `SELECT id,ordinal,baseline,sources_json,history_cutoff
-		FROM session_context_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, sessionID).Scan(
-		&state.Epoch.ID, &state.Epoch.Ordinal, &state.Epoch.Baseline, &state.Epoch.Sources, &state.Epoch.HistoryCutoff); err != nil {
+	if err := db.SQL().QueryRowContext(ctx, `SELECT id,ordinal,summary_prompt,history_cutoff
+		FROM session_compaction_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, sessionID).Scan(
+		&state.Checkpoint.ID, &state.Checkpoint.Ordinal, &state.Checkpoint.SummaryPrompt, &state.Checkpoint.HistoryCutoff); err != nil {
 		return State{}, fmt.Errorf("compaction: load epoch: %w", err)
 	}
 	rows, err := db.SQL().QueryContext(ctx, `SELECT id,role,content,parts_json,status,usage_json,sequence
-		FROM session_message WHERE session_id=? AND sequence>=? ORDER BY sequence`, sessionID, state.Epoch.HistoryCutoff)
+		FROM session_message WHERE session_id=? AND sequence>=? ORDER BY sequence`, sessionID, state.Checkpoint.HistoryCutoff)
 	if err != nil {
 		return State{}, fmt.Errorf("compaction: load messages: %w", err)
 	}
@@ -104,10 +104,7 @@ func (r *Repository) Begin(ctx context.Context, attempt Attempt) (Attempt, error
 	return attempt, nil
 }
 
-func (r *Repository) Complete(ctx context.Context, attempt Attempt, summary SummaryResult, fresh FullContext) (Record, error) {
-	if !json.Valid(fresh.Sources) {
-		return Record{}, errors.New("compaction: invalid context sources")
-	}
+func (r *Repository) Complete(ctx context.Context, attempt Attempt, summary SummaryResult) (Record, error) {
 	recordID, err := id.New("cmpr")
 	if err != nil {
 		return Record{}, err
@@ -132,16 +129,17 @@ func (r *Repository) Complete(ctx context.Context, attempt Attempt, summary Summ
 		}
 		var current string
 		var ordinal int
-		if err := tx.QueryRowContext(ctx, `SELECT id,ordinal FROM session_context_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, attempt.SessionID).Scan(&current, &ordinal); err != nil {
+		if err := tx.QueryRowContext(ctx, `SELECT id,ordinal FROM session_compaction_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, attempt.SessionID).Scan(&current, &ordinal); err != nil {
 			return err
 		}
 		if current != attempt.SourceEpochID {
 			return errors.New("compaction: source epoch is no longer current")
 		}
 		now := events[0].CreatedAt
-		if _, err := tx.ExecContext(ctx, `INSERT INTO session_context_epoch(
-			id,session_id,ordinal,baseline,sources_json,history_cutoff,created_at) VALUES(?,?,?,?,?,?,?)`,
-			epochID, attempt.SessionID, ordinal+1, fresh.Baseline, []byte(fresh.Sources), attempt.HistoryCutoff, formatTime(now)); err != nil {
+		compactedSummaryPrompt := composeCompactedSummaryPrompt(summary.Summary, attempt)
+		if _, err := tx.ExecContext(ctx, `INSERT INTO session_compaction_epoch(
+			id,session_id,ordinal,summary_prompt,history_cutoff,created_at) VALUES(?,?,?,?,?,?)`,
+			epochID, attempt.SessionID, ordinal+1, compactedSummaryPrompt, attempt.HistoryCutoff, formatTime(now)); err != nil {
 			return err
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO compaction_record(

@@ -9,16 +9,26 @@ import (
 	"testing"
 )
 
+func observeSources(t *testing.T, sources []Source) map[string]Observation {
+	t.Helper()
+	observations := make(map[string]Observation, len(sources))
+	for _, source := range sources {
+		observation, err := source.Observe(context.Background())
+		if err != nil {
+			t.Fatalf("observe %s: %v", source.Key(), err)
+		}
+		observations[source.Key()] = observation
+	}
+	return observations
+}
+
 func TestCLIUtilitiesSourceListsAvailableUtilities(t *testing.T) {
 	observation, err := (CLIUtilitiesSource{Available: []string{"bash", "git"}}).Observe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(observation.Baseline, "Available CLI utilities: bash, git") {
-		t.Fatalf("baseline = %q", observation.Baseline)
-	}
-	if string(observation.Value) != `["bash","git"]` {
-		t.Fatalf("value = %s", observation.Value)
+	if !strings.Contains(observation.Text, "Available CLI utilities: bash, git") {
+		t.Fatalf("baseline = %q", observation.Text)
 	}
 }
 
@@ -27,8 +37,8 @@ func TestCLIUtilitiesSourceReportsNoneAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Baseline != "Available CLI utilities: none" {
-		t.Fatalf("baseline = %q", observation.Baseline)
+	if observation.Text != "Available CLI utilities: none" {
+		t.Fatalf("baseline = %q", observation.Text)
 	}
 }
 
@@ -37,11 +47,8 @@ func TestOptionalCLIUtilitiesSourceListsOnlyDetectedUtilities(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Baseline != "Available optional CLI utilities: bat, python3" {
-		t.Fatalf("baseline = %q", observation.Baseline)
-	}
-	if string(observation.Value) != `["bat","python3"]` {
-		t.Fatalf("value = %s", observation.Value)
+	if observation.Text != "Available optional CLI utilities: bat, python3" {
+		t.Fatalf("baseline = %q", observation.Text)
 	}
 }
 
@@ -51,27 +58,20 @@ func TestBuiltinsIncludeCLIUtilitiesSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := NewRegistry(sources...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := registry.Observe(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	snapshot := observeSources(t, sources)
 	observation, ok := snapshot["runtime:cli-utilities"]
-	if !ok || observation.Baseline != "Available CLI utilities: bash, stat" {
+	if !ok || observation.Text != "Available CLI utilities: bash, stat" {
 		t.Fatalf("CLI utility observation = %#v", observation)
 	}
-	if strings.Contains(snapshot["runtime:environment"].Baseline, "CLI utilities") {
-		t.Fatalf("environment source contains CLI utility inventory: %q", snapshot["runtime:environment"].Baseline)
+	if strings.Contains(snapshot["runtime:environment"].Text, "CLI utilities") {
+		t.Fatalf("environment source contains CLI utility inventory: %q", snapshot["runtime:environment"].Text)
 	}
 	optional, ok := snapshot["runtime:optional-cli-utilities"]
-	if !ok || optional.Baseline != "Available optional CLI utilities: bat, node" {
+	if !ok || optional.Text != "Available optional CLI utilities: bat, node" {
 		t.Fatalf("optional CLI utility observation = %#v", optional)
 	}
 	prompt, ok := snapshot["agent:prompt"]
-	if !ok || prompt.Baseline != "configured agent prompt" || string(prompt.Value) != `"configured agent prompt"` {
+	if !ok || prompt.Text != "configured agent prompt" {
 		t.Fatalf("agent prompt observation = %#v", prompt)
 	}
 }
@@ -102,14 +102,7 @@ func TestBuiltinsDiscoverAgentsFromGlobalAndRootToWorkingDirectory(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := NewRegistry(sources...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := registry.Observe(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	snapshot := observeSources(t, sources)
 	var got []string
 	for _, key := range []string{"agents:global", "agents:project-0000", "agents:project-0001", "agents:project-0002"} {
 		observation, ok := snapshot[key]
@@ -119,14 +112,14 @@ func TestBuiltinsDiscoverAgentsFromGlobalAndRootToWorkingDirectory(t *testing.T)
 		if observation.Path == "" || filepath.Base(observation.Path) != "AGENTS.md" {
 			t.Fatalf("%s path = %q", key, observation.Path)
 		}
-		got = append(got, string(observation.Value))
+		got = append(got, observation.Text)
 	}
-	want := []string{`"global"`, `"root"`, `"a"`, `"b"`}
+	want := []string{"Global AGENTS.md:\nglobal", "AGENTS.md at " + root + ":\nroot", "AGENTS.md at " + filepath.Join(root, "a") + ":\na", "AGENTS.md at " + cwd + ":\nb"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("AGENTS order = %#v, want %#v", got, want)
 	}
 	for _, observation := range snapshot {
-		if string(observation.Value) == `"outside"` {
+		if strings.HasSuffix(observation.Text, "\noutside") {
 			t.Fatal("AGENTS discovery escaped the project root")
 		}
 	}
@@ -193,11 +186,8 @@ func TestSubagentsSourceListsAvailableSubagents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Baseline != "Available subagents: explorer, review, worker" {
-		t.Fatalf("baseline = %q", observation.Baseline)
-	}
-	if string(observation.Value) != `["explorer","review","worker"]` {
-		t.Fatalf("value = %s", observation.Value)
+	if observation.Text != "Available subagents: explorer, review, worker" {
+		t.Fatalf("baseline = %q", observation.Text)
 	}
 }
 
@@ -206,8 +196,8 @@ func TestSubagentsSourceReportsNoneAvailable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Baseline != "Available subagents: none" {
-		t.Fatalf("baseline = %q", observation.Baseline)
+	if observation.Text != "Available subagents: none" {
+		t.Fatalf("baseline = %q", observation.Text)
 	}
 }
 
@@ -221,16 +211,9 @@ func TestBuiltinsIncludeSubagentsSource(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := NewRegistry(sources...)
-	if err != nil {
-		t.Fatal(err)
-	}
-	snapshot, err := registry.Observe(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
+	snapshot := observeSources(t, sources)
 	observation, ok := snapshot["runtime:subagents"]
-	if !ok || observation.Baseline != "Available subagents: explorer, worker" {
+	if !ok || observation.Text != "Available subagents: explorer, worker" {
 		t.Fatalf("subagent observation = %#v", observation)
 	}
 }
@@ -254,17 +237,10 @@ func TestBuiltinsIncludeToolSystemGuidanceWhenNonEmpty(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			registry, err := NewRegistry(sources...)
-			if err != nil {
-				t.Fatal(err)
-			}
-			snapshot, err := registry.Observe(context.Background())
-			if err != nil {
-				t.Fatal(err)
-			}
+			snapshot := observeSources(t, sources)
 			observation, ok := snapshot["runtime:tool-system-guidance"]
 			if test.wantKey {
-				if !ok || observation.Baseline != test.guidance {
+				if !ok || observation.Text != test.guidance {
 					t.Fatalf("tool-system-guidance = %#v, want %q", observation, test.guidance)
 				}
 			} else {

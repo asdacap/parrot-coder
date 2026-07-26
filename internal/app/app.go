@@ -475,11 +475,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: context registry: %w", err)
 	}
-	contexts := systemcontext.Manager{Registry: contextRegistry}
 	compactionRepository := compaction.NewRepository(sessionStore, repository)
 	compactionService, err := compaction.NewService(compactionRepository,
-		compaction.ProviderSummarizer{Providers: providerRegistry},
-		compactionContextObserver{manager: contexts}, compaction.Config{})
+		compaction.ProviderSummarizer{Providers: providerRegistry}, compaction.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("app: compaction: %w", err)
 	}
@@ -490,9 +488,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: session state directories: %w", err)
 	}
-	userSession, err := agent.NewUserSession(ctx, sessions, agent.UserSessionConfig{
+	userSession, err := agent.NewUserSession(ctx, sessions, contextRegistry, agent.UserSessionConfig{
 		AgentSession: agent.AgentSessionConfig{
-			Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
+			StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
 			ToolProviders: toolProviders, ToolPermissionAuthorizer: permissions, ToolErrorAdvisor: pathErrorAdvisor,
 			Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
 				return live.TaskIDFor(sessionID, managedtask.MainTaskID)
@@ -647,13 +645,6 @@ func convertSandboxRules(rules []config.SandboxRule) []security.Rule {
 		result = append(result, security.Rule{Path: rule.Path, Action: action})
 	}
 	return result
-}
-
-type compactionContextObserver struct{ manager systemcontext.Manager }
-
-func (o compactionContextObserver) ObserveFull(ctx context.Context) (compaction.FullContext, error) {
-	observed, err := o.manager.ObserveFull(ctx)
-	return compaction.FullContext{Baseline: observed.Baseline, Sources: observed.Sources}, err
 }
 
 // StoreOutput stores a stream as a text file in the session's private state.

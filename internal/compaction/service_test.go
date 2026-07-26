@@ -29,16 +29,9 @@ func (s *fakeSummarizer) Summarize(_ context.Context, request SummaryRequest) (S
 	return s.result, s.err
 }
 
-type fakeContext struct {
-	value FullContext
-	err   error
-}
-
-func (c fakeContext) ObserveFull(context.Context) (FullContext, error) { return c.value, c.err }
-
 type failingCompleteStore struct{ *Repository }
 
-func (s failingCompleteStore) Complete(context.Context, Attempt, SummaryResult, FullContext) (Record, error) {
+func (s failingCompleteStore) Complete(context.Context, Attempt, SummaryResult) (Record, error) {
 	return Record{}, errors.New("injected database commit failure")
 }
 
@@ -60,7 +53,11 @@ func newHarness(t *testing.T, baseline string, messages int) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessions.GetSession(created.ID).InitializeContext(ctx, baseline, json.RawMessage(`{"test":{"available":true,"value":{"v":1}}}`), 0); err != nil {
+	sessionDB, err := db.Session(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sessionDB.SQL().ExecContext(ctx, `UPDATE session_compaction_epoch SET summary_prompt=? WHERE session_id=?`, baseline, created.ID); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < messages; i++ {
@@ -72,10 +69,6 @@ func newHarness(t *testing.T, baseline string, messages int) *harness {
 		if _, err := sessions.GetSession(created.ID).AppendMessage(ctx, protocol.Message{Role: role, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: text}}}); err != nil {
 			t.Fatal(err)
 		}
-	}
-	sessionDB, err := db.Session(ctx, created.ID)
-	if err != nil {
-		t.Fatal(err)
 	}
 	return &harness{db: sessionDB, sessions: sessions, repo: NewRepository(db, events), id: created.ID}
 }
@@ -101,7 +94,7 @@ func TestBudgetTriggerAndDeterministicHeuristic(t *testing.T) {
 	}
 	h := newHarness(t, "baseline", 6)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-	service, err := NewService(h.repo, summary, fakeContext{value: FullContext{Baseline: "fresh", Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 2, TriggerFraction: .8})
+	service, err := NewService(h.repo, summary, Config{RecentMessages: 2, TriggerFraction: .8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +113,7 @@ func TestForcedCompactionRelaxesRecentMessageRetention(t *testing.T) {
 		t.Run(fmt.Sprintf("context_window_%d", contextWindow), func(t *testing.T) {
 			h := newHarness(t, "baseline", 6)
 			summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-			service, err := NewService(h.repo, summary, fakeContext{value: FullContext{Baseline: "fresh", Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 6})
+			service, err := NewService(h.repo, summary, Config{RecentMessages: 6})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -140,7 +133,7 @@ func TestForcedCompactionRelaxesRecentMessageRetention(t *testing.T) {
 func TestForcedCompactionDoesNotRequireModelBudgetMetadata(t *testing.T) {
 	h := newHarness(t, "baseline", 6)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-	service, err := NewService(h.repo, summary, fakeContext{value: FullContext{Baseline: "fresh", Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 2})
+	service, err := NewService(h.repo, summary, Config{RecentMessages: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,10 +166,10 @@ func TestSafeCutKeepsToolCallWithAllResults(t *testing.T) {
 	}
 }
 
-func TestAtomicSuccessPreservesHistoryAndIncludesPriorBaseline(t *testing.T) {
+func TestAtomicSuccessPreservesHistoryAndIncludesPriorSummary(t *testing.T) {
 	h := newHarness(t, "PRIOR EPOCH SUMMARY", 8)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "intent and decisions", Usage: protocol.Usage{TotalTokens: 12}}}
-	service, _ := NewService(h.repo, summary, fakeContext{value: FullContext{Baseline: "FRESH TYPED CONTEXT", Sources: json.RawMessage(`{"fresh":{"available":true}}`)}}, Config{RecentMessages: 2})
+	service, _ := NewService(h.repo, summary, Config{RecentMessages: 2})
 	result, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true})
 	if err != nil || result.Status != "complete" {
 		t.Fatalf("compact = %#v, %v", result, err)
@@ -184,8 +177,8 @@ func TestAtomicSuccessPreservesHistoryAndIncludesPriorBaseline(t *testing.T) {
 	if len(summary.request.Messages) != 6 || !strings.Contains(summary.request.Prompt, "PRIOR EPOCH SUMMARY") || strings.Contains(strings.ToLower(summary.request.Prompt), "include secrets") {
 		t.Fatalf("summary request = %#v", summary.request)
 	}
-	epoch, err := h.sessions.GetSession(h.id).CurrentContextEpoch(context.Background())
-	if err != nil || epoch.Ordinal != 1 || !strings.Contains(epoch.Baseline, "FRESH TYPED CONTEXT") || !strings.Contains(epoch.Baseline, "intent and decisions") {
+	epoch, err := h.sessions.GetSession(h.id).CurrentCompactionEpoch(context.Background())
+	if err != nil || epoch.Ordinal != 1 || strings.Contains(epoch.SummaryPrompt, "PRIOR EPOCH SUMMARY") || !strings.Contains(epoch.SummaryPrompt, "intent and decisions") {
 		t.Fatalf("epoch = %#v, %v", epoch, err)
 	}
 	messages, _ := h.sessions.GetSession(h.id).ListMessages(context.Background())
@@ -211,40 +204,27 @@ func TestAtomicSuccessPreservesHistoryAndIncludesPriorBaseline(t *testing.T) {
 	}
 }
 
-func TestFailuresLeaveOldEpochActive(t *testing.T) {
-	tests := []struct {
-		name       string
-		summarizer *fakeSummarizer
-		observer   fakeContext
-	}{
-		{"provider", &fakeSummarizer{err: errors.New("provider failed")}, fakeContext{}},
-		{"context", &fakeSummarizer{result: SummaryResult{Summary: "summary"}}, fakeContext{err: errors.New("source unavailable")}},
-		{"invalid context", &fakeSummarizer{result: SummaryResult{Summary: "summary"}}, fakeContext{value: FullContext{Sources: json.RawMessage(`no`)}}},
+func TestSummarizerFailureLeavesOldEpochActive(t *testing.T) {
+	h := newHarness(t, "old", 6)
+	service, _ := NewService(h.repo, &fakeSummarizer{err: errors.New("provider failed")}, Config{RecentMessages: 2})
+	if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err == nil {
+		t.Fatal("compaction succeeded")
 	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			h := newHarness(t, "old", 6)
-			service, _ := NewService(h.repo, test.summarizer, test.observer, Config{RecentMessages: 2})
-			if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err == nil {
-				t.Fatal("compaction succeeded")
-			}
-			epoch, _ := h.sessions.GetSession(h.id).CurrentContextEpoch(context.Background())
-			if epoch.Ordinal != 0 || epoch.Baseline != "old" {
-				t.Fatalf("epoch advanced: %#v", epoch)
-			}
-			var records int
-			_ = h.db.SQL().QueryRow(`SELECT COUNT(*) FROM compaction_record`).Scan(&records)
-			if records != 0 {
-				t.Fatalf("records = %d", records)
-			}
-		})
+	epoch, _ := h.sessions.GetSession(h.id).CurrentCompactionEpoch(context.Background())
+	if epoch.Ordinal != 0 || epoch.SummaryPrompt != "old" {
+		t.Fatalf("epoch advanced: %#v", epoch)
+	}
+	var records int
+	_ = h.db.SQL().QueryRow(`SELECT COUNT(*) FROM compaction_record`).Scan(&records)
+	if records != 0 {
+		t.Fatalf("records = %d", records)
 	}
 }
 
 func TestCancellationMarksAttemptInterrupted(t *testing.T) {
 	h := newHarness(t, "old", 6)
 	summary := &fakeSummarizer{err: context.Canceled}
-	service, _ := NewService(h.repo, summary, fakeContext{}, Config{RecentMessages: 2})
+	service, _ := NewService(h.repo, summary, Config{RecentMessages: 2})
 	_, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v", err)
@@ -258,11 +238,11 @@ func TestCancellationMarksAttemptInterrupted(t *testing.T) {
 func TestDatabaseCompletionFailureDoesNotAdvanceEpoch(t *testing.T) {
 	h := newHarness(t, "old", 6)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-	service, _ := NewService(failingCompleteStore{h.repo}, summary, fakeContext{value: FullContext{Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 2})
+	service, _ := NewService(failingCompleteStore{h.repo}, summary, Config{RecentMessages: 2})
 	if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err == nil {
 		t.Fatal("compaction succeeded")
 	}
-	epoch, _ := h.sessions.GetSession(h.id).CurrentContextEpoch(context.Background())
+	epoch, _ := h.sessions.GetSession(h.id).CurrentCompactionEpoch(context.Background())
 	if epoch.Ordinal != 0 {
 		t.Fatalf("epoch advanced: %#v", epoch)
 	}
@@ -318,11 +298,11 @@ func TestLongHistoryCompactsRequestButKeepsFullHistory(t *testing.T) {
 	// Alternating user/assistant messages model 510 complete turns.
 	h := newHarness(t, "baseline", 1020)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "bounded"}}
-	service, _ := NewService(h.repo, summary, fakeContext{value: FullContext{Sources: json.RawMessage(`{}`)}}, Config{RecentMessages: 10})
+	service, _ := NewService(h.repo, summary, Config{RecentMessages: 10})
 	if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err != nil {
 		t.Fatal(err)
 	}
-	epoch, _ := h.sessions.GetSession(h.id).CurrentContextEpoch(context.Background())
+	epoch, _ := h.sessions.GetSession(h.id).CurrentCompactionEpoch(context.Background())
 	history, err := h.sessions.GetSession(h.id).ListModelHistory(context.Background(), epoch.HistoryCutoff)
 	if err != nil || len(history) != 10 {
 		t.Fatalf("model history = %d, %v", len(history), err)

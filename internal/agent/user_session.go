@@ -84,29 +84,30 @@ type UserSessionConfig struct {
 }
 
 type userSession struct {
-	config     UserSessionConfig
-	sessions   SessionRuntime
-	repository *agentSessionRepository
-	childTurns childTurnSemaphore
-	quotaMu    sync.Mutex
-	childMu    sync.Mutex
-	closed     bool
+	config        UserSessionConfig
+	sessions      SessionRuntime
+	systemContext SystemContextPrompt
+	repository    *agentSessionRepository
+	childTurns    childTurnSemaphore
+	quotaMu       sync.Mutex
+	childMu       sync.Mutex
+	closed        bool
 }
 
 var _ UserSession = (*userSession)(nil)
 
 // NewUserSession creates a user runtime with its own agent-session repository.
-func NewUserSession(ctx context.Context, sessions SessionRuntime, config UserSessionConfig, observers ...LifecycleObserver) (UserSession, error) {
+func NewUserSession(ctx context.Context, sessions SessionRuntime, systemContext SystemContextPrompt, config UserSessionConfig, observers ...LifecycleObserver) (UserSession, error) {
 	if config.MaxConcurrentChildTurns <= 0 || config.MaxConcurrentChildTurnsPerParent <= 0 || config.MaxConcurrentChildTurnsPerParent > config.MaxConcurrentChildTurns {
 		return nil, errors.New("agent: child turn concurrency limits are invalid")
 	}
-	if sessions == nil {
-		return nil, errors.New("agent: session persistence is required")
+	if sessions == nil || systemContext == nil {
+		return nil, errors.New("agent: session persistence and system context prompt are required")
 	}
 	if err := validateAgentSessionConfig(&config.AgentSession); err != nil {
 		return nil, err
 	}
-	created := &userSession{config: config, sessions: sessions, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
+	created := &userSession{config: config, sessions: sessions, systemContext: systemContext, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
 	applyChildDefaults(&created.config)
 	repository, err := newAgentSessionRepository(ctx, created, config.MaxConcurrentChildTurnsPerParent, observers...)
 	if err != nil {
@@ -549,6 +550,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 
 	var (
 		user                                     UserSession
+		systemContext                            SystemContextPrompt
 		maxChildPromptBytes, maxChildResultBytes int
 		observeChildProgress                     func(string, func(ChildProgress)) func()
 		onChildProgress, onChildComplete         func(Status)
@@ -556,13 +558,14 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	)
 	if r.user != nil {
 		user = r.user
+		systemContext = r.user.systemContext
 		maxChildPromptBytes, maxChildResultBytes = r.user.config.MaxChildPromptBytes, r.user.config.MaxChildResultBytes
 		observeChildProgress = r.user.config.ObserveChildProgress
 		onChildProgress, onChildComplete = r.user.config.OnChildProgress, r.user.config.OnChildComplete
 		onChildLifecycle = r.user.config.OnChildLifecycle
 	}
 	candidate := newAgentSession(
-		dto, parent, user, r, store, r.config, r.maxConcurrentChildTurns, r.observers,
+		dto, parent, user, r, store, systemContext, r.config, r.maxConcurrentChildTurns, r.observers,
 		maxChildPromptBytes, maxChildResultBytes, observeChildProgress, onChildProgress, onChildComplete, onChildLifecycle,
 	)
 	rolledBack := false

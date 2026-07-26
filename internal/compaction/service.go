@@ -19,16 +19,12 @@ type Store interface {
 	Load(context.Context, string) (State, error)
 	Completed(context.Context, string, string, int64, int64) (Record, bool, error)
 	Begin(context.Context, Attempt) (Attempt, error)
-	Complete(context.Context, Attempt, SummaryResult, FullContext) (Record, error)
+	Complete(context.Context, Attempt, SummaryResult) (Record, error)
 	Fail(ctx context.Context, sessionID, attemptID, status, reason string) error
 }
 
 type Summarizer interface {
 	Summarize(context.Context, SummaryRequest) (SummaryResult, error)
-}
-
-type ContextObserver interface {
-	ObserveFull(context.Context) (FullContext, error)
 }
 
 type Config struct {
@@ -41,13 +37,12 @@ type Config struct {
 type Service struct {
 	store      Store
 	summarizer Summarizer
-	contexts   ContextObserver
 	config     Config
 }
 
-func NewService(store Store, summarizer Summarizer, contexts ContextObserver, config Config) (*Service, error) {
-	if store == nil || summarizer == nil || contexts == nil {
-		return nil, errors.New("compaction: store, summarizer, and context observer are required")
+func NewService(store Store, summarizer Summarizer, config Config) (*Service, error) {
+	if store == nil || summarizer == nil {
+		return nil, errors.New("compaction: store and summarizer are required")
 	}
 	if config.TriggerFraction == 0 {
 		config.TriggerFraction = .8
@@ -61,7 +56,7 @@ func NewService(store Store, summarizer Summarizer, contexts ContextObserver, co
 	if config.MaxSummaryInputBytes <= 0 {
 		config.MaxSummaryInputBytes = 2 << 20
 	}
-	return &Service{store: store, summarizer: summarizer, contexts: contexts, config: config}, nil
+	return &Service{store: store, summarizer: summarizer, config: config}, nil
 }
 
 func (s *Service) Compact(ctx context.Context, request Request) (result Result, err error) {
@@ -97,7 +92,7 @@ func (s *Service) Compact(ctx context.Context, request Request) (result Result, 
 	}
 	plan, reason := s.plan(state, request)
 	if reason != "" {
-		return Result{Status: "skipped", SourceEpochID: state.Epoch.ID, Reason: reason}, nil
+		return Result{Status: "skipped", SourceEpochID: state.Checkpoint.ID, Reason: reason}, nil
 	}
 	if existing, ok, err := s.store.Completed(ctx, request.SessionID, plan.SourceEpochID, plan.CoveredFrom, plan.CoveredTo); err != nil {
 		return Result{}, err
@@ -125,7 +120,7 @@ func (s *Service) Compact(ctx context.Context, request Request) (result Result, 
 		return Result{Status: status, AttemptID: attempt.ID, SourceEpochID: attempt.SourceEpochID}, errors.Join(cause, markErr)
 	}
 
-	prompt, messages, err := summaryInput(state.Epoch, plan, s.config.MaxSummaryInputBytes)
+	prompt, messages, err := summaryInput(state.Checkpoint, plan, s.config.MaxSummaryInputBytes)
 	if err != nil {
 		return fail(err)
 	}
@@ -136,15 +131,7 @@ func (s *Service) Compact(ctx context.Context, request Request) (result Result, 
 	if strings.TrimSpace(summary.Summary) == "" {
 		return fail(errors.New("compaction: summarizer returned an empty summary"))
 	}
-	fresh, err := s.contexts.ObserveFull(ctx)
-	if err != nil {
-		return fail(fmt.Errorf("compaction: observe full context: %w", err))
-	}
-	if !json.Valid(fresh.Sources) {
-		return fail(errors.New("compaction: observer returned invalid sources"))
-	}
-	fresh.Baseline = composeBaseline(fresh.Baseline, summary.Summary, attempt)
-	record, err := s.store.Complete(ctx, attempt, summary, fresh)
+	record, err := s.store.Complete(ctx, attempt, summary)
 	if err != nil {
 		if existing, ok, lookupErr := s.store.Completed(context.Background(), request.SessionID, plan.SourceEpochID, plan.CoveredFrom, plan.CoveredTo); lookupErr == nil && ok {
 			_ = s.store.Fail(context.Background(), attempt.SessionID, attempt.ID, "failed", "superseded by an idempotent completed compaction")
@@ -156,7 +143,7 @@ func (s *Service) Compact(ctx context.Context, request Request) (result Result, 
 }
 
 func (s *Service) plan(state State, request Request) (Plan, string) {
-	estimate := EstimateRequest(state.Epoch.Baseline+request.Instructions, state.Messages, request.Tools)
+	estimate := EstimateRequest(request.Instructions, state.Messages, request.Tools)
 	usable := request.Model.ContextWindow - request.Model.MaxOutputTokens - s.config.ReserveTokens
 	if usable <= 0 {
 		if !request.Force {
@@ -191,7 +178,7 @@ func (s *Service) plan(state State, request Request) (Plan, string) {
 	if len(covered) == 0 {
 		return Plan{}, ErrNoSafeCut.Error()
 	}
-	return Plan{SourceEpochID: state.Epoch.ID, CoveredFrom: state.Epoch.HistoryCutoff, CoveredTo: covered[len(covered)-1].Sequence, HistoryCutoff: cut, Messages: covered, Estimate: estimate}, ""
+	return Plan{SourceEpochID: state.Checkpoint.ID, CoveredFrom: state.Checkpoint.HistoryCutoff, CoveredTo: covered[len(covered)-1].Sequence, HistoryCutoff: cut, Messages: covered, Estimate: estimate}, ""
 }
 
 // HeuristicTextTokens is deterministic and intentionally conservative. It is
@@ -297,9 +284,9 @@ func SafeCut(messages []Message, recent int) (int64, bool) {
 	return messages[index].Sequence, true
 }
 
-func summaryInput(epoch Epoch, plan Plan, maxBytes int) (string, []protocol.Message, error) {
+func summaryInput(epoch CompactionEpoch, plan Plan, maxBytes int) (string, []protocol.Message, error) {
 	const instructions = "Summarize the covered session history for continuation. Preserve user intent, decisions and rationale, modified files, commands and tests run, unresolved errors, current todo state, and current permission state. Do not include credentials, tokens, secrets, or secret values. Be concise and factual."
-	prompt := instructions + fmt.Sprintf("\n\nSource epoch: %s. Covered event sequences: %d-%d. Prior epoch baseline and any prior compacted summary follow:\n\n%s", epoch.ID, plan.CoveredFrom, plan.CoveredTo, epoch.Baseline)
+	prompt := instructions + fmt.Sprintf("\n\nSource epoch: %s. Covered event sequences: %d-%d. Prior compacted summary prompt follows:\n\n%s", epoch.ID, plan.CoveredFrom, plan.CoveredTo, epoch.SummaryPrompt)
 	messages := make([]protocol.Message, 0, len(plan.Messages))
 	total := len(prompt)
 	for _, item := range plan.Messages {
@@ -317,14 +304,10 @@ func summaryInput(epoch Epoch, plan Plan, maxBytes int) (string, []protocol.Mess
 	return prompt, messages, nil
 }
 
-func composeBaseline(observed, summary string, attempt Attempt) string {
+func composeCompactedSummaryPrompt(summary string, attempt Attempt) string {
 	const begin = "----- BEGIN COMPACTED SESSION HISTORY -----"
 	const end = "----- END COMPACTED SESSION HISTORY -----"
-	section := fmt.Sprintf("%s\nSource epoch: %s\nCovered sequences: %d-%d\nHistory cutoff: %d\n\n%s\n%s", begin, attempt.SourceEpochID, attempt.CoveredFrom, attempt.CoveredTo, attempt.HistoryCutoff, strings.TrimSpace(summary), end)
-	if strings.TrimSpace(observed) == "" {
-		return section
-	}
-	return strings.TrimSpace(observed) + "\n\n" + section
+	return fmt.Sprintf("%s\nSource epoch: %s\nCovered sequences: %d-%d\nHistory cutoff: %d\n\n%s\n%s", begin, attempt.SourceEpochID, attempt.CoveredFrom, attempt.CoveredTo, attempt.HistoryCutoff, strings.TrimSpace(summary), end)
 }
 
 func completedResult(record Record) Result {

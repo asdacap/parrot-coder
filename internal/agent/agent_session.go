@@ -2,7 +2,6 @@ package agent
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -65,10 +64,6 @@ type AgentSession interface {
 	ListMessages(context.Context) ([]session.Message, error)
 	HasPendingInputs(context.Context) (bool, error)
 	LatestSequence(context.Context) (int64, error)
-	CurrentContextEpoch(context.Context) (session.ContextEpoch, error)
-	InitializeContext(context.Context, string, json.RawMessage, int64) (session.ContextEpoch, error)
-	ReconcileContext(context.Context, string, json.RawMessage) error
-	ReplaceContext(context.Context, string, json.RawMessage, int64) (session.ContextEpoch, error)
 }
 
 func (s *agentSession) ID() string           { return s.dto.ID }
@@ -120,19 +115,6 @@ func (s *agentSession) HasPendingInputs(ctx context.Context) (bool, error) {
 func (s *agentSession) LatestSequence(ctx context.Context) (int64, error) {
 	return s.store.LatestSequence(ctx)
 }
-func (s *agentSession) CurrentContextEpoch(ctx context.Context) (session.ContextEpoch, error) {
-	return s.store.CurrentContextEpoch(ctx)
-}
-func (s *agentSession) InitializeContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
-	return s.store.InitializeContext(ctx, baseline, sources, cutoff)
-}
-func (s *agentSession) ReconcileContext(ctx context.Context, text string, sources json.RawMessage) error {
-	return s.store.ReconcileContext(ctx, text, sources)
-}
-func (s *agentSession) ReplaceContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
-	return s.store.ReplaceContext(ctx, baseline, sources, cutoff)
-}
-
 func (s *agentSession) Status() Status {
 	s.mu.Lock()
 	if s.child != nil {
