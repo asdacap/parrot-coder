@@ -441,7 +441,7 @@ func (r *agentSessionRepository) ManagedChildTasks() int {
 	count := 0
 	for _, runtime := range runtimes {
 		runtime.mu.Lock()
-		managed := runtime.childTurn != nil
+		managed := runtime.managedTask
 		runtime.mu.Unlock()
 		if managed {
 			count++
@@ -595,6 +595,34 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		dto, parent, user, r, store, systemContext, queueMonitor, r.config, r.maxConcurrentChildTurns, r.observers,
 		maxChildPromptBytes, maxChildResultBytes, observeChildProgress, onChildProgress, onChildComplete, onChildLifecycle,
 	)
+	if parent != nil {
+		boundParent := parent.(*agentSession)
+		policy := managedTurnPolicy{
+			maxPromptBytes: maxChildPromptBytes,
+			maxResultBytes: maxChildResultBytes,
+			tryAcquire:     candidate.tryAcquireWorkerQuotaWait,
+			acquire: func(ctx context.Context) (func(), error) {
+				parentPermit, err := boundParent.childTurns.acquire(ctx)
+				if err != nil {
+					return nil, err
+				}
+				globalPermit, err := r.user.AcquireWorkerQuota(ctx)
+				if err != nil {
+					parentPermit.Release()
+					return nil, err
+				}
+				var once sync.Once
+				return func() { once.Do(func() { parentPermit.Release(); globalPermit.Release() }) }, nil
+			},
+			onProgress:  onChildProgress,
+			onComplete:  onChildComplete,
+			onLifecycle: onChildLifecycle,
+		}
+		if observeChildProgress != nil {
+			policy.observe = func(report func(ChildProgress)) func() { return observeChildProgress(dto.ID, report) }
+		}
+		candidate.turnPolicy = policy
+	}
 	rolledBack := false
 	defer func() {
 		if recovered := recover(); recovered != nil {

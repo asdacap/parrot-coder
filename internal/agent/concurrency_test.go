@@ -71,7 +71,7 @@ func TestWorkerQuotaRespectsShutdownAndGlobalAndParentRelease(t *testing.T) {
 func TestAgentSessionShutdownBlocksRejectsNewTurnsAndHonorsContext(t *testing.T) {
 	done := make(chan struct{})
 	cancelCalled := make(chan struct{}, 1)
-	s := &agentSession{drain: &drainState{done: done, cancel: func() { cancelCalled <- struct{}{} }, status: StatusRunning}}
+	s := &agentSession{turn: &turnState{done: done, cancel: func() { cancelCalled <- struct{}{} }, status: StatusRunning}}
 	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
 	defer cancel()
 	if err := s.Shutdown(ctx); !errors.Is(err, context.DeadlineExceeded) {

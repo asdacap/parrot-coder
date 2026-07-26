@@ -65,8 +65,8 @@ type Status struct {
 	ToolUses      int
 }
 
-func childTurnActive(status AgentStatus) bool {
-	return status == StatusBlocked || status == StatusPending || status == StatusRunning
+func turnActive(status AgentStatus) bool {
+	return status == StatusBlocked || status == StatusPending || status == StatusRunning || status == StatusInterrupting
 }
 
 const (

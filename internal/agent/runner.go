@@ -133,12 +133,10 @@ type agentSession struct {
 	securityProfile        *agentSessionSecurityProfile
 	mu                     sync.Mutex
 	selectionMu            sync.Mutex
-	childOp                sync.Mutex
 	status                 Status
-	childRequest           ChildRequest
-	childTurn              *childTurnState
-	cancelChild            context.CancelFunc
-	drain                  *drainState
+	turn                   *turnState
+	turnPolicy             turnPolicy
+	managedTask            bool
 	childCreations         int
 	removed                bool
 	shuttingDown           bool
@@ -181,7 +179,7 @@ func newAgentSession(
 	}
 	return &agentSession{
 		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, queueMonitor: queueMonitor, config: config,
-		status: status, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
+		status: status, turnPolicy: ordinaryTurnPolicy{}, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
 		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
 		observeChildProgress: observeChildProgress, onChildProgress: onChildProgress,
 		onChildComplete: onChildComplete, onChildLifecycle: onChildLifecycle,

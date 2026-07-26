@@ -685,20 +685,14 @@ func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 	<-started
 	item := child.(*agentSession)
-	item.childOp.Lock()
+	item.mu.Lock()
+	captured := item.turn
+	item.mu.Unlock()
 	close(release)
-	for deadline := time.Now().Add(time.Second); ; {
-		item.mu.Lock()
-		idle := item.drain == nil
-		item.mu.Unlock()
-		if idle {
-			break
-		}
-		if time.Now().After(deadline) {
-			item.childOp.Unlock()
-			t.Fatal("child drain did not become idle")
-		}
-		runtime.Gosched()
+	select {
+	case <-captured.done:
+	case <-time.After(time.Second):
+		t.Fatal("child turn did not become idle")
 	}
 
 	type sendResult struct {
@@ -711,13 +705,6 @@ func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 		admission, sendErr := child.Send(context.Background(), "msg_follow_up", "follow-up")
 		sent <- sendResult{status: child.Status(), messageID: admission.Input.MessageID, err: sendErr}
 	}()
-	select {
-	case result := <-sent:
-		item.childOp.Unlock()
-		t.Fatalf("Send escaped managed completion: %#v", result)
-	case <-time.After(20 * time.Millisecond):
-	}
-	item.childOp.Unlock()
 	result := <-sent
 	if result.err != nil || result.messageID != "msg_follow_up" || result.status.Turn != 2 || result.status.State != StatusRunning {
 		t.Fatalf("serialized Send = %#v", result)
@@ -1357,6 +1344,18 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 		t.Fatalf("historical nested hierarchy after managed create = %q, %v", got, ok)
 	}
 	nestedRuntime := mustGetAgentSession(t, restarted, nested.ID)
+	admission, err := nestedRuntime.Send(ctx, "msg_restored_child", "resume restored work")
+	if err != nil || !admission.Created {
+		t.Fatalf("restored child Send = %#v, %v", admission, err)
+	}
+	restoredTurn, err := nestedRuntime.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredStatus, err := restoredTurn.Wait(ctx)
+	if err != nil || restoredStatus.State != StatusSucceeded || restoredStatus.Turn != 1 || restoredStatus.ParentSession != childA.ID || restoredStatus.RootSession != parent.ID {
+		t.Fatalf("restored child turn = %#v, %v", restoredStatus, err)
+	}
 	if nestedRuntime.Name() != "nested" || mustGetAgentSession(t, restarted, childA.ID).Name() != "child a" {
 		t.Fatalf("restored names = nested:%q child:%q", nestedRuntime.Name(), mustGetAgentSession(t, restarted, childA.ID).Name())
 	}
@@ -1517,8 +1516,10 @@ func TestRunnerProcessesMonitoredQueueItemAsSyntheticTurn(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.admit(t, "user", "initial question", session.DeliverySteer)
-	state := &drainState{done: make(chan struct{}), status: StatusRunning}
-	h.runner.run(context.Background(), state)
+	ctx, cancel := context.WithCancel(context.Background())
+	state := &turnState{ctx: ctx, cancel: cancel, done: make(chan struct{}), status: StatusRunning}
+	h.runner.turn = state
+	h.runner.runTurn(state)
 	if state.err != nil {
 		t.Fatal(state.err)
 	}

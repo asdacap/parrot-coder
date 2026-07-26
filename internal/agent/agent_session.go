@@ -36,13 +36,43 @@ type Active struct {
 	Status    AgentStatus
 }
 
-type drainState struct {
-	done   chan struct{}
-	cancel context.CancelFunc
-	wake   bool
-	status AgentStatus
-	err    error
+type turnState struct {
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	wake         bool
+	status       AgentStatus
+	err          error
+	messageID    string
+	result       Status
+	releaseQuota func()
 }
+
+type turnPolicy interface {
+	Validate(string) error
+	TryAcquire() (func(), bool, error)
+	Acquire(context.Context) (func(), error)
+	CapturesOutput() bool
+	Started(Status)
+	Working(Status, func(ChildProgress)) func()
+	Finished(Status, string, error, bool) (string, error, bool)
+	Published(Status)
+	Completed(Status)
+}
+
+type ordinaryTurnPolicy struct{}
+
+func (ordinaryTurnPolicy) Validate(string) error                      { return nil }
+func (ordinaryTurnPolicy) TryAcquire() (func(), bool, error)          { return nil, false, nil }
+func (ordinaryTurnPolicy) Acquire(context.Context) (func(), error)    { return nil, nil }
+func (ordinaryTurnPolicy) CapturesOutput() bool                       { return false }
+func (ordinaryTurnPolicy) Started(Status)                             {}
+func (ordinaryTurnPolicy) Working(Status, func(ChildProgress)) func() { return func() {} }
+func (ordinaryTurnPolicy) Finished(_ Status, output string, err error, _ bool) (string, error, bool) {
+	return output, err, false
+}
+func (ordinaryTurnPolicy) Published(Status) {}
+func (ordinaryTurnPolicy) Completed(Status) {}
 
 // AgentSession is the runtime for one persisted agent session. It owns both
 // execution and the synchronization which ensures only one execution lifecycle
@@ -118,8 +148,8 @@ func (s *agentSession) LatestSequence(ctx context.Context) (int64, error) {
 func (s *agentSession) Status() Status {
 	s.mu.Lock()
 	status := cloneStatus(s.status)
-	if s.childTurn == nil && s.drain != nil {
-		status.State = s.drain.status
+	if s.turn != nil && turnActive(s.turn.status) {
+		status.State = s.turn.status
 	}
 	s.mu.Unlock()
 	return status
@@ -128,8 +158,8 @@ func (s *agentSession) Status() Status {
 func (s *agentSession) executionStatus() AgentStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.drain != nil {
-		return s.drain.status
+	if s.turn != nil && turnActive(s.turn.status) {
+		return s.turn.status
 	}
 	return StatusIdle
 }
@@ -137,10 +167,10 @@ func (s *agentSession) executionStatus() AgentStatus {
 func (s *agentSession) Observe() (ChildTurnObserver, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.childTurn == nil {
+	if s.turn == nil {
 		return nil, ErrChildNotFound
 	}
-	return childObserver{turn: s.childTurn}, nil
+	return turnObserver{turn: s.turn}, nil
 }
 
 func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
@@ -176,10 +206,7 @@ func (s *agentSession) Send(ctx context.Context, messageID, content string) (ses
 }
 
 func (s *agentSession) send(ctx context.Context, messageID, content, measuredContent string) (session.Admission, error) {
-	if s.user != nil && s.parent != nil {
-		return s.sendManagedTurn(ctx, messageID, content, measuredContent)
-	}
-	admission, _, err := s.admitAndStart(ctx, messageID, content)
+	admission, _, err := s.admitAndStart(ctx, messageID, content, measuredContent, false, true)
 	return admission, err
 }
 
@@ -188,14 +215,14 @@ func (s *agentSession) sendAndWait(ctx context.Context, content string) (string,
 	if err != nil {
 		return "", err
 	}
-	_, state, err := s.admitAndStart(ctx, messageID, content)
+	_, state, err := s.admitAndStart(ctx, messageID, content, content, false, true)
 	if err != nil {
 		return "", err
 	}
 	return s.awaitMessage(ctx, state, messageID)
 }
 
-func (s *agentSession) awaitMessage(ctx context.Context, state *drainState, messageID string) (string, error) {
+func (s *agentSession) awaitMessage(ctx context.Context, state *turnState, messageID string) (string, error) {
 	if err := s.wait(ctx, state); err != nil {
 		if ctx.Err() != nil {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -204,6 +231,10 @@ func (s *agentSession) awaitMessage(ctx context.Context, state *drainState, mess
 		}
 		return "", err
 	}
+	return s.messageResponse(ctx, messageID)
+}
+
+func (s *agentSession) messageResponse(ctx context.Context, messageID string) (string, error) {
 	messages, err := s.store.ListMessages(ctx)
 	if err != nil {
 		return "", err
@@ -228,20 +259,111 @@ func (s *agentSession) awaitMessage(ctx context.Context, state *drainState, mess
 	return "", errors.New("agent: session produced no assistant output")
 }
 
-func (s *agentSession) admitAndStart(ctx context.Context, messageID, content string) (session.Admission, *drainState, error) {
-	s.mu.Lock()
-	admission, err := s.admitLocked(ctx, messageID, content)
-	if err != nil {
-		s.mu.Unlock()
+func (s *agentSession) effectiveTurnPolicy() turnPolicy {
+	if s.turnPolicy == nil {
+		return ordinaryTurnPolicy{}
+	}
+	return s.turnPolicy
+}
+
+func (s *agentSession) admitAndStart(ctx context.Context, messageID, content, measuredContent string, waitForPermit, start bool) (session.Admission, *turnState, error) {
+	policy := s.effectiveTurnPolicy()
+	if err := policy.Validate(measuredContent); err != nil {
 		return session.Admission{}, nil, err
 	}
-	if !admission.Created {
+retry:
+	s.mu.Lock()
+	if s.removed {
 		s.mu.Unlock()
-		return admission, nil, nil
+		return session.Admission{}, nil, ErrAgentSessionRemoved
 	}
-	state := s.startOrJoinLocked(true)
+	if s.shuttingDown {
+		s.mu.Unlock()
+		return session.Admission{}, nil, ErrUserSessionClosed
+	}
+	if s.turn != nil && (s.turn.status == StatusBlocked || s.turn.status == StatusInterrupting) {
+		turn := s.turn
+		s.mu.Unlock()
+		select {
+		case <-turn.done:
+			goto retry
+		case <-ctx.Done():
+			return session.Admission{}, nil, ctx.Err()
+		}
+	}
+	if s.turn != nil && turnActive(s.turn.status) {
+		admission, err := s.admitLocked(ctx, messageID, content)
+		if err == nil && admission.Created {
+			s.turn.wake = true
+		}
+		state := s.turn
+		s.mu.Unlock()
+		return admission, state, err
+	}
 	s.mu.Unlock()
+
+	release, blocked, err := policy.TryAcquire()
+	if err != nil || blocked && !waitForPermit {
+		if blocked {
+			err = ErrChildConcurrency
+		}
+		return session.Admission{}, nil, err
+	}
+	s.mu.Lock()
+	if s.turn != nil && turnActive(s.turn.status) {
+		s.mu.Unlock()
+		if release != nil {
+			release()
+		}
+		goto retry
+	}
+	admission, err := s.admitLocked(ctx, messageID, content)
+	if err != nil || !admission.Created {
+		state := s.turn
+		s.mu.Unlock()
+		if release != nil {
+			release()
+		}
+		return admission, state, err
+	}
+	state := s.newTurnLocked(admission.Input.MessageID, release, blocked)
+	s.mu.Unlock()
+	if start {
+		s.startTurn(state)
+	}
 	return admission, state, nil
+}
+
+func (s *agentSession) startTurn(state *turnState) {
+	s.mu.Lock()
+	status := state.status
+	task := cloneStatus(s.status)
+	s.mu.Unlock()
+	if status == StatusInterrupting {
+		go s.finishTurn(state, "", context.Canceled)
+		return
+	}
+	s.effectiveTurnPolicy().Started(task)
+	if status == StatusBlocked {
+		go s.waitForTurnPermit(state)
+	} else {
+		go s.runTurn(state)
+	}
+}
+
+func (s *agentSession) abortTurn(state *turnState) {
+	state.cancel()
+	s.mu.Lock()
+	if state.releaseQuota != nil {
+		state.releaseQuota()
+		state.releaseQuota = nil
+	}
+	state.err = context.Canceled
+	if s.turn == state {
+		s.turn = nil
+	}
+	close(state.done)
+	s.mu.Unlock()
 }
 
 func (s *agentSession) admitLocked(ctx context.Context, messageID, content string) (session.Admission, error) {
@@ -254,126 +376,127 @@ func (s *agentSession) admitLocked(ctx context.Context, messageID, content strin
 	return s.store.Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer})
 }
 
-// Wake coalesces with an active drain and returns immediately.
-func (s *agentSession) Wake() {
-	s.mu.Lock()
-	if !s.removed && !s.shuttingDown {
-		s.startOrJoinLocked(true)
-	}
-	s.mu.Unlock()
-}
-
-// Resume starts an idle drain or joins the complete lifetime of an active one.
-func (s *agentSession) Resume(ctx context.Context) error {
+func (s *agentSession) startEmptyTurn(wake bool) (*turnState, error) {
+retry:
 	s.mu.Lock()
 	if s.removed {
 		s.mu.Unlock()
-		return ErrAgentSessionRemoved
+		return nil, ErrAgentSessionRemoved
 	}
 	if s.shuttingDown {
 		s.mu.Unlock()
-		return ErrUserSessionClosed
+		return nil, ErrUserSessionClosed
 	}
-	state := s.startOrJoinLocked(false)
+	if s.turn != nil && turnActive(s.turn.status) {
+		if wake {
+			s.turn.wake = true
+		}
+		state := s.turn
+		s.mu.Unlock()
+		return state, nil
+	}
 	s.mu.Unlock()
+
+	release, blocked, err := s.effectiveTurnPolicy().TryAcquire()
+	if err != nil {
+		return nil, err
+	}
+	s.mu.Lock()
+	if s.removed || s.shuttingDown || s.turn != nil && turnActive(s.turn.status) {
+		s.mu.Unlock()
+		if release != nil {
+			release()
+		}
+		goto retry
+	}
+	state := s.newTurnLocked("", release, blocked)
+	s.mu.Unlock()
+	s.startTurn(state)
+	return state, nil
+}
+
+// Wake coalesces with an active turn and returns immediately.
+func (s *agentSession) Wake() {
+	_, _ = s.startEmptyTurn(true)
+}
+
+// Resume starts an idle turn or joins the complete lifetime of an active one.
+func (s *agentSession) Resume(ctx context.Context) error {
+	state, err := s.startEmptyTurn(false)
+	if err != nil {
+		return err
+	}
 	return s.wait(ctx, state)
 }
 
-func (s *agentSession) wait(ctx context.Context, state *drainState) error {
+func (s *agentSession) wait(ctx context.Context, state *turnState) error {
+	if state == nil {
+		return nil
+	}
 	select {
 	case <-state.done:
-		s.mu.Lock()
-		err := state.err
-		s.mu.Unlock()
-		return err
+		return state.err
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
 func (s *agentSession) Interrupt(ctx context.Context) error {
-	s.mu.Lock()
-	if s.childTurn != nil && childTurnActive(s.status.State) {
-		s.cancelChild()
-		done := s.childTurn.done
-		s.mu.Unlock()
-		select {
-		case <-done:
-			return nil
-		case <-ctx.Done():
-			return ctx.Err()
-		}
+	if err := s.interruptExecution(ctx); ctx.Err() != nil {
+		return err
 	}
-	s.mu.Unlock()
-	return s.interruptExecution(ctx)
+	return nil
 }
 
 func (s *agentSession) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.shuttingDown = true
-	var childDone <-chan struct{}
-	if s.childTurn != nil {
-		childDone = s.childTurn.done
-		if childTurnActive(s.status.State) {
-			s.cancelChild()
-		}
-	}
-	var drainDone <-chan struct{}
-	if s.drain != nil {
-		s.drain.status = StatusInterrupting
-		s.drain.wake = false
-		s.drain.cancel()
-		drainDone = s.drain.done
-	}
-	s.mu.Unlock()
-
-	for _, done := range []<-chan struct{}{childDone, drainDone} {
-		if done == nil {
-			continue
-		}
-		select {
-		case <-done:
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return nil
-}
-
-func (s *agentSession) interruptExecution(ctx context.Context) error {
-	s.mu.Lock()
-	state := s.drain
-	if state == nil {
+	state := s.turn
+	if state == nil || !turnActive(state.status) {
 		s.mu.Unlock()
 		return nil
 	}
 	state.status = StatusInterrupting
 	state.wake = false
 	state.cancel()
-	done := state.done
 	s.mu.Unlock()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
+	if err := s.wait(ctx, state); ctx.Err() != nil {
+		return err
 	}
+	return nil
 }
 
-func (s *agentSession) startOrJoinLocked(requestWake bool) *drainState {
-	if s.drain != nil {
-		if requestWake {
-			s.drain.wake = true
-		}
-		return s.drain
+func (s *agentSession) interruptExecution(ctx context.Context) error {
+	s.mu.Lock()
+	state := s.turn
+	if state == nil || !turnActive(state.status) {
+		s.mu.Unlock()
+		return nil
 	}
+	state.status = StatusInterrupting
+	state.wake = false
+	state.cancel()
+	s.mu.Unlock()
+	return s.wait(ctx, state)
+}
+
+func (s *agentSession) newTurnLocked(messageID string, release func(), blocked bool) *turnState {
 	ctx, cancel := context.WithCancel(context.Background())
-	state := &drainState{done: make(chan struct{}), cancel: cancel, status: StatusRunning}
-	s.drain = state
-	go func() {
-		s.started()
-		s.run(ctx, state)
-	}()
+	status := StatusRunning
+	if blocked {
+		status = StatusBlocked
+	}
+	state := &turnState{ctx: ctx, cancel: cancel, done: make(chan struct{}), status: status, messageID: messageID, releaseQuota: release}
+	s.turn = state
+	s.status.Turn++
+	s.status.State, s.status.FinishedAt = status, time.Time{}
+	if !blocked {
+		s.status.StartedAt = time.Now().UTC()
+	} else {
+		s.status.StartedAt = time.Time{}
+	}
+	s.status.Output, s.status.Error, s.status.Truncated = "", "", false
+	s.status.Usage, s.status.ToolUses = ChildUsage{}, 0
 	return state
 }
 
@@ -402,7 +525,7 @@ func (s *agentSession) removeIfIdle(remove func() error) error {
 	if s.removed {
 		return nil
 	}
-	if s.drain != nil || s.childCreations != 0 || s.childTurn != nil && childTurnActive(s.status.State) {
+	if s.turn != nil && turnActive(s.turn.status) || s.childCreations != 0 {
 		return ErrAgentSessionActive
 	}
 	if err := remove(); err != nil {
@@ -412,22 +535,54 @@ func (s *agentSession) removeIfIdle(remove func() error) error {
 	return nil
 }
 
-func (s *agentSession) run(ctx context.Context, state *drainState) {
-	for {
-		var err error
-		if s.execute != nil {
-			err = s.execute(ctx)
-		} else {
-			err = s.drainOnce(ctx)
+func (s *agentSession) waitForTurnPermit(state *turnState) {
+	release, err := s.effectiveTurnPolicy().Acquire(state.ctx)
+	if err != nil {
+		s.finishTurn(state, "", err)
+		return
+	}
+	s.mu.Lock()
+	if state.ctx.Err() != nil || s.turn != state {
+		s.mu.Unlock()
+		if release != nil {
+			release()
 		}
-		if err == nil && ctx.Err() == nil {
+		s.finishTurn(state, "", context.Canceled)
+		return
+	}
+	state.releaseQuota = release
+	state.status = StatusRunning
+	s.status.State, s.status.StartedAt = StatusRunning, time.Now().UTC()
+	s.mu.Unlock()
+	go s.runTurn(state)
+}
+
+func (s *agentSession) runTurn(state *turnState) {
+	s.mu.Lock()
+	canceled := state.ctx.Err() != nil || state.status == StatusInterrupting
+	s.mu.Unlock()
+	if canceled {
+		s.finishTurn(state, "", context.Canceled)
+		return
+	}
+	s.started()
+	policy := s.effectiveTurnPolicy()
+	stop := policy.Working(s.Status(), func(progress ChildProgress) { s.reportTurnProgress(state, progress) })
+	var err error
+	for {
+		if s.execute != nil {
+			err = s.execute(state.ctx)
+		} else {
+			err = s.drainOnce(state.ctx)
+		}
+		if err == nil && state.ctx.Err() == nil {
 			var prepared bool
-			prepared, err = s.prepareQueueNotification(ctx)
+			prepared, err = s.prepareQueueNotification(state.ctx)
 			if err == nil && prepared {
 				continue
 			}
 			if err == nil {
-				prepared, err = s.prepareContinuation(ctx)
+				prepared, err = s.prepareContinuation(state.ctx)
 				if err == nil && prepared {
 					continue
 				}
@@ -435,31 +590,53 @@ func (s *agentSession) run(ctx context.Context, state *drainState) {
 		}
 
 		s.mu.Lock()
-		state.err = err
-		if state.wake && ctx.Err() == nil {
+		if state.wake && state.ctx.Err() == nil {
 			state.wake = false
 			s.mu.Unlock()
 			continue
 		}
-		restart := state.wake
-		if restart {
-			nextCtx, cancel := context.WithCancel(context.Background())
-			next := &drainState{done: make(chan struct{}), cancel: cancel, status: StatusRunning}
-			s.drain = next
-			close(state.done)
-			s.mu.Unlock()
-			s.started()
-			go s.run(nextCtx, next)
-			return
-		}
-		if s.drain == state {
-			s.drain = nil
-		}
-		close(state.done)
 		s.mu.Unlock()
-		s.completed(err)
-		return
+		break
 	}
+	stop()
+	output := ""
+	if policy.CapturesOutput() && state.messageID != "" && err == nil {
+		output, err = s.messageResponse(context.Background(), state.messageID)
+	}
+	s.finishTurn(state, output, err)
+}
+
+func (s *agentSession) finishTurn(state *turnState, output string, runErr error) {
+	canceled := state.ctx.Err() != nil
+	state.cancel()
+	policy := s.effectiveTurnPolicy()
+	output, runErr, truncated := policy.Finished(s.Status(), output, runErr, canceled)
+	s.mu.Lock()
+	s.status.Truncated = truncated
+	state.err = runErr
+	status, errText := StatusSucceeded, ""
+	if runErr != nil {
+		status, errText = StatusFailed, runErr.Error()
+	}
+	if state.status == StatusInterrupting && (errors.Is(runErr, context.Canceled) || errors.Is(runErr, ErrChildCanceled)) {
+		status = StatusCanceled
+	}
+	s.status.State, s.status.Output, s.status.Error = status, output, errText
+	s.status.FinishedAt = time.Now().UTC()
+	state.result = cloneStatus(s.status)
+	state.status = StatusInterrupting
+	if state.releaseQuota != nil {
+		state.releaseQuota()
+		state.releaseQuota = nil
+	}
+	s.mu.Unlock()
+	policy.Published(state.result)
+	s.mu.Lock()
+	state.status = status
+	close(state.done)
+	s.mu.Unlock()
+	policy.Completed(state.result)
+	s.completed(runErr)
 }
 
 func (s *agentSession) started() {
