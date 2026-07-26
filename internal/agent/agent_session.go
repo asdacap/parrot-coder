@@ -35,12 +35,14 @@ type Active struct {
 }
 
 type drainState struct {
-	done                 chan struct{}
-	cancel               context.CancelFunc
-	wake                 bool
-	status               AgentStatus
-	err                  error
-	notificationSequence int64
+	done   chan struct{}
+	cancel context.CancelFunc
+	wake   bool
+	status AgentStatus
+	err    error
+	// firstNotificationSequence bounds Prompt response selection when the same
+	// drain continues with synthetic monitored-queue turns.
+	firstNotificationSequence int64
 }
 
 // AgentSession is the runtime for one persisted agent session. It owns both
@@ -234,7 +236,7 @@ func (s *agentSession) awaitPrompt(ctx context.Context, state *drainState, cutof
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
 		message := messages[i]
-		if message.Role != "assistant" || message.Sequence <= cutoff || state.notificationSequence != 0 && message.Sequence >= state.notificationSequence {
+		if message.Role != "assistant" || message.Sequence <= cutoff || state.firstNotificationSequence != 0 && message.Sequence >= state.firstNotificationSequence {
 			continue
 		}
 		if message.Error != "" {
@@ -441,8 +443,8 @@ func (s *agentSession) run(ctx context.Context, state *drainState) {
 			var prepared bool
 			var sequence int64
 			prepared, sequence, err = s.prepareQueueNotification(ctx)
-			if sequence != 0 && state.notificationSequence == 0 {
-				state.notificationSequence = sequence
+			if sequence != 0 && state.firstNotificationSequence == 0 {
+				state.firstNotificationSequence = sequence
 			}
 			if err == nil && prepared {
 				continue
