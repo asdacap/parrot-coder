@@ -126,6 +126,7 @@ type agentSession struct {
 	config                 AgentSessionConfig
 	securityProfile        *agentSessionSecurityProfile
 	mu                     sync.Mutex
+	selectionMu            sync.Mutex
 	childOp                sync.Mutex
 	child                  *childState
 	drain                  *drainState
@@ -331,7 +332,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				return err
 			}
 			if pending {
-				statusPrompt, err := r.config.Status.Observe(ctx, r.statusQuery(ctx, selected, profile), newProfileStatus(profile))
+				statusPrompt, err := r.config.Status.Observe(ctx, r.statusQuery(selected, profile), newProfileStatus(profile))
 				if err != nil {
 					return err
 				}
@@ -453,7 +454,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 	}
 }
 
-func (r *agentSession) statusQuery(ctx context.Context, selected session.AgentSessionDto, profile Profile) statusinfo.Query {
+func (r *agentSession) statusQuery(selected session.AgentSessionDto, profile Profile) statusinfo.Query {
 	query := statusinfo.Query{
 		SessionID:       r.dto.ID,
 		ParentSessionID: selected.ParentSessionID,
@@ -464,9 +465,7 @@ func (r *agentSession) statusQuery(ctx context.Context, selected session.AgentSe
 	}
 	if selected.ParentSessionID != "" {
 		if parent, err := r.user.Get(selected.ParentSessionID); err == nil {
-			if details, err := parent.Details(ctx); err == nil {
-				query.ParentSessionName = details.Name
-			}
+			query.ParentSessionName = parent.Name()
 		}
 	}
 	return query
@@ -867,7 +866,7 @@ func executeToolCall(ctx context.Context, executor tool.Executor, call completed
 
 func (r *agentSession) executeTools(ctx context.Context, selected session.AgentSessionDto, profile Profile, calls []completedCall) error {
 	executor := r.toolExecutor
-	statusQuery := r.statusQuery(ctx, selected, profile)
+	statusQuery := r.statusQuery(selected, profile)
 	sem := make(chan struct{}, r.config.MaxConcurrentTools)
 	outcomes := make([]toolOutcome, len(calls))
 	var wg sync.WaitGroup

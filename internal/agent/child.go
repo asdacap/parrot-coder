@@ -48,7 +48,9 @@ type Status struct {
 	ParentSession string
 	RootSession   string
 	Agent         string
+	Provider      string
 	Model         string
+	Variant       string
 	Name          string
 	Lineage       []string
 	Depth         int

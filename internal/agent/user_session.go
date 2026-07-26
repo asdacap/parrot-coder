@@ -444,6 +444,21 @@ type sessionBinding struct {
 	err  error
 }
 
+func (r *agentSessionRepository) updateSelection(expected *agentSession, updated session.AgentSessionDto) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	dto, ok := r.dtos[updated.ID]
+	if !ok || r.sessions[updated.ID] != expected {
+		return
+	}
+	dto.Agent = updated.Agent
+	dto.Provider = updated.Provider
+	dto.Model = updated.Model
+	dto.Variant = updated.Variant
+	dto.UpdatedAt = updated.UpdatedAt
+	r.dtos[updated.ID] = dto
+}
+
 func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 	r.mu.Lock()
 	if existing := r.sessions[sessionID]; existing != nil {

@@ -107,6 +107,18 @@ func (r *recordingSessionRuntime) Resolutions() ([]string, []session.AgentSessio
 	return append([]string(nil), r.ids...), append([]session.AgentSessionStore(nil), r.stores...)
 }
 
+type updateErrorStore struct {
+	session.AgentSessionStore
+	err error
+}
+
+func (s updateErrorStore) UpdateSelection(ctx context.Context, patch session.SelectionPatch, validate session.SelectionValidator) (session.AgentSessionDto, error) {
+	if _, err := s.AgentSessionStore.UpdateSelection(ctx, patch, validate); err != nil {
+		return session.AgentSessionDto{}, err
+	}
+	return session.AgentSessionDto{}, s.err
+}
+
 type failingGetSessionRuntime struct {
 	SessionRuntime
 	sessionID string
@@ -125,6 +137,45 @@ func (failingGetUserSession) Get(context.Context) (session.AgentSessionDto, erro
 	return session.AgentSessionDto{}, session.ErrNotFound
 }
 
+func TestUpdateSelectionReconcilesCommittedSelectionAfterError(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	publishErr := errors.New("publish failed")
+	h.runner.store = updateErrorStore{AgentSessionStore: h.runner.store, err: publishErr}
+	variant := "high"
+	if _, err := h.runner.UpdateSelection(t.Context(), session.SelectionPatch{Agent: "plan", Provider: "other", Model: "new-model", Variant: &variant}, nil); !errors.Is(err, publishErr) {
+		t.Fatalf("UpdateSelection error = %v, want %v", err, publishErr)
+	}
+	status := h.runner.Status()
+	if status.Agent != "plan" || status.Provider != "other" || status.Model != "new-model" || status.Variant != variant {
+		t.Fatalf("reconciled status selection = %s/%s/%s (%s)", status.Agent, status.Provider, status.Model, status.Variant)
+	}
+	h.agentSessions.repository.mu.Lock()
+	cached := h.agentSessions.repository.dtos[h.sessionID]
+	h.agentSessions.repository.mu.Unlock()
+	if cached.Agent != status.Agent || cached.Provider != status.Provider || cached.Model != status.Model || cached.Variant != status.Variant {
+		t.Fatalf("cached selection = %s/%s/%s (%s), want reconciled status", cached.Agent, cached.Provider, cached.Model, cached.Variant)
+	}
+}
+
+func TestUpdateSelectionSynchronizesRuntimeAndRepositoryStatus(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	variant := "high"
+	updated, err := h.runner.UpdateSelection(t.Context(), session.SelectionPatch{Agent: "plan", Provider: "other", Model: "new-model", Variant: &variant}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	status := h.runner.Status()
+	if status.Agent != updated.Agent || status.Provider != updated.Provider || status.Model != updated.Model || status.Variant != updated.Variant {
+		t.Fatalf("status selection = %s/%s/%s (%s), want %s/%s/%s (%s)", status.Agent, status.Provider, status.Model, status.Variant, updated.Agent, updated.Provider, updated.Model, updated.Variant)
+	}
+	h.agentSessions.repository.mu.Lock()
+	cached := h.agentSessions.repository.dtos[h.sessionID]
+	h.agentSessions.repository.mu.Unlock()
+	if cached.Agent != updated.Agent || cached.Provider != updated.Provider || cached.Model != updated.Model || cached.Variant != updated.Variant {
+		t.Fatalf("cached selection = %s/%s/%s (%s), want %s/%s/%s (%s)", cached.Agent, cached.Provider, cached.Model, cached.Variant, updated.Agent, updated.Provider, updated.Model, updated.Variant)
+	}
+}
+
 func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	created, err := NewUserSession(t.Context(), failingGetSessionRuntime{SessionRuntime: h.sessions, sessionID: "ses_deleted_parent"}, h.agentSessions.config)
@@ -132,7 +183,7 @@ func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := mustGetAgentSession(t, created.(*userSession), h.sessionID).(*agentSession)
-	query := runner.statusQuery(context.Background(), session.AgentSessionDto{
+	query := runner.statusQuery(session.AgentSessionDto{
 		ParentSessionID: "ses_deleted_parent",
 		Provider:        "openai",
 		Model:           "gpt",

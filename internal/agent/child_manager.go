@@ -102,7 +102,7 @@ func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, r
 		releaseQuota()
 		return nil, errors.Join(ErrUserSessionClosed, user.discardChild(context.WithoutCancel(ctx), child.ID()))
 	}
-	created.child = &childState{status: Status{SessionID: child.ID(), ParentSession: s.ID(), RootSession: root, Agent: request.Agent, Model: request.Model, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, State: StatusRunning, StartedAt: now}, request: request, turn: turn, cancel: cancel}
+	created.child = &childState{status: Status{SessionID: child.ID(), ParentSession: s.ID(), RootSession: root, Agent: created.dto.Agent, Provider: created.dto.Provider, Model: created.dto.Model, Variant: created.dto.Variant, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, State: StatusRunning, StartedAt: now}, request: request, turn: turn, cancel: cancel}
 	created.mu.Unlock()
 	if err := user.registerChild(created); err != nil {
 		created.mu.Lock()
