@@ -951,6 +951,23 @@ func isLifecycleEvent(eventType string) bool {
 	}
 }
 
+// isRuntimeActivityContentEvent reports whether a non-lifecycle event needs a
+// registered activity owner. Other known events describe session resources and
+// are intentionally ignored when they are projected from a child session.
+func isRuntimeActivityContentEvent(eventType string) bool {
+	switch eventType {
+	case v1.EventMessagePartDelta, v1.EventSessionStatus, v1.EventAgentSessionProgress,
+		v1.EventSessionToolPending, v1.EventSessionToolRunning, v1.EventSessionToolSuccess,
+		v1.EventSessionToolFailure, v1.EventSessionToolInterrupted, v1.EventToolOutputDelta,
+		v1.EventCodeDisplay, "session.assistant.started", "session.assistant.complete",
+		"session.assistant.error", "session.assistant.interrupted", "session.context.initialized",
+		"session.context.changed", "session.context.replaced":
+		return true
+	default:
+		return false
+	}
+}
+
 func decodeLifecycleEvent(item v1.Event) (runtimeLifecycleEvent, error) {
 	payload, err := v1.DecodeEventData(item)
 	if err != nil {
@@ -1120,6 +1137,9 @@ func (t *RuntimeActivityTracker) activityStatusReports(sessionID, processID stri
 func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeActivityReport, error) {
 	if isLifecycleEvent(item.Type) {
 		return t.applyLifecycle(item)
+	}
+	if v1.KnownEvent(item.Type) && !isRuntimeActivityContentEvent(item.Type) {
+		return nil, nil
 	}
 	sessionID, processID := t.eventOrigin(item)
 	node := t.known(sessionID, processID)

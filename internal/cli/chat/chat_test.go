@@ -1096,6 +1096,30 @@ func TestStreamRuntimeActivityTerminalProgressClearsLiveRow(t *testing.T) {
 	}
 }
 
+func TestStreamRuntimeActivityIgnoresChildAdmissionBeforeStart(t *testing.T) {
+	var output bytes.Buffer
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
+	options := streamOptions{stderr: &output}
+	admitted, _ := json.Marshal(v1.SessionInputAdmitted{InputID: "input", MessageID: "message", Content: "inspect", Delivery: "steer"})
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-child", v1.EventSessionInputAdmitted, admitted)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, agentStart("session-child", "session-main", "explore")); err != nil {
+		t.Fatal(err)
+	}
+	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "done"})
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-child", v1.EventMessagePartDelta, delta)); err != nil {
+		t.Fatal(err)
+	}
+	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-child", "session.assistant.complete", complete)); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "  ○ [explore] response: done\n" {
+		t.Fatalf("child output = %q", got)
+	}
+}
+
 func TestSessionEventWithoutKnownOriginReportsUnknownOrigin(t *testing.T) {
 	var output bytes.Buffer
 	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")

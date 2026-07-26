@@ -887,6 +887,25 @@ func runtimeActivityEvent(sessionID string, eventType string, data json.RawMessa
 	return v1.Event{Type: eventType, SessionID: sessionID, Data: data}
 }
 
+func TestEnhancedChildAdmissionDoesNotChangeRootPendingInputs(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}, renderer: renderer}, knownMessages: map[string]bool{}}
+	data, _ := json.Marshal(v1.SessionInputAdmitted{InputID: "input", MessageID: "message", Content: "queued", Delivery: "queue"})
+	if err := runtime.handleEvent(runtimeActivityEvent("session-child", v1.EventSessionInputAdmitted, data)); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.pending) != 0 || len(runtime.activity) != 0 || output.Len() != 0 {
+		t.Fatalf("child admission changed root UI: pending=%#v activity=%#v output=%q", runtime.pending, runtime.activity, output.String())
+	}
+	if err := runtime.handleEvent(runtimeActivityEvent("session-main", v1.EventSessionInputAdmitted, data)); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.pending) != 1 || runtime.pending[0].inputID != "input" {
+		t.Fatalf("root pending inputs = %#v", runtime.pending)
+	}
+}
+
 func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
 	if err := runtime.handleEvent(runtimeActivityStart("session-1", "session-main", "explore")); err != nil {
