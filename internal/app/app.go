@@ -491,43 +491,33 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: session state directories: %w", err)
 	}
 	userSession, err := agent.NewUserSession(ctx, sessions, contextRegistry, queues, agent.UserSessionConfig{
-		AgentSession: agent.AgentSessionConfig{
-			StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
-			ToolProviders: toolProviders, ToolPermissionAuthorizer: permissions, ToolErrorAdvisor: pathErrorAdvisor,
-			Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
-				return live.TaskIDFor(sessionID, managedtask.MainTaskID)
-			}, Live: live, Compactor: compactionService, Goals: goals, Status: statusRegistry,
-			ToolPanicLogger: toolPanicLogger(),
-		},
 		MaxConcurrentChildTurns:          loaded.Config.Subagents.MaxConcurrent,
 		MaxConcurrentChildTurnsPerParent: loaded.Config.Subagents.MaxConcurrentPerParent,
-		MaxChildDepth:                    loaded.Config.Subagents.MaxDepth,
-		ChildAgentIdentity: func(id string) string {
+		MaxChildDepth:                    loaded.Config.Subagents.MaxDepth, ProjectID: info.ID, DefaultSelection: defaultSelection,
+	}, stateDirectories, profileResolver, providerRegistry, toolProviders, permissions, pathErrorAdvisor,
+		ws, outputs, processes, func(sessionID string) string { return live.TaskIDFor(sessionID, managedtask.MainTaskID) },
+		live, compactionService, goals, statusRegistry, toolPanicLogger(), tasks,
+		func(id string) string {
 			profile, resolveErr := profileResolver.GetProfile(id)
 			if resolveErr != nil {
 				return id
 			}
 			return profile.ID
 		},
-		ChildAgentRecursionLimit: func(id string) int {
+		func(id string) int {
 			profile, resolveErr := profileResolver.GetProfile(id)
 			if resolveErr != nil {
 				return 0
 			}
 			return profile.RecursionLimit
-		},
-		ChildTasks: tasks, ProjectID: info.ID, DefaultSelection: defaultSelection,
-		ObserveTurnProgress: func(sessionID string, report func(agent.ChildProgress)) func() {
+		}, nil,
+		func(sessionID string, report func(agent.ChildProgress)) func() {
 			return live.ObserveTransient(sessionID, func(item v1.Event) { reportChildEvent(report, item) })
 		},
-		OnTurnComplete: notifications.Notify,
-		OnTurnProgress: func(task agent.Status) {
+		func(task agent.Status) {
 			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 			live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: turnEventSession(task), TaskID: task.SessionID, Data: data})
-		},
-		OnTurnLifecycle: func(item agent.TurnLifecycleEvent) { publishTurnLifecycle(live, item) },
-		OnChildDiscard:  live.ForgetSession,
-	}, reporter)
+		}, notifications.Notify, func(item agent.TurnLifecycleEvent) { publishTurnLifecycle(live, item) }, live.ForgetSession, reporter)
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
 	}

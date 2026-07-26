@@ -5,6 +5,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 func TestChildTurnSemaphoreBoundsCapacityAndPermitReleaseIsIdempotent(t *testing.T) {
@@ -106,7 +108,9 @@ func TestNewUserSessionRejectsInvalidChildTurnLimits(t *testing.T) {
 		{MaxConcurrentChildTurnsPerParent: 1},
 		{MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 2},
 	} {
-		if _, err := NewUserSession(t.Context(), nil, nil, nil, config); err == nil {
+		if _, err := NewUserSession(t.Context(), nil, nil, nil, config,
+			nil, nil, nil, tool.Providers{}, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+			nil, nil, nil, nil, nil, nil, nil, nil); err == nil {
 			t.Fatalf("NewUserSession(%#v) succeeded", config)
 		}
 	}

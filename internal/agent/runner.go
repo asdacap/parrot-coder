@@ -13,14 +13,11 @@ import (
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
-	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/queue"
-	"github.com/amirulashraf/parrot-coder/internal/session"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
-	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type QueueMonitor interface {
@@ -38,6 +35,10 @@ type SystemContextPrompt interface {
 type LivePublisher interface {
 	Publish(string, protocol.Event)
 }
+
+type noopLivePublisher struct{}
+
+func (noopLivePublisher) Publish(string, protocol.Event) {}
 
 type toolOutputWriter struct {
 	live      LivePublisher
@@ -92,49 +93,19 @@ type ProfileResolver interface {
 }
 
 type AgentSessionConfig struct {
-	StateDirectories         UserSessionStateDirectories
-	Agents                   *Registry
-	Profiles                 ProfileResolver
-	Providers                ProviderResolver
-	ToolProviders            tool.Providers
-	ToolPermissionAuthorizer tool.Authorizer
-	ToolErrorAdvisor         tool.ErrorAdvisor
-	ToolMaxInputBytes        int
-	ToolMaxOutputBytes       int
-	Workspace                *workspace.Workspace
-	Outputs                  *tool.OutputStore
-	Processes                *process.Runner
-	TaskIDFor                func(string) string
-	Live                     LivePublisher
-	Compactor                Compactor
-	Goals                    *session.GoalService
-	Status                   StatusObserver
-	MaxConcurrentTools       int
-	CleanupTimeout           time.Duration
-	// ToolPanicLogger, when set, receives diagnostics for a tool call whose
-	// Plan or Execute panicked and was recovered into a failure. It is purely
-	// an observability seam: the panic is always reported to the model as a
-	// tool failure whether or not a logger is configured.
-	ToolPanicLogger func(ctx context.Context, sessionID, toolName string, recovered any, stack []byte)
+	ToolMaxInputBytes  int
+	ToolMaxOutputBytes int
+	MaxConcurrentTools int
+	CleanupTimeout     time.Duration
 }
 
-func validateAgentSessionConfig(config *AgentSessionConfig) error {
-	if config.Profiles == nil {
-		config.Profiles = config.Agents
-	}
-	if config.StateDirectories == nil || config.Profiles == nil || config.Providers == nil {
-		return errors.New("agent: session dependencies are required")
-	}
-	if !config.ToolProviders.Valid() {
-		return errors.New("agent: tool providers are required")
-	}
+func applyAgentSessionDefaults(config *AgentSessionConfig) {
 	if config.MaxConcurrentTools <= 0 {
 		config.MaxConcurrentTools = 4
 	}
 	if config.CleanupTimeout <= 0 {
 		config.CleanupTimeout = 5 * time.Second
 	}
-	return nil
 }
 
 type completedCall struct {
