@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -60,11 +61,54 @@ type AgentSession interface {
 	Wake()
 	Resume(context.Context) error
 	Interrupt(context.Context) error
+	Details(context.Context) (session.AgentSessionDto, error)
+	UpdateSelection(context.Context, session.SelectionPatch, session.SelectionValidator) (session.AgentSessionDto, error)
+	ListMessages(context.Context) ([]session.Message, error)
+	Admit(context.Context, session.AdmitParams) (session.Admission, error)
+	HasPendingInputs(context.Context) (bool, error)
+	LatestSequence(context.Context) (int64, error)
+	CurrentContextEpoch(context.Context) (session.ContextEpoch, error)
+	InitializeContext(context.Context, string, json.RawMessage, int64) (session.ContextEpoch, error)
+	ReconcileContext(context.Context, string, json.RawMessage) error
+	ReplaceContext(context.Context, string, json.RawMessage, int64) (session.ContextEpoch, error)
 }
 
 func (s *agentSession) ID() string           { return s.dto.ID }
 func (s *agentSession) Name() string         { return s.dto.Name }
 func (s *agentSession) Parent() AgentSession { return s.parent }
+
+func (s *agentSession) Details(ctx context.Context) (session.AgentSessionDto, error) {
+	return s.store.Get(ctx)
+}
+
+func (s *agentSession) UpdateSelection(ctx context.Context, patch session.SelectionPatch, validate session.SelectionValidator) (session.AgentSessionDto, error) {
+	return s.store.UpdateSelection(ctx, patch, validate)
+}
+
+func (s *agentSession) ListMessages(ctx context.Context) ([]session.Message, error) {
+	return s.store.ListMessages(ctx)
+}
+func (s *agentSession) Admit(ctx context.Context, params session.AdmitParams) (session.Admission, error) {
+	return s.store.Admit(ctx, params)
+}
+func (s *agentSession) HasPendingInputs(ctx context.Context) (bool, error) {
+	return s.store.HasPendingInputs(ctx)
+}
+func (s *agentSession) LatestSequence(ctx context.Context) (int64, error) {
+	return s.store.LatestSequence(ctx)
+}
+func (s *agentSession) CurrentContextEpoch(ctx context.Context) (session.ContextEpoch, error) {
+	return s.store.CurrentContextEpoch(ctx)
+}
+func (s *agentSession) InitializeContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
+	return s.store.InitializeContext(ctx, baseline, sources, cutoff)
+}
+func (s *agentSession) ReconcileContext(ctx context.Context, text string, sources json.RawMessage) error {
+	return s.store.ReconcileContext(ctx, text, sources)
+}
+func (s *agentSession) ReplaceContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
+	return s.store.ReplaceContext(ctx, baseline, sources, cutoff)
+}
 
 func (s *agentSession) Status() Status {
 	s.mu.Lock()

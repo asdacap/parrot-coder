@@ -34,6 +34,12 @@ type SelectionPatch struct {
 
 type SelectionValidator func(Selection) error
 
+type ContextSession interface {
+	CurrentContextEpoch(context.Context) (ContextEpoch, error)
+	InitializeContext(context.Context, string, json.RawMessage, int64) (ContextEpoch, error)
+	ReconcileContext(context.Context, string, json.RawMessage) error
+}
+
 type AgentSessionStore interface {
 	Get(context.Context) (AgentSessionDto, error)
 	Delete(context.Context) error

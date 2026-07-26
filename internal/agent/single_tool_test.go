@@ -168,7 +168,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	}
 	contextRegistry, _ := systemcontext.NewRegistry(source)
 	agentSessions, err := NewUserSession(ctx, sessions, UserSessionConfig{AgentSession: AgentSessionConfig{
-		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
+		Contexts:           systemcontext.Manager{Registry: contextRegistry},
 		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,

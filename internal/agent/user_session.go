@@ -23,6 +23,7 @@ type SessionRuntime interface {
 	GetSession(string) session.AgentSessionStore
 	List(context.Context) ([]session.AgentSessionDto, error)
 	CreateSelected(context.Context, session.CreateParams, session.Selection) (session.AgentSessionDto, error)
+	ClaimInteractive(context.Context, session.InteractiveOwner, session.CreateParams, session.Selection, bool, func(int) bool) (session.InteractiveClaim, error)
 }
 
 // ChildSession is the canonical relationship between a child agent session and
@@ -51,6 +52,10 @@ type UserSession interface {
 	Interrupt(context.Context, string) error
 	Status(sessionID string) AgentStatus
 	Remove(sessionID string) error
+	Delete(context.Context, string) error
+	List(context.Context) ([]session.AgentSessionDto, error)
+	CreateSelected(context.Context, session.CreateParams, session.Selection) (AgentSession, error)
+	ClaimInteractive(context.Context, session.InteractiveOwner, session.CreateParams, session.Selection, bool, func(int) bool) (session.InteractiveClaim, error)
 	Shutdown(context.Context) error
 	createChild(context.Context, *agentSession, ChildRequest) (AgentSession, error)
 	observeChild(string, string) (ChildTurnObserver, error)
@@ -59,7 +64,6 @@ type UserSession interface {
 	sendManagedTurn(context.Context, *agentSession, string, string) (string, error)
 	forgetChild(*agentSession) error
 	reportChildProgress(*agentSession, ChildProgress)
-	resolveAgentSessionStore(string) session.AgentSessionStore
 }
 
 type UserSessionConfig struct {
@@ -164,6 +168,46 @@ func (s *userSession) Status(sessionID string) AgentStatus { return s.repository
 
 func (s *userSession) Remove(sessionID string) error { return s.repository.Remove(sessionID) }
 
+func (s *userSession) Delete(ctx context.Context, sessionID string) error {
+	if err := s.repository.Interrupt(ctx, sessionID); err != nil {
+		return err
+	}
+	if err := s.delete(ctx, sessionID); err != nil {
+		return err
+	}
+	return s.repository.Remove(sessionID)
+}
+
+func (s *userSession) List(ctx context.Context) ([]session.AgentSessionDto, error) {
+	return s.list(ctx)
+}
+
+func (s *userSession) CreateSelected(ctx context.Context, params session.CreateParams, selection session.Selection) (AgentSession, error) {
+	created, err := s.createSelected(ctx, params, selection)
+	if err != nil {
+		return nil, err
+	}
+	var parent AgentSession
+	if created.ParentSessionID != "" {
+		parent, err = s.repository.Get(created.ParentSessionID)
+		if err != nil {
+			return nil, errors.Join(err, s.delete(ctx, created.ID))
+		}
+	}
+	return s.repository.bind(created, parent, s.resolveAgentSessionStore(created.ID), func() error { return s.delete(ctx, created.ID) })
+}
+
+func (s *userSession) ClaimInteractive(ctx context.Context, owner session.InteractiveOwner, params session.CreateParams, selection session.Selection, forceNew bool, alive func(int) bool) (session.InteractiveClaim, error) {
+	claim, err := s.sessions.ClaimInteractive(ctx, owner, params, selection, forceNew, alive)
+	if err != nil {
+		return session.InteractiveClaim{}, err
+	}
+	if _, err := s.repository.Get(claim.Session.ID); err != nil {
+		return session.InteractiveClaim{}, err
+	}
+	return claim, nil
+}
+
 func (s *userSession) Shutdown(ctx context.Context) error { return s.shutdownChildren(ctx) }
 
 // agentSessionRepository owns the one runtime AgentSession object associated
@@ -265,7 +309,7 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	r.dtos[child.ID] = child
 	observers := append([]ChildCreatedObserver(nil), r.childObservers...)
 	r.mu.Unlock()
-	runtime, err := r.bind(child, parent, nil, func() error { return r.user.delete(ctx, child.ID) })
+	runtime, err := r.bind(child, parent, r.user.resolveAgentSessionStore(child.ID), func() error { return r.user.delete(ctx, child.ID) })
 	if err != nil {
 		if _, retained := r.ChildRelation(child.ID); retained {
 			for _, observer := range observers {
@@ -405,8 +449,10 @@ func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 	r.mu.Unlock()
 
 	var store session.AgentSessionStore
-	if !known && r.user != nil {
+	if r.user != nil {
 		store = r.user.resolveAgentSessionStore(sessionID)
+	}
+	if !known && store != nil {
 		loaded, err := store.Get(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("agent: get session %s: %w", sessionID, err)

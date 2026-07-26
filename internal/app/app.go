@@ -475,7 +475,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: context registry: %w", err)
 	}
-	contexts := systemcontext.Manager{Registry: contextRegistry, Store: sessions}
+	contexts := systemcontext.Manager{Registry: contextRegistry}
 	compactionRepository := compaction.NewRepository(sessionStore, repository)
 	compactionService, err := compaction.NewService(compactionRepository,
 		compaction.ProviderSummarizer{Providers: providerRegistry},
@@ -544,7 +544,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	userSession.AddChildCreatedObserver(childSessionObserver{live})
 	result.userSession = userSession
 	backend := &httpapi.DomainBackend{
-		Version: options.Version, ProjectRoot: info.Root, Sessions: sessions, AgentSessions: userSession, Agents: taskAgents, Modes: modes,
+		Version: options.Version, ProjectRoot: info.Root, AgentSessions: userSession, Agents: taskAgents, Modes: modes,
 		Providers: providers, Permissions: permissions, Questions: questions, Todos: todos, Goals: goals,
 		Events: live, DefaultSelection: defaultSelection, Processes: processLifecycle{notifications: notifications, processes: processes},
 		ProviderResolver: providerRegistry, Tools: toolProviders,
@@ -555,7 +555,11 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 				return v1.Compaction{}, httpapi.ErrConflict
 			}
 		}
-		selected, err := sessions.GetSession(sessionID).Get(ctx)
+		runtime, err := userSession.Get(sessionID)
+		if err != nil {
+			return v1.Compaction{}, err
+		}
+		selected, err := runtime.Details(ctx)
 		if err != nil {
 			if errors.Is(err, session.ErrNotFound) {
 				return v1.Compaction{}, httpapi.ErrNotFound
@@ -599,7 +603,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			"status", record.Status, "duration_ms", record.Duration.Milliseconds(), "error_ref", record.ErrorRef,
 		)
 	})})
-	handler := resumeHandler{next: apiServer, sessions: sessions, userSession: userSession, live: live}
+	handler := resumeHandler{next: apiServer, userSession: userSession, live: live}
 	transport := inproc.New(handler)
 	typed, err := client.New("http://parrot.local", transport)
 	if err != nil {
@@ -875,7 +879,6 @@ func (p questionPrompter) Prompt(context.Context, question.Pending) (question.Re
 
 type resumeHandler struct {
 	next        http.Handler
-	sessions    *session.Service
 	userSession agent.UserSession
 	live        *event.Broker
 }
@@ -891,7 +894,12 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, prefix) && strings.HasSuffix(r.URL.Path, "/events") && r.URL.Query().Get("after") == "" {
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), "/events")
 		if id != "" && !strings.Contains(id, "/") {
-			latest, err := h.sessions.GetSession(id).LatestSequence(r.Context())
+			runtime, err := h.userSession.Get(id)
+			if err != nil {
+				h.next.ServeHTTP(w, r)
+				return
+			}
+			latest, err := runtime.LatestSequence(r.Context())
 			if err == nil && latest >= 1000 {
 				clone := r.Clone(r.Context())
 				query := clone.URL.Query()
@@ -907,13 +915,13 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := h.sessions.GetSession(id).Get(r.Context()); err != nil {
+		runtime, err := h.userSession.Get(id)
+		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
-		runtime, err := h.userSession.Get(id)
-		if err != nil {
-			http.Error(w, "bind agent session", http.StatusInternalServerError)
+		if _, err := runtime.Details(r.Context()); err != nil {
+			http.NotFound(w, r)
 			return
 		}
 		runtime.Wake()

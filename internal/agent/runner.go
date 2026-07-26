@@ -29,8 +29,8 @@ type StatusObserver interface {
 }
 
 type ContextRuntime interface {
-	Initialize(context.Context, string, int64) (session.ContextEpoch, error)
-	Reconcile(context.Context, string) (session.ContextEpoch, error)
+	Initialize(context.Context, session.ContextSession, int64) (session.ContextEpoch, error)
+	Reconcile(context.Context, session.ContextSession) (session.ContextEpoch, error)
 }
 
 type LivePublisher interface {
@@ -138,9 +138,6 @@ type agentSession struct {
 }
 
 func newAgentSession(dto session.AgentSessionDto, parent AgentSession, user UserSession, store session.AgentSessionStore, config AgentSessionConfig, maxConcurrentChildTurns int, observers []LifecycleObserver) *agentSession {
-	if store == nil && user != nil {
-		store = user.resolveAgentSessionStore(dto.ID)
-	}
 	return &agentSession{
 		dto: dto, parent: parent, user: user, store: store, config: config,
 		childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
@@ -233,13 +230,13 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if r.config.Contexts == nil {
 				return errors.New("agent: context runtime is required for initialization")
 			}
-			epoch, err = r.config.Contexts.Initialize(ctx, r.dto.ID, cutoff)
+			epoch, err = r.config.Contexts.Initialize(ctx, r, cutoff)
 			if err != nil {
 				return err
 			}
 		}
 		if !initial && r.config.Contexts != nil {
-			reconciled, reconcileErr := r.config.Contexts.Reconcile(ctx, r.dto.ID)
+			reconciled, reconcileErr := r.config.Contexts.Reconcile(ctx, r)
 			if reconcileErr != nil && reconciled.ID == "" {
 				return reconcileErr
 			}
@@ -442,8 +439,10 @@ func (r *agentSession) statusQuery(ctx context.Context, selected session.AgentSe
 		Variant:         selected.Variant,
 	}
 	if selected.ParentSessionID != "" {
-		if parent, err := r.user.resolveAgentSessionStore(selected.ParentSessionID).Get(ctx); err == nil {
-			query.ParentSessionName = parent.Name
+		if parent, err := r.user.Get(selected.ParentSessionID); err == nil {
+			if details, err := parent.Details(ctx); err == nil {
+				query.ParentSessionName = details.Name
+			}
 		}
 	}
 	return query
@@ -818,9 +817,9 @@ type toolOutcome struct {
 	persistErr  error
 }
 
-func settleTool(ctx context.Context, persistent session.AgentSessionStore, callID, status string, result tool.Result, errorText string) error {
+func (r *agentSession) settleTool(ctx context.Context, callID, status string, result tool.Result, errorText string) error {
 	tail, _ := result.Metadata["output_tail"].(string)
-	return persistent.SettleToolWithOutput(ctx, callID, status, result.Text, errorText, tail)
+	return r.store.SettleToolWithOutput(ctx, callID, status, result.Text, errorText, tail)
 }
 
 // executeToolCall runs one tool and converts any panic in its Plan or Execute
@@ -890,7 +889,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 				settleCtx, cancel = context.WithTimeout(context.Background(), r.config.CleanupTimeout)
 				defer cancel()
 			}
-			settleErr := settleTool(settleCtx, r.store, call.call.ID, status, result, errorText)
+			settleErr := r.settleTool(settleCtx, call.call.ID, status, result, errorText)
 			outcome.settled = settleErr == nil
 			outcome.persistErr = settleErr
 			outcomes[i] = outcome

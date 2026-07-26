@@ -483,7 +483,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	}
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
 	createdAgentSessions, err := NewUserSession(ctx, sessions, UserSessionConfig{AgentSession: AgentSessionConfig{
-		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
+		Contexts:           systemcontext.Manager{Registry: contextRegistry},
 		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,
@@ -921,8 +921,23 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.agentSessions.repository.config.ToolProviders = providers
-	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
 	before, err := h.sessions.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created, err := h.agentSessions.CreateSelected(context.Background(), session.CreateParams{Title: "rollback"}, session.Selection{Agent: BuildID, Provider: "fake", Model: "model"}); !errors.Is(err, providerErr) || created != nil {
+		t.Fatalf("CreateSelected = %#v, %v", created, err)
+	}
+	afterCreate, err := h.sessions.List(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(afterCreate) != len(before) {
+		t.Fatalf("failed selected session remained: sessions=%d want=%d", len(afterCreate), len(before))
+	}
+
+	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
+	before, err = h.sessions.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
