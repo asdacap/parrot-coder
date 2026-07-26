@@ -308,12 +308,11 @@ func (s *Server) prompts(w http.ResponseWriter, r *http.Request) {
 		s.writeProblem(w, r, invalidProblem(requestID(r), "message_id, content, and a delivery of steer or queue are required."))
 		return
 	}
-	item, err := s.backend.AdmitPrompt(r.Context(), r.PathValue("id"), request)
+	item, err := s.backend.SubmitPrompt(r.Context(), r.PathValue("id"), request)
 	if err != nil {
 		s.writeBackendError(w, r, err)
 		return
 	}
-	s.backend.Wake(r.PathValue("id"))
 	s.writeJSON(w, http.StatusAccepted, item)
 }
 

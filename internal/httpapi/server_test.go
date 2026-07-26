@@ -25,8 +25,6 @@ import (
 )
 
 type stubBackend struct {
-	mu         sync.Mutex
-	order      []string
 	backendErr error
 	stream     *EventStream
 }
@@ -64,17 +62,10 @@ func (b *stubBackend) PutGoal(context.Context, string, v1.PutGoalRequest) (v1.Go
 	return v1.Goal{ID: "goal_test", SessionID: "ses_test", Objective: "ship it", Status: "active"}, b.backendErr
 }
 func (b *stubBackend) DeleteGoal(context.Context, string) error { return b.backendErr }
-func (b *stubBackend) AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error) {
-	b.mu.Lock()
-	b.order = append(b.order, "admit")
-	b.mu.Unlock()
+func (b *stubBackend) SubmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error) {
 	return v1.PromptAccepted{InputID: "inp_test", MessageID: "msg_test", Delivery: "steer", Status: "pending", Created: true}, b.backendErr
 }
-func (b *stubBackend) Wake(string) {
-	b.mu.Lock()
-	b.order = append(b.order, "wake")
-	b.mu.Unlock()
-}
+func (b *stubBackend) Wake(string)                             {}
 func (b *stubBackend) Interrupt(context.Context, string) error { return b.backendErr }
 func (b *stubBackend) OpenEvents(context.Context, string, int64) (*EventStream, error) {
 	if b.backendErr != nil {
@@ -467,6 +458,32 @@ func (d blockingDrainer) Drain(ctx context.Context, _ string) error {
 	return ctx.Err()
 }
 
+func TestSubmitPromptAdmitsAndWakes(t *testing.T) {
+	backend, sessions := newSelectionBackend(t)
+	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	started := make(chan struct{}, 1)
+	backend.AgentSessions = newTestSessionController(blockingDrainer{started: started}, sessions)
+	created, err := backend.CreateSession(context.Background(), v1.CreateSessionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	accepted, err := backend.SubmitPrompt(context.Background(), created.ID, v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "queue"})
+	if err != nil || accepted.MessageID != "msg_test" || accepted.Status != "pending" || !accepted.Created {
+		t.Fatalf("SubmitPrompt = %#v, %v", accepted, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("submitted prompt did not wake session")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = backend.AgentSessions.Interrupt(ctx, created.ID)
+	})
+}
+
 func TestSelectionRejectsActiveSession(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
@@ -639,23 +656,6 @@ func TestStrictJSONContentTypeAndLimit(t *testing.T) {
 			}
 			assertProblem(t, response, test.code)
 		})
-	}
-}
-
-func TestPromptAdmissionPrecedesWake(t *testing.T) {
-	backend := &stubBackend{}
-	server := New(backend, Config{})
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/ses_test/prompts", strings.NewReader(`{"message_id":"msg_test","content":"hello","delivery":"queue"}`))
-	request.Header.Set("Content-Type", v1.MediaTypeJSON)
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("status = %d", response.Code)
-	}
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	if strings.Join(backend.order, ",") != "admit,wake" {
-		t.Fatalf("order = %v", backend.order)
 	}
 }
 
