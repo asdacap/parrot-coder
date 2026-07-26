@@ -54,15 +54,23 @@ func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (A
 	if s.user == nil {
 		return nil, ErrChildNotFound
 	}
-	return s.user.createChild(ctx, s, request)
+	return s.user.CreateChild(ctx, s, request)
 }
 
-func (user *userSession) createChild(ctx context.Context, s *agentSession, request ChildRequest) (AgentSession, error) {
+func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, request ChildRequest) (AgentSession, error) {
+	s, ok := parent.(*agentSession)
+	if !ok || s == nil {
+		return nil, errors.New("agent: child parent runtime is not owned by this user session")
+	}
 	if err := s.reserveChildCreation(); err != nil {
 		return nil, err
 	}
 	defer s.releaseChildCreation()
 
+	owned, ok := user.repository.Lookup(s.ID())
+	if !ok || owned != parent {
+		return nil, errors.New("agent: child parent runtime is not owned by this user session")
+	}
 	user.childMu.Lock()
 	defer user.childMu.Unlock()
 	if user.closed {

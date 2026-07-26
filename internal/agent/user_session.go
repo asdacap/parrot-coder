@@ -57,7 +57,7 @@ type UserSession interface {
 	CreateSelected(context.Context, session.CreateParams, session.Selection) (AgentSession, error)
 	ClaimInteractive(context.Context, session.InteractiveOwner, session.CreateParams, session.Selection, bool, func(int) bool) (session.InteractiveClaim, error)
 	Shutdown(context.Context) error
-	createChild(context.Context, *agentSession, ChildRequest) (AgentSession, error)
+	CreateChild(context.Context, AgentSession, ChildRequest) (AgentSession, error)
 	observeChild(string, string) (ChildTurnObserver, error)
 	resolveChild(string, string) (AgentSession, error)
 	runChild(*agentSession, *childTurnState)

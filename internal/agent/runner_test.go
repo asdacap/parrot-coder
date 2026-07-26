@@ -594,6 +594,21 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
+	other, err := NewUserSession(t.Context(), h.sessions, h.agentSessions.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := h.sessions.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if foreign, err := other.CreateChild(t.Context(), parent, ChildRequest{Prompt: "foreign", Agent: BuildID, Name: "foreign"}); err == nil || foreign != nil {
+		t.Fatalf("foreign CreateChild = %#v, %v", foreign, err)
+	}
+	after, err := h.sessions.List(t.Context())
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("sessions after foreign CreateChild = %#v, %v; want %d", after, err, len(before))
+	}
 	parentStatus := parent.Status()
 	if parentStatus.SessionID != h.sessionID || parentStatus.RootSession != h.sessionID || parentStatus.ParentSession != "" || parentStatus.State != StatusIdle {
 		t.Fatalf("parent status = %#v", parentStatus)
