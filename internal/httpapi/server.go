@@ -304,8 +304,8 @@ func (s *Server) prompts(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &request) {
 		return
 	}
-	if request.MessageID == "" || request.Content == "" || request.Delivery != "steer" && request.Delivery != "queue" {
-		s.writeProblem(w, r, invalidProblem(requestID(r), "message_id, content, and a delivery of steer or queue are required."))
+	if request.MessageID == "" || request.Content == "" {
+		s.writeProblem(w, r, invalidProblem(requestID(r), "message_id and content are required."))
 		return
 	}
 	item, err := s.backend.SubmitPrompt(r.Context(), r.PathValue("id"), request)

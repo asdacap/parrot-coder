@@ -340,10 +340,7 @@ func (b *DomainBackend) SubmitPrompt(ctx context.Context, id string, request v1.
 	if err != nil {
 		return v1.PromptAccepted{}, err
 	}
-	admission, err := runtime.Admit(ctx, session.AdmitParams{MessageID: request.MessageID, Content: request.Content, Delivery: session.Delivery(request.Delivery)})
-	if errors.Is(err, session.ErrInvalidDelivery) {
-		return v1.PromptAccepted{}, ErrInvalid
-	}
+	admission, err := runtime.Send(ctx, request.MessageID, request.Content)
 	if errors.Is(err, session.ErrIdempotencyConflict) {
 		return v1.PromptAccepted{}, ErrIdempotencyConflict
 	}

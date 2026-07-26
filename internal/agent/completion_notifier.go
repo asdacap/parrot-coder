@@ -8,11 +8,13 @@ import (
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
+	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
 // NotificationSession receives a completed child-agent turn.
 type NotificationSession interface {
-	Send(context.Context, string) (messageID, inputID string, err error)
+	Send(context.Context, string, string) (session.Admission, error)
 }
 
 type activeNotification struct {
@@ -89,7 +91,11 @@ func (n *CompletionNotifier) Notify(task Status) {
 		}
 		sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer sendCancel()
-		if _, _, err := session.Send(sendCtx, completionNotification(task)); err != nil && !errors.Is(err, context.Canceled) {
+		messageID, err := id.New("msg")
+		if err == nil {
+			_, err = session.Send(sendCtx, messageID, completionNotification(task))
+		}
+		if err != nil && !errors.Is(err, context.Canceled) {
 			diagnostics.Error("agent_task_notification_failed", "session_id", task.ParentSession, "task_id", task.SessionID, "error_type", diagnostics.ErrorType(err))
 		}
 	}()

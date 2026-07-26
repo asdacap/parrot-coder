@@ -133,7 +133,7 @@ func (r *enhancedChatRuntime) submitPrompt(content string) error {
 			return err
 		}
 		accepted, err := r.shell.api.Prompt(r.shell.ctx, r.shell.current.ID, v1.PromptRequest{
-			MessageID: messageID, Content: content, Delivery: "steer",
+			MessageID: messageID, Content: content,
 		})
 		if err != nil {
 			return err
@@ -168,7 +168,7 @@ func (r *enhancedChatRuntime) submitPrompt(content string) error {
 		return err
 	}
 	if _, err := r.shell.api.Prompt(r.shell.ctx, r.shell.current.ID, v1.PromptRequest{
-		MessageID: messageID, Content: content, Delivery: "steer",
+		MessageID: messageID, Content: content,
 	}); err != nil {
 		return err
 	}

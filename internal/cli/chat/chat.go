@@ -801,7 +801,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 		if err != nil {
 			return streamResult{err: err}
 		}
-		if _, err := api.Prompt(ctx, sessionID, v1.PromptRequest{MessageID: messageID, Content: prompt, Delivery: "steer"}); err != nil {
+		if _, err := api.Prompt(ctx, sessionID, v1.PromptRequest{MessageID: messageID, Content: prompt}); err != nil {
 			return streamResult{err: err}
 		}
 	}

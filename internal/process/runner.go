@@ -17,6 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -42,7 +43,7 @@ type Config struct {
 // AgentSession is the capability used to deliver a yielded process's eventual
 // completion to its owning session.
 type AgentSession interface {
-	Send(context.Context, string) (messageID, inputID string, err error)
+	Send(context.Context, string, string) (session.Admission, error)
 }
 
 // AgentSessionResolver resolves the owner of a yielded process.

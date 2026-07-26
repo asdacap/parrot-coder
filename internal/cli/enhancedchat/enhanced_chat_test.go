@@ -100,7 +100,7 @@ func TestEnhancedBusySubmissionSteersAndPromotionCommits(t *testing.T) {
 	if err := runtime.submitPrompt("next task"); err != nil {
 		t.Fatal(err)
 	}
-	if len(api.prompts) != 1 || api.prompts[0].Delivery != "steer" || len(runtime.pending) != 1 {
+	if len(api.prompts) != 1 || len(runtime.pending) != 1 {
 		t.Fatalf("prompts=%#v pending=%#v", api.prompts, runtime.pending)
 	}
 	if err := runtime.render(); err != nil {
@@ -1941,7 +1941,7 @@ type enhancedQueueAPI struct {
 
 func (a *enhancedQueueAPI) Prompt(_ context.Context, _ string, request v1.PromptRequest) (v1.PromptAccepted, error) {
 	a.prompts = append(a.prompts, request)
-	return v1.PromptAccepted{InputID: "input", MessageID: "message", Delivery: request.Delivery, Status: "pending", Created: true}, nil
+	return v1.PromptAccepted{InputID: "input", MessageID: "message", Delivery: "steer", Status: "pending", Created: true}, nil
 }
 
 func (a *enhancedQueueAPI) Messages(context.Context, string) (v1.MessageList, error) {

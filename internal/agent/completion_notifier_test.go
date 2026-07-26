@@ -6,6 +6,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
 type notificationAgentSession struct {
@@ -14,7 +16,7 @@ type notificationAgentSession struct {
 	sent     chan struct{}
 }
 
-func (s *notificationAgentSession) Send(_ context.Context, message string) (string, string, error) {
+func (s *notificationAgentSession) Send(_ context.Context, _, message string) (session.Admission, error) {
 	s.mu.Lock()
 	s.messages = append(s.messages, message)
 	s.mu.Unlock()
@@ -22,7 +24,7 @@ func (s *notificationAgentSession) Send(_ context.Context, message string) (stri
 	case s.sent <- struct{}{}:
 	default:
 	}
-	return "message", "input", nil
+	return session.Admission{}, nil
 }
 
 func TestCompletionNotifierDeliversTerminalTurnToDirectParent(t *testing.T) {

@@ -8,7 +8,6 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/session"
-	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 type LifecycleObserver interface {
@@ -56,8 +55,7 @@ type AgentSession interface {
 	Observe() (ChildTurnObserver, error)
 	ResolveChild(string) (AgentSession, error)
 	Prompt(context.Context, string) (string, error)
-	Send(context.Context, string) (messageID, inputID string, err error)
-	SendAgentMessage(context.Context, tool.AgentMessage) (string, error)
+	Send(context.Context, string, string) (session.Admission, error)
 	Wake()
 	Resume(context.Context) error
 	Interrupt(context.Context) error
@@ -65,7 +63,6 @@ type AgentSession interface {
 	Details(context.Context) (session.AgentSessionDto, error)
 	UpdateSelection(context.Context, session.SelectionPatch, session.SelectionValidator) (session.AgentSessionDto, error)
 	ListMessages(context.Context) ([]session.Message, error)
-	Admit(context.Context, session.AdmitParams) (session.Admission, error)
 	HasPendingInputs(context.Context) (bool, error)
 	LatestSequence(context.Context) (int64, error)
 	CurrentContextEpoch(context.Context) (session.ContextEpoch, error)
@@ -88,22 +85,6 @@ func (s *agentSession) UpdateSelection(ctx context.Context, patch session.Select
 
 func (s *agentSession) ListMessages(ctx context.Context) ([]session.Message, error) {
 	return s.store.ListMessages(ctx)
-}
-func (s *agentSession) Admit(ctx context.Context, params session.AdmitParams) (session.Admission, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.removed {
-		return session.Admission{}, ErrAgentSessionRemoved
-	}
-	if s.shuttingDown {
-		return session.Admission{}, ErrUserSessionClosed
-	}
-	admission, err := s.store.Admit(ctx, params)
-	if err != nil {
-		return session.Admission{}, err
-	}
-	s.startOrJoinLocked(true)
-	return admission, nil
 }
 func (s *agentSession) HasPendingInputs(ctx context.Context) (bool, error) {
 	return s.store.HasPendingInputs(ctx)
@@ -189,18 +170,45 @@ func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
 // Prompt admits input, runs the session to idle, and returns the assistant
 // message produced by that execution lifecycle.
 func (s *agentSession) Prompt(ctx context.Context, content string) (string, error) {
-	messages, err := s.store.ListMessages(ctx)
+	messageID, err := id.New("msg")
 	if err != nil {
 		return "", err
+	}
+	_, state, cutoff, err := s.startPrompt(ctx, messageID, content)
+	if err != nil {
+		return "", err
+	}
+	return s.awaitPrompt(ctx, state, cutoff)
+}
+
+// Send admits steer input with the caller's idempotency key and wakes the
+// session without waiting for it to idle.
+func (s *agentSession) Send(ctx context.Context, messageID, content string) (session.Admission, error) {
+	return s.send(ctx, messageID, content, content)
+}
+
+func (s *agentSession) send(ctx context.Context, messageID, content, measuredContent string) (session.Admission, error) {
+	if s.user != nil && s.parent != nil {
+		return s.sendManagedTurn(ctx, messageID, content, measuredContent)
+	}
+	admission, _, err := s.admitAndStart(ctx, messageID, content)
+	return admission, err
+}
+
+func (s *agentSession) startPrompt(ctx context.Context, messageID, content string) (session.Admission, *drainState, int64, error) {
+	messages, err := s.store.ListMessages(ctx)
+	if err != nil {
+		return session.Admission{}, nil, 0, err
 	}
 	var cutoff int64
 	for _, message := range messages {
 		cutoff = max(cutoff, message.Sequence)
 	}
-	_, state, err := s.admitAndStart(ctx, content)
-	if err != nil {
-		return "", err
-	}
+	admission, state, err := s.admitAndStart(ctx, messageID, content)
+	return admission, state, cutoff, err
+}
+
+func (s *agentSession) awaitPrompt(ctx context.Context, state *drainState, cutoff int64) (string, error) {
 	if err := s.wait(ctx, state); err != nil {
 		if ctx.Err() != nil {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -209,7 +217,7 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 		}
 		return "", err
 	}
-	messages, err = s.store.ListMessages(ctx)
+	messages, err := s.store.ListMessages(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -225,54 +233,28 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 	return "", errors.New("agent: session produced no assistant output")
 }
 
-// Send admits steer input and wakes the session without waiting for it to idle.
-func (s *agentSession) Send(ctx context.Context, content string) (string, string, error) {
-	if s.user != nil && s.parent != nil {
-		return s.sendManagedTurn(ctx, content, content)
-	}
-	admission, _, err := s.admitAndStart(ctx, content)
-	return admission.Input.MessageID, admission.Input.ID, err
-}
-
-func (s *agentSession) SendAgentMessage(ctx context.Context, message tool.AgentMessage) (string, error) {
-	content := message.String()
-	if s.user != nil && s.parent != nil {
-		messageID, _, err := s.sendManagedTurn(ctx, content, message.Content)
-		return messageID, err
-	}
-	admission, _, err := s.admitAndStart(ctx, content)
-	return admission.Input.MessageID, err
-}
-
-func (s *agentSession) admit(ctx context.Context, content string) (string, error) {
+func (s *agentSession) admitAndStart(ctx context.Context, messageID, content string) (session.Admission, *drainState, error) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	admission, err := s.admitLocked(ctx, content)
-	return admission.Input.MessageID, err
-}
-
-func (s *agentSession) admitAndStart(ctx context.Context, content string) (session.Admission, *drainState, error) {
-	s.mu.Lock()
-	admission, err := s.admitLocked(ctx, content)
+	admission, err := s.admitLocked(ctx, messageID, content)
 	if err != nil {
 		s.mu.Unlock()
 		return session.Admission{}, nil, err
+	}
+	if !admission.Created {
+		s.mu.Unlock()
+		return admission, nil, nil
 	}
 	state := s.startOrJoinLocked(true)
 	s.mu.Unlock()
 	return admission, state, nil
 }
 
-func (s *agentSession) admitLocked(ctx context.Context, content string) (session.Admission, error) {
+func (s *agentSession) admitLocked(ctx context.Context, messageID, content string) (session.Admission, error) {
 	if s.removed {
 		return session.Admission{}, ErrAgentSessionRemoved
 	}
 	if s.shuttingDown {
 		return session.Admission{}, ErrUserSessionClosed
-	}
-	messageID, err := id.New("msg")
-	if err != nil {
-		return session.Admission{}, err
 	}
 	return s.store.Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer})
 }

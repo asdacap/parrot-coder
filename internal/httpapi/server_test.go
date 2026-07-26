@@ -118,7 +118,7 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"GET", "/api/v1/sessions/ses_test/goal", "", 200},
 		{"PUT", "/api/v1/sessions/ses_test/goal", `{"objective":"ship it"}`, 200},
 		{"DELETE", "/api/v1/sessions/ses_test/goal", "", 204},
-		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello","delivery":"steer"}`, 202},
+		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello"}`, 202},
 		{"POST", "/api/v1/sessions/ses_test/interrupt", "", 204},
 		{"GET", "/api/v1/sessions/ses_test/permissions", "", 200},
 		{"POST", "/api/v1/sessions/ses_test/permissions/per_test/reply", `{"decision":"allow"}`, 204},
@@ -360,8 +360,8 @@ type testAgentSession struct {
 	id         string
 }
 
-func (s testAgentSession) Admit(ctx context.Context, params session.AdmitParams) (session.Admission, error) {
-	admission, err := s.AgentSession.Admit(ctx, params)
+func (s testAgentSession) Send(ctx context.Context, messageID, content string) (session.Admission, error) {
+	admission, err := s.AgentSession.Send(ctx, messageID, content)
 	if err == nil {
 		s.controller.wake(s.id)
 	}
@@ -475,8 +475,8 @@ func TestSubmitPromptAdmitsAndWakes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	accepted, err := backend.SubmitPrompt(context.Background(), created.ID, v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "queue"})
-	if err != nil || accepted.MessageID != "msg_test" || accepted.Status != "pending" || !accepted.Created {
+	accepted, err := backend.SubmitPrompt(context.Background(), created.ID, v1.PromptRequest{MessageID: "msg_test", Content: "hello"})
+	if err != nil || accepted.MessageID != "msg_test" || accepted.Delivery != "steer" || accepted.Status != "pending" || !accepted.Created {
 		t.Fatalf("SubmitPrompt = %#v, %v", accepted, err)
 	}
 	select {
@@ -580,7 +580,7 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.Admit(ctx, session.AdmitParams{MessageID: "msg_steer", Content: "queued", Delivery: session.DeliverySteer}); err != nil {
+	if _, err := runtime.Send(ctx, "msg_steer", "queued"); err != nil {
 		t.Fatal(err)
 	}
 
@@ -680,7 +680,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := New(&DomainBackend{AgentSessions: newTestSessionController(nil, userSession), Events: event.NewBroker(repository, event.NewTransientRepository())}, Config{})
-	body := `{"message_id":"msg_retry","content":"hello","delivery":"steer"}`
+	body := `{"message_id":"msg_retry","content":"hello"}`
 	for attempt := 0; attempt < 2; attempt++ {
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(body))
 		request.Header.Set("Content-Type", v1.MediaTypeJSON)
@@ -705,7 +705,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 		t.Fatalf("events = %#v", items)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(`{"message_id":"msg_retry","content":"different","delivery":"steer"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(`{"message_id":"msg_retry","content":"different"}`))
 	request.Header.Set("Content-Type", v1.MediaTypeJSON)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -985,7 +985,7 @@ func TestClientParityNetworkAndInProcess(t *testing.T) {
 			if err != nil || selected.Agent != "plan" || selected.Model != "code" {
 				t.Fatalf("UpdateSessionSelection = %#v, %v", selected, err)
 			}
-			accepted, err := apiClient.Prompt(ctx, "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "steer"})
+			accepted, err := apiClient.Prompt(ctx, "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello"})
 			if err != nil || accepted.InputID != "inp_test" {
 				t.Fatalf("Prompt = %#v, %v", accepted, err)
 			}

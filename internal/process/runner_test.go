@@ -17,6 +17,7 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
@@ -527,9 +528,9 @@ func (s *recordingProcessAgentSessions) Get(sessionID string) AgentSession {
 
 type recordingProcessAgentSession struct{ sent chan string }
 
-func (s recordingProcessAgentSession) Send(_ context.Context, content string) (string, string, error) {
+func (s recordingProcessAgentSession) Send(_ context.Context, _, content string) (session.Admission, error) {
 	s.sent <- content
-	return "message", "input", nil
+	return session.Admission{}, nil
 }
 
 func TestRunPersistentNotifiesOwningAgentSessionOnlyAfterYieldedProcessFinishes(t *testing.T) {
