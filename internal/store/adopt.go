@@ -23,7 +23,7 @@ var legacyTables = []struct {
 	{"event", "id,session_id,sequence,type,data_json,created_at"},
 	{"session_input", "id,session_id,message_id,content,delivery,status,admitted_sequence,promoted_sequence,created_at,promoted_at"},
 	{"session_message", "id,session_id,role,content,input_id,sequence,created_at,parts_json,status,finish_reason,error_text,usage_json"},
-	{"session_context_epoch", "id,session_id,ordinal,baseline,sources_json,history_cutoff,created_at"},
+	{"session_compaction_epoch", "id,session_id,ordinal,summary_prompt,history_cutoff,created_at"},
 	{"session_tool_call", "id,session_id,message_id,name,input_json,status,result_text,error_text,sequence,settled_sequence,created_at,settled_at"},
 	{"session_todo", "session_id,id,position,content,status,priority"},
 	{"compaction_attempt", "id,session_id,source_epoch_id,covered_from_sequence,covered_to_sequence,history_cutoff,provider_id,model_id,forced,status,error_text,created_at,finished_at"},

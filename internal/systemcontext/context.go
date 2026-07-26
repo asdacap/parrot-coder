@@ -1,17 +1,13 @@
-// Package systemcontext observes typed, durable provider context.
+// Package systemcontext observes provider context for the system prompt.
 package systemcontext
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
 type Source interface {
@@ -20,15 +16,10 @@ type Source interface {
 }
 
 type Observation struct {
-	Available bool            `json:"available"`
-	Value     json.RawMessage `json:"value,omitempty"`
-	Path      string          `json:"path,omitempty"`
-	Baseline  string          `json:"-"`
-	Update    string          `json:"-"`
-	Removal   string          `json:"removal,omitempty"`
+	Available bool
+	Text      string
+	Path      string
 }
-
-type Snapshot map[string]Observation
 
 type Registry struct {
 	mu      sync.RWMutex
@@ -63,7 +54,12 @@ func validKey(key string) bool {
 	return ok && namespace != "" && name != "" && !strings.ContainsAny(key, "\r\n\t ")
 }
 
-func (r *Registry) Observe(ctx context.Context) (Snapshot, error) {
+// GetSystemContextPrompt observes every source and renders available context in
+// stable key order.
+func (r *Registry) GetSystemContextPrompt(ctx context.Context) (string, error) {
+	if r == nil {
+		return "", errors.New("systemcontext: registry is unavailable")
+	}
 	r.mu.RLock()
 	keys := make([]string, 0, len(r.sources))
 	sources := make(map[string]Source, len(r.sources))
@@ -86,191 +82,31 @@ func (r *Registry) Observe(ctx context.Context) (Snapshot, error) {
 		go func(key string, source Source) {
 			defer wg.Done()
 			observation, err := source.Observe(ctx)
-			if err == nil && observation.Available && len(observation.Value) != 0 && !json.Valid(observation.Value) {
-				err = errors.New("invalid observation JSON")
-			}
-			results <- result{key, observation, err}
+			results <- result{key: key, observation: observation, err: err}
 		}(key, sources[key])
 	}
 	wg.Wait()
 	close(results)
-	snapshot := make(Snapshot, len(keys))
+
 	observed := make(map[string]result, len(keys))
 	for result := range results {
 		observed[result.key] = result
 	}
-	var failures []error
+	sections := make([]string, 0, len(keys))
+	failures := make([]error, 0)
 	for _, key := range keys {
 		result := observed[key]
 		if result.err != nil {
-			failures = append(failures, fmt.Errorf("%s: %w", result.key, result.err))
-			result.observation.Available = false
-		}
-		snapshot[result.key] = result.observation
-	}
-	return snapshot, errors.Join(failures...)
-}
-
-type EpochSession interface {
-	session.ContextSession
-	ReplaceContext(context.Context, string, json.RawMessage, int64) (session.ContextEpoch, error)
-}
-
-type Manager struct {
-	Registry *Registry
-}
-
-// FullContext is a freshly observed, complete typed context snapshot. It is
-// suitable for a new epoch baseline; unlike reconciliation it never carries
-// unavailable values forward from an older observation.
-type FullContext struct {
-	Baseline string
-	Sources  json.RawMessage
-}
-
-func (m Manager) ObserveFull(ctx context.Context) (FullContext, error) {
-	if m.Registry == nil {
-		return FullContext{}, errors.New("systemcontext: registry is unavailable")
-	}
-	snapshot, observeErr := m.Registry.Observe(ctx)
-	if err := completeSnapshot(snapshot, observeErr); err != nil {
-		return FullContext{}, err
-	}
-	raw, err := encodeSnapshot(snapshot)
-	if err != nil {
-		return FullContext{}, err
-	}
-	return FullContext{Baseline: renderBaseline(snapshot), Sources: raw}, nil
-}
-
-func (m Manager) Initialize(ctx context.Context, target session.ContextSession, cutoff int64) (session.ContextEpoch, error) {
-	full, err := m.ObserveFull(ctx)
-	if err != nil {
-		return session.ContextEpoch{}, err
-	}
-	return target.InitializeContext(ctx, full.Baseline, full.Sources, cutoff)
-}
-
-func (m Manager) Reconcile(ctx context.Context, target session.ContextSession) (session.ContextEpoch, error) {
-	epoch, err := target.CurrentContextEpoch(ctx)
-	if err != nil {
-		return session.ContextEpoch{}, err
-	}
-	var previous Snapshot
-	if err := json.Unmarshal(epoch.Sources, &previous); err != nil {
-		return session.ContextEpoch{}, err
-	}
-	current, observeErr := m.Registry.Observe(ctx)
-	next := cloneSnapshot(previous)
-	var changes []string
-	keys := make([]string, 0, len(current)+len(previous))
-	for key := range current {
-		keys = append(keys, key)
-	}
-	for key := range previous {
-		if _, registered := current[key]; !registered {
-			keys = append(keys, key)
-		}
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		observed, registered := current[key]
-		old, existed := previous[key]
-		if !registered {
-			if len(old.Value) != 0 {
-				changes = appendNonempty(changes, old.Removal)
-			}
-			delete(next, key)
+			failures = append(failures, fmt.Errorf("%s: %w", key, result.err))
 			continue
 		}
-		if !observed.Available {
+		if !result.observation.Available {
+			failures = append(failures, fmt.Errorf("%s: source unavailable", key))
 			continue
 		}
-		if len(observed.Value) == 0 {
-			if existed && len(old.Value) != 0 {
-				changes = appendNonempty(changes, old.Removal)
-			}
-			delete(next, key)
-			continue
-		}
-		if !existed {
-			changes = appendNonempty(changes, observed.Baseline)
-		} else if !bytes.Equal(old.Value, observed.Value) {
-			changes = appendNonempty(changes, observed.Update)
-		}
-		next[key] = observed
-	}
-	raw, err := encodeSnapshot(next)
-	if err != nil {
-		return session.ContextEpoch{}, err
-	}
-	if bytes.Equal(raw, epoch.Sources) {
-		return epoch, observeErr
-	}
-	if err := target.ReconcileContext(ctx, strings.Join(changes, "\n\n"), raw); err != nil {
-		return session.ContextEpoch{}, err
-	}
-	epoch.Sources = raw
-	return epoch, observeErr
-}
-
-func (m Manager) Replace(ctx context.Context, target EpochSession, baseline string, cutoff int64) (session.ContextEpoch, error) {
-	full, err := m.ObserveFull(ctx)
-	if err != nil {
-		return session.ContextEpoch{}, err
-	}
-	return target.ReplaceContext(ctx, baseline, full.Sources, cutoff)
-}
-
-func completeSnapshot(snapshot Snapshot, observeErr error) error {
-	var unavailable []error
-	keys := make([]string, 0, len(snapshot))
-	for key := range snapshot {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		observation := snapshot[key]
-		if !observation.Available {
-			unavailable = append(unavailable, fmt.Errorf("%s: source unavailable", key))
+		if strings.TrimSpace(result.observation.Text) != "" {
+			sections = append(sections, result.observation.Text)
 		}
 	}
-	return errors.Join(append([]error{observeErr}, unavailable...)...)
-}
-
-func renderBaseline(snapshot Snapshot) string {
-	keys := make([]string, 0, len(snapshot))
-	for key := range snapshot {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	var sections []string
-	for _, key := range keys {
-		observation := snapshot[key]
-		if observation.Available && len(observation.Value) != 0 {
-			sections = appendNonempty(sections, observation.Baseline)
-		}
-	}
-	return strings.Join(sections, "\n\n")
-}
-
-func encodeSnapshot(snapshot Snapshot) (json.RawMessage, error) {
-	raw, err := json.Marshal(snapshot)
-	return json.RawMessage(raw), err
-}
-
-func cloneSnapshot(snapshot Snapshot) Snapshot {
-	result := make(Snapshot, len(snapshot))
-	for key, value := range snapshot {
-		value.Value = append(json.RawMessage(nil), value.Value...)
-		result[key] = value
-	}
-	return result
-}
-
-func appendNonempty(values []string, value string) []string {
-	if strings.TrimSpace(value) != "" {
-		return append(values, value)
-	}
-	return values
+	return strings.Join(sections, "\n\n"), errors.Join(failures...)
 }

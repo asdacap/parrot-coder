@@ -17,8 +17,8 @@ func TestSessionNameMigrationBackfillsOnlyStrictLegacySubtaskTitles(t *testing.T
 		open      func(context.Context, string) (*DB, error)
 		wantCount int
 	}{
-		{name: "legacy", dir: legacyMigrations, open: Open, wantCount: 9},
-		{name: "session", dir: sessionMigrations, open: OpenSession, wantCount: 4},
+		{name: "legacy", dir: legacyMigrations, open: Open, wantCount: 10},
+		{name: "session", dir: sessionMigrations, open: OpenSession, wantCount: 5},
 	}
 	rows := []struct {
 		id, title, agent, want string
@@ -52,7 +52,7 @@ func TestSessionNameMigrationBackfillsOnlyStrictLegacySubtaskTitles(t *testing.T
 					if _, err := raw.ExecContext(ctx, `CREATE TABLE _parrot_migration (version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
 						t.Fatal(err)
 					}
-					for _, migration := range migrations[:len(migrations)-1] {
+					for _, migration := range migrations[:len(migrations)-2] {
 						if _, err := raw.ExecContext(ctx, migration.sql); err != nil {
 							t.Fatalf("apply %s: %v", migration.name, err)
 						}
@@ -85,15 +85,168 @@ func TestSessionNameMigrationBackfillsOnlyStrictLegacySubtaskTitles(t *testing.T
 	}
 }
 
-func TestMigration006WithSnapshotDataUpgradesThrough009AndReopens(t *testing.T) {
+func TestCompactionEpochMigrationBackfillsCompletedTargetsAndPreservesReferences(t *testing.T) {
+	lineages := []struct {
+		name string
+		dir  string
+		open func(context.Context, string) (*DB, error)
+	}{
+		{name: "legacy", dir: legacyMigrations, open: Open},
+		{name: "session", dir: sessionMigrations, open: OpenSession},
+	}
+	const wantPrompt = "----- BEGIN COMPACTED SESSION HISTORY -----\nSource epoch: epoch-0\nCovered sequences: 0-3\nHistory cutoff: 4\n\nsummary text\n----- END COMPACTED SESSION HISTORY -----"
+
+	for _, lineage := range lineages {
+		t.Run(lineage.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "session.db")
+			migrations, err := loadMigrations(lineage.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := raw.ExecContext(ctx, `CREATE TABLE _parrot_migration (version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+				t.Fatal(err)
+			}
+			for _, migration := range migrations[:len(migrations)-1] {
+				if _, err := raw.ExecContext(ctx, migration.sql); err != nil {
+					t.Fatalf("apply %s: %v", migration.name, err)
+				}
+				if _, err := raw.ExecContext(ctx, `INSERT INTO _parrot_migration(version,name,checksum,applied_at) VALUES(?,?,?,?)`, migration.version, migration.name, migration.checksum, "2026-01-01T00:00:00Z"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := raw.ExecContext(ctx, `
+				INSERT INTO session(id,title,created_at,updated_at) VALUES('session-1','title','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+				INSERT INTO session_context_epoch VALUES('epoch-0','session-1',0,'old baseline','[]',0,'2026-01-01T00:00:00Z');
+				INSERT INTO session_context_epoch VALUES('epoch-1','session-1',1,'old baseline','[]',4,'2026-01-01T00:01:00Z');
+				INSERT INTO compaction_attempt VALUES('attempt-1','session-1','epoch-0',0,3,4,'provider','model',0,'completed','', '2026-01-01T00:00:30Z','2026-01-01T00:01:00Z');
+				INSERT INTO compaction_record VALUES('record-1','attempt-1','session-1','epoch-0','epoch-1',0,3,4,'  summary text  ','{}','provider','model','2026-01-01T00:01:00Z');
+			`); err != nil {
+				t.Fatal(err)
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			db, err := lineage.open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			rows, err := db.SQL().QueryContext(ctx, `SELECT id, summary_prompt FROM session_compaction_epoch WHERE session_id='session-1' ORDER BY ordinal`)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer rows.Close()
+			var got [][2]string
+			for rows.Next() {
+				var row [2]string
+				if err := rows.Scan(&row[0], &row[1]); err != nil {
+					t.Fatal(err)
+				}
+				got = append(got, row)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatal(err)
+			}
+			if len(got) != 2 || got[0] != [2]string{"epoch-0", ""} || got[1] != [2]string{"epoch-1", wantPrompt} {
+				t.Fatalf("migrated epochs = %#v", got)
+			}
+			var attemptID, recordID string
+			if err := db.SQL().QueryRowContext(ctx, `SELECT (SELECT id FROM compaction_attempt), (SELECT id FROM compaction_record)`).Scan(&attemptID, &recordID); err != nil {
+				t.Fatal(err)
+			}
+			if attemptID != "attempt-1" || recordID != "record-1" {
+				t.Fatalf("preserved IDs = %q, %q", attemptID, recordID)
+			}
+			var violations int
+			if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM pragma_foreign_key_check`).Scan(&violations); err != nil || violations != 0 {
+				t.Fatalf("foreign key violations = %d, %v", violations, err)
+			}
+		})
+	}
+}
+
+func TestCompactionEpochMigrationCreatesInitialEpochForMissingSession(t *testing.T) {
+	const baseID = "ctx_migrated_73657373696F6E2D32"
+	tests := []struct {
+		name, dir string
+		open      func(context.Context, string) (*DB, error)
+		collision bool
+		wantID    string
+	}{
+		{name: "legacy", dir: legacyMigrations, open: Open, collision: true, wantID: baseID + "_1"},
+		{name: "session", dir: sessionMigrations, open: OpenSession, wantID: baseID},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			path := filepath.Join(t.TempDir(), "session.db")
+			migrations, err := loadMigrations(test.dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := raw.ExecContext(ctx, `CREATE TABLE _parrot_migration (version INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)`); err != nil {
+				t.Fatal(err)
+			}
+			for _, migration := range migrations[:len(migrations)-1] {
+				if _, err := raw.ExecContext(ctx, migration.sql); err != nil {
+					t.Fatalf("apply %s: %v", migration.name, err)
+				}
+				if _, err := raw.ExecContext(ctx, `INSERT INTO _parrot_migration(version,name,checksum,applied_at) VALUES(?,?,?,?)`, migration.version, migration.name, migration.checksum, "2026-01-01T00:00:00Z"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if test.collision {
+				if _, err := raw.ExecContext(ctx, `
+					INSERT INTO session(id,title,created_at,updated_at) VALUES('session-1','existing','2026-01-01T00:00:00Z','2026-01-01T00:00:00Z');
+					INSERT INTO session_context_epoch VALUES('`+baseID+`','session-1',0,'old baseline','[]',0,'2026-01-01T00:00:00Z');
+				`); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := raw.ExecContext(ctx, `INSERT INTO session(id,title,created_at,updated_at) VALUES('session-2','missing','2026-01-02T00:00:00Z','2026-01-02T00:00:00Z')`); err != nil {
+				t.Fatal(err)
+			}
+			if err := raw.Close(); err != nil {
+				t.Fatal(err)
+			}
+
+			db, err := test.open(ctx, path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			var id, prompt, createdAt string
+			var ordinal int
+			var cutoff int64
+			if err := db.SQL().QueryRowContext(ctx, `SELECT id,ordinal,summary_prompt,history_cutoff,created_at FROM session_compaction_epoch WHERE session_id='session-2'`).Scan(&id, &ordinal, &prompt, &cutoff, &createdAt); err != nil {
+				t.Fatal(err)
+			}
+			if id != test.wantID || ordinal != 0 || prompt != "" || cutoff != 0 || createdAt != "2026-01-02T00:00:00Z" {
+				t.Fatalf("initial epoch = %q, %d, %q, %d, %q", id, ordinal, prompt, cutoff, createdAt)
+			}
+		})
+	}
+}
+
+func TestMigration006WithSnapshotDataUpgradesThrough010AndReopens(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "parrot.db")
 	migrations, err := loadMigrations(legacyMigrations)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(migrations) != 9 {
-		t.Fatalf("migration count = %d, want 9", len(migrations))
+	if len(migrations) != 10 {
+		t.Fatalf("migration count = %d, want 10", len(migrations))
 	}
 	raw, err := sql.Open("sqlite", path)
 	if err != nil {
@@ -129,7 +282,7 @@ func TestMigration006WithSnapshotDataUpgradesThrough009AndReopens(t *testing.T) 
 		t.Fatal(err)
 	}
 	var count int
-	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM _parrot_migration`).Scan(&count); err != nil || count != 9 {
+	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM _parrot_migration`).Scan(&count); err != nil || count != 10 {
 		t.Fatalf("migration count after upgrade = %d, %v", count, err)
 	}
 	if err := db.SQL().QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name LIKE 'snapshot_%'`).Scan(&count); err != nil || count != 0 {

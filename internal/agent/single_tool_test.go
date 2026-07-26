@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -108,9 +109,8 @@ func TestRunnerSendsSingleToolResultWithoutDuplication(t *testing.T) {
 }
 
 // mutableSource is a system context source whose observed value changes after
-// a configured number of observations, simulating an AGENTS.md file that was
-// edited mid-session. It lets a test reproduce the effect of ReconcileContext
-// appending a system message between a tool result and the next provider turn.
+// a configured number of observations, simulating an AGENTS.md file edited
+// between provider turns.
 type mutableSource struct {
 	key    string
 	count  atomic.Int32
@@ -124,12 +124,11 @@ func (m *mutableSource) Observe(context.Context) (systemcontext.Observation, err
 	if n >= m.flipAt {
 		text = "changed"
 	}
-	raw, _ := json.Marshal(text)
-	return systemcontext.Observation{Available: true, Value: raw, Baseline: text, Update: "context changed to " + text}, nil
+	return systemcontext.Observation{Available: true, Text: text}, nil
 }
 
 // newRunnerHarnessWithSource builds a runner harness like newRunnerHarness but
-// with a custom system context source, so a test can drive ReconcileContext.
+// with a custom system context source.
 func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Profile, source systemcontext.Source, tools ...tool.Tool) *runnerHarness {
 	t.Helper()
 	ctx := context.Background()
@@ -167,8 +166,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 		t.Fatal(err)
 	}
 	contextRegistry, _ := systemcontext.NewRegistry(source)
-	agentSessions, err := NewUserSession(ctx, sessions, UserSessionConfig{AgentSession: AgentSessionConfig{
-		Contexts:           systemcontext.Manager{Registry: contextRegistry},
+	agentSessions, err := NewUserSession(ctx, sessions, contextRegistry, UserSessionConfig{AgentSession: AgentSessionConfig{
 		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,
@@ -192,19 +190,23 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, sessionID: created.ID, runner: runner}
 }
 
-// TestRunnerSendsSingleToolResultAfterContextReconcile reproduces the bug
-// where a ReconcileContext system message appended after a single tool result
-// makes the last history role "system", failing the ready check and stopping
-// the drain before the tool result is sent to the model.
-func TestRunnerSendsSingleToolResultAfterContextReconcile(t *testing.T) {
+// TestRunnerRefreshesSystemContextWhileContinuingToolResult verifies each
+// provider turn gets fresh system context without interrupting tool continuation.
+func TestRunnerRefreshesSystemContextWhileContinuingToolResult(t *testing.T) {
 	item := &fakeTool{id: "read"}
 	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
 		if index == 0 {
+			if !strings.Contains(request.Instructions, "baseline") || strings.Contains(request.Instructions, "changed") {
+				return nil, errors.New("first request did not contain baseline system context")
+			}
 			call := protocol.ToolCall{ID: "call-1", Name: "read", Input: json.RawMessage(`{}`)}
 			return events(
 				protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call},
 				protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls},
 			), nil
+		}
+		if !strings.Contains(request.Instructions, "changed") || strings.Contains(request.Instructions, "baseline") {
+			return nil, errors.New("second request did not contain changed system context")
 		}
 		var sawToolResult bool
 		for _, message := range request.Messages {
@@ -219,9 +221,7 @@ func TestRunnerSendsSingleToolResultAfterContextReconcile(t *testing.T) {
 		}
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
-	// flip the context source after the first observation (initialize is the
-	// first; reconcile on the tool-result turn is the second, which appends a
-	// system message after the tool result).
+	// Flip the source after the first provider turn observes it.
 	source := &mutableSource{key: "agent:context", flipAt: 2}
 	h := newRunnerHarnessWithSource(t, fake, nil, source, item)
 	h.admit(t, "user", "run tool", session.DeliverySteer)
@@ -229,6 +229,9 @@ func TestRunnerSendsSingleToolResultAfterContextReconcile(t *testing.T) {
 		t.Fatal(err)
 	}
 	if turns := len(fake.Requests()); turns != 2 {
-		t.Fatalf("provider turns = %d, want 2 (tool result not sent after context reconcile)", turns)
+		t.Fatalf("provider turns = %d, want 2", turns)
+	}
+	if observations := source.count.Load(); observations != int32(len(fake.Requests())) {
+		t.Fatalf("system context observations = %d, provider turns = %d", observations, len(fake.Requests()))
 	}
 }

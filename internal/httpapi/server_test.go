@@ -20,6 +20,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 	"github.com/amirulashraf/parrot-coder/internal/transport/inproc"
 )
@@ -205,7 +206,11 @@ func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *age
 	if err != nil {
 		t.Fatal(err)
 	}
-	userSession, err := agent.NewUserSession(context.Background(), sessions, agent.UserSessionConfig{
+	contextRegistry, err := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "test:context", Text: "test context"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSession, err := agent.NewUserSession(context.Background(), sessions, contextRegistry, agent.UserSessionConfig{
 		AgentSession:            agent.AgentSessionConfig{StateDirectories: stateDirectories, Agents: agents, Providers: selectionResolver{}, ToolProviders: toolProviders},
 		MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 1,
 	})

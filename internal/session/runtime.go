@@ -1,14 +1,11 @@
 package session
 
 import (
-	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sort"
-	"strings"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/event"
@@ -34,12 +31,6 @@ type SelectionPatch struct {
 
 type SelectionValidator func(Selection) error
 
-type ContextSession interface {
-	CurrentContextEpoch(context.Context) (ContextEpoch, error)
-	InitializeContext(context.Context, string, json.RawMessage, int64) (ContextEpoch, error)
-	ReconcileContext(context.Context, string, json.RawMessage) error
-}
-
 type AgentSessionStore interface {
 	Get(context.Context) (AgentSessionDto, error)
 	Delete(context.Context) error
@@ -56,10 +47,7 @@ type AgentSessionStore interface {
 	ListModelHistory(context.Context, int64) ([]protocol.Message, error)
 	LatestSequence(context.Context) (int64, error)
 	PendingCutoff(context.Context) (int64, error)
-	CurrentContextEpoch(context.Context) (ContextEpoch, error)
-	InitializeContext(context.Context, string, json.RawMessage, int64) (ContextEpoch, error)
-	ReconcileContext(context.Context, string, json.RawMessage) error
-	ReplaceContext(context.Context, string, json.RawMessage, int64) (ContextEpoch, error)
+	CurrentCompactionEpoch(context.Context) (CompactionEpoch, error)
 	StartAssistant(context.Context) (Message, error)
 	FinishAssistant(context.Context, string, AssistantFinal) error
 	AddToolCall(context.Context, string, protocol.ToolCall) (ToolCall, error)
@@ -204,160 +192,31 @@ func (s *agentSessionStore) PendingCutoff(ctx context.Context) (int64, error) {
 	return cutoff.Int64, nil
 }
 
-type ContextEpoch struct {
+type CompactionEpoch struct {
 	ID            string
 	SessionID     string
 	Ordinal       int
-	Baseline      string
-	Sources       json.RawMessage
+	SummaryPrompt string
 	HistoryCutoff int64
 	CreatedAt     time.Time
 }
 
-func (s *agentSessionStore) CurrentContextEpoch(ctx context.Context) (ContextEpoch, error) {
+func (s *agentSessionStore) CurrentCompactionEpoch(ctx context.Context) (CompactionEpoch, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
-		return ContextEpoch{}, err
+		return CompactionEpoch{}, err
 	}
-	var item ContextEpoch
+	var item CompactionEpoch
 	var created string
-	err = db.SQL().QueryRowContext(ctx, `SELECT id, session_id, ordinal, baseline, sources_json, history_cutoff, created_at FROM session_context_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, s.sessionID).Scan(&item.ID, &item.SessionID, &item.Ordinal, &item.Baseline, &item.Sources, &item.HistoryCutoff, &created)
+	err = db.SQL().QueryRowContext(ctx, `SELECT id, session_id, ordinal, summary_prompt, history_cutoff, created_at FROM session_compaction_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, s.sessionID).Scan(&item.ID, &item.SessionID, &item.Ordinal, &item.SummaryPrompt, &item.HistoryCutoff, &created)
 	if errors.Is(err, sql.ErrNoRows) {
-		return ContextEpoch{}, ErrNotFound
+		return CompactionEpoch{}, ErrNotFound
 	}
 	if err != nil {
-		return ContextEpoch{}, err
+		return CompactionEpoch{}, err
 	}
 	item.CreatedAt, err = parseTime(created)
 	return item, err
-}
-
-func (s *agentSessionStore) InitializeContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (ContextEpoch, error) {
-	if !json.Valid(sources) {
-		return ContextEpoch{}, errors.New("session: invalid context sources JSON")
-	}
-	if cutoff < 0 {
-		cutoff = 0
-	}
-	epochID, err := id.New("ctx")
-	if err != nil {
-		return ContextEpoch{}, err
-	}
-	payload, _ := json.Marshal(map[string]any{"epoch_id": epochID, "history_cutoff": cutoff, "agents_files": loadedAgentsFiles(nil, sources)})
-	var out ContextEpoch
-	_, err = s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.context.initialized", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-		var count int
-		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_context_epoch WHERE session_id=?`, s.sessionID).Scan(&count); err != nil {
-			return err
-		}
-		if count != 0 {
-			return errors.New("session: context already initialized")
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO session_context_epoch(id,session_id,ordinal,baseline,sources_json,history_cutoff,created_at) VALUES(?,?,0,?,?,?,?)`, epochID, s.sessionID, baseline, []byte(sources), cutoff, formatTime(events[0].CreatedAt))
-		if err == nil {
-			out = ContextEpoch{epochID, s.sessionID, 0, baseline, append(json.RawMessage(nil), sources...), cutoff, events[0].CreatedAt}
-		}
-		return err
-	})
-	return out, err
-}
-
-// ReconcileContext appends one combined system message and advances the source
-// snapshot in the same transaction. An unchanged snapshot is a durable no-op.
-func (s *agentSessionStore) ReconcileContext(ctx context.Context, text string, sources json.RawMessage) error {
-	if !json.Valid(sources) {
-		return errors.New("session: invalid context sources JSON")
-	}
-	_, err := s.events.AppendBuilt(ctx, s.sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
-		var epochID string
-		var current []byte
-		if err := tx.QueryRowContext(ctx, `SELECT id,sources_json FROM session_context_epoch WHERE session_id=? ORDER BY ordinal DESC LIMIT 1`, s.sessionID).Scan(&epochID, &current); err != nil {
-			return nil, nil, err
-		}
-		if string(current) == string(sources) {
-			return nil, nil, nil
-		}
-		messageID := ""
-		pending := event.NewEvent{Type: "session.context.observed", Data: json.RawMessage(`{}`)}
-		if text != "" {
-			generated, err := id.New("msg")
-			if err != nil {
-				return nil, nil, err
-			}
-			messageID = generated
-			data, _ := json.Marshal(map[string]any{"message_id": messageID, "content": text, "agents_files": loadedAgentsFiles(current, sources)})
-			pending = event.NewEvent{Type: "session.context.changed", Data: data}
-		}
-		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-			if text != "" {
-				parts, _ := json.Marshal([]protocol.ContentPart{{Type: protocol.ContentText, Text: text}})
-				if _, err := tx.ExecContext(ctx, `INSERT INTO session_message(id,session_id,role,content,parts_json,status,sequence,created_at) VALUES(?,?,'system',?,?,'complete',?,?)`, messageID, s.sessionID, text, parts, events[0].Sequence, formatTime(events[0].CreatedAt)); err != nil {
-					return err
-				}
-			}
-			_, err := tx.ExecContext(ctx, `UPDATE session_context_epoch SET sources_json=? WHERE id=?`, []byte(sources), epochID)
-			return err
-		}
-		return []event.NewEvent{pending}, project, nil
-	})
-	return err
-}
-
-// loadedAgentsFiles returns AGENTS.md sources that are present in the next
-// snapshot and are new or changed relative to the previous snapshot. Paths are
-// explicit context metadata so clients can accurately report global and nested
-// project files without parsing human-facing labels.
-func loadedAgentsFiles(previous, next json.RawMessage) []string {
-	type source struct {
-		Available bool            `json:"available"`
-		Value     json.RawMessage `json:"value"`
-		Path      string          `json:"path"`
-	}
-	decode := func(raw json.RawMessage) map[string]source {
-		values := map[string]source{}
-		_ = json.Unmarshal(raw, &values)
-		return values
-	}
-	before, after := decode(previous), decode(next)
-	keys := make([]string, 0, len(after))
-	for key := range after {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	paths := make([]string, 0)
-	for _, key := range keys {
-		item := after[key]
-		if !strings.HasPrefix(key, "agents:") || !item.Available || len(item.Value) == 0 || item.Path == "" {
-			continue
-		}
-		old, existed := before[key]
-		if existed && old.Available && old.Path == item.Path && bytes.Equal(old.Value, item.Value) {
-			continue
-		}
-		paths = append(paths, item.Path)
-	}
-	return paths
-}
-
-func (s *agentSessionStore) ReplaceContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (ContextEpoch, error) {
-	if !json.Valid(sources) || cutoff < 0 {
-		return ContextEpoch{}, errors.New("session: invalid replacement context")
-	}
-	epochID, _ := id.New("ctx")
-	payload, _ := json.Marshal(map[string]any{"epoch_id": epochID, "history_cutoff": cutoff, "agents_files": loadedAgentsFiles(nil, sources)})
-	var out ContextEpoch
-	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.context.replaced", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-		var ordinal int
-		if err := tx.QueryRowContext(ctx, `SELECT COALESCE(MAX(ordinal),-1)+1 FROM session_context_epoch WHERE session_id=?`, s.sessionID).Scan(&ordinal); err != nil {
-			return err
-		}
-		_, err := tx.ExecContext(ctx, `INSERT INTO session_context_epoch(id,session_id,ordinal,baseline,sources_json,history_cutoff,created_at) VALUES(?,?,?,?,?,?,?)`, epochID, s.sessionID, ordinal, baseline, []byte(sources), cutoff, formatTime(events[0].CreatedAt))
-		if err == nil {
-			out = ContextEpoch{epochID, s.sessionID, ordinal, baseline, append(json.RawMessage(nil), sources...), cutoff, events[0].CreatedAt}
-		}
-		return err
-	})
-	return out, err
 }
 
 func (s *agentSessionStore) AppendMessage(ctx context.Context, message protocol.Message) (Message, error) {

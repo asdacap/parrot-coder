@@ -98,7 +98,7 @@ func TestNewUserSessionRejectsInvalidChildTurnLimits(t *testing.T) {
 		{MaxConcurrentChildTurnsPerParent: 1},
 		{MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 2},
 	} {
-		if _, err := NewUserSession(t.Context(), nil, config); err == nil {
+		if _, err := NewUserSession(t.Context(), nil, nil, config); err == nil {
 			t.Fatalf("NewUserSession(%#v) succeeded", config)
 		}
 	}

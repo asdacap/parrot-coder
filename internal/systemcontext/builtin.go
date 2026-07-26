@@ -2,7 +2,6 @@ package systemcontext
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -20,8 +19,7 @@ type StaticSource struct {
 
 func (s StaticSource) Key() string { return s.SourceKey }
 func (s StaticSource) Observe(context.Context) (Observation, error) {
-	raw, _ := json.Marshal(s.Text)
-	return Observation{Available: true, Value: raw, Baseline: s.Text, Update: s.Text}, nil
+	return Observation{Available: true, Text: s.Text}, nil
 }
 
 type DateSource struct{ Now func() time.Time }
@@ -32,10 +30,7 @@ func (s DateSource) Observe(context.Context) (Observation, error) {
 	if s.Now != nil {
 		now = s.Now()
 	}
-	date := now.Format("2006-01-02")
-	raw, _ := json.Marshal(date)
-	text := "Current date: " + date
-	return Observation{Available: true, Value: raw, Baseline: text, Update: "The current date is now " + date + "."}, nil
+	return Observation{Available: true, Text: "Current date: " + now.Format("2006-01-02")}, nil
 }
 
 type EnvironmentSource struct {
@@ -51,7 +46,6 @@ func (s EnvironmentSource) Observe(context.Context) (Observation, error) {
 	value := struct {
 		OS, Arch, WorkingDirectory, ProjectRoot, ProjectID, ConfigPath, PredefinedConfigPath string
 	}{runtime.GOOS, runtime.GOARCH, s.WorkingDirectory, s.ProjectRoot, s.ProjectID, s.ConfigPath, s.PredefinedConfigPath}
-	raw, _ := json.Marshal(value)
 	text := fmt.Sprintf("Platform: %s/%s\nWorking directory: %s\nProject root: %s", value.OS, value.Arch, value.WorkingDirectory, value.ProjectRoot)
 	if value.ProjectID != "" {
 		text += "\nProject ID: " + value.ProjectID
@@ -62,7 +56,7 @@ func (s EnvironmentSource) Observe(context.Context) (Observation, error) {
 	if value.PredefinedConfigPath != "" {
 		text += "\nPredefined config path: " + value.PredefinedConfigPath
 	}
-	return Observation{Available: true, Value: raw, Baseline: text, Update: "Environment changed:\n" + text}, nil
+	return Observation{Available: true, Text: text}, nil
 }
 
 type CLIUtilitiesSource struct {
@@ -71,14 +65,11 @@ type CLIUtilitiesSource struct {
 
 func (CLIUtilitiesSource) Key() string { return "runtime:cli-utilities" }
 func (s CLIUtilitiesSource) Observe(context.Context) (Observation, error) {
-	available := append([]string(nil), s.Available...)
-	raw, _ := json.Marshal(available)
 	utilities := "none"
-	if len(available) > 0 {
-		utilities = strings.Join(available, ", ")
+	if len(s.Available) > 0 {
+		utilities = strings.Join(s.Available, ", ")
 	}
-	text := "Available CLI utilities: " + utilities
-	return Observation{Available: true, Value: raw, Baseline: text, Update: text}, nil
+	return Observation{Available: true, Text: "Available CLI utilities: " + utilities}, nil
 }
 
 type OptionalCLIUtilitiesSource struct {
@@ -87,14 +78,11 @@ type OptionalCLIUtilitiesSource struct {
 
 func (OptionalCLIUtilitiesSource) Key() string { return "runtime:optional-cli-utilities" }
 func (s OptionalCLIUtilitiesSource) Observe(context.Context) (Observation, error) {
-	available := append([]string(nil), s.Available...)
-	raw, _ := json.Marshal(available)
 	utilities := "none"
-	if len(available) > 0 {
-		utilities = strings.Join(available, ", ")
+	if len(s.Available) > 0 {
+		utilities = strings.Join(s.Available, ", ")
 	}
-	text := "Available optional CLI utilities: " + utilities
-	return Observation{Available: true, Value: raw, Baseline: text, Update: text}, nil
+	return Observation{Available: true, Text: "Available optional CLI utilities: " + utilities}, nil
 }
 
 type SubagentsSource struct {
@@ -104,14 +92,11 @@ type SubagentsSource struct {
 func (SubagentsSource) Key() string { return "runtime:subagents" }
 
 func (s SubagentsSource) Observe(context.Context) (Observation, error) {
-	available := append([]string(nil), s.Available...)
-	raw, _ := json.Marshal(available)
 	agents := "none"
-	if len(available) > 0 {
-		agents = strings.Join(available, ", ")
+	if len(s.Available) > 0 {
+		agents = strings.Join(s.Available, ", ")
 	}
-	text := "Available subagents: " + agents
-	return Observation{Available: true, Value: raw, Baseline: text, Update: text}, nil
+	return Observation{Available: true, Text: "Available subagents: " + agents}, nil
 }
 
 type FileSource struct {
@@ -129,7 +114,7 @@ func (s FileSource) Observe(context.Context) (Observation, error) {
 	}
 	file, err := os.Open(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
-		return Observation{Available: true, Path: s.Path, Removal: s.Label + " was removed."}, nil
+		return Observation{Available: true, Path: s.Path}, nil
 	}
 	if err != nil {
 		return Observation{Available: false}, err
@@ -145,9 +130,7 @@ func (s FileSource) Observe(context.Context) (Observation, error) {
 	if int64(len(data)) > max {
 		return Observation{Available: false}, errors.New("systemcontext: file exceeds byte limit")
 	}
-	raw, _ := json.Marshal(string(data))
-	text := s.Label + ":\n" + string(data)
-	return Observation{Available: true, Value: raw, Path: s.Path, Baseline: text, Update: s.Label + " changed:\n" + string(data), Removal: s.Label + " was removed."}, nil
+	return Observation{Available: true, Text: s.Label + ":\n" + string(data), Path: s.Path}, nil
 }
 
 type BuiltinOptions struct {
@@ -227,7 +210,7 @@ func ObserveAgentsFiles(ctx context.Context, sources []Source) ([]string, error)
 			failures = append(failures, fmt.Errorf("%s: %w", source.Key(), err))
 			continue
 		}
-		if !observation.Available || len(observation.Value) == 0 || observation.Path == "" || seen[observation.Path] {
+		if !observation.Available || strings.TrimSpace(observation.Text) == "" || observation.Path == "" || seen[observation.Path] {
 			continue
 		}
 		seen[observation.Path] = true
