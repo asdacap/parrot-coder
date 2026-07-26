@@ -23,7 +23,7 @@ const (
 	EventTodoUpdated            = "todo.updated"
 	EventGoalUpdated            = "goal.updated"
 	EventGoalCleared            = "goal.cleared"
-	EventTaskProgress           = "task.progress"
+	EventAgentSessionProgress   = "agent_session.progress"
 	EventUserSessionStart       = "user_session.start"
 	EventUserSessionWorking     = "user_session.working"
 	EventUserSessionIdle        = "user_session.idle"
@@ -75,7 +75,7 @@ type Usage struct {
 	OutputCost        float64 `json:"output_cost,omitempty"`
 }
 
-type TaskProgress struct {
+type AgentSessionProgress struct {
 	SessionID string `json:"session_id,omitempty"`
 	Agent     string `json:"agent"`
 	Status    string `json:"status"`
@@ -192,7 +192,7 @@ var EventManifest = []EventDefinition{
 	{Name: EventTodoUpdated, Durable: true, Payload: "TodoUpdated"},
 	{Name: EventGoalUpdated, Durable: true, Payload: "Goal"},
 	{Name: EventGoalCleared, Durable: true, Payload: "Goal"},
-	{Name: EventTaskProgress, Payload: "TaskProgress"},
+	{Name: EventAgentSessionProgress, Payload: "AgentSessionProgress"},
 	{Name: EventUserSessionStart, Payload: "UserSessionEvent"},
 	{Name: EventUserSessionWorking, Payload: "UserSessionEvent"},
 	{Name: EventUserSessionIdle, Payload: "UserSessionEvent"},
@@ -262,8 +262,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &TodoUpdated{}
 	case EventGoalUpdated, EventGoalCleared:
 		target = &Goal{}
-	case EventTaskProgress:
-		target = &TaskProgress{}
+	case EventAgentSessionProgress:
+		target = &AgentSessionProgress{}
 	case EventUserSessionStart, EventUserSessionWorking, EventUserSessionIdle:
 		target = &UserSessionEvent{}
 	case EventAgentSessionStart, EventAgentSessionWorking, EventAgentSessionIdle, EventAgentSessionFinished:

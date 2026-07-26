@@ -89,10 +89,10 @@ parent event, and the event namespace determines the payload type.
 
 Child-session events are also published on the parent's stream, so clients
 subscribe once while retaining original producer attribution. Clients rebuild
-a presentation task tree from agent parentage and process ownership; “task” is
-a client presentation concept rather than a common lifecycle wire payload.
-`task.progress` remains the separate agent progress event. References to an
-unknown session or process indicate a client-side tracking gap.
+a runtime activity tree from agent parentage and process ownership rather than
+receiving a common lifecycle payload. `agent_session.progress` remains the
+separate agent progress event. References to an unknown session or process
+indicate a client-side tracking gap.
 
 ## Tool lifecycle
 

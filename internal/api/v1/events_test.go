@@ -36,9 +36,9 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			want:  &v1.TodoUpdated{Todos: []v1.Todo{{ID: "todo_1", Content: "test", Status: "pending", Priority: "high", Position: 0}}},
 		},
 		{
-			name:  "task progress",
-			event: v1.Event{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"session_id":"ses_child","agent":"explore","status":"running","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"reasoning_tokens":1,"cached_input_tokens":3},"tool_uses":4}`)},
-			want:  &v1.TaskProgress{SessionID: "ses_child", Agent: "explore", Status: "running", Usage: v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}, ToolUses: 4},
+			name:  "agent session progress",
+			event: v1.Event{Type: v1.EventAgentSessionProgress, Data: json.RawMessage(`{"session_id":"ses_child","agent":"explore","status":"running","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"reasoning_tokens":1,"cached_input_tokens":3},"tool_uses":4}`)},
+			want:  &v1.AgentSessionProgress{SessionID: "ses_child", Agent: "explore", Status: "running", Usage: v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}, ToolUses: 4},
 		},
 		{
 			name:  "message part delta",
@@ -94,11 +94,11 @@ func TestDecodeSessionInputEventDataRejectsUnknownFields(t *testing.T) {
 	for _, event := range []v1.Event{
 		{Type: v1.EventSessionInputAdmitted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","content":"hello","delivery":"steer","extra":true}`)},
 		{Type: v1.EventSessionInputPromoted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","extra":true}`)},
-		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"session_id":"ses_child","agent":"explore","status":"running","usage":{},"tool_uses":0,"extra":true}`)},
+		{Type: v1.EventAgentSessionProgress, Data: json.RawMessage(`{"session_id":"ses_child","agent":"explore","status":"running","usage":{},"tool_uses":0,"extra":true}`)},
 		{Type: v1.EventUserSessionStart, Data: json.RawMessage(`{"session_id":"ses_main","extra":true}`)},
 		{Type: v1.EventAgentSessionStart, Data: json.RawMessage(`{"session_id":"ses_child","parent_session_id":"ses_main","extra":true}`)},
 		{Type: v1.EventProcessStart, Data: json.RawMessage(`{"session_id":"ses_main","process_id":"proc_1","extra":true}`)},
-		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task` + `_id":"task_1","session_id":"ses_child","agent":"explore","status":"running","usage":{},"tool_uses":0}`)},
+		{Type: v1.EventAgentSessionProgress, Data: json.RawMessage(`{"task` + `_id":"task_1","session_id":"ses_child","agent":"explore","status":"running","usage":{},"tool_uses":0}`)},
 		{Type: v1.EventCodeDisplay, Data: json.RawMessage(`{"tool_call_id":"call_1","source":"x","extra":true}`)},
 		{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"call_1","result":"ok","extra":true}`)},
 	} {
@@ -183,7 +183,7 @@ func TestEventManifestUsesDomainLifecycleAndTypedTools(t *testing.T) {
 		v1.EventAgentSessionFinished:   "AgentSessionEvent",
 		v1.EventProcessStart:           "ProcessEvent",
 		v1.EventProcessFinished:        "ProcessEvent",
-		v1.EventTaskProgress:           "TaskProgress",
+		v1.EventAgentSessionProgress:   "AgentSessionProgress",
 		v1.EventSessionToolPending:     "ToolEvent",
 		v1.EventSessionToolRunning:     "ToolEvent",
 		v1.EventSessionToolSuccess:     "ToolEvent",
@@ -201,7 +201,7 @@ func TestEventManifestUsesDomainLifecycleAndTypedTools(t *testing.T) {
 	if len(want) != 0 {
 		t.Fatalf("event manifest is missing %#v", want)
 	}
-	for _, legacy := range []string{"task.start", "task.working", "task.idle", "task.finished"} {
+	for _, legacy := range []string{"task.start", "task.working", "task.idle", "task.finished", "task.progress"} {
 		if v1.KnownEvent(legacy) {
 			t.Fatalf("legacy event %q remains in event manifest", legacy)
 		}

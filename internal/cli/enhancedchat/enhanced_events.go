@@ -35,7 +35,7 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		r.turnCompleteID = ""
 		// Activity identities are unique per tree, but the old session's activity
 		// tree is meaningless to the new one. Rebuild it rather than carry stale nodes.
-		r.resetTaskTracker()
+		r.resetRuntimeActivityTracker()
 		r.knownMessages = make(map[string]bool, len(messages.Items))
 		r.unsyncedMessages = make(map[string]bool)
 		for _, item := range messages.Items {
@@ -114,10 +114,11 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 	return r.reconcileRuntime()
 }
 
-// resetTaskTracker keeps the connected server's shared presentation state so
-// task names learned by a new tree are also available to tool activity labels.
-func (r *enhancedChatRuntime) resetTaskTracker() {
-	r.subagents = taskStreamTracker{presentation: r.presentation(), rootSessionID: r.shell.current.ID}
+// resetRuntimeActivityTracker keeps the connected server's shared presentation
+// state so friendly names learned by a new tree are also available to tool
+// activity labels.
+func (r *enhancedChatRuntime) resetRuntimeActivityTracker() {
+	r.runtimeActivities = runtimeActivityStreamTracker{presentation: r.presentation(), rootSessionID: r.shell.current.ID}
 }
 
 func (r *enhancedChatRuntime) markActiveAssistantsUnsynced(messages v1.MessageList) {
@@ -178,11 +179,8 @@ func (r *enhancedChatRuntime) stopStream() {
 	r.streamGeneration++
 }
 
-// handleTaskEvent renders one flat task event through the task tree tracker.
-// The tracker owns which task is a child of which; this runtime only maps the
-// resulting reports onto the live activity list and the transcript.
-// formatTaskTokenUsage returns a humanized token-usage snippet for a task.
-func formatTaskTokenUsage(usage chatview.TaskUsage) string {
+// formatRuntimeActivityTokenUsage returns a humanized token-usage snippet.
+func formatRuntimeActivityTokenUsage(usage chatview.RuntimeActivityUsage) string {
 	if usage.InputTokens == 0 && usage.OutputTokens == 0 {
 		return "-"
 	}
@@ -193,10 +191,9 @@ func formatTaskTokenUsage(usage chatview.TaskUsage) string {
 	return part
 }
 
-// recordUsage folds one usage event into the task tree, whichever session
-// reported it: the main session under the main task, each subagent under its
-// own. Routing every usage event through the tree keeps the modeline's tokens
-// and cost describing the same work.
+// recordUsage folds one usage event into the runtime activity tree, whichever
+// session reported it. Routing every usage event through the tree keeps the
+// modeline's tokens and cost describing the same work.
 func (r *enhancedChatRuntime) recordUsage(item v1.Event) {
 	if item.Type != v1.EventSessionStatus {
 		return
@@ -209,41 +206,44 @@ func (r *enhancedChatRuntime) recordUsage(item v1.Event) {
 	if status.Kind != "usage" || status.Usage == nil {
 		return
 	}
-	r.subagents.addUsage(r.shell.current.ID, item.SessionID, *status.Usage)
-	r.refreshMainTaskUsage()
+	r.runtimeActivities.addUsage(r.shell.current.ID, item.SessionID, *status.Usage)
+	r.refreshRuntimeUsage()
 }
 
-// refreshMainTaskUsage recaches what the modeline reports: the session's own
-// usage plus every subagent descended from the main task.
-func (r *enhancedChatRuntime) refreshMainTaskUsage() {
-	if tracker := r.subagents.Tracker(); tracker != nil {
-		r.mainTaskUsage = tracker.CumulativeUsage(r.shell.current.ID, "")
+// refreshRuntimeUsage recaches what the modeline reports: the session's own
+// usage plus every descendant of the root runtime activity.
+func (r *enhancedChatRuntime) refreshRuntimeUsage() {
+	if tracker := r.runtimeActivities.Tracker(); tracker != nil {
+		r.runtimeUsage = tracker.CumulativeUsage(r.shell.current.ID, "")
 	}
 }
 
-func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
-	if r.subagents.Tracker() == nil {
-		r.subagents.presentation = r.presentation()
+// handleRuntimeActivityEvent renders one flat event through the runtime activity
+// tracker. The tracker owns the hierarchy; this runtime only maps the resulting
+// reports onto the live activity list and the transcript.
+func (r *enhancedChatRuntime) handleRuntimeActivityEvent(item v1.Event) error {
+	if r.runtimeActivities.Tracker() == nil {
+		r.runtimeActivities.presentation = r.presentation()
 	}
 	thinking := r.shell != nil && r.shell.options.thinking
-	reports, err := r.subagents.describe(item, thinking)
+	reports, err := r.runtimeActivities.describe(item, thinking)
 	if err != nil {
 		return err
 	}
 	// For progress events, enhance the report line with token breakdown.
-	if item.Type == v1.EventTaskProgress && len(reports) > 0 {
+	if item.Type == v1.EventAgentSessionProgress && len(reports) > 0 {
 		payload, decodeErr := v1.DecodeEventData(item)
 		if decodeErr == nil {
-			progress := payload.(*v1.TaskProgress)
+			progress := payload.(*v1.AgentSessionProgress)
 			if progress.Usage.TotalTokens > 0 {
-				// The tree's total covers the agent's own subagents too; its progress
+				// The tree's total covers the agent's descendants too; its progress
 				// report covers only itself and stands in until usage is recorded.
-				usage := r.subagents.Tracker().CumulativeUsage(item.SessionID, "")
+				usage := r.runtimeActivities.Tracker().CumulativeUsage(item.SessionID, "")
 				if usage.InputTokens == 0 && usage.OutputTokens == 0 {
-					usage = chatview.TaskUsage{InputTokens: progress.Usage.InputTokens, OutputTokens: progress.Usage.OutputTokens, CachedTokens: progress.Usage.CachedInputTokens}
+					usage = chatview.RuntimeActivityUsage{InputTokens: progress.Usage.InputTokens, OutputTokens: progress.Usage.OutputTokens, CachedTokens: progress.Usage.CachedInputTokens}
 				}
 				oldToken := fmt.Sprintf("· %s tokens", chatview.FormatTokenCount(progress.Usage.TotalTokens))
-				tokenPart := formatTaskTokenUsage(usage)
+				tokenPart := formatRuntimeActivityTokenUsage(usage)
 				if tokenPart != "-" {
 					for i := range reports {
 						reports[i].line = strings.Replace(reports[i].line, oldToken, "· "+tokenPart, 1)
@@ -252,8 +252,8 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 			}
 		}
 	}
-	// Update cached main task cumulative tokens after any task event.
-	r.refreshMainTaskUsage()
+	// Update cached cumulative tokens after any runtime activity event.
+	r.refreshRuntimeUsage()
 	for _, report := range reports {
 		text := report.line
 		if report.block != "" {
@@ -319,8 +319,8 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 
 func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 	r.recordUsage(item)
-	if isTaskEvent(item, r.shell.current.ID) {
-		return r.handleTaskEvent(item)
+	if isRuntimeActivityEvent(item, r.shell.current.ID) {
+		return r.handleRuntimeActivityEvent(item)
 	}
 	switch item.Type {
 	case v1.EventMessagePartDelta:

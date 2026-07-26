@@ -110,7 +110,7 @@ A safe provider-turn boundary performs these operations in order:
 Tool calls are recorded before execution. Tools may execute concurrently, but
 event publication is serialized and all tools settle before continuation.
 
-## Sessions and Tasks
+## Sessions and Runtime Activity
 
 A user session has an ID and runs its own turns. It can start child agent
 sessions through `agent_spawn` and retained processes through `exec_command`.
@@ -135,18 +135,18 @@ and distinct `process_id`.
 
 A child session's events are republished on its parent's stream as-is, keeping
 their own type, data, and producer attribution, so a client needs one
-subscription regardless of subagent recursion. Clients own the presentation
-tree: “task” describes this CLI tree, not a common wire payload. The client
-tracks agent-session parentage from `parent_session_id`; processes remain
-children of their owning session and never become ancestry nodes. An event
-referencing an unseen session or process indicates a client tracking gap.
+subscription regardless of subagent recursion. Clients own the runtime activity
+tree rather than receiving a common lifecycle payload. The client tracks
+agent-session parentage from `parent_session_id`; processes remain children of
+their owning session and never become ancestry nodes. An event referencing an
+unseen session or process indicates a client tracking gap.
 
 Tool calls use the durable `session.tool.pending`, `session.tool.running`,
 `session.tool.success`, `session.tool.failure`, and `session.tool.interrupted`
 events. Their `ToolEvent` payload has canonical `call_id`, `tool_name`, `input`,
 `status`, `result`, `error`, and `output_tail` fields. A terminal event may omit
 `tool_name`; clients correlate it with the pending event by `call_id`.
-`task.progress` remains the separate agent progress contract.
+`agent_session.progress` remains the separate agent progress contract.
 
 ## Context Epochs
 

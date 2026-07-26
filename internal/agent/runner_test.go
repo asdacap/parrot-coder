@@ -843,16 +843,16 @@ func TestAgentSessionEmitsTurnEventsUniformly(t *testing.T) {
 			broker.SetEventHandler(func(item event.BrokerEvent) func() {
 				switch item.Name {
 				case event.TurnStarted:
-					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleStart, Task: item.Payload.(Status)})
+					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleStart, Status: item.Payload.(Status)})
 				case event.TurnWorking:
 					working := item.Payload.(TurnWorkingEvent)
-					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleWorking, Task: working.Task})
-					return observe(working.Task.SessionID, working.Report)
+					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleWorking, Status: working.Status})
+					return observe(working.Status.SessionID, working.Report)
 				case event.TurnProgress:
 					progress(item.Payload.(Status))
 				case event.TurnFinished:
 					status := item.Payload.(Status)
-					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleFinished, Task: status})
+					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleFinished, Status: status})
 					progress(status)
 				case event.TurnCompleted:
 					complete(item.Payload.(Status))

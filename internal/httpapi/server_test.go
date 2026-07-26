@@ -789,13 +789,15 @@ func TestOpenAPIHasExactlyDeclaredRoutesAndProblems(t *testing.T) {
 	if document.OpenAPI != "3.1.0" || len(document.Events) != len(v1.EventManifest) {
 		t.Fatalf("document metadata is incomplete")
 	}
-	for _, name := range []string{"UserSessionEvent", "AgentSessionEvent", "ProcessEvent", "ToolEvent"} {
+	for _, name := range []string{"UserSessionEvent", "AgentSessionEvent", "AgentSessionProgress", "ProcessEvent", "ToolEvent"} {
 		if _, ok := document.Components.Schemas[name]; !ok {
 			t.Fatalf("missing event schema %s", name)
 		}
 	}
-	if _, ok := document.Components.Schemas["TaskEvent"]; ok {
-		t.Fatal("obsolete TaskEvent schema is still registered")
+	for _, name := range []string{"TaskEvent", "TaskProgress"} {
+		if _, ok := document.Components.Schemas[name]; ok {
+			t.Fatalf("obsolete %s schema is still registered", name)
+		}
 	}
 	if len(operationSchemas) != len(Routes()) {
 		t.Fatalf("operation schema count = %d, route count = %d", len(operationSchemas), len(Routes()))

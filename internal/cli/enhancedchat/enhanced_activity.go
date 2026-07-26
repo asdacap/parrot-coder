@@ -26,8 +26,8 @@ func (r *enhancedChatRuntime) activityRows(now time.Time, columns int) []string 
 
 func (r *enhancedChatRuntime) activityFrames(now time.Time, columns int) []terminal.LiveFrame {
 	var frames []terminal.LiveFrame
-	if tracker := r.subagents.Tracker(); tracker != nil {
-		for _, item := range tracker.Tasks() {
+	if tracker := r.runtimeActivities.Tracker(); tracker != nil {
+		for _, item := range tracker.Activities() {
 			frames = append(frames, terminal.LiveFrame{SessionID: item.SessionID, ProcessID: item.ProcessID, ParentSessionID: item.ParentSessionID})
 		}
 	}
@@ -128,7 +128,7 @@ func reasoningSummaryActivity(item enhancedActivityItem, now time.Time) terminal
 // modelineActivity moves transient top-level status out of the activity list.
 // Provider-supplied reasoning summaries still have titles and remain as
 // ordinary Thought rows above the modeline. Tools opt in through presentation
-// metadata, and child-agent invocations always remain in their task rows.
+// metadata, and child-agent invocations always remain in their activity rows.
 func (r *enhancedChatRuntime) modelineActivity(now time.Time) string {
 	for i := len(r.activity) - 1; i >= 0; i-- {
 		if r.isModelineActivity(r.activity[i]) {
@@ -524,8 +524,8 @@ func (r *enhancedChatRuntime) resetReasoning() {
 
 // updateAssistantUsage describes the message a usage event belongs to: the
 // context it leaves behind and the tokens shown on its activity row. What was
-// spent is not accounted here — recordUsage charges it to the task tree, which
-// is the one place the main task and its subagents are added up together.
+// spent is not accounted here — recordUsage charges it to the runtime activity
+// tree, which is the one place the root session and its descendants are added up.
 func (r *enhancedChatRuntime) updateAssistantUsage(messageID string, usage *v1.Usage) {
 	if usage == nil {
 		return

@@ -986,24 +986,24 @@ func sessionEvent(sessionID string, eventType string, data json.RawMessage) v1.E
 	return v1.Event{Type: eventType, SessionID: sessionID, Data: data}
 }
 
-func TestStreamTaskEventPrefixesCompletedResponseByDepth(t *testing.T) {
+func TestStreamRuntimeActivityEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	var output bytes.Buffer
 	options := streamOptions{stderr: &output}
-	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
 	// A grandchild session renders two levels deep because the tracker walks its
 	// parent chain, not because the event carries a depth.
-	if err := writeStreamTaskEvent(options, &tracker, agentStart("session-parent", "session-main", "build")); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, agentStart("session-parent", "session-main", "build")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStreamTaskEvent(options, &tracker, agentStart("session-review", "session-parent", "review")); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, agentStart("session-review", "session-parent", "review")); err != nil {
 		t.Fatal(err)
 	}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "review result\nmore detail"})
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-review", v1.EventMessagePartDelta, delta)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-review", "session.assistant.complete", complete)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", "session.assistant.complete", complete)); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); got != "    ○ [review] response: review result\n    [review] more detail\n" {
@@ -1037,19 +1037,19 @@ func TestStreamCodeDisplayOutput(t *testing.T) {
 	}
 }
 
-func TestStreamTaskEventSkipsEmptyCompletedResponse(t *testing.T) {
+func TestStreamRuntimeActivityEventSkipsEmptyCompletedResponse(t *testing.T) {
 	var output bytes.Buffer
-	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
 	options := streamOptions{stderr: &output}
 	started, _ := json.Marshal(map[string]string{"message_id": "child-message"})
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	if err := writeStreamTaskEvent(options, &tracker, agentStart("session-review", "session-main", "review")); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, agentStart("session-review", "session-main", "review")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-review", "session.assistant.started", started)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", "session.assistant.started", started)); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-review", "session.assistant.complete", complete)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", "session.assistant.complete", complete)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != 0 {
@@ -1057,56 +1057,56 @@ func TestStreamTaskEventSkipsEmptyCompletedResponse(t *testing.T) {
 	}
 }
 
-func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
+func TestStreamRuntimeActivityTerminalProgressClearsLiveRow(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
 	options := streamOptions{stderr: io.Discard, renderer: renderer}
-	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
-	if err := writeStreamTaskEvent(options, &tracker, agentStart("session-explore", "session-main", "explore")); err != nil {
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, agentStart("session-explore", "session-main", "explore")); err != nil {
 		t.Fatal(err)
 	}
 	for _, status := range []string{"running", "succeeded"} {
-		data, _ := json.Marshal(v1.TaskProgress{SessionID: "session-explore", Agent: "explore", Status: status})
+		data, _ := json.Marshal(v1.AgentSessionProgress{SessionID: "session-explore", Agent: "explore", Status: status})
 		before := output.Len()
-		if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventTaskProgress, data)); err != nil {
+		if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-explore", v1.EventAgentSessionProgress, data)); err != nil {
 			t.Fatal(err)
 		}
 		if output.Len() == before {
-			t.Fatalf("%s task progress did not update renderer", status)
+			t.Fatalf("%s agent-session progress did not update renderer", status)
 		}
 	}
 	before := output.Len()
-	data, _ := json.Marshal(v1.TaskProgress{SessionID: "session-explore", Agent: "explore", Status: "running"})
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventTaskProgress, data)); err != nil {
+	data, _ := json.Marshal(v1.AgentSessionProgress{SessionID: "session-explore", Agent: "explore", Status: "running"})
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-explore", v1.EventAgentSessionProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != before {
-		t.Fatal("late task progress repainted renderer")
+		t.Fatal("late agent-session progress repainted renderer")
 	}
 	working, _ := json.Marshal(v1.AgentSessionEvent{SessionID: "session-explore"})
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventAgentSessionWorking, working)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-explore", v1.EventAgentSessionWorking, working)); err != nil {
 		t.Fatal(err)
 	}
-	data, _ = json.Marshal(v1.TaskProgress{SessionID: "session-explore", Agent: "explore", Status: "running"})
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventTaskProgress, data)); err != nil {
+	data, _ = json.Marshal(v1.AgentSessionProgress{SessionID: "session-explore", Agent: "explore", Status: "running"})
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-explore", v1.EventAgentSessionProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() == before {
-		t.Fatal("follow-up task progress was suppressed")
+		t.Fatal("follow-up agent-session progress was suppressed")
 	}
 }
 
 func TestSessionEventWithoutKnownOriginReportsUnknownOrigin(t *testing.T) {
 	var output bytes.Buffer
-	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
 	options := streamOptions{stderr: &output}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "orphan"})
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-ghost", v1.EventMessagePartDelta, delta)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-ghost", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
 	// The unknown-origin error is shown once; repeated unknown origins do not
 	// flood the transcript.
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-ghost", v1.EventMessagePartDelta, delta)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-ghost", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); got != "✗ unknown event origin session-ghost (message.part.delta)\n" {
@@ -1123,7 +1123,7 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 		{kind: "reasoning_summary", want: "  · [review] Thought: Checking the change"},
 	} {
 		t.Run(test.kind, func(t *testing.T) {
-			tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+			tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
 			if _, err := tracker.describe(agentStart("session-review", "session-main", "review"), true); err != nil {
 				t.Fatal(err)
 			}
@@ -1149,7 +1149,7 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 }
 
 func TestSubagentDeltaPresentation(t *testing.T) {
-	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
 	if _, err := tracker.describe(agentStart("session-explore", "session-main", "explore"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -1182,7 +1182,7 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 }
 
 func TestSubagentRunningStatusIsNotReported(t *testing.T) {
-	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
 	if _, err := tracker.describe(agentStart("session-review", "session-main", "review"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -1197,7 +1197,7 @@ func TestSubagentRunningStatusIsNotReported(t *testing.T) {
 }
 
 func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
-	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
 	if _, err := tracker.describe(agentStart("session-explore", "session-main", "explore"), false); err != nil {
 		t.Fatal(err)
 	}
@@ -1632,14 +1632,14 @@ func TestEnhancedConfigReportsTheCurrentModelNotTheStartupOne(t *testing.T) {
 	}
 }
 
-func TestChatTaskTrackerPersistsAcrossTurnsOfOneSession(t *testing.T) {
+func TestChatRuntimeActivityTrackerPersistsAcrossTurnsOfOneSession(t *testing.T) {
 	shell := &chatShell{current: v1.Session{ID: "session-a"}}
-	first := shell.taskTracker()
-	if shell.taskTracker() != first {
-		t.Fatal("task tracker was rebuilt between turns of one session")
+	first := shell.runtimeActivityTracker()
+	if shell.runtimeActivityTracker() != first {
+		t.Fatal("runtime activity tracker was rebuilt between turns of one session")
 	}
 	shell.current = v1.Session{ID: "session-b"}
-	if shell.taskTracker() == first {
-		t.Fatal("task tracker survived a session change")
+	if shell.runtimeActivityTracker() == first {
+		t.Fatal("runtime activity tracker survived a session change")
 	}
 }

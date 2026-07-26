@@ -43,8 +43,8 @@ const ToolFailureErrorBlock = "error_block"
 // what a server predating the tools endpoint yields, and it is also the state
 // while a connection is being established.
 type Presentations struct {
-	byID      map[string]v1.ToolPresentation
-	taskNames map[string]string
+	byID          map[string]v1.ToolPresentation
+	activityNames map[string]string
 }
 
 func NewPresentations(list v1.ToolList) Presentations {
@@ -52,7 +52,7 @@ func NewPresentations(list v1.ToolList) Presentations {
 	for _, item := range list.Items {
 		byID[item.ID] = item.Presentation
 	}
-	return Presentations{byID: byID, taskNames: make(map[string]string)}
+	return Presentations{byID: byID, activityNames: make(map[string]string)}
 }
 
 // For returns the declared presentation of a tool, or the empty presentation
@@ -169,8 +169,8 @@ func (p Presentations) Label(name string, input map[string]any) string {
 			}
 			value := firstString(input, field.Names...)
 			if field.TaskName {
-				if taskName := p.taskNames[value]; taskName != "" {
-					value = taskName
+				if activityName := p.activityNames[value]; activityName != "" {
+					value = activityName
 				}
 			}
 			if value == "" {
@@ -260,7 +260,7 @@ func legacyOutput(name string) string {
 	}
 }
 
-// Subagent reports whether invocations of a tool create child task activity.
+// Subagent reports whether invocations of a tool create child-agent activity.
 func (p Presentations) Subagent(name string) bool {
 	if presentation, declared := p.byID[name]; declared {
 		return presentation.Subagent

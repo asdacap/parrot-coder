@@ -553,7 +553,7 @@ type streamOptions struct {
 	resume      bool
 	renderer    *terminal.LiveRenderer
 	keyInput    *terminal.KeyDecoder
-	tasks       *taskStreamTracker
+	activities  *runtimeActivityStreamTracker
 	// presentation is what the connected server's tools declared about
 	// themselves. Its zero value renders through the legacy fallbacks.
 	presentation chatview.Presentations
@@ -598,7 +598,7 @@ func streamToolReportFromView(report chatview.StreamToolReport) streamToolReport
 	return streamToolReport{line: report.Line, label: report.Label, block: report.Block, blockKind: report.BlockKind, terminal: report.Terminal, hidden: report.Hidden, liveOnly: report.LiveOnly, style: report.Style}
 }
 
-type taskReport struct {
+type runtimeActivityReport struct {
 	id            string
 	line          string
 	block         string
@@ -610,51 +610,51 @@ type taskReport struct {
 	style         terminal.TextStyle
 }
 
-// taskStreamTracker adapts the shared task tree tracker to the plain chat
-// renderer. The tracker owns the parent-child relationships of every task on
-// the stream; this wrapper only owns which report is currently live.
-type taskStreamTracker struct {
-	tracker       *chatview.TaskTracker
+// runtimeActivityStreamTracker adapts the shared runtime activity tracker to the
+// plain chat renderer. The tracker owns the parent-child relationships of every
+// activity on the stream; this wrapper only owns which report is currently live.
+type runtimeActivityStreamTracker struct {
+	tracker       *chatview.RuntimeActivityTracker
 	presentation  chatview.Presentations
 	rootSessionID string
-	live          *taskReport
+	live          *runtimeActivityReport
 }
 
-func newTaskStreamTracker(presentation chatview.Presentations, rootSessionIDs ...string) taskStreamTracker {
+func newRuntimeActivityStreamTracker(presentation chatview.Presentations, rootSessionIDs ...string) runtimeActivityStreamTracker {
 	rootSessionID := ""
 	if len(rootSessionIDs) != 0 {
 		rootSessionID = rootSessionIDs[0]
 	}
-	tracker := chatview.NewTaskTracker(rootSessionID)
+	tracker := chatview.NewRuntimeActivityTracker(rootSessionID)
 	tracker.Presentation = presentation
-	return taskStreamTracker{tracker: tracker, presentation: presentation, rootSessionID: rootSessionID}
+	return runtimeActivityStreamTracker{tracker: tracker, presentation: presentation, rootSessionID: rootSessionID}
 }
 
-func isTaskEvent(item v1.Event, rootSessionID string) bool {
-	return chatview.IsTaskEvent(item, rootSessionID)
+func isRuntimeActivityEvent(item v1.Event, rootSessionID string) bool {
+	return chatview.IsRuntimeActivityEvent(item, rootSessionID)
 }
 
-func (t *taskStreamTracker) Tracker() *chatview.TaskTracker {
+func (t *runtimeActivityStreamTracker) Tracker() *chatview.RuntimeActivityTracker {
 	return t.tracker
 }
 
-func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
+func (t *runtimeActivityStreamTracker) describe(item v1.Event, thinking bool) ([]runtimeActivityReport, error) {
 	if t.tracker == nil {
-		t.tracker = chatview.NewTaskTracker(t.rootSessionID)
+		t.tracker = chatview.NewRuntimeActivityTracker(t.rootSessionID)
 		t.tracker.Presentation = t.presentation
 	}
 	reports, err := t.tracker.Apply(item, thinking)
 	if err != nil {
 		return nil, err
 	}
-	result := make([]taskReport, len(reports))
+	result := make([]runtimeActivityReport, len(reports))
 	for i, report := range reports {
-		result[i] = taskReport{id: report.ID, line: report.Line, block: report.Block, blockKind: report.BlockKind, blockLanguage: report.BlockLanguage, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
+		result[i] = runtimeActivityReport{id: report.ID, line: report.Line, block: report.Block, blockKind: report.BlockKind, blockLanguage: report.BlockLanguage, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, style: report.Style}
 	}
 	return result, nil
 }
 
-func writeStreamTaskEvent(options streamOptions, tracker *taskStreamTracker, item v1.Event) error {
+func writeStreamRuntimeActivityEvent(options streamOptions, tracker *runtimeActivityStreamTracker, item v1.Event) error {
 	reports, err := tracker.describe(item, options.thinking)
 	if err != nil {
 		return err
@@ -706,7 +706,7 @@ func writeStreamTaskEvent(options streamOptions, tracker *taskStreamTracker, ite
 	return nil
 }
 
-func restoreStreamTaskActivity(options streamOptions, tracker *taskStreamTracker) error {
+func restoreStreamRuntimeActivity(options streamOptions, tracker *runtimeActivityStreamTracker) error {
 	if options.renderer == nil || tracker.live == nil {
 		return nil
 	}
@@ -841,10 +841,10 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 	interruptCount := 0
 	toolInput := false
 	toolTracker := streamToolTracker{tracker: chatview.StreamToolTracker{Presentation: options.presentation}}
-	subagentTracker := options.tasks
-	if subagentTracker == nil {
-		fresh := newTaskStreamTracker(options.presentation, sessionID)
-		subagentTracker = &fresh
+	activityTracker := options.activities
+	if activityTracker == nil {
+		fresh := newRuntimeActivityStreamTracker(options.presentation, sessionID)
+		activityTracker = &fresh
 	}
 	interrupts, _ := ctx.Value(interruptKey{}).(<-chan os.Signal)
 	requestInterrupt := func() error {
@@ -854,7 +854,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 		}
 		interrupted = true
 		if options.renderer != nil {
-			subagentTracker.live = nil
+			activityTracker.live = nil
 			_ = options.renderer.Commit("■ Interrupt requested")
 		} else {
 			fmt.Fprintln(options.stderr, "■ Interrupt requested")
@@ -910,8 +910,8 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					return streamResult{err: err}
 				}
 			}
-			if options.format != "jsonl" && isTaskEvent(item, sessionID) {
-				if err := writeStreamTaskEvent(options, subagentTracker, item); err != nil {
+			if options.format != "jsonl" && isRuntimeActivityEvent(item, sessionID) {
+				if err := writeStreamRuntimeActivityEvent(options, activityTracker, item); err != nil {
 					return streamResult{err: err}
 				}
 				continue
@@ -920,12 +920,12 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				if err := writeStreamToolEvent(options, &toolTracker, item); err != nil {
 					return streamResult{err: err}
 				}
-				if err := restoreStreamTaskActivity(options, subagentTracker); err != nil {
+				if err := restoreStreamRuntimeActivity(options, activityTracker); err != nil {
 					return streamResult{err: err}
 				}
 			}
 			if options.format != "jsonl" && (item.Type == "session.context.initialized" || item.Type == "session.context.changed" || item.Type == "session.context.replaced") {
-				subagentTracker.live = nil
+				activityTracker.live = nil
 				if err := writeAgentsLoadedActivity(options, item); err != nil {
 					return streamResult{err: err}
 				}
@@ -939,7 +939,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				if value.Kind == "text" {
 					streamed.WriteString(value.Delta)
 					if options.renderer != nil {
-						subagentTracker.live = nil
+						activityTracker.live = nil
 						if err := options.renderer.UpdateMessage(chatview.AssistantMessageIcon+" ", streamed.String()); err != nil {
 							return streamResult{err: err}
 						}
@@ -948,7 +948,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					toolInput = true
 				} else if options.format != "jsonl" && (value.Kind != "reasoning" && value.Kind != "reasoning_summary" || options.thinking) {
 					if options.renderer != nil {
-						subagentTracker.live = nil
+						activityTracker.live = nil
 						_ = options.renderer.Update([]string{"status: " + value.Kind})
 					} else {
 						fmt.Fprintf(options.stderr, "status: %s\n", value.Kind)
@@ -965,7 +965,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					label = value.Message
 				}
 				if options.format != "jsonl" && value.Kind != "idle" && value.Kind != "finish" && value.Kind != "usage" {
-					subagentTracker.live = nil
+					activityTracker.live = nil
 					flush := value.Kind == "provider_retry" || value.Kind == "status_prompt" || value.Kind == "max_turns_reached"
 					if err := writeStreamStatus(options, label, flush); err != nil {
 						return streamResult{err: err}
@@ -983,14 +983,14 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 				}
 			case *v1.CodeDisplay:
 				if options.format != "jsonl" {
-					subagentTracker.live = nil
+					activityTracker.live = nil
 					if err := writeStreamCodeDisplay(options, value); err != nil {
 						return streamResult{err: err}
 					}
 				}
 			case *v1.ToolOutputDelta:
 				if options.format != "jsonl" {
-					subagentTracker.live = nil
+					activityTracker.live = nil
 					if err := writeStreamToolOutput(options, &toolTracker, value); err != nil {
 						return streamResult{err: err}
 					}
@@ -1393,26 +1393,26 @@ type chatShell struct {
 	inputEchoed     bool
 	columns         int
 
-	// tasks tracks the session's task tree across turns. A task started in one
-	// turn can still emit events in a later one, so the tracker is rebuilt only
+	// activities tracks the session's runtime activity tree across turns. An
+	// activity started in one turn can still emit events in a later one, so the tracker is rebuilt only
 	// when the session changes, never between turns of one session.
-	tasks        *taskStreamTracker
-	tasksSession string
+	activities        *runtimeActivityStreamTracker
+	activitiesSession string
 
 	// lastPrompt stores the last submitted prompt so /continue can resend it
 	// after an error or when the user wants to retry.
 	lastPrompt string
 }
 
-// taskTracker returns the task tree tracker for the current session, starting
-// a fresh tree when the session changes.
-func (s *chatShell) taskTracker() *taskStreamTracker {
-	if s.tasks == nil || s.tasksSession != s.current.ID {
-		tracker := newTaskStreamTracker(s.presentation, s.current.ID)
-		s.tasks = &tracker
-		s.tasksSession = s.current.ID
+// runtimeActivityTracker returns the runtime activity tracker for the current
+// session, starting a fresh tree when the session changes.
+func (s *chatShell) runtimeActivityTracker() *runtimeActivityStreamTracker {
+	if s.activities == nil || s.activitiesSession != s.current.ID {
+		tracker := newRuntimeActivityStreamTracker(s.presentation, s.current.ID)
+		s.activities = &tracker
+		s.activitiesSession = s.current.ID
 	}
-	return s.tasks
+	return s.activities
 }
 
 func (s *chatShell) runEnhanced(first string) int {
@@ -1747,7 +1747,7 @@ func (s *chatShell) promptLabel() string {
 
 func (s *chatShell) streamOptions(resume bool) streamOptions {
 	return streamOptions{format: "text", stdout: s.stdout, stderr: s.stderr, promptInput: s.reader,
-		thinking: s.options.thinking, chat: true, resume: resume, renderer: s.renderer, keyInput: s.decoder, tasks: s.taskTracker(),
+		thinking: s.options.thinking, chat: true, resume: resume, renderer: s.renderer, keyInput: s.decoder, activities: s.runtimeActivityTracker(),
 		presentation: s.presentation}
 }
 

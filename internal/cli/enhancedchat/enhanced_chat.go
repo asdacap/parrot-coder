@@ -244,8 +244,8 @@ type enhancedChatRuntime struct {
 	lastCompleteID    string
 	borderCommitted   bool
 	contextTokens     int
-	mainTaskUsage     chatview.TaskUsage
-	subagents         taskStreamTracker
+	runtimeUsage      chatview.RuntimeActivityUsage
+	runtimeActivities runtimeActivityStreamTracker
 	pendingToolOutput map[string]shellOutputTail
 	completedToolIDs  map[string]bool
 
@@ -557,11 +557,11 @@ func (r *enhancedChatRuntime) render() error {
 		busy = false
 	}
 	right := r.shell.modelineModelLabel(r.contextTokens)
-	if tokens := formatTaskTokenUsage(r.mainTaskUsage); tokens != "-" {
+	if tokens := formatRuntimeActivityTokenUsage(r.runtimeUsage); tokens != "-" {
 		right += " · " + tokens
 	}
-	if r.mainTaskUsage.Cost > 0 {
-		right += " · " + formatCost(r.mainTaskUsage.Cost)
+	if r.runtimeUsage.Cost > 0 {
+		right += " · " + formatCost(r.runtimeUsage.Cost)
 	}
 	frames := r.activityFrames(now, r.shell.renderer.Columns())
 	frames = append(frames, terminal.LiveFrame{

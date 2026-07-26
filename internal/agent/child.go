@@ -78,8 +78,8 @@ const (
 )
 
 type TurnLifecycleEvent struct {
-	Kind string
-	Task Status
+	Kind   string
+	Status Status
 }
 
 // ChildTurnObserver remains bound to the turn current when it was created.

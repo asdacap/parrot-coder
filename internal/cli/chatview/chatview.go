@@ -16,9 +16,10 @@ import (
 )
 
 const (
-	MaxToolBlockLines   = 10
-	maxShellOutputLines = 10
-	maxShellOutputBytes = 16 << 10
+	MaxToolBlockLines       = 10
+	maxShellOutputLines     = 10
+	maxShellOutputBytes     = 16 << 10
+	runtimeActivityKindMain = "main"
 )
 
 // AgentEmptyResponseText is shown when an assistant completes without
@@ -582,17 +583,17 @@ type StreamToolReport struct {
 	Style     terminal.TextStyle
 }
 
-type taskMessageState struct {
+type runtimeActivityMessageState struct {
 	text             strings.Builder
 	reasoning        strings.Builder
 	reasoningSummary bool
 	reasoningDone    bool
 }
 
-// TaskReport is one renderable unit derived from a flat lifecycle event.
+// RuntimeActivityReport is one renderable unit derived from a flat lifecycle event.
 // SessionID and optional ProcessID group frames, while ParentSessionID locates
 // child sessions in the hierarchy. MainStatus marks the primary status.
-type TaskReport struct {
+type RuntimeActivityReport struct {
 	ID              string
 	SessionID       string
 	ProcessID       string
@@ -608,9 +609,9 @@ type TaskReport struct {
 	Style           terminal.TextStyle
 }
 
-// TaskInfo is the read-only public projection of one session or process tracked
+// RuntimeActivityInfo is the read-only public projection of one session or process tracked
 // from the event stream. It contains values so callers cannot mutate the tree.
-type TaskInfo struct {
+type RuntimeActivityInfo struct {
 	SessionID       string
 	ProcessID       string
 	ParentSessionID string
@@ -620,9 +621,9 @@ type TaskInfo struct {
 	Status          string
 }
 
-// taskNode is one session or process in the tracker. Session ancestry determines
+// runtimeActivityNode is one session or process in the tracker. Session ancestry determines
 // hierarchy; processID is empty for a session node.
-type taskNode struct {
+type runtimeActivityNode struct {
 	id              string
 	sessionID       string
 	processID       string
@@ -634,10 +635,10 @@ type taskNode struct {
 	error           string
 	orphan          bool
 
-	messages         map[string]*taskMessageState
+	messages         map[string]*runtimeActivityMessageState
 	tools            *StreamToolTracker
 	done             map[string]bool
-	progress         *v1.TaskProgress
+	progress         *v1.AgentSessionProgress
 	progressOpen     bool
 	progressDone     bool
 	progressFlushed  bool
@@ -645,35 +646,35 @@ type taskNode struct {
 	finished         bool
 	lifecycleFlushed bool
 
-	direct TaskUsage
+	direct RuntimeActivityUsage
 }
 
-// TaskTracker rebuilds the session/process tree from flat lifecycle events and
+// RuntimeActivityTracker rebuilds the session/process tree from flat lifecycle events and
 // renders child activity. Hierarchy comes from session_id and parent_session_id;
 // process_id distinguishes shell processes within a session.
-type TaskTracker struct {
-	// Presentation is forwarded to every per-task tool tracker. Its zero value
-	// describes nothing, so an unset tracker renders through the fallbacks.
+type RuntimeActivityTracker struct {
+	// Presentation is forwarded to every per-activity tool tracker. Its zero
+	// value describes nothing, so an unset tracker renders through fallbacks.
 	Presentation    Presentations
 	rootSessionID   string
-	tasks           map[string]*taskNode
-	sessions        map[string]*taskNode
+	activities      map[string]*runtimeActivityNode
+	sessions        map[string]*runtimeActivityNode
 	unknownReported map[string]bool
 }
 
 func processKey(sessionID, processID string) string { return sessionID + "\x00" + processID }
 
-func NewTaskTracker(rootSessionID string) *TaskTracker {
-	tracker := &TaskTracker{rootSessionID: rootSessionID, tasks: make(map[string]*taskNode), sessions: make(map[string]*taskNode)}
+func NewRuntimeActivityTracker(rootSessionID string) *RuntimeActivityTracker {
+	tracker := &RuntimeActivityTracker{rootSessionID: rootSessionID, activities: make(map[string]*runtimeActivityNode), sessions: make(map[string]*runtimeActivityNode)}
 	if rootSessionID != "" {
-		root := &taskNode{id: processKey(rootSessionID, ""), sessionID: rootSessionID, kind: string(managedtask.KindMain)}
-		tracker.tasks[root.id] = root
+		root := &runtimeActivityNode{id: processKey(rootSessionID, ""), sessionID: rootSessionID, kind: runtimeActivityKindMain}
+		tracker.activities[root.id] = root
 		tracker.sessions[rootSessionID] = root
 	}
 	return tracker
 }
 
-func taskAgentLabel(agent, name string) string {
+func activityAgentLabel(agent, name string) string {
 	agent = strings.TrimSpace(agent)
 	name = strings.TrimSpace(name)
 	if agent == "" {
@@ -715,7 +716,7 @@ func EventLine(indent int, agent, event string) string {
 	return strings.Join(lines, "\n")
 }
 
-func prefixTaskText(prefix, text string) string {
+func prefixActivityText(prefix, text string) string {
 	lines := strings.Split(text, "\n")
 	for i := range lines {
 		lines[i] = prefix + lines[i]
@@ -736,14 +737,14 @@ func splitEventIcon(event string) (string, string) {
 
 // depth resolves indentation by walking the parent-session chain to the root.
 // Orphaned nodes, whose ancestry is unknown, render at depth one.
-func (t *TaskTracker) depth(node *taskNode) int {
+func (t *RuntimeActivityTracker) depth(node *runtimeActivityNode) int {
 	depth := 0
 	for current := node; current != nil; {
 		if current.sessionID == t.rootSessionID && current.processID == "" || current.parentSessionID == "" {
 			return depth
 		}
 		parent := t.sessions[current.parentSessionID]
-		if parent == nil || depth > len(t.tasks) {
+		if parent == nil || depth > len(t.activities) {
 			return depth + 1
 		}
 		depth++
@@ -752,8 +753,8 @@ func (t *TaskTracker) depth(node *taskNode) int {
 	return depth
 }
 
-func (t *TaskTracker) eventLine(node *taskNode, event string) string {
-	label := taskAgentLabel(node.agent, node.name)
+func (t *RuntimeActivityTracker) eventLine(node *runtimeActivityNode, event string) string {
+	label := activityAgentLabel(node.agent, node.name)
 	if node.kind == string(managedtask.KindShell) {
 		label = "shell"
 		if node.name != "" {
@@ -767,7 +768,7 @@ func (t *TaskTracker) eventLine(node *taskNode, event string) string {
 
 // unknownOrigin reports an event whose session/process pair was never
 // registered. The error is emitted once per pair to avoid flooding output.
-func (t *TaskTracker) unknownOrigin(sessionID, processID, eventType string) []TaskReport {
+func (t *RuntimeActivityTracker) unknownOrigin(sessionID, processID, eventType string) []RuntimeActivityReport {
 	origin := sessionID
 	if processID != "" {
 		origin += "/" + processID
@@ -779,30 +780,30 @@ func (t *TaskTracker) unknownOrigin(sessionID, processID, eventType string) []Ta
 		return nil
 	}
 	t.unknownReported[origin] = true
-	return []TaskReport{{ID: "unknown-origin:" + origin, Line: "✗ unknown event origin " + origin + " (" + eventType + ")", Terminal: true, EmitPlain: true, Style: terminal.TextStyleDefault}}
+	return []RuntimeActivityReport{{ID: "unknown-origin:" + origin, Line: "✗ unknown event origin " + origin + " (" + eventType + ")", Terminal: true, EmitPlain: true, Style: terminal.TextStyleDefault}}
 }
 
-func (t *TaskTracker) known(sessionID, processID string) *taskNode {
+func (t *RuntimeActivityTracker) known(sessionID, processID string) *runtimeActivityNode {
 	if sessionID == "" {
 		return nil
 	}
-	return t.tasks[processKey(sessionID, processID)]
+	return t.activities[processKey(sessionID, processID)]
 }
 
-// Tasks returns a deterministic snapshot of the tracked session/process tree.
+// Activities returns a deterministic snapshot of the tracked session/process tree.
 // Parents precede their children, and siblings are ordered by identity. An item
 // whose parent is absent is treated as an additional root.
-func (t *TaskTracker) Tasks() []TaskInfo {
-	children := make(map[string][]*taskNode)
-	roots := make([]*taskNode, 0)
-	for _, node := range t.tasks {
+func (t *RuntimeActivityTracker) Activities() []RuntimeActivityInfo {
+	children := make(map[string][]*runtimeActivityNode)
+	roots := make([]*runtimeActivityNode, 0)
+	for _, node := range t.activities {
 		if node.parentSessionID == "" || t.sessions[node.parentSessionID] == nil {
 			roots = append(roots, node)
 		} else {
 			children[node.parentSessionID] = append(children[node.parentSessionID], node)
 		}
 	}
-	sortNodes := func(nodes []*taskNode) {
+	sortNodes := func(nodes []*runtimeActivityNode) {
 		sort.Slice(nodes, func(i, j int) bool { return nodes[i].id < nodes[j].id })
 	}
 	sortNodes(roots)
@@ -810,15 +811,15 @@ func (t *TaskTracker) Tasks() []TaskInfo {
 		sortNodes(nodes)
 	}
 
-	result := make([]TaskInfo, 0, len(t.tasks))
-	seen := make(map[string]bool, len(t.tasks))
-	var appendTree func(*taskNode)
-	appendTree = func(node *taskNode) {
+	result := make([]RuntimeActivityInfo, 0, len(t.activities))
+	seen := make(map[string]bool, len(t.activities))
+	var appendTree func(*runtimeActivityNode)
+	appendTree = func(node *runtimeActivityNode) {
 		if seen[node.id] {
 			return
 		}
 		seen[node.id] = true
-		result = append(result, TaskInfo{SessionID: node.sessionID, ProcessID: node.processID, ParentSessionID: node.parentSessionID, Kind: node.kind, Agent: node.agent, Name: node.name, Status: node.status})
+		result = append(result, RuntimeActivityInfo{SessionID: node.sessionID, ProcessID: node.processID, ParentSessionID: node.parentSessionID, Kind: node.kind, Agent: node.agent, Name: node.name, Status: node.status})
 		if node.processID == "" {
 			for _, child := range children[node.sessionID] {
 				appendTree(child)
@@ -830,8 +831,8 @@ func (t *TaskTracker) Tasks() []TaskInfo {
 	}
 	// Malformed cyclic ancestry has no root. Keep the projection complete and
 	// deterministic without allowing such input to recurse forever.
-	remaining := make([]*taskNode, 0)
-	for _, node := range t.tasks {
+	remaining := make([]*runtimeActivityNode, 0)
+	for _, node := range t.activities {
 		if !seen[node.id] {
 			remaining = append(remaining, node)
 		}
@@ -843,16 +844,16 @@ func (t *TaskTracker) Tasks() []TaskInfo {
 	return result
 }
 
-// TaskUsage is what one session spent. Cost is the runner's price for the tokens,
+// RuntimeActivityUsage is what one session spent. Cost is the runner's price for the tokens,
 // so it is reported alongside them rather than accounted separately.
-type TaskUsage struct {
+type RuntimeActivityUsage struct {
 	InputTokens  int
 	OutputTokens int
 	CachedTokens int
 	Cost         float64
 }
 
-func (u *TaskUsage) add(other TaskUsage) {
+func (u *RuntimeActivityUsage) add(other RuntimeActivityUsage) {
 	u.InputTokens += other.InputTokens
 	u.OutputTokens += other.OutputTokens
 	u.CachedTokens += other.CachedTokens
@@ -863,7 +864,7 @@ func (u *TaskUsage) add(other TaskUsage) {
 // spent it. Usage for an origin the tree has never seen is dropped rather than
 // counted against the wrong session. Counts accumulate because each usage event
 // reports only its own turn.
-func (t *TaskTracker) AddUsage(sessionID, processID string, usage v1.Usage) {
+func (t *RuntimeActivityTracker) AddUsage(sessionID, processID string, usage v1.Usage) {
 	if sessionID == "" {
 		sessionID = t.rootSessionID
 	}
@@ -871,31 +872,31 @@ func (t *TaskTracker) AddUsage(sessionID, processID string, usage v1.Usage) {
 	if node == nil {
 		return
 	}
-	node.direct.add(TaskUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedTokens: usage.CachedInputTokens, Cost: usage.InputCost + usage.OutputCost})
+	node.direct.add(RuntimeActivityUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedTokens: usage.CachedInputTokens, Cost: usage.InputCost + usage.OutputCost})
 }
 
 // CumulativeUsage returns what a session or process and all its descendants
 // spent. This walks the tree once per call — safe for small trees (<100 nodes).
 // Malformed cyclic ancestry counts each reachable node once instead of
 // recursing forever.
-func (t *TaskTracker) CumulativeUsage(sessionID, processID string) TaskUsage {
+func (t *RuntimeActivityTracker) CumulativeUsage(sessionID, processID string) RuntimeActivityUsage {
 	node := t.known(sessionID, processID)
 	if node == nil {
-		return TaskUsage{}
+		return RuntimeActivityUsage{}
 	}
-	return t.nodeCumulativeUsage(node, make(map[*taskNode]bool, len(t.tasks)))
+	return t.nodeCumulativeUsage(node, make(map[*runtimeActivityNode]bool, len(t.activities)))
 }
 
-func (t *TaskTracker) nodeCumulativeUsage(node *taskNode, seen map[*taskNode]bool) TaskUsage {
+func (t *RuntimeActivityTracker) nodeCumulativeUsage(node *runtimeActivityNode, seen map[*runtimeActivityNode]bool) RuntimeActivityUsage {
 	if seen[node] {
-		return TaskUsage{}
+		return RuntimeActivityUsage{}
 	}
 	seen[node] = true
 	total := node.direct
 	if node.processID != "" {
 		return total
 	}
-	for _, child := range t.tasks {
+	for _, child := range t.activities {
 		if child != node && child.parentSessionID == node.sessionID {
 			total.add(t.nodeCumulativeUsage(child, seen))
 		}
@@ -921,14 +922,14 @@ func CodeDisplayStatus(display v1.CodeDisplay) string {
 	return "↳ Code · " + location
 }
 
-// IsTaskEvent reports whether an event belongs to child-session or process
+// IsRuntimeActivityEvent reports whether an event belongs to child-session or process
 // activity rather than the foreground transcript. Lifecycle events always do;
 // other events do when their origin differs from the foreground session.
-func IsTaskEvent(item v1.Event, rootSessionID string) bool {
+func IsRuntimeActivityEvent(item v1.Event, rootSessionID string) bool {
 	return isLifecycleEvent(item.Type) || item.SessionID != "" && item.SessionID != rootSessionID
 }
 
-type taskLifecycleEvent struct {
+type runtimeLifecycleEvent struct {
 	sessionID       string
 	processID       string
 	parentSessionID string
@@ -950,30 +951,30 @@ func isLifecycleEvent(eventType string) bool {
 	}
 }
 
-func decodeLifecycleEvent(item v1.Event) (taskLifecycleEvent, error) {
+func decodeLifecycleEvent(item v1.Event) (runtimeLifecycleEvent, error) {
 	payload, err := v1.DecodeEventData(item)
 	if err != nil {
-		return taskLifecycleEvent{}, err
+		return runtimeLifecycleEvent{}, err
 	}
 	switch event := payload.(type) {
 	case *v1.UserSessionEvent:
-		return taskLifecycleEvent{sessionID: event.SessionID, kind: string(managedtask.KindMain), status: event.Status, error: event.Error}, nil
+		return runtimeLifecycleEvent{sessionID: event.SessionID, kind: runtimeActivityKindMain, status: event.Status, error: event.Error}, nil
 	case *v1.AgentSessionEvent:
-		return taskLifecycleEvent{
+		return runtimeLifecycleEvent{
 			sessionID: event.SessionID, parentSessionID: event.ParentSessionID, kind: string(managedtask.KindAgent),
 			agent: event.Agent, name: event.Name, status: event.Status, error: event.Error,
 		}, nil
 	case *v1.ProcessEvent:
-		return taskLifecycleEvent{
+		return runtimeLifecycleEvent{
 			sessionID: event.SessionID, processID: event.ProcessID, parentSessionID: event.SessionID,
 			kind: string(managedtask.KindShell), name: event.Name, status: event.Status, error: event.Error,
 		}, nil
 	default:
-		return taskLifecycleEvent{}, fmt.Errorf("unexpected lifecycle payload %T", payload)
+		return runtimeLifecycleEvent{}, fmt.Errorf("unexpected lifecycle payload %T", payload)
 	}
 }
 
-func (t *TaskTracker) eventOrigin(item v1.Event) (string, string) {
+func (t *RuntimeActivityTracker) eventOrigin(item v1.Event) (string, string) {
 	sessionID := item.SessionID
 	if sessionID == "" {
 		sessionID = t.rootSessionID
@@ -989,10 +990,10 @@ func (t *TaskTracker) eventOrigin(item v1.Event) (string, string) {
 	return sessionID, ""
 }
 
-// Apply folds one flat event into the task tree and returns what to render.
-// Events belonging to the session's main task return nil; the caller renders
+// Apply folds one flat event into the runtime activity tree and returns what to
+// render. Events belonging to the root session return nil; the caller renders
 // those through the main transcript path instead.
-func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) {
+func (t *RuntimeActivityTracker) Apply(item v1.Event, thinking bool) ([]RuntimeActivityReport, error) {
 	reports, err := t.apply(item, thinking)
 	if err != nil {
 		return nil, err
@@ -1007,21 +1008,21 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		}
 		reports[i].MainStatus = item.Type == v1.EventAgentSessionFinished || item.Type == v1.EventProcessFinished
 	}
-	if item.Type == v1.EventTaskProgress && owner != nil && owner.progressIgnored {
+	if item.Type == v1.EventAgentSessionProgress && owner != nil && owner.progressIgnored {
 		owner.progressIgnored = false
 		return reports, nil
 	}
-	if item.Type == v1.EventTaskProgress || isLifecycleEvent(item.Type) {
-		reports = append(reports, t.taskStatusReports(ownerSessionID, ownerProcessID)...)
+	if item.Type == v1.EventAgentSessionProgress || isLifecycleEvent(item.Type) {
+		reports = append(reports, t.activityStatusReports(ownerSessionID, ownerProcessID)...)
 	}
 	return reports, nil
 }
 
-func (t *TaskTracker) taskActive(node *taskNode) bool {
-	return t.taskActiveSeen(node, make(map[*taskNode]bool, len(t.tasks)))
+func (t *RuntimeActivityTracker) activityActive(node *runtimeActivityNode) bool {
+	return t.activityActiveSeen(node, make(map[*runtimeActivityNode]bool, len(t.activities)))
 }
 
-func (t *TaskTracker) taskActiveSeen(node *taskNode, seen map[*taskNode]bool) bool {
+func (t *RuntimeActivityTracker) activityActiveSeen(node *runtimeActivityNode, seen map[*runtimeActivityNode]bool) bool {
 	if node == nil {
 		return false
 	}
@@ -1036,31 +1037,31 @@ func (t *TaskTracker) taskActiveSeen(node *taskNode, seen map[*taskNode]bool) bo
 	if selfActive {
 		return true
 	}
-	for _, child := range t.tasks {
-		if child.parentSessionID == node.sessionID && t.taskActiveSeen(child, seen) {
+	for _, child := range t.activities {
+		if child.parentSessionID == node.sessionID && t.activityActiveSeen(child, seen) {
 			return true
 		}
 	}
 	return false
 }
 
-func (t *TaskTracker) activeChildCount(node *taskNode) int {
+func (t *RuntimeActivityTracker) activeChildCount(node *runtimeActivityNode) int {
 	count := 0
-	for _, child := range t.tasks {
-		if child.parentSessionID == node.sessionID && t.taskActive(child) {
+	for _, child := range t.activities {
+		if child.parentSessionID == node.sessionID && t.activityActive(child) {
 			count++
 		}
 	}
 	return count
 }
 
-func (t *TaskTracker) taskStatusReports(sessionID, processID string) []TaskReport {
-	var reports []TaskReport
-	seen := make(map[*taskNode]bool, len(t.tasks))
+func (t *RuntimeActivityTracker) activityStatusReports(sessionID, processID string) []RuntimeActivityReport {
+	var reports []RuntimeActivityReport
+	seen := make(map[*runtimeActivityNode]bool, len(t.activities))
 	for node := t.known(sessionID, processID); node != nil && !(node.sessionID == t.rootSessionID && node.processID == "") && !seen[node]; node = t.sessions[node.parentSessionID] {
 		seen[node] = true
 		// Shell lifecycle has its own stable live row. Unlike agent progress it
-		// settles directly on task.finished and has no later progress event.
+		// settles directly on process.finished and has no later progress event.
 		if node.kind == string(managedtask.KindShell) {
 			continue
 		}
@@ -1077,7 +1078,7 @@ func (t *TaskTracker) taskStatusReports(sessionID, processID string) []TaskRepor
 				}
 			}
 			node.lifecycleFlushed = true
-			reports = append(reports, TaskReport{
+			reports = append(reports, RuntimeActivityReport{
 				ID: node.id + ":lifecycle", SessionID: node.sessionID, ProcessID: node.processID, ParentSessionID: node.parentSessionID,
 				Line: t.eventLine(node, icon+" "+body), Terminal: true,
 				EmitPlain: true, MainStatus: true, Style: style,
@@ -1089,9 +1090,9 @@ func (t *TaskTracker) taskStatusReports(sessionID, processID string) []TaskRepor
 		}
 		body := fmt.Sprintf("agent: %s · %s tokens · %d tools", node.progress.Agent, FormatTokenCount(node.progress.Usage.TotalTokens), node.progress.ToolUses)
 		if children > 0 {
-			unit := "active task"
+			unit := "active activity"
 			if children != 1 {
-				unit += "s"
+				unit = "active activities"
 			}
 			body += fmt.Sprintf(" · %d %s", children, unit)
 		}
@@ -1107,7 +1108,7 @@ func (t *TaskTracker) taskStatusReports(sessionID, processID string) []TaskRepor
 			}
 			node.progressFlushed = true
 		}
-		reports = append(reports, TaskReport{
+		reports = append(reports, RuntimeActivityReport{
 			ID: node.id + ":status", SessionID: node.sessionID, ProcessID: node.processID, ParentSessionID: node.parentSessionID,
 			Line: t.eventLine(node, icon+" "+body), Terminal: terminalEvent,
 			EmitPlain: terminalEvent, MainStatus: true, Style: terminal.TextStyleMuted,
@@ -1116,7 +1117,7 @@ func (t *TaskTracker) taskStatusReports(sessionID, processID string) []TaskRepor
 	return reports
 }
 
-func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) {
+func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeActivityReport, error) {
 	if isLifecycleEvent(item.Type) {
 		return t.applyLifecycle(item)
 	}
@@ -1149,10 +1150,10 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			return nil, nil
 		}
 		if node.messages == nil {
-			node.messages = make(map[string]*taskMessageState)
+			node.messages = make(map[string]*runtimeActivityMessageState)
 		}
 		if node.messages[key] == nil {
-			node.messages[key] = &taskMessageState{}
+			node.messages[key] = &runtimeActivityMessageState{}
 		}
 		return nil, nil
 	case v1.EventMessagePartDelta:
@@ -1170,11 +1171,11 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			return nil, nil
 		}
 		if node.messages == nil {
-			node.messages = make(map[string]*taskMessageState)
+			node.messages = make(map[string]*runtimeActivityMessageState)
 		}
 		state := node.messages[key]
 		if state == nil {
-			state = &taskMessageState{}
+			state = &runtimeActivityMessageState{}
 			node.messages[key] = state
 		}
 		switch delta.Kind {
@@ -1184,7 +1185,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 				return nil, nil
 			}
 			line := t.eventLine(node, PendingIcon+" response: "+state.text.String())
-			return []TaskReport{{ID: key + ":response", Line: line, Style: terminal.TextStyleMuted}}, nil
+			return []RuntimeActivityReport{{ID: key + ":response", Line: line, Style: terminal.TextStyleMuted}}, nil
 		case "reasoning_summary":
 			if !state.reasoningSummary {
 				state.reasoning.Reset()
@@ -1205,7 +1206,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 				icon = FinalizedReasoningSummaryIcon
 			}
 			line := t.eventLine(node, icon+" Thought: "+SingleLineReasoningSummary(state.reasoning.String()))
-			return []TaskReport{{ID: key + ":reasoning", Line: line, Terminal: delta.Done, EmitPlain: delta.Done, Style: terminal.TextStyleMuted}}, nil
+			return []RuntimeActivityReport{{ID: key + ":reasoning", Line: line, Terminal: delta.Done, EmitPlain: delta.Done, Style: terminal.TextStyleMuted}}, nil
 		case "reasoning":
 			if !thinking || state.reasoningSummary {
 				return nil, nil
@@ -1215,11 +1216,11 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 				return nil, nil
 			}
 			line := t.eventLine(node, SpinnerFrames[0]+" Reasoning: "+SingleLineReasoningSummary(state.reasoning.String()))
-			return []TaskReport{{ID: key + ":reasoning", Line: line, Style: terminal.TextStyleMuted}}, nil
+			return []RuntimeActivityReport{{ID: key + ":reasoning", Line: line, Style: terminal.TextStyleMuted}}, nil
 		case "tool_input":
 			return nil, nil
 		default:
-			return []TaskReport{{ID: key + ":status", Line: t.eventLine(node, "status: "+delta.Kind), Style: terminal.TextStyleMuted}}, nil
+			return []RuntimeActivityReport{{ID: key + ":status", Line: t.eventLine(node, "status: "+delta.Kind), Style: terminal.TextStyleMuted}}, nil
 		}
 	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
 		var payload struct {
@@ -1256,9 +1257,9 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			text += payload.Error
 		}
 		delete(node.messages, key)
-		var reports []TaskReport
+		var reports []RuntimeActivityReport
 		if state != nil && !state.reasoningDone && strings.TrimSpace(state.reasoning.String()) != "" {
-			reasoning := TaskReport{ID: key + ":reasoning", Terminal: true, Skip: text != "", Style: terminal.TextStyleMuted}
+			reasoning := RuntimeActivityReport{ID: key + ":reasoning", Terminal: true, Skip: text != "", Style: terminal.TextStyleMuted}
 			if text == "" || state.reasoningSummary {
 				label := "Reasoning: "
 				if state.reasoningSummary {
@@ -1271,12 +1272,12 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 			reports = append(reports, reasoning)
 		}
 		if text == "" && item.Type == "session.assistant.complete" {
-			return append(reports, TaskReport{ID: key + ":response", Terminal: true, Skip: true}), nil
+			return append(reports, RuntimeActivityReport{ID: key + ":response", Terminal: true, Skip: true}), nil
 		}
 		if text == "" {
 			text = "response complete"
 		}
-		return append(reports, TaskReport{ID: key + ":response", Line: t.eventLine(node, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
+		return append(reports, RuntimeActivityReport{ID: key + ":response", Line: t.eventLine(node, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
 	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}
@@ -1289,16 +1290,16 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		}
 		block := report.Block
 		if block != "" && report.BlockKind != ToolResultDiff {
-			block = prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", block)
+			block = prefixActivityText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", block)
 		}
-		return []TaskReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, BlockKind: report.BlockKind, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
+		return []RuntimeActivityReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, BlockKind: report.BlockKind, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
 	case v1.EventCodeDisplay:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {
 			return nil, err
 		}
 		display := payload.(*v1.CodeDisplay)
-		return []TaskReport{{
+		return []RuntimeActivityReport{{
 			ID: scope + "code:" + display.ToolCallID, Line: t.eventLine(node, CodeDisplayStatus(*display)),
 			Block: display.Source, BlockKind: ToolResultCode, BlockLanguage: display.Language,
 			Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted,
@@ -1316,17 +1317,18 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if report.Line == "" {
 			return nil, nil
 		}
-		block := prefixTaskText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
-		return []TaskReport{{ID: scope + "tool:" + output.ToolCallID, Line: t.eventLine(node, report.Line), Block: block, Style: report.Style}}, nil
-	case v1.EventTaskProgress:
+		block := prefixActivityText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", report.Block)
+		return []RuntimeActivityReport{{ID: scope + "tool:" + output.ToolCallID, Line: t.eventLine(node, report.Line), Block: block, Style: report.Style}}, nil
+	case v1.EventAgentSessionProgress:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {
 			return nil, err
 		}
-		progress := payload.(*v1.TaskProgress)
-		// Progress belongs to the task generation opened by task.start or
-		// task.working. Once that generation reports a terminal status, delayed
-		// running events cannot resurrect it; a new task.working is required.
+		progress := payload.(*v1.AgentSessionProgress)
+		// Progress belongs to the generation opened by agent_session.start or
+		// agent_session.working. Once that generation reports a terminal status,
+		// delayed running events cannot resurrect it; a new agent_session.working
+		// is required.
 		if !node.progressOpen || node.finished && (progress.Status == "pending" || progress.Status == "running") {
 			node.progressIgnored = true
 			return nil, nil
@@ -1351,12 +1353,12 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if status.Message != "" {
 			line = status.Message
 		}
-		return []TaskReport{{ID: scope + "status:" + status.MessageID, Line: t.eventLine(node, StatusNoticeIcon+" "+line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
+		return []RuntimeActivityReport{{ID: scope + "status:" + status.MessageID, Line: t.eventLine(node, StatusNoticeIcon+" "+line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
 	case "session.context.initialized", "session.context.changed", "session.context.replaced":
 		lines := AgentsLoadedActivities(item)
-		reports := make([]TaskReport, 0, len(lines))
+		reports := make([]RuntimeActivityReport, 0, len(lines))
 		for i, line := range lines {
-			reports = append(reports, TaskReport{ID: fmt.Sprintf("%scontext:%d", scope, i), Line: t.eventLine(node, line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted})
+			reports = append(reports, RuntimeActivityReport{ID: fmt.Sprintf("%scontext:%d", scope, i), Line: t.eventLine(node, line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted})
 		}
 		return reports, nil
 	default:
@@ -1367,7 +1369,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 // applyLifecycle folds one domain lifecycle event into the presentation tree.
 // Start events introduce a session/process pair; later events for an unknown
 // origin are reported as tracking gaps.
-func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
+func (t *RuntimeActivityTracker) applyLifecycle(item v1.Event) ([]RuntimeActivityReport, error) {
 	event, err := decodeLifecycleEvent(item)
 	if err != nil {
 		return nil, err
@@ -1378,10 +1380,10 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 	key := processKey(event.sessionID, event.processID)
 	switch item.Type {
 	case v1.EventUserSessionStart, v1.EventAgentSessionStart, v1.EventProcessStart:
-		node := t.tasks[key]
+		node := t.activities[key]
 		if node == nil {
-			node = &taskNode{id: key, sessionID: event.sessionID, processID: event.processID}
-			t.tasks[key] = node
+			node = &runtimeActivityNode{id: key, sessionID: event.sessionID, processID: event.processID}
+			t.activities[key] = node
 		}
 		node.kind = event.kind
 		if event.agent != "" {
@@ -1389,14 +1391,14 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 		}
 		if event.name != "" {
 			node.name = event.name
-			if t.Presentation.taskNames == nil {
-				t.Presentation.taskNames = make(map[string]string)
+			if t.Presentation.activityNames == nil {
+				t.Presentation.activityNames = make(map[string]string)
 			}
 			nameKey := event.sessionID
 			if event.processID != "" {
 				nameKey = event.processID
 			}
-			t.Presentation.taskNames[nameKey] = event.name
+			t.Presentation.activityNames[nameKey] = event.name
 		}
 		node.status = "working"
 		node.progressOpen = true
@@ -1411,7 +1413,7 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 			return t.unknownOrigin(event.parentSessionID, "", "parent session of "+event.sessionID), nil
 		}
 		if node.kind == string(managedtask.KindShell) {
-			return []TaskReport{{ID: node.id + ":lifecycle", Line: t.eventLine(node, SpinnerFrames[0]+" running"), Style: terminal.TextStyleMuted}}, nil
+			return []RuntimeActivityReport{{ID: node.id + ":lifecycle", Line: t.eventLine(node, SpinnerFrames[0]+" running"), Style: terminal.TextStyleMuted}}, nil
 		}
 		return nil, nil
 	case v1.EventUserSessionWorking, v1.EventAgentSessionWorking:
@@ -1452,7 +1454,7 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 				}
 			}
 			node.lifecycleFlushed = true
-			return []TaskReport{{ID: node.id + ":lifecycle", Line: t.eventLine(node, icon+" "+body), Terminal: true, EmitPlain: true, Style: style}}, nil
+			return []RuntimeActivityReport{{ID: node.id + ":lifecycle", Line: t.eventLine(node, icon+" "+body), Terminal: true, EmitPlain: true, Style: style}}, nil
 		}
 		node.lifecycleFlushed = false
 		return nil, nil

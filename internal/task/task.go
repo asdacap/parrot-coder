@@ -12,7 +12,6 @@ import (
 type Kind string
 
 const (
-	KindMain  Kind = "main"
 	KindAgent Kind = "agent"
 	KindShell Kind = "shell"
 )

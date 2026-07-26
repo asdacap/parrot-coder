@@ -1227,39 +1227,39 @@ func publishAgentTurnEvent(live *event.Broker, notifications *agent.CompletionNo
 	stop := func() {}
 	switch item.Name {
 	case event.TurnStarted:
-		if task, ok := item.Payload.(agent.Status); ok {
-			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleStart, Task: task})
+		if status, ok := item.Payload.(agent.Status); ok {
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleStart, Status: status})
 		}
 	case event.TurnWorking:
 		if working, ok := item.Payload.(agent.TurnWorkingEvent); ok {
-			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleWorking, Task: working.Task})
-			stop = live.ObserveTransient(working.Task.SessionID, func(item v1.Event) { reportChildEvent(working.Report, item) })
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleWorking, Status: working.Status})
+			stop = live.ObserveTransient(working.Status.SessionID, func(item v1.Event) { reportChildEvent(working.Report, item) })
 		}
 	case event.TurnProgress:
-		if task, ok := item.Payload.(agent.Status); ok {
-			publishTurnProgress(live, task)
+		if status, ok := item.Payload.(agent.Status); ok {
+			publishTurnProgress(live, status)
 		}
 	case event.TurnFinished:
-		if task, ok := item.Payload.(agent.Status); ok {
-			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleFinished, Task: task})
-			publishTurnProgress(live, task)
+		if status, ok := item.Payload.(agent.Status); ok {
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleFinished, Status: status})
+			publishTurnProgress(live, status)
 		}
 	case event.TurnCompleted:
-		if task, ok := item.Payload.(agent.Status); ok {
-			notifications.Notify(task)
+		if status, ok := item.Payload.(agent.Status); ok {
+			notifications.Notify(status)
 		}
 	}
 	return stop
 }
 
-func publishTurnProgress(live *event.Broker, task agent.Status) {
-	data, _ := json.Marshal(v1.TaskProgress{SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
-	live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.SessionID, Data: data})
+func publishTurnProgress(live *event.Broker, status agent.Status) {
+	data, _ := json.Marshal(v1.AgentSessionProgress{SessionID: status.SessionID, Agent: status.Agent, Status: string(status.State), Usage: v1.Usage{InputTokens: status.Usage.InputTokens, OutputTokens: status.Usage.OutputTokens, TotalTokens: status.Usage.TotalTokens, ReasoningTokens: status.Usage.ReasoningTokens, CachedInputTokens: status.Usage.CachedInputTokens}, ToolUses: status.ToolUses})
+	live.PublishEvent(v1.Event{Type: v1.EventAgentSessionProgress, SessionID: status.SessionID, Data: data})
 }
 
 func publishTurnLifecycle(live *event.Broker, item agent.TurnLifecycleEvent) {
-	task := item.Task
-	payload := v1.AgentSessionEvent{SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name}
+	status := item.Status
+	payload := v1.AgentSessionEvent{SessionID: status.SessionID, ParentSessionID: status.ParentSession, Agent: status.Agent, Name: status.Name}
 	eventType := ""
 	switch item.Kind {
 	case agent.TurnLifecycleStart:
@@ -1270,13 +1270,13 @@ func publishTurnLifecycle(live *event.Broker, item agent.TurnLifecycleEvent) {
 		eventType = v1.EventAgentSessionIdle
 	case agent.TurnLifecycleFinished:
 		eventType = v1.EventAgentSessionFinished
-		payload.Status = string(task.State)
-		payload.Error = task.Error
+		payload.Status = string(status.State)
+		payload.Error = status.Error
 	default:
 		return
 	}
 	data, _ := json.Marshal(payload)
-	live.PublishEvent(v1.Event{Type: eventType, SessionID: task.SessionID, Data: data})
+	live.PublishEvent(v1.Event{Type: eventType, SessionID: status.SessionID, Data: data})
 }
 
 func reportChildEvent(report func(agent.ChildProgress), item v1.Event) {

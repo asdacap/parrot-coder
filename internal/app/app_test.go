@@ -1197,7 +1197,7 @@ func TestPublishTurnLifecycleEmitsAgentSessionEvents(t *testing.T) {
 			events, unsubscribe := live.Subscribe(test.stream, 5)
 			defer unsubscribe()
 
-			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleStart, Task: test.status})
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleStart, Status: test.status})
 			startedItem := <-events
 			started := decodeAgentSessionEvent(t, startedItem)
 			if startedItem.Type != v1.EventAgentSessionStart || started.SessionID != test.status.SessionID || started.ParentSessionID != test.status.ParentSession || started.Agent != test.status.Agent {
@@ -1211,7 +1211,7 @@ func TestPublishTurnLifecycleEmitsAgentSessionEvents(t *testing.T) {
 				{kind: agent.TurnLifecycleWorking, eventType: v1.EventAgentSessionWorking},
 				{kind: agent.TurnLifecycleIdle, eventType: v1.EventAgentSessionIdle},
 			} {
-				publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: lifecycle.kind, Task: test.status})
+				publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: lifecycle.kind, Status: test.status})
 				item := <-events
 				payload := decodeAgentSessionEvent(t, item)
 				if item.Type != lifecycle.eventType || payload.SessionID != test.status.SessionID {
@@ -1226,13 +1226,13 @@ func TestPublishTurnLifecycleEmitsAgentSessionEvents(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			progress := progressPayload.(*v1.TaskProgress)
+			progress := progressPayload.(*v1.AgentSessionProgress)
 			if progressItem.SessionID != test.status.SessionID || progress.SessionID != test.status.SessionID || progress.Status != "running" || progress.ToolUses != 3 {
 				t.Fatalf("progress event = %#v, payload = %#v", progressItem, progress)
 			}
 
 			test.status.State, test.status.Error = agent.StatusFailed, "boom"
-			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleFinished, Task: test.status})
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleFinished, Status: test.status})
 			finishedItem := <-events
 			finished := decodeAgentSessionEvent(t, finishedItem)
 			if finishedItem.Type != v1.EventAgentSessionFinished || finished.SessionID != test.status.SessionID || finished.Status != "failed" || finished.Error != "boom" {

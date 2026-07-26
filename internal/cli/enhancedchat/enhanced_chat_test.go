@@ -604,11 +604,11 @@ func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
 	}
 }
 
-// The modeline reports what the whole task tree spent. Every session reports
-// usage on its own envelope, and a usage event covers one turn, so the totals
-// accumulate. A subagent's task.progress repeats what it has spent and must not
-// be counted again on top of its usage events.
-func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
+// The modeline reports what the whole runtime activity tree spent. Every session
+// reports usage on its own envelope, and a usage event covers one turn, so the
+// totals accumulate. A child agent's agent_session.progress repeats what it has
+// spent and must not be counted again on top of its usage events.
+func TestEnhancedModelineUsageCoversRuntimeActivitiesOnce(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
 	usageEvent := func(sessionID string, usage v1.Usage) v1.Event {
 		data, _ := json.Marshal(v1.SessionStatus{MessageID: "assistant", Kind: "usage", Usage: &usage})
@@ -619,31 +619,31 @@ func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if want := (chatview.TaskUsage{InputTokens: 2400, OutputTokens: 600, CachedTokens: 1600, Cost: 1.5}); runtime.mainTaskUsage != want {
-		t.Fatalf("session usage = %#v, want %#v", runtime.mainTaskUsage, want)
+	if want := (chatview.RuntimeActivityUsage{InputTokens: 2400, OutputTokens: 600, CachedTokens: 1600, Cost: 1.5}); runtime.runtimeUsage != want {
+		t.Fatalf("session usage = %#v, want %#v", runtime.runtimeUsage, want)
 	}
 
-	if err := runtime.handleEvent(taskStart("session-1", "session-main", "explore")); err != nil {
+	if err := runtime.handleEvent(runtimeActivityStart("session-1", "session-main", "explore")); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.handleEvent(usageEvent("session-1", v1.Usage{InputTokens: 100, OutputTokens: 50, CachedInputTokens: 25, TotalTokens: 150, InputCost: 0.125})); err != nil {
 		t.Fatal(err)
 	}
-	want := chatview.TaskUsage{InputTokens: 2500, OutputTokens: 650, CachedTokens: 1625, Cost: 1.625}
-	if runtime.mainTaskUsage != want {
-		t.Fatalf("usage with subagent = %#v, want %#v", runtime.mainTaskUsage, want)
+	want := chatview.RuntimeActivityUsage{InputTokens: 2500, OutputTokens: 650, CachedTokens: 1625, Cost: 1.625}
+	if runtime.runtimeUsage != want {
+		t.Fatalf("usage with subagent = %#v, want %#v", runtime.runtimeUsage, want)
 	}
-	if got := formatTaskTokenUsage(runtime.mainTaskUsage); got != "+2.5ki +650o (+65.00% cache)" {
+	if got := formatRuntimeActivityTokenUsage(runtime.runtimeUsage); got != "+2.5ki +650o (+65.00% cache)" {
 		t.Fatalf("modeline token usage = %q", got)
 	}
 
-	progress, _ := json.Marshal(v1.TaskProgress{Agent: "explore", Status: "running",
+	progress, _ := json.Marshal(v1.AgentSessionProgress{Agent: "explore", Status: "running",
 		Usage: v1.Usage{InputTokens: 100, OutputTokens: 50, CachedInputTokens: 25, TotalTokens: 150}, ToolUses: 3})
-	if err := runtime.handleEvent(taskContent("session-1", v1.EventTaskProgress, progress)); err != nil {
+	if err := runtime.handleEvent(runtimeActivityEvent("session-1", v1.EventAgentSessionProgress, progress)); err != nil {
 		t.Fatal(err)
 	}
-	if runtime.mainTaskUsage != want {
-		t.Fatalf("task progress counted usage twice: %#v", runtime.mainTaskUsage)
+	if runtime.runtimeUsage != want {
+		t.Fatalf("agent-session progress counted usage twice: %#v", runtime.runtimeUsage)
 	}
 	if line := formatActivity(runtime.activity[0], runtime.activity[0].started); !strings.Contains(line, "+100i +50o (+25.00% cache) · 3 tools") {
 		t.Fatalf("progress line = %q", line)
@@ -651,11 +651,11 @@ func TestEnhancedModelineUsageCoversMainTaskAndSubagentsOnce(t *testing.T) {
 }
 
 // Agent activity is keyed by the session carried in every event envelope.
-func taskStart(sessionID, parentSessionID, agent string, name ...string) v1.Event {
-	return taskStartInSession(sessionID, parentSessionID, agent, name...)
+func runtimeActivityStart(sessionID, parentSessionID, agent string, name ...string) v1.Event {
+	return runtimeActivityStartInSession(sessionID, parentSessionID, agent, name...)
 }
 
-func taskStartInSession(sessionID, parentSessionID, agent string, name ...string) v1.Event {
+func runtimeActivityStartInSession(sessionID, parentSessionID, agent string, name ...string) v1.Event {
 	if parentSessionID == "" && agent == "" {
 		data, _ := json.Marshal(v1.UserSessionEvent{SessionID: sessionID})
 		return v1.Event{Type: v1.EventUserSessionStart, SessionID: sessionID, Data: data}
@@ -668,17 +668,17 @@ func taskStartInSession(sessionID, parentSessionID, agent string, name ...string
 	return v1.Event{Type: v1.EventAgentSessionStart, SessionID: sessionID, Data: data}
 }
 
-func taskContent(sessionID string, eventType string, data json.RawMessage) v1.Event {
+func runtimeActivityEvent(sessionID string, eventType string, data json.RawMessage) v1.Event {
 	return v1.Event{Type: eventType, SessionID: sessionID, Data: data}
 }
 
 func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
-	if err := runtime.handleEvent(taskStart("session-1", "session-main", "explore")); err != nil {
+	if err := runtime.handleEvent(runtimeActivityStart("session-1", "session-main", "explore")); err != nil {
 		t.Fatal(err)
 	}
-	data, _ := json.Marshal(v1.TaskProgress{Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
-	if err := runtime.handleEvent(taskContent("session-1", v1.EventTaskProgress, data)); err != nil {
+	data, _ := json.Marshal(v1.AgentSessionProgress{Agent: "explore", Status: "running", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
+	if err := runtime.handleEvent(runtimeActivityEvent("session-1", v1.EventAgentSessionProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 1 {
@@ -689,36 +689,36 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 		t.Fatalf("line = %q", line)
 	}
 
-	data, _ = json.Marshal(v1.TaskProgress{Agent: "explore", Status: "succeeded", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
-	if err := runtime.handleEvent(taskContent("session-1", v1.EventTaskProgress, data)); err != nil {
+	data, _ = json.Marshal(v1.AgentSessionProgress{Agent: "explore", Status: "succeeded", Usage: v1.Usage{TotalTokens: 35}, ToolUses: 3})
+	if err := runtime.handleEvent(runtimeActivityEvent("session-1", v1.EventAgentSessionProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {
-		t.Fatalf("completed task remains live: %#v", runtime.activity)
+		t.Fatalf("completed runtime activity remains live: %#v", runtime.activity)
 	}
 
-	data, _ = json.Marshal(v1.TaskProgress{Agent: "explore", Status: "running"})
-	if err := runtime.handleEvent(taskContent("session-1", v1.EventTaskProgress, data)); err != nil {
+	data, _ = json.Marshal(v1.AgentSessionProgress{Agent: "explore", Status: "running"})
+	if err := runtime.handleEvent(runtimeActivityEvent("session-1", v1.EventAgentSessionProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {
-		t.Fatalf("late task progress recreated activity: %#v", runtime.activity)
+		t.Fatalf("late agent-session progress recreated activity: %#v", runtime.activity)
 	}
 
 	working, _ := json.Marshal(v1.AgentSessionEvent{SessionID: "session-1"})
-	if err := runtime.handleEvent(taskContent("session-1", v1.EventAgentSessionWorking, working)); err != nil {
+	if err := runtime.handleEvent(runtimeActivityEvent("session-1", v1.EventAgentSessionWorking, working)); err != nil {
 		t.Fatal(err)
 	}
-	data, _ = json.Marshal(v1.TaskProgress{Agent: "explore", Status: "running"})
-	if err := runtime.handleEvent(taskContent("session-1", v1.EventTaskProgress, data)); err != nil {
+	data, _ = json.Marshal(v1.AgentSessionProgress{Agent: "explore", Status: "running"})
+	if err := runtime.handleEvent(runtimeActivityEvent("session-1", v1.EventAgentSessionProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 1 {
-		t.Fatalf("follow-up task progress = %#v", runtime.activity)
+		t.Fatalf("follow-up agent-session progress = %#v", runtime.activity)
 	}
 }
 
-func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
+func TestEnhancedRuntimeActivityEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}, knownMessages: map[string]bool{}}
 	runtime.activity = append(runtime.activity,
 		enhancedActivityItem{id: "call-read", label: "read · file.go", toolName: "read", status: "running", started: time.Now()},
@@ -726,17 +726,17 @@ func TestEnhancedTaskEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	)
 	// A grandchild renders two levels deep because the UI walks the parent
 	// chain it tracks, not because an event envelope carries a depth.
-	if err := runtime.handleEvent(taskStartInSession("session-main", "", "")); err != nil {
+	if err := runtime.handleEvent(runtimeActivityStartInSession("session-main", "", "")); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.handleEvent(taskStartInSession("session-parent", "session-main", "build")); err != nil {
+	if err := runtime.handleEvent(runtimeActivityStartInSession("session-parent", "session-main", "build")); err != nil {
 		t.Fatal(err)
 	}
-	if err := runtime.handleEvent(taskStart("session-review", "session-parent", "review", "ui-hierarchy")); err != nil {
+	if err := runtime.handleEvent(runtimeActivityStart("session-review", "session-parent", "review", "ui-hierarchy")); err != nil {
 		t.Fatal(err)
 	}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "checking"})
-	if err := runtime.handleEvent(taskContent("session-review", v1.EventMessagePartDelta, delta)); err != nil {
+	if err := runtime.handleEvent(runtimeActivityEvent("session-review", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 3 {
@@ -802,7 +802,7 @@ func TestTaskActivityLabelsUseTargetID(t *testing.T) {
 
 func TestEnhancedSubagentCompletionRemovesAllRowsAndIgnoresLateEvents(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}, options: codingFlags{thinking: true}}, knownMessages: map[string]bool{}}
-	if err := runtime.handleEvent(taskStart("session-review", "session-main", "review")); err != nil {
+	if err := runtime.handleEvent(runtimeActivityStart("session-review", "session-main", "review")); err != nil {
 		t.Fatal(err)
 	}
 	for _, delta := range []v1.MessagePartDelta{
@@ -810,7 +810,7 @@ func TestEnhancedSubagentCompletionRemovesAllRowsAndIgnoresLateEvents(t *testing
 		{MessageID: "child-message", Kind: "text", Delta: "result"},
 	} {
 		data, _ := json.Marshal(delta)
-		if err := runtime.handleEvent(taskContent("session-review", v1.EventMessagePartDelta, data)); err != nil {
+		if err := runtime.handleEvent(runtimeActivityEvent("session-review", v1.EventMessagePartDelta, data)); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -819,7 +819,7 @@ func TestEnhancedSubagentCompletionRemovesAllRowsAndIgnoresLateEvents(t *testing
 	}
 
 	data, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	if err := runtime.handleEvent(taskContent("session-review", "session.assistant.complete", data)); err != nil {
+	if err := runtime.handleEvent(runtimeActivityEvent("session-review", "session.assistant.complete", data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {
@@ -827,7 +827,7 @@ func TestEnhancedSubagentCompletionRemovesAllRowsAndIgnoresLateEvents(t *testing
 	}
 
 	data, _ = json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "late"})
-	if err := runtime.handleEvent(taskContent("session-review", v1.EventMessagePartDelta, data)); err != nil {
+	if err := runtime.handleEvent(runtimeActivityEvent("session-review", v1.EventMessagePartDelta, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {

@@ -109,7 +109,7 @@ type turnState struct {
 }
 
 type TurnWorkingEvent struct {
-	Task   Status
+	Status Status
 	Report func(ChildProgress)
 }
 
@@ -375,15 +375,15 @@ retry:
 
 func (s *agentSession) startTurn(state *turnState) {
 	s.mu.Lock()
-	status := state.status
-	task := cloneStatus(s.status)
+	turnStatus := state.status
+	status := cloneStatus(s.status)
 	s.mu.Unlock()
-	if status == StatusInterrupting {
+	if turnStatus == StatusInterrupting {
 		go s.finishTurn(state, "", context.Canceled, false)
 		return
 	}
-	s.events.Publish(event.BrokerEvent{Name: event.TurnStarted, Payload: task})
-	if status == StatusBlocked {
+	s.events.Publish(event.BrokerEvent{Name: event.TurnStarted, Payload: status})
+	if turnStatus == StatusBlocked {
 		go s.waitForTurnPermit(state)
 	} else {
 		go s.runTurn(state)
@@ -634,7 +634,7 @@ func (s *agentSession) runTurn(state *turnState) {
 		return
 	}
 	s.started()
-	stop := s.events.Publish(event.BrokerEvent{Name: event.TurnWorking, Payload: TurnWorkingEvent{Task: s.Status(), Report: func(progress ChildProgress) { s.reportTurnProgress(state, progress) }}})
+	stop := s.events.Publish(event.BrokerEvent{Name: event.TurnWorking, Payload: TurnWorkingEvent{Status: s.Status(), Report: func(progress ChildProgress) { s.reportTurnProgress(state, progress) }}})
 	var err error
 	for {
 		err = s.drainOnce(state.ctx)
@@ -814,9 +814,9 @@ func (s *agentSession) reportTurnProgress(turn *turnState, progress ChildProgres
 	s.status.Usage.ReasoningTokens += progress.Usage.ReasoningTokens
 	s.status.Usage.CachedInputTokens += progress.Usage.CachedInputTokens
 	s.status.ToolUses += progress.ToolUses
-	task := cloneStatus(s.status)
+	status := cloneStatus(s.status)
 	s.mu.Unlock()
-	s.events.Publish(event.BrokerEvent{Name: event.TurnProgress, Payload: task})
+	s.events.Publish(event.BrokerEvent{Name: event.TurnProgress, Payload: status})
 }
 
 func newAgentSession(
