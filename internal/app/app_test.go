@@ -1129,21 +1129,33 @@ func TestBrokerFlattensTaskAttribution(t *testing.T) {
 	}
 }
 
-func TestPublishChildLifecycleEmitsFlatTaskEvents(t *testing.T) {
-	live := event.NewBroker(nil, nil)
-	parentEvents, unsubscribe := live.Subscribe("parent", 4)
-	defer unsubscribe()
+func TestPublishTurnLifecycleEmitsFlatTaskEvents(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		status agent.Status
+		stream string
+	}{
+		{name: "root", status: agent.Status{SessionID: "root", Agent: "build"}, stream: "root"},
+		{name: "child", status: agent.Status{SessionID: "child", ParentSession: "parent", Agent: "explore"}, stream: "parent"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			live := event.NewBroker(nil, nil)
+			events, unsubscribe := live.Subscribe(test.stream, 4)
+			defer unsubscribe()
 
-	publishChildLifecycle(live, agent.ChildLifecycleEvent{Kind: agent.ChildLifecycleStart, Task: agent.Status{SessionID: "child", ParentSession: "parent", Agent: "explore"}})
-	started := decodeTaskEvent(t, <-parentEvents)
-	if started.TaskID != "child" || started.SessionID != "child" || started.ParentSessionID != "parent" || started.Kind != "agent" || started.Agent != "explore" {
-		t.Fatalf("start = %#v", started)
-	}
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleStart, Task: test.status})
+			started := decodeTaskEvent(t, <-events)
+			if started.TaskID != test.status.SessionID || started.SessionID != test.status.SessionID || started.ParentSessionID != test.status.ParentSession || started.Kind != "agent" || started.Agent != test.status.Agent {
+				t.Fatalf("start = %#v", started)
+			}
 
-	publishChildLifecycle(live, agent.ChildLifecycleEvent{Kind: agent.ChildLifecycleFinished, Task: agent.Status{SessionID: "child", ParentSession: "parent", Agent: "explore", State: agent.StatusFailed, Error: "boom"}})
-	finished := decodeTaskEvent(t, <-parentEvents)
-	if finished.TaskID != "child" || finished.SessionID != "child" || finished.Status != "failed" || finished.Error != "boom" {
-		t.Fatalf("finished = %#v", finished)
+			test.status.State, test.status.Error = agent.StatusFailed, "boom"
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleFinished, Task: test.status})
+			finished := decodeTaskEvent(t, <-events)
+			if finished.TaskID != test.status.SessionID || finished.SessionID != test.status.SessionID || finished.Status != "failed" || finished.Error != "boom" {
+				t.Fatalf("finished = %#v", finished)
+			}
+		})
 	}
 }
 

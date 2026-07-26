@@ -136,6 +136,7 @@ type agentSession struct {
 	status                 Status
 	turn                   *turnState
 	turnPolicy             turnPolicy
+	turnEvents             turnEvents
 	managedTask            bool
 	childCreations         int
 	removed                bool
@@ -147,10 +148,6 @@ type agentSession struct {
 	execute                func(context.Context) error
 	maxChildPromptBytes    int
 	maxChildResultBytes    int
-	observeChildProgress   func(string, func(ChildProgress)) func()
-	onChildProgress        func(Status)
-	onChildComplete        func(Status)
-	onChildLifecycle       func(ChildLifecycleEvent)
 }
 
 func newAgentSession(
@@ -165,9 +162,7 @@ func newAgentSession(
 	maxConcurrentChildTurns int,
 	observers []LifecycleObserver,
 	maxChildPromptBytes, maxChildResultBytes int,
-	observeChildProgress func(string, func(ChildProgress)) func(),
-	onChildProgress, onChildComplete func(Status),
-	onChildLifecycle func(ChildLifecycleEvent),
+	events turnEvents,
 ) *agentSession {
 	status := Status{SessionID: dto.ID, RootSession: dto.ID, Agent: dto.Agent, Provider: dto.Provider, Model: dto.Model, Variant: dto.Variant, Name: dto.Name, State: StatusIdle}
 	if parent != nil {
@@ -179,10 +174,8 @@ func newAgentSession(
 	}
 	return &agentSession{
 		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, queueMonitor: queueMonitor, config: config,
-		status: status, turnPolicy: ordinaryTurnPolicy{}, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
+		status: status, turnPolicy: ordinaryTurnPolicy{}, turnEvents: events, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
 		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
-		observeChildProgress: observeChildProgress, onChildProgress: onChildProgress,
-		onChildComplete: onChildComplete, onChildLifecycle: onChildLifecycle,
 	}
 }
 

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/id"
@@ -53,26 +54,55 @@ type turnPolicy interface {
 	TryAcquire() (func(), bool, error)
 	Acquire(context.Context) (func(), error)
 	CapturesOutput() bool
-	Started(Status)
-	Working(Status, func(ChildProgress)) func()
 	Finished(Status, string, error, bool) (string, error, bool)
-	Published(Status)
+}
+
+type turnEvents interface {
+	Started(Status)
+	Working(string, Status, func(ChildProgress)) func()
+	Progress(Status)
+	Finished(Status)
 	Completed(Status)
 }
 
+type noopTurnEvents struct{}
+
+func (noopTurnEvents) Started(Status)                                     {}
+func (noopTurnEvents) Working(string, Status, func(ChildProgress)) func() { return func() {} }
+func (noopTurnEvents) Progress(Status)                                    {}
+func (noopTurnEvents) Finished(Status)                                    {}
+func (noopTurnEvents) Completed(Status)                                   {}
+
+type callbackTurnEvents struct {
+	observe   func(string, func(ChildProgress)) func()
+	progress  func(Status)
+	complete  func(Status)
+	lifecycle func(TurnLifecycleEvent)
+}
+
+func (e callbackTurnEvents) Started(status Status) {
+	e.lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleStart, Task: status})
+}
+func (e callbackTurnEvents) Working(sessionID string, status Status, report func(ChildProgress)) func() {
+	e.lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleWorking, Task: status})
+	return e.observe(sessionID, report)
+}
+func (e callbackTurnEvents) Progress(status Status) { e.progress(status) }
+func (e callbackTurnEvents) Finished(status Status) {
+	e.lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleFinished, Task: status})
+	e.progress(status)
+}
+func (e callbackTurnEvents) Completed(status Status) { e.complete(status) }
+
 type ordinaryTurnPolicy struct{}
 
-func (ordinaryTurnPolicy) Validate(string) error                      { return nil }
-func (ordinaryTurnPolicy) TryAcquire() (func(), bool, error)          { return nil, false, nil }
-func (ordinaryTurnPolicy) Acquire(context.Context) (func(), error)    { return nil, nil }
-func (ordinaryTurnPolicy) CapturesOutput() bool                       { return false }
-func (ordinaryTurnPolicy) Started(Status)                             {}
-func (ordinaryTurnPolicy) Working(Status, func(ChildProgress)) func() { return func() {} }
+func (ordinaryTurnPolicy) Validate(string) error                   { return nil }
+func (ordinaryTurnPolicy) TryAcquire() (func(), bool, error)       { return nil, false, nil }
+func (ordinaryTurnPolicy) Acquire(context.Context) (func(), error) { return nil, nil }
+func (ordinaryTurnPolicy) CapturesOutput() bool                    { return false }
 func (ordinaryTurnPolicy) Finished(_ Status, output string, err error, _ bool) (string, error, bool) {
 	return output, err, false
 }
-func (ordinaryTurnPolicy) Published(Status) {}
-func (ordinaryTurnPolicy) Completed(Status) {}
 
 // AgentSession is the runtime for one persisted agent session. It owns both
 // execution and the synchronization which ensures only one execution lifecycle
@@ -343,7 +373,7 @@ func (s *agentSession) startTurn(state *turnState) {
 		go s.finishTurn(state, "", context.Canceled)
 		return
 	}
-	s.effectiveTurnPolicy().Started(task)
+	s.turnEvents.Started(task)
 	if status == StatusBlocked {
 		go s.waitForTurnPermit(state)
 	} else {
@@ -567,7 +597,7 @@ func (s *agentSession) runTurn(state *turnState) {
 	}
 	s.started()
 	policy := s.effectiveTurnPolicy()
-	stop := policy.Working(s.Status(), func(progress ChildProgress) { s.reportTurnProgress(state, progress) })
+	stop := s.turnEvents.Working(s.ID(), s.Status(), func(progress ChildProgress) { s.reportTurnProgress(state, progress) })
 	var err error
 	for {
 		if s.execute != nil {
@@ -630,12 +660,12 @@ func (s *agentSession) finishTurn(state *turnState, output string, runErr error)
 		state.releaseQuota = nil
 	}
 	s.mu.Unlock()
-	policy.Published(state.result)
+	s.turnEvents.Finished(state.result)
 	s.mu.Lock()
 	state.status = status
 	close(state.done)
 	s.mu.Unlock()
-	policy.Completed(state.result)
+	s.turnEvents.Completed(state.result)
 	s.completed(runErr)
 }
 
@@ -653,4 +683,73 @@ func (s *agentSession) completed(err error) {
 			observer.LifecycleComplete(s.dto.ID, err)
 		}
 	}
+}
+
+func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (AgentSession, error) {
+	if s.user == nil {
+		return nil, ErrChildNotFound
+	}
+	return s.user.CreateChild(ctx, s, request)
+}
+
+func (s *agentSession) tryAcquireWorkerQuota() (func(), error) {
+	release, blocked, err := s.tryAcquireWorkerQuotaWait()
+	if err != nil {
+		return nil, err
+	}
+	if blocked {
+		return nil, ErrChildConcurrency
+	}
+	return release, nil
+}
+
+func (s *agentSession) tryAcquireWorkerQuotaWait() (func(), bool, error) {
+	if s.user == nil || s.parent == nil {
+		return nil, false, ErrChildNotFound
+	}
+	parent, ok := s.parent.(*agentSession)
+	if !ok || parent == nil {
+		return nil, false, ErrChildNotFound
+	}
+	parentPermit, ok := parent.childTurns.tryAcquire()
+	if !ok {
+		return nil, true, nil
+	}
+	globalRelease, err := s.user.TryAcquireWorkerQuota()
+	if errors.Is(err, ErrChildConcurrency) {
+		parentPermit.Release()
+		return nil, true, nil
+	}
+	if err != nil {
+		parentPermit.Release()
+		return nil, false, err
+	}
+	var once sync.Once
+	return func() { once.Do(func() { parentPermit.Release(); globalRelease() }) }, false, nil
+}
+
+func (s *agentSession) statusSnapshot() Status {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return cloneStatus(s.status)
+}
+
+func (s *agentSession) reportTurnProgress(turn *turnState, progress ChildProgress) {
+	if progress.ToolUses < 0 || progress.Usage.InputTokens < 0 || progress.Usage.OutputTokens < 0 || progress.Usage.TotalTokens < 0 || progress.Usage.ReasoningTokens < 0 || progress.Usage.CachedInputTokens < 0 {
+		return
+	}
+	s.mu.Lock()
+	if turn == nil || s.turn != turn || turn.status != StatusRunning {
+		s.mu.Unlock()
+		return
+	}
+	s.status.Usage.InputTokens += progress.Usage.InputTokens
+	s.status.Usage.OutputTokens += progress.Usage.OutputTokens
+	s.status.Usage.TotalTokens += progress.Usage.TotalTokens
+	s.status.Usage.ReasoningTokens += progress.Usage.ReasoningTokens
+	s.status.Usage.CachedInputTokens += progress.Usage.CachedInputTokens
+	s.status.ToolUses += progress.ToolUses
+	task := cloneStatus(s.status)
+	s.mu.Unlock()
+	s.turnEvents.Progress(task)
 }

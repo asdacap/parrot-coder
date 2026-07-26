@@ -272,7 +272,7 @@ func TestAgentSessionConcurrentResumeJoinsLifecycle(t *testing.T) {
 	var mu sync.Mutex
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	session := &agentSession{dto: session.AgentSessionDto{ID: "same"}, execute: func(context.Context) error {
+	session := &agentSession{dto: session.AgentSessionDto{ID: "same"}, turnEvents: noopTurnEvents{}, execute: func(context.Context) error {
 		mu.Lock()
 		calls++
 		if calls == 1 {

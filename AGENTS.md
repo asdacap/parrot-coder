@@ -22,3 +22,4 @@
 - Do not directly update database outside the relevant runtime domain model. EG: Do not add message history database manually outside of AgentSession.
 - Do not put dependency in a config struct. Pass it in the struct directly in the constructor so method does not go through config to get dependency.
 - Calling a method is better than hooking up a mutable state and a callback and then doing the whole orchestration of making the mutable state in sync. Just call a method from the original source when you need it.
+- Prefer noop than nil.

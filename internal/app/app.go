@@ -517,16 +517,16 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			return profile.RecursionLimit
 		},
 		ChildTasks: tasks, ProjectID: info.ID, DefaultSelection: defaultSelection,
-		ObserveChildProgress: func(sessionID string, report func(agent.ChildProgress)) func() {
+		ObserveTurnProgress: func(sessionID string, report func(agent.ChildProgress)) func() {
 			return live.ObserveTransient(sessionID, func(item v1.Event) { reportChildEvent(report, item) })
 		},
-		OnChildComplete: notifications.Notify,
-		OnChildProgress: func(task agent.Status) {
+		OnTurnComplete: notifications.Notify,
+		OnTurnProgress: func(task agent.Status) {
 			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
-			live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
+			live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: turnEventSession(task), TaskID: task.SessionID, Data: data})
 		},
-		OnChildLifecycle: func(item agent.ChildLifecycleEvent) { publishChildLifecycle(live, item) },
-		OnChildDiscard:   live.ForgetSession,
+		OnTurnLifecycle: func(item agent.TurnLifecycleEvent) { publishTurnLifecycle(live, item) },
+		OnChildDiscard:  live.ForgetSession,
 	}, reporter)
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
@@ -1227,7 +1227,7 @@ func (o childSessionObserver) ChildCreated(child agent.ChildSession) {
 	o.events.ObserveSession(child.SessionID)
 }
 
-// publishChildLifecycle publishes one flat task lifecycle event for an agent
+// publishTurnLifecycle publishes one flat task lifecycle event for an agent
 // task on its parent session's stream.
 type managedTaskController struct{ tasks *managedtask.Manager }
 
@@ -1247,18 +1247,25 @@ func (c *managedTaskController) WaitKind(ctx context.Context, callerSession, id 
 	return c.tasks.WaitKind(ctx, callerSession, id, kind)
 }
 
-func publishChildLifecycle(live *event.Broker, item agent.ChildLifecycleEvent) {
+func turnEventSession(task agent.Status) string {
+	if task.ParentSession != "" {
+		return task.ParentSession
+	}
+	return task.SessionID
+}
+
+func publishTurnLifecycle(live *event.Broker, item agent.TurnLifecycleEvent) {
 	task := item.Task
 	payload := v1.TaskEvent{TaskID: task.SessionID, SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
 	eventType := ""
 	switch item.Kind {
-	case agent.ChildLifecycleStart:
+	case agent.TurnLifecycleStart:
 		eventType = managedtask.EventStart
-	case agent.ChildLifecycleWorking:
+	case agent.TurnLifecycleWorking:
 		eventType = managedtask.EventWorking
-	case agent.ChildLifecycleIdle:
+	case agent.TurnLifecycleIdle:
 		eventType = managedtask.EventIdle
-	case agent.ChildLifecycleFinished:
+	case agent.TurnLifecycleFinished:
 		eventType = managedtask.EventFinished
 		payload.Status = string(task.State)
 		payload.Error = task.Error
@@ -1266,7 +1273,7 @@ func publishChildLifecycle(live *event.Broker, item agent.ChildLifecycleEvent) {
 		return
 	}
 	data, _ := json.Marshal(payload)
-	live.PublishEvent(v1.Event{Type: eventType, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
+	live.PublishEvent(v1.Event{Type: eventType, SessionID: turnEventSession(task), TaskID: task.SessionID, Data: data})
 }
 
 func reportChildEvent(report func(agent.ChildProgress), item v1.Event) {

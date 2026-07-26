@@ -719,6 +719,94 @@ func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 }
 
+func TestAgentSessionEmitsTurnEventsUniformly(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		managed bool
+	}{
+		{name: "ordinary session"},
+		{name: "managed child", managed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+				return events(
+					protocol.Event{Type: protocol.EventTextDelta, Text: "answer"},
+					protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+				), nil
+			}}
+			h := newRunnerHarness(t, fake, nil)
+			var mu sync.Mutex
+			events := make([]string, 0, 8)
+			completed := make(chan Status, 1)
+			record := func(event string) {
+				mu.Lock()
+				events = append(events, event)
+				mu.Unlock()
+			}
+			observe := func(sessionID string, report func(ChildProgress)) func() {
+				record("observe:" + sessionID)
+				report(ChildProgress{Usage: ChildUsage{InputTokens: 1, TotalTokens: 1}, ToolUses: 1})
+				return func() { record("stop:" + sessionID) }
+			}
+			progress := func(status Status) { record("progress:" + string(status.State)) }
+			complete := func(status Status) {
+				record("complete:" + string(status.State))
+				completed <- status
+			}
+			lifecycle := func(event TurnLifecycleEvent) { record("lifecycle:" + event.Kind) }
+			h.agentSessions.config.ObserveTurnProgress = observe
+			h.agentSessions.config.OnTurnProgress = progress
+			h.agentSessions.config.OnTurnComplete = complete
+			h.agentSessions.config.OnTurnLifecycle = lifecycle
+
+			root := mustGetAgentSession(t, h.agentSessions, h.sessionID).(*agentSession)
+			root.turnEvents = callbackTurnEvents{observe: observe, progress: progress, complete: complete, lifecycle: lifecycle}
+			var subject AgentSession = root
+			var err error
+			if test.managed {
+				subject, err = root.CreateChild(t.Context(), ChildRequest{Prompt: "child", Agent: BuildID, Name: "uniform-events"})
+			} else {
+				_, err = root.Send(t.Context(), "msg_uniform_events", "root")
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation, err := subject.Observe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := observation.Wait(t.Context())
+			if err != nil || result.State != StatusSucceeded || result.Usage.InputTokens != 1 || result.ToolUses != 1 {
+				t.Fatalf("turn result = %#v, %v", result, err)
+			}
+			select {
+			case status := <-completed:
+				if status.SessionID != subject.ID() || status.State != StatusSucceeded {
+					t.Fatalf("completion = %#v", status)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("completion callback was not invoked")
+			}
+			mu.Lock()
+			got := append([]string(nil), events...)
+			mu.Unlock()
+			want := []string{
+				"lifecycle:start",
+				"lifecycle:working",
+				"observe:" + subject.ID(),
+				"progress:running",
+				"stop:" + subject.ID(),
+				"lifecycle:finished",
+				"progress:succeeded",
+				"complete:succeeded",
+			}
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("events = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
 func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})

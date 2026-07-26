@@ -13,6 +13,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
+	petname "github.com/dustinkirkland/golang-petname"
 )
 
 var (
@@ -77,10 +78,10 @@ type UserSessionConfig struct {
 	ChildTasks                       *managedtask.Manager
 	ProjectID                        string
 	DefaultSelection                 session.Selection
-	ObserveChildProgress             func(sessionID string, report func(ChildProgress)) func()
-	OnChildProgress                  func(Status)
-	OnChildComplete                  func(Status)
-	OnChildLifecycle                 func(ChildLifecycleEvent)
+	ObserveTurnProgress              func(sessionID string, report func(ChildProgress)) func()
+	OnTurnProgress                   func(Status)
+	OnTurnComplete                   func(Status)
+	OnTurnLifecycle                  func(TurnLifecycleEvent)
 	OnChildDiscard                   func(string)
 }
 
@@ -578,22 +579,23 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		systemContext                            SystemContextPrompt
 		queueMonitor                             QueueMonitor
 		maxChildPromptBytes, maxChildResultBytes int
-		observeChildProgress                     func(string, func(ChildProgress)) func()
-		onChildProgress, onChildComplete         func(Status)
-		onChildLifecycle                         func(ChildLifecycleEvent)
+		events                                   turnEvents = noopTurnEvents{}
 	)
 	if r.user != nil {
 		user = r.user
 		systemContext = r.user.systemContext
 		queueMonitor = r.user.queueMonitor
 		maxChildPromptBytes, maxChildResultBytes = r.user.config.MaxChildPromptBytes, r.user.config.MaxChildResultBytes
-		observeChildProgress = r.user.config.ObserveChildProgress
-		onChildProgress, onChildComplete = r.user.config.OnChildProgress, r.user.config.OnChildComplete
-		onChildLifecycle = r.user.config.OnChildLifecycle
+		events = callbackTurnEvents{
+			observe:   r.user.config.ObserveTurnProgress,
+			progress:  r.user.config.OnTurnProgress,
+			complete:  r.user.config.OnTurnComplete,
+			lifecycle: r.user.config.OnTurnLifecycle,
+		}
 	}
 	candidate := newAgentSession(
 		dto, parent, user, r, store, systemContext, queueMonitor, r.config, r.maxConcurrentChildTurns, r.observers,
-		maxChildPromptBytes, maxChildResultBytes, observeChildProgress, onChildProgress, onChildComplete, onChildLifecycle,
+		maxChildPromptBytes, maxChildResultBytes, events,
 	)
 	if parent != nil {
 		boundParent := parent.(*agentSession)
@@ -614,12 +616,6 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 				var once sync.Once
 				return func() { once.Do(func() { parentPermit.Release(); globalPermit.Release() }) }, nil
 			},
-			onProgress:  onChildProgress,
-			onComplete:  onChildComplete,
-			onLifecycle: onChildLifecycle,
-		}
-		if observeChildProgress != nil {
-			policy.observe = func(report func(ChildProgress)) func() { return observeChildProgress(dto.ID, report) }
 		}
 		candidate.turnPolicy = policy
 	}
@@ -794,4 +790,159 @@ func (r *agentSessionRepository) Remove(sessionID string) error {
 		r.mu.Unlock()
 		return nil
 	})
+}
+
+func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, request ChildRequest) (AgentSession, error) {
+	s, ok := parent.(*agentSession)
+	if !ok || s == nil {
+		return nil, errors.New("agent: child parent runtime is not owned by this user session")
+	}
+	if err := s.reserveChildCreation(); err != nil {
+		return nil, err
+	}
+	defer s.releaseChildCreation()
+
+	owned, ok := user.repository.Lookup(s.ID())
+	if !ok || owned != parent {
+		return nil, errors.New("agent: child parent runtime is not owned by this user session")
+	}
+	user.childMu.Lock()
+	defer user.childMu.Unlock()
+	user.quotaMu.Lock()
+	closed := user.closed
+	user.quotaMu.Unlock()
+	if closed {
+		return nil, ErrUserSessionClosed
+	}
+
+	s.mu.Lock()
+	lineage := append(append([]string(nil), s.status.Lineage...), s.status.Agent)
+	s.mu.Unlock()
+	if err := user.validateChild(s.ID(), lineage, request); err != nil {
+		return nil, err
+	}
+	name := user.uniqueChildName(request)
+	request.Name = name
+	child, err := user.repository.CreateChild(ctx, s, ChildSessionRequest{ProjectID: user.config.ProjectID, Name: name, Agent: request.Agent, Model: request.Model, DefaultSelection: user.config.DefaultSelection})
+	if err != nil {
+		return nil, err
+	}
+	created := child.(*agentSession)
+	messageID, err := id.New("msg")
+	var turn *turnState
+	if err == nil {
+		_, turn, err = created.admitAndStart(ctx, messageID, request.Prompt, request.Prompt, true, false)
+	}
+	if err != nil {
+		return nil, errors.Join(err, user.discardChild(context.WithoutCancel(ctx), child.ID()))
+	}
+	created.mu.Lock()
+	created.managedTask = true
+	created.mu.Unlock()
+	if err := user.registerChild(created); err != nil {
+		created.mu.Lock()
+		created.managedTask = false
+		created.mu.Unlock()
+		created.abortTurn(turn)
+		return nil, errors.Join(err, user.discardChild(context.WithoutCancel(ctx), child.ID()))
+	}
+	created.startTurn(turn)
+	return child, nil
+}
+
+func (s *userSession) validateChild(parent string, lineage []string, request ChildRequest) error {
+	if strings.TrimSpace(parent) == "" || strings.TrimSpace(request.Prompt) == "" || !validChildAgent(request.Agent) {
+		return ErrInvalidChildRequest
+	}
+	if len(request.Prompt) > s.config.MaxChildPromptBytes {
+		return ErrChildRequestLimit
+	}
+	if len(lineage) > s.config.MaxChildDepth {
+		return ErrChildDepth
+	}
+	identity := s.childAgentIdentity(request.Agent)
+	recursions := 1
+	for _, ancestor := range lineage {
+		if !validChildAgent(ancestor) {
+			return ErrInvalidChildRequest
+		}
+		if s.childAgentIdentity(ancestor) == identity {
+			recursions++
+		}
+	}
+	if recursions > s.childRecursionLimit(identity) {
+		return ErrChildRecursion
+	}
+	if s.repository.ManagedChildTasks() >= s.config.MaxChildTasks {
+		return ErrChildTaskLimit
+	}
+	return nil
+}
+
+func (s *userSession) discardChild(ctx context.Context, sessionID string) error {
+	if err := s.repository.DiscardChild(ctx, sessionID); err != nil {
+		return err
+	}
+	if s.config.OnChildDiscard != nil {
+		s.config.OnChildDiscard(sessionID)
+	}
+	return nil
+}
+
+func (s *userSession) registerChild(child *agentSession) error {
+	if s.config.ChildTasks == nil {
+		return nil
+	}
+	return s.config.ChildTasks.Register(managedChildTask{child}, func(caller string) bool { return s.childVisible(caller, child.ID()) })
+}
+
+func (s *userSession) childVisible(caller, target string) bool {
+	current := target
+	for {
+		parent, ok := s.repository.ChildRelation(current)
+		if !ok {
+			return false
+		}
+		if parent == caller {
+			return true
+		}
+		current = parent
+	}
+}
+
+func (s *userSession) uniqueChildName(request ChildRequest) string {
+	name := managedtask.SanitizeName(request.Name)
+	if name == "" {
+		generated := petname.Generate(2, "-")
+		if s.config.ChildNameGenerator != nil {
+			generated = s.config.ChildNameGenerator()
+		}
+		name = managedtask.SanitizeName(request.Agent + "-" + generated)
+	}
+	return managedtask.UniqueName(name, func(candidate string) bool {
+		for _, relation := range s.repository.children {
+			if child, ok := s.repository.Lookup(relation.SessionID); ok && child.Name() == candidate {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+func (s *userSession) childAgentIdentity(id string) string {
+	if s.config.ChildAgentIdentity != nil {
+		if identity := s.config.ChildAgentIdentity(id); identity != "" {
+			return identity
+		}
+	}
+	return id
+}
+
+func (s *userSession) childRecursionLimit(id string) int {
+	if s.config.ChildAgentRecursionLimit != nil {
+		if limit := s.config.ChildAgentRecursionLimit(id); limit > 0 {
+			return limit
+		}
+	}
+	return 3
 }

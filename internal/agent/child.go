@@ -70,13 +70,13 @@ func turnActive(status AgentStatus) bool {
 }
 
 const (
-	ChildLifecycleStart    = "start"
-	ChildLifecycleWorking  = "working"
-	ChildLifecycleIdle     = "idle"
-	ChildLifecycleFinished = "finished"
+	TurnLifecycleStart    = "start"
+	TurnLifecycleWorking  = "working"
+	TurnLifecycleIdle     = "idle"
+	TurnLifecycleFinished = "finished"
 )
 
-type ChildLifecycleEvent struct {
+type TurnLifecycleEvent struct {
 	Kind string
 	Task Status
 }
