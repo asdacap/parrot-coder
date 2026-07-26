@@ -137,8 +137,8 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	}
 
 	for name, description := range map[string]string{
-		"task_interrupt":   interrupt.Description(),
-		"task_list_active": list.Description(),
+		"task_interrupt":   interrupt.Descriptor().Description,
+		"task_list_active": list.Descriptor().Description,
 	} {
 		contract := strings.ToLower(description)
 		if !strings.Contains(contract, "process") || !strings.Contains(contract, "session") {
@@ -153,7 +153,7 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 		{kind: managedtask.KindShell, identifier: "process"},
 	} {
 		item := &WaitTool{Kind: test.kind}
-		if description := strings.ToLower(item.Description()); !strings.Contains(description, test.identifier) {
+		if description := strings.ToLower(item.Descriptor().Description); !strings.Contains(description, test.identifier) {
 			t.Errorf("%s description = %q", item.ID(), description)
 		}
 		if schema := strings.ToLower(string(item.JSONSchema())); !strings.Contains(schema, test.identifier) {

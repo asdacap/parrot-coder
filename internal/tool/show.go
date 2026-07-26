@@ -27,8 +27,13 @@ func (*ShowTool) ID() string { return "show" }
 func (*ShowTool) Presentation() Presentation {
 	return Presentation{Muted: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"path"}}}}}
 }
-func (*ShowTool) Description() string {
-	return "Display a bounded line range from a text file as source code. Relative paths resolve within the workspace."
+func (t *ShowTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Display a bounded line range from a text file as source code. Relative paths resolve within the workspace.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (*ShowTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input readInput

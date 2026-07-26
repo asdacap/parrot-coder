@@ -51,12 +51,14 @@ func (*ExecCommandTool) Presentation() Presentation {
 	}
 }
 
-func (*ExecCommandTool) Description() string {
-	return "Runs a command in a PTY, returning output or a task ID for ongoing interaction."
-}
-
-func (*ExecCommandTool) SystemPromptGuidance() string {
-	return `exec_command runs in a sandbox by default (current_security_context). Directories outside the workspace that lack write permission appear as if they are mounted read-only — the sandbox intercepts writes and returns "Read-only file system" even though the underlying mount is writable. Use request_write_permission to grant session-scoped write access to a specific path, or set sandbox_permissions to "disable_sandbox" (requires justification and user approval) to bypass the sandbox entirely.`
+func (t *ExecCommandTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:                   t.ID(),
+		Description:          "Runs a command in a PTY, returning output or a task ID for ongoing interaction.",
+		Schema:               t.JSONSchema(),
+		Presentation:         t.Presentation(),
+		SystemPromptGuidance: `exec_command runs in a sandbox by default (current_security_context). Directories outside the workspace that lack write permission appear as if they are mounted read-only — the sandbox intercepts writes and returns "Read-only file system" even though the underlying mount is writable. Use request_write_permission to grant session-scoped write access to a specific path, or set sandbox_permissions to "disable_sandbox" (requires justification and user approval) to bypass the sandbox entirely.`,
+	}
 }
 
 func (*ExecCommandTool) JSONSchema() json.RawMessage { return json.RawMessage(execCommandSchema) }

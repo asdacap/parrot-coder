@@ -20,16 +20,17 @@ func (*SkillTool) Presentation() Presentation {
 	return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"name"}}}}}
 }
 
-func (t *SkillTool) Description() string {
+func (t *SkillTool) Descriptor() Descriptor {
 	items := t.Registry.List()
 	names := make([]string, 0, len(items))
 	for _, item := range items {
 		names = append(names, item.Name+": "+item.Description)
 	}
-	if len(names) == 0 {
-		return "Load the exact body and execution metadata of a discovered skill."
+	description := "Load the exact body and execution metadata of a discovered skill."
+	if len(names) > 0 {
+		description += " Available skills: " + strings.Join(names, "; ")
 	}
-	return "Load the exact body and execution metadata of a discovered skill. Available skills: " + strings.Join(names, "; ")
+	return Descriptor{ID: t.ID(), Description: description, Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
 func (*SkillTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input struct {

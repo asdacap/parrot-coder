@@ -65,7 +65,7 @@ func (t *AgentTool) ID() string { return t.Kind }
 func (t *AgentTool) Descriptor() Descriptor { return AgentDescriptor(t.Kind) }
 
 func AgentDescriptor(kind string) Descriptor {
-	descriptor := Descriptor{ID: kind, SystemPromptGuidance: ""}
+	descriptor := Descriptor{ID: kind}
 	switch kind {
 	case agentSpawnID:
 		descriptor.Description = "Start a reusable child agent in an isolated session and return its session ID immediately. The final result will automatically be sent to the caller when the child agent finishes."
@@ -84,7 +84,6 @@ func AgentDescriptor(kind string) Descriptor {
 }
 
 func (t *AgentTool) Presentation() Presentation { return t.Descriptor().Presentation }
-func (t *AgentTool) Description() string        { return t.Descriptor().Description }
 
 func (t *AgentTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	input, err := decodeAgentInput(raw)

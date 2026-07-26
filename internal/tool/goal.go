@@ -16,8 +16,8 @@ type GetGoalTool struct {
 
 func NewGetGoalTool(service *session.GoalService) *GetGoalTool { return &GetGoalTool{Service: service} }
 func (*GetGoalTool) ID() string                                { return "get_goal" }
-func (*GetGoalTool) Description() string {
-	return "Get the current goal for this session, including status, budget, usage, and remaining tokens."
+func (t *GetGoalTool) Descriptor() Descriptor {
+	return Descriptor{ID: t.ID(), Description: "Get the current goal for this session, including status, budget, usage, and remaining tokens.", Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
 func (*GetGoalTool) DescribeRequest(json.RawMessage) (string, error) {
 	return "Get the current goal", nil
@@ -57,8 +57,8 @@ func NewCreateGoalTool(service *session.GoalService) *CreateGoalTool {
 	return &CreateGoalTool{Service: service}
 }
 func (*CreateGoalTool) ID() string { return "create_goal" }
-func (*CreateGoalTool) Description() string {
-	return "Create a goal only when explicitly requested by the user or system. Fails while an unfinished goal exists; omit token_budget unless explicitly requested."
+func (t *CreateGoalTool) Descriptor() Descriptor {
+	return Descriptor{ID: t.ID(), Description: "Create a goal only when explicitly requested by the user or system. Fails while an unfinished goal exists; omit token_budget unless explicitly requested.", Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
 func (*CreateGoalTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input createGoalInput
@@ -102,8 +102,8 @@ func NewUpdateGoalTool(service *session.GoalService) *UpdateGoalTool {
 	return &UpdateGoalTool{Service: service}
 }
 func (*UpdateGoalTool) ID() string { return "update_goal" }
-func (*UpdateGoalTool) Description() string {
-	return "Mark the current goal complete only when achieved, or blocked only after the same blocking condition recurs for at least three consecutive goal turns. Pause, resume, and limit statuses are user/system controlled."
+func (t *UpdateGoalTool) Descriptor() Descriptor {
+	return Descriptor{ID: t.ID(), Description: "Mark the current goal complete only when achieved, or blocked only after the same blocking condition recurs for at least three consecutive goal turns. Pause, resume, and limit statuses are user/system controlled.", Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
 func (*UpdateGoalTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input updateGoalInput

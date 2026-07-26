@@ -150,7 +150,7 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 		t.Fatalf("apply_patch schema is not OpenCode-compatible: %s", schema)
 	}
 	for _, documentation := range []string{"line-ending agnostic", "matched-location line ending", "UTF-8 BOM"} {
-		if !strings.Contains(tool.Description()+schema, documentation) {
+		if !strings.Contains(tool.Descriptor().Description+schema, documentation) {
 			t.Fatalf("apply_patch documentation is missing %q", documentation)
 		}
 	}

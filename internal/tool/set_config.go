@@ -41,8 +41,13 @@ func (*SetConfigTool) PermissionChoices() []permission.Choice {
 	}
 }
 
-func (*SetConfigTool) Description() string {
-	return "Set, delete, append to, or remove from a configuration value in the global parrot.yaml file. Operates on one key at a time. Always triggers a permission dialog."
+func (t *SetConfigTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Set, delete, append to, or remove from a configuration value in the global parrot.yaml file. Operates on one key at a time. Always triggers a permission dialog.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 
 func (*SetConfigTool) JSONSchema() json.RawMessage {

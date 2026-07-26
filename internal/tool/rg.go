@@ -70,8 +70,13 @@ func (*RgTool) Presentation() Presentation {
 	}
 }
 
-func (*RgTool) Description() string {
-	return "Search text files for a fixed string. Relative paths resolve within the workspace; include optionally filters files with a glob. Uses the rg CLI when available and falls back to an internal Go search."
+func (t *RgTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Search text files for a fixed string. Relative paths resolve within the workspace; include optionally filters files with a glob. Uses the rg CLI when available and falls back to an internal Go search.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (*RgTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input rgInput

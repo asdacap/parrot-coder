@@ -39,11 +39,12 @@ func (t *TaskTool) Presentation() Presentation {
 	}
 	return Presentation{}
 }
-func (t *TaskTool) Description() string {
+func (t *TaskTool) Descriptor() Descriptor {
+	description := "List active shell processes and child agent sessions visible to the current session. Returned task_id values are process IDs for shells and child session IDs for agents."
 	if t.Kind == "task_interrupt" {
-		return "Interrupt a running shell process or child agent session by canonical ID or friendly name. Agent sessions are retained for follow-up messages."
+		description = "Interrupt a running shell process or child agent session by canonical ID or friendly name. Agent sessions are retained for follow-up messages."
 	}
-	return "List active shell processes and child agent sessions visible to the current session. Returned task_id values are process IDs for shells and child session IDs for agents."
+	return Descriptor{ID: t.ID(), Description: description, Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
 
 func (t *TaskTool) DescribeRequest(raw json.RawMessage) (string, error) {
@@ -145,11 +146,12 @@ func (t *WaitTool) identifier(input waitInput) string {
 	return input.ProcessID
 }
 
-func (t *WaitTool) Description() string {
+func (t *WaitTool) Descriptor() Descriptor {
+	description := "Wait for a shell process to complete, yielding if the requested period elapses. process_id accepts the canonical process ID or friendly name. Waiting never stops the process."
 	if t.Kind == managedtask.KindAgent {
-		return "Wait for a child agent session to complete, yielding if the requested period elapses. session_id accepts the canonical child session ID or friendly name. Waiting never stops the agent."
+		description = "Wait for a child agent session to complete, yielding if the requested period elapses. session_id accepts the canonical child session ID or friendly name. Waiting never stops the agent."
 	}
-	return "Wait for a shell process to complete, yielding if the requested period elapses. process_id accepts the canonical process ID or friendly name. Waiting never stops the process."
+	return Descriptor{ID: t.ID(), Description: description, Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
 
 func (t *WaitTool) Presentation() Presentation {

@@ -15,8 +15,10 @@ type TodoReadTool struct {
 func NewTodoReadTool(service *session.TodoService) *TodoReadTool {
 	return &TodoReadTool{Service: service}
 }
-func (*TodoReadTool) ID() string          { return "todoread" }
-func (*TodoReadTool) Description() string { return "Read the current session's ordered todo list." }
+func (*TodoReadTool) ID() string { return "todoread" }
+func (t *TodoReadTool) Descriptor() Descriptor {
+	return Descriptor{ID: t.ID(), Description: "Read the current session's ordered todo list.", Schema: t.JSONSchema(), Presentation: t.Presentation()}
+}
 func (*TodoReadTool) DescribeRequest(json.RawMessage) (string, error) {
 	return "Read the current todo list", nil
 }

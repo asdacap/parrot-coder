@@ -254,7 +254,8 @@ func (p Providers) Materialize(state AgentSession) (Snapshot, error) {
 		if availability, ok := unwrapTool(created).(SessionAvailability); ok && !availability.Available(state) {
 			continue
 		}
-		if created.ID() != descriptor.ID || created.Description() != descriptor.Description || !bytes.Equal(created.JSONSchema(), descriptor.Schema) || !reflect.DeepEqual(created.Presentation(), descriptor.Presentation) || created.SystemPromptGuidance() != descriptor.SystemPromptGuidance {
+		createdDescriptor := created.Descriptor()
+		if created.ID() != descriptor.ID || createdDescriptor.Description != descriptor.Description || !bytes.Equal(created.JSONSchema(), descriptor.Schema) || !reflect.DeepEqual(created.Presentation(), descriptor.Presentation) || createdDescriptor.SystemPromptGuidance != descriptor.SystemPromptGuidance {
 			return Snapshot{}, fmt.Errorf("tool: provider %s returned inconsistent tool", descriptor.ID)
 		}
 		tools[descriptor.ID] = created
@@ -262,12 +263,7 @@ func (p Providers) Materialize(state AgentSession) (Snapshot, error) {
 	return Snapshot{tools: tools, definitions: definitions(tools)}, nil
 }
 
-func DescriptorOf(t Tool) Descriptor {
-	if descriptor := t.Descriptor(); descriptor.ID != "" {
-		return descriptor.clone()
-	}
-	return Descriptor{ID: t.ID(), Description: t.Description(), Schema: append(json.RawMessage(nil), t.JSONSchema()...), Presentation: t.Presentation().clone(), SystemPromptGuidance: t.SystemPromptGuidance()}
-}
+func DescriptorOf(t Tool) Descriptor { return t.Descriptor().clone() }
 
 func descriptorDefinitions(descriptors []Descriptor) []Definition {
 	out := make([]Definition, 0, len(descriptors))
@@ -281,7 +277,6 @@ func descriptorDefinitions(descriptors []Descriptor) []Definition {
 type Tool interface {
 	Descriptor() Descriptor
 	ID() string
-	Description() string
 	// DescribeRequest decodes this tool's parameters and returns concise,
 	// human-readable permission context for the invocation. Implementations must
 	// not generically serialize the JSON input or expose credentials and secret
@@ -292,11 +287,6 @@ type Tool interface {
 	// what a tool does rather than on which tool it is. Embed BasePresentation
 	// for the neutral default.
 	Presentation() Presentation
-	// SystemPromptGuidance returns extra text injected into the system prompt
-	// to explain this tool's runtime behavior beyond its schema. Return "" to
-	// opt out; only non-empty guidance is included. Embed BasePresentation for
-	// the neutral default.
-	SystemPromptGuidance() string
 	Plan(context.Context, json.RawMessage, CallContext) (Plan, error)
 	Execute(context.Context, Plan, CallContext) (Result, error)
 }
@@ -426,7 +416,7 @@ func (s Snapshot) Presentations() []PresentationEntry {
 func (s Snapshot) SystemPromptGuidance() string {
 	var entries []string
 	for _, t := range s.tools {
-		if g := t.SystemPromptGuidance(); g != "" {
+		if g := t.Descriptor().SystemPromptGuidance; g != "" {
 			entries = append(entries, g)
 		}
 	}
@@ -437,7 +427,7 @@ func (s Snapshot) SystemPromptGuidance() string {
 func definitions(tools map[string]Tool) []Definition {
 	out := make([]Definition, 0, len(tools))
 	for _, t := range tools {
-		out = append(out, Definition{ID: t.ID(), Description: t.Description(), Schema: append(json.RawMessage(nil), t.JSONSchema()...)})
+		out = append(out, Definition{ID: t.ID(), Description: t.Descriptor().Description, Schema: append(json.RawMessage(nil), t.JSONSchema()...)})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

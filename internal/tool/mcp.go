@@ -41,8 +41,13 @@ func NewMCPTool(caller MCPCaller, definition mcp.ToolDefinition) (*MCPTool, erro
 	return &MCPTool{definition: definition, caller: caller, schema: schema}, nil
 }
 func (t *MCPTool) ID() string { return t.definition.Name }
-func (t *MCPTool) Description() string {
-	return fmt.Sprintf("MCP tool %s/%s. %s", t.definition.Server, t.definition.Tool, t.definition.Description)
+func (t *MCPTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  fmt.Sprintf("MCP tool %s/%s. %s", t.definition.Server, t.definition.Tool, t.definition.Description),
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (t *MCPTool) DescribeRequest(json.RawMessage) (string, error) {
 	return fmt.Sprintf("Call MCP tool %s/%s", t.definition.Server, t.definition.Tool), nil
