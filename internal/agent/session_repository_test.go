@@ -245,15 +245,6 @@ func TestAgentSessionRepositoryChildHierarchy(t *testing.T) {
 	if !slices.Equal(children, want) {
 		t.Fatalf("ChildSessions = %#v, want %#v", children, want)
 	}
-	if err := repository.ForgetChild("child-a"); err != nil {
-		t.Fatal(err)
-	}
-	if err := repository.ForgetChild("missing"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := repository.ChildRelation("child-a"); ok {
-		t.Fatal("child relation was not forgotten")
-	}
 }
 
 func TestAgentSessionConcurrentResumeJoinsLifecycle(t *testing.T) {

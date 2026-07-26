@@ -59,7 +59,6 @@ type UserSession interface {
 	Shutdown(context.Context) error
 	CreateChild(context.Context, AgentSession, ChildRequest) (AgentSession, error)
 	TryAcquireWorkerQuota() (func(), error)
-	forgetChild(*agentSession) error
 }
 
 type UserSessionConfig struct {
@@ -422,27 +421,6 @@ func (r *agentSessionRepository) ManagedChildTasks() int {
 		}
 	}
 	return count
-}
-
-// ForgetChild removes the retained child runtime and its relationship.
-func (r *agentSessionRepository) ForgetChild(sessionID string) error {
-	r.mu.Lock()
-	runtime := r.sessions[sessionID]
-	r.mu.Unlock()
-	remove := func() error {
-		r.mu.Lock()
-		if r.sessions[sessionID] == runtime {
-			delete(r.sessions, sessionID)
-		}
-		delete(r.children, sessionID)
-		delete(r.dtos, sessionID)
-		r.mu.Unlock()
-		return nil
-	}
-	if runtime == nil {
-		return remove()
-	}
-	return runtime.removeIfIdle(remove)
 }
 
 // DiscardChild removes a child runtime, relationship, and durable session when

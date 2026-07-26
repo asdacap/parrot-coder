@@ -673,15 +673,6 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 			t.Fatalf("ResolveChild(%q) = %#v, %v", identifier, resolved, err)
 		}
 	}
-	if err := nested.(*agentSession).forget(); err != nil {
-		t.Fatal(err)
-	}
-	if err := child.(*agentSession).forget(); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := parent.ResolveChild(child.ID()); !errors.Is(err, ErrChildNotFound) {
-		t.Fatalf("ResolveChild after Forget = %v", err)
-	}
 }
 
 func TestAgentToolSessionResolvesDirectParentAndDescendantsOnly(t *testing.T) {
@@ -1123,42 +1114,6 @@ func TestRemoveIsAtomicWithIdleSessionAdmission(t *testing.T) {
 	default:
 		close(release)
 		t.Fatalf("Send=%v Remove=%v", sendErr, removeErr)
-	}
-}
-
-func TestForgetAndRemoveDoNotDeadlock(t *testing.T) {
-	for range 100 {
-		fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
-			return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
-		}}
-		h := newRunnerHarness(t, fake, nil)
-		parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
-		child, err := parent.CreateChild(context.Background(), ChildRequest{Prompt: "done", Agent: BuildID, Name: "forget"})
-		if err != nil {
-			t.Fatal(err)
-		}
-		observation, err := child.Observe()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if _, err := observation.Wait(context.Background()); err != nil {
-			t.Fatal(err)
-		}
-		start := make(chan struct{})
-		results := make(chan error, 2)
-		go func() { <-start; results <- child.(*agentSession).forget() }()
-		go func() { <-start; results <- h.agentSessions.Remove(child.ID()) }()
-		close(start)
-		for range 2 {
-			select {
-			case err := <-results:
-				if err != nil && !errors.Is(err, ErrChildNotFound) {
-					t.Fatal(err)
-				}
-			case <-time.After(time.Second):
-				t.Fatal("Forget and Remove deadlocked")
-			}
-		}
 	}
 }
 

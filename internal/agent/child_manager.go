@@ -294,40 +294,6 @@ func (o childObserver) Wait(ctx context.Context) (Status, error) {
 	}
 }
 
-func (s *agentSession) forget() error {
-	if s.user == nil {
-		return ErrChildNotFound
-	}
-	return s.user.forgetChild(s)
-}
-
-func (user *userSession) forgetChild(s *agentSession) error {
-	s.childOp.Lock()
-	defer s.childOp.Unlock()
-	user.childMu.Lock()
-	defer user.childMu.Unlock()
-	s.mu.Lock()
-	if s.child == nil {
-		s.mu.Unlock()
-		return ErrChildNotFound
-	}
-	if s.child.status.State == StatusRunning || s.child.status.State == StatusPending {
-		s.mu.Unlock()
-		return ErrChildRunning
-	}
-	s.mu.Unlock()
-	if user.repository.HasChildSessions(s.ID()) {
-		return errors.New("agent: cannot forget an agent with retained children")
-	}
-	if err := user.repository.ForgetChild(s.ID()); err != nil {
-		return err
-	}
-	if user.config.ChildTasks != nil {
-		user.config.ChildTasks.Unregister(s.ID())
-	}
-	return nil
-}
-
 func (s *userSession) discardChild(ctx context.Context, sessionID string) error {
 	if err := s.repository.DiscardChild(ctx, sessionID); err != nil {
 		return err
