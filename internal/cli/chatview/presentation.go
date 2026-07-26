@@ -103,6 +103,29 @@ func (p Presentations) EnrichLabelInput(name string, input map[string]any, resul
 	return out
 }
 
+// CompletedLabel appends a declared result-line count to the invocation label.
+func (p Presentations) CompletedLabel(name string, input map[string]any, result string) string {
+	label := p.Label(name, input)
+	noun := p.For(name).ResultCountNoun
+	if noun == "" {
+		return label
+	}
+	count := 0
+	for _, line := range strings.Split(strings.TrimSpace(result), "\n") {
+		if strings.TrimSpace(line) != "" {
+			count++
+		}
+	}
+	if count != 1 {
+		if strings.HasSuffix(noun, "s") || strings.HasSuffix(noun, "x") || strings.HasSuffix(noun, "z") || strings.HasSuffix(noun, "ch") || strings.HasSuffix(noun, "sh") {
+			noun += "es"
+		} else {
+			noun += "s"
+		}
+	}
+	return fmt.Sprintf("%s · %d %s", label, count, noun)
+}
+
 // Label summarises an invocation from its input, following the strategy the
 // tool declared. A tool this client does not know falls back to the generic
 // label, which inspects field names rather than tool identity.

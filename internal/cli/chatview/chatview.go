@@ -1490,8 +1490,12 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	if call.stream == ToolOutputNone {
 		errorText, block = "", ""
 	}
+	label := t.Presentation.Label(call.name, call.input)
+	if status == "success" {
+		label = t.Presentation.CompletedLabel(call.name, call.input, result)
+	}
 	return StreamToolReport{
-		Line: StreamToolStatus(status, errorText), Label: t.Presentation.Label(call.name, call.input), Block: block, BlockKind: blockKind,
+		Line: StreamToolStatus(status, errorText), Label: label, Block: block, BlockKind: blockKind,
 		Terminal: terminalEvent, Hidden: !terminalEvent && t.Presentation.TerminalOnly(call.name), LiveOnly: call.liveOnly, Style: style,
 	}
 }

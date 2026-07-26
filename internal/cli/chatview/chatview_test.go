@@ -47,6 +47,27 @@ func TestCompletedInputPresentation(t *testing.T) {
 	}
 }
 
+func TestResultCountPresentationUpdatesCompletedLabel(t *testing.T) {
+	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "search", Presentation: v1.ToolPresentation{
+			Label:           v1.ToolLabel{Fields: []v1.ToolLabelPart{{Names: []string{"pattern"}, Quote: true}}},
+			ResultCountNoun: "match",
+		},
+	}}})
+	tracker := StreamToolTracker{Presentation: presentations}
+	pending := tracker.DescribeReport(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"call","name":"search","input":{"pattern":"needle"}}`)})
+	success := tracker.DescribeReport(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"call","result":"one\ntwo\n"}`)})
+	if pending.Label != `search · "needle"` || success.Label != `search · "needle" · 2 matches` {
+		t.Fatalf("result count labels: pending=%q success=%q", pending.Label, success.Label)
+	}
+
+	tracker.DescribeReport(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"empty","name":"search","input":{"pattern":"absent"}}`)})
+	empty := tracker.DescribeReport(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"empty","result":""}`)})
+	if empty.Label != `search · "absent" · 0 matches` {
+		t.Fatalf("empty result label = %q", empty.Label)
+	}
+}
+
 func TestDiffPresentationPreservesRawResultThroughTaskReports(t *testing.T) {
 	tracker := NewTaskTracker()
 	startMainTask(tracker)

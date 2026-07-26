@@ -91,6 +91,14 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 			}
 		}
 	}
+	if terminalEvent && status == "success" {
+		for i := range r.activity {
+			if r.activity[i].id == callID {
+				r.activity[i].label = presentation.CompletedLabel(r.activity[i].toolName, r.activity[i].input, result)
+				break
+			}
+		}
+	}
 	if terminalEvent && status == "success" && strings.TrimSpace(result) != "" {
 		for i := range r.activity {
 			if r.activity[i].id != callID {

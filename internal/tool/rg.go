@@ -62,7 +62,8 @@ func NewRgTool(c RgConfig) *RgTool {
 func (*RgTool) ID() string { return "rg" }
 func (*RgTool) Presentation() Presentation {
 	return Presentation{
-		Muted: true,
+		Muted:           true,
+		ResultCountNoun: "match",
 		Label: LabelSpec{Fields: []LabelField{
 			{Names: []string{"pattern"}, Quote: true},
 			{Names: []string{"path"}, Default: "."},

@@ -730,7 +730,7 @@ func toolPresentationDTO(presentation tool.Presentation) v1.ToolPresentation {
 			Prefix: presentation.Label.Prefix, Noun: presentation.Label.Noun,
 		},
 		Redact: presentation.Redact, Muted: presentation.Muted,
-		Result: string(presentation.Result), Output: string(presentation.Output), Failure: string(presentation.Failure),
+		Result: string(presentation.Result), ResultCountNoun: presentation.ResultCountNoun, Output: string(presentation.Output), Failure: string(presentation.Failure),
 		Subagent: presentation.Subagent, Modeline: presentation.Modeline, LiveOnly: presentation.LiveOnly, LabelInPermission: presentation.LabelInPermission,
 		CompletedInput: v1.ToolCompletedInput{
 			Fields: presentation.CompletedInput.Fields, TerminalOnly: presentation.CompletedInput.TerminalOnly,

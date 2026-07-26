@@ -14,6 +14,9 @@ type Presentation struct {
 	Muted bool `json:"muted,omitempty"`
 	// Result selects how a successful result body is rendered, if at all.
 	Result ResultRender `json:"result,omitempty"`
+	// ResultCountNoun appends the number of non-empty result lines to the
+	// completed label, using this value as the singular noun.
+	ResultCountNoun string `json:"result_count_noun,omitempty"`
 	// Output describes how streamed output is handled. OutputNone folds two
 	// concerns deliberately: it suppresses both streamed deltas and error text,
 	// because both follow from a tool having nothing displayable to show.
