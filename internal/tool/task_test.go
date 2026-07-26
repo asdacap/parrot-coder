@@ -71,6 +71,58 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 	}
 }
 
+func TestWaitTaskYieldsForNewAndPendingSteer(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		kind managedtask.Kind
+		raw  string
+	}{
+		{name: "agent", kind: managedtask.KindAgent, raw: `{"session_id":"task_agent"}`},
+		{name: "process", kind: managedtask.KindShell, raw: `{"process_id":"proc_test"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			started := make(chan struct{}, 1)
+			controller := &recordingTaskController{wait: func(ctx context.Context, _, taskID string, kind managedtask.Kind) (managedtask.Result, error) {
+				started <- struct{}{}
+				<-ctx.Done()
+				return managedtask.Result{ID: taskID, Kind: kind, Status: "running"}, ctx.Err()
+			}}
+			item := &WaitTool{Kind: test.kind, Controller: controller}
+			plan, err := item.Plan(context.Background(), json.RawMessage(test.raw), CallContext{SessionID: "session"})
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			steer := make(chan struct{})
+			done := make(chan Result, 1)
+			go func() {
+				result, executeErr := item.Execute(context.Background(), plan, CallContext{SessionID: "session", Steer: steer})
+				if executeErr != nil {
+					t.Errorf("Execute() error = %v", executeErr)
+				}
+				done <- result
+			}()
+			<-started
+			close(steer)
+			result := <-done
+			if result.Metadata["status"] != "running" || result.Metadata["yielded"] != true {
+				t.Fatalf("new steer result = %s", result.Text)
+			}
+
+			pending := make(chan struct{})
+			close(pending)
+			result, err = item.Execute(context.Background(), plan, CallContext{SessionID: "session", Steer: pending})
+			if err != nil {
+				t.Fatal(err)
+			}
+			<-started
+			if result.Metadata["status"] != "running" || result.Metadata["yielded"] != true {
+				t.Fatalf("pending steer result = %s", result.Text)
+			}
+		})
+	}
+}
+
 func TestWaitTaskRejectsInvalidRequestsAndPropagatesCancellation(t *testing.T) {
 	controller := &recordingTaskController{wait: func(ctx context.Context, _, _ string, _ managedtask.Kind) (managedtask.Result, error) {
 		<-ctx.Done()

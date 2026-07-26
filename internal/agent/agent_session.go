@@ -89,16 +89,21 @@ type Active struct {
 	Status    AgentStatus
 }
 
+var noSteerSignal <-chan struct{} = make(chan struct{})
+
 type turnState struct {
-	ctx          context.Context
-	cancel       context.CancelFunc
-	done         chan struct{}
-	wake         bool
-	status       AgentStatus
-	err          error
-	messageID    string
-	result       Status
-	releaseQuota func()
+	ctx           context.Context
+	cancel        context.CancelFunc
+	done          chan struct{}
+	wake          bool
+	steer         chan struct{}
+	steerSignaled bool
+	steerSequence int64
+	status        AgentStatus
+	err           error
+	messageID     string
+	result        Status
+	releaseQuota  func()
 }
 
 type TurnWorkingEvent struct {
@@ -326,6 +331,7 @@ retry:
 		admission, err := s.admitLocked(ctx, messageID, content)
 		if err == nil && admission.Created {
 			s.turn.wake = true
+			s.signalSteerLocked(s.turn, admission.Input.AdmittedSequence)
 		}
 		state := s.turn
 		s.mu.Unlock()
@@ -511,13 +517,42 @@ func (s *agentSession) interruptExecution(ctx context.Context) error {
 	return s.wait(ctx, state)
 }
 
+func (s *agentSession) signalSteerLocked(state *turnState, sequence int64) {
+	if sequence > state.steerSequence {
+		state.steerSequence = sequence
+	}
+	if !state.steerSignaled {
+		close(state.steer)
+		state.steerSignaled = true
+	}
+}
+
+func (s *agentSession) acknowledgeSteers(cutoff int64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if state := s.turn; state != nil && state.steerSignaled && state.steerSequence <= cutoff {
+		state.steer = make(chan struct{})
+		state.steerSignaled = false
+		state.steerSequence = 0
+	}
+}
+
+func (s *agentSession) steerSignal() <-chan struct{} {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turn == nil {
+		return noSteerSignal
+	}
+	return s.turn.steer
+}
+
 func (s *agentSession) newTurnLocked(messageID string, release func(), blocked bool) *turnState {
 	ctx, cancel := context.WithCancel(context.Background())
 	status := StatusRunning
 	if blocked {
 		status = StatusBlocked
 	}
-	state := &turnState{ctx: ctx, cancel: cancel, done: make(chan struct{}), status: status, messageID: messageID, releaseQuota: release}
+	state := &turnState{ctx: ctx, cancel: cancel, done: make(chan struct{}), steer: make(chan struct{}), status: status, messageID: messageID, releaseQuota: release}
 	s.turn = state
 	s.status.Turn++
 	s.status.State, s.status.FinishedAt = status, time.Time{}
@@ -878,6 +913,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if err != nil {
 			return err
 		}
+		r.acknowledgeSteers(cutoff)
 
 		selected, err := r.store.Get(ctx)
 		if err != nil {
@@ -1315,7 +1351,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 			if r.taskIDFor != nil {
 				taskID = r.taskIDFor(r.dto.ID)
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.workspace, Outputs: r.outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile)}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.workspace, Outputs: r.outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile), Steer: r.steerSignal()}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {
