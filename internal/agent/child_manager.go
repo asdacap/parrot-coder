@@ -7,6 +7,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	petname "github.com/dustinkirkland/golang-petname"
 )
@@ -24,6 +26,8 @@ type childTurnState struct {
 	done         chan struct{}
 	result       Status
 	releaseQuota func()
+	drain        *drainState
+	cutoff       int64
 }
 
 func applyChildDefaults(config *UserSessionConfig) {
@@ -179,7 +183,23 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	if s.observeChildProgress != nil {
 		stop = s.observeChildProgress(s.ID(), s.reportChildProgress)
 	}
-	output, runErr := s.Prompt(turn.ctx, state.request.Prompt)
+	var output string
+	var runErr error
+	if turn.drain == nil {
+		messageID, err := id.New("msg")
+		if err != nil {
+			runErr = err
+		} else {
+			_, drain, cutoff, err := s.startPrompt(turn.ctx, messageID, state.request.Prompt)
+			if err != nil {
+				runErr = err
+			} else {
+				output, runErr = s.awaitPrompt(turn.ctx, drain, cutoff)
+			}
+		}
+	} else {
+		output, runErr = s.awaitPrompt(turn.ctx, turn.drain, turn.cutoff)
+	}
 	stop()
 	turn.cancel()
 	s.childOp.Lock()
@@ -214,12 +234,12 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	}
 }
 
-func (s *agentSession) sendManagedTurn(ctx context.Context, content, measuredContent string) (string, error) {
+func (s *agentSession) sendManagedTurn(ctx context.Context, messageID, content, measuredContent string) (session.Admission, error) {
 	if strings.TrimSpace(measuredContent) == "" {
-		return "", ErrInvalidChildRequest
+		return session.Admission{}, ErrInvalidChildRequest
 	}
 	if len(measuredContent) > s.maxChildPromptBytes {
-		return "", ErrChildRequestLimit
+		return session.Admission{}, ErrChildRequestLimit
 	}
 retry:
 	s.childOp.Lock()
@@ -228,7 +248,7 @@ retry:
 	if state == nil {
 		s.mu.Unlock()
 		s.childOp.Unlock()
-		return "", ErrChildNotFound
+		return session.Admission{}, ErrChildNotFound
 	}
 	if state.status.State == StatusRunning || state.status.State == StatusPending {
 		if s.drain == nil {
@@ -239,33 +259,53 @@ retry:
 			case <-turn.done:
 				goto retry
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return session.Admission{}, ctx.Err()
 			}
 		}
-		messageID, err := s.admitLocked(ctx, content)
-		if err == nil {
+		admission, err := s.admitLocked(ctx, messageID, content)
+		if err == nil && admission.Created {
 			s.drain.wake = true
 		}
 		s.mu.Unlock()
 		s.childOp.Unlock()
-		return messageID, err
+		return admission, err
 	}
 	s.mu.Unlock()
 	defer s.childOp.Unlock()
 	releaseQuota, err := s.tryAcquireWorkerQuota()
 	if err != nil {
-		return "", err
+		return session.Admission{}, err
+	}
+	messages, err := s.store.ListMessages(ctx)
+	if err != nil {
+		releaseQuota()
+		return session.Admission{}, err
+	}
+	var cutoff int64
+	for _, message := range messages {
+		cutoff = max(cutoff, message.Sequence)
 	}
 	s.mu.Lock()
 	if s.removed {
 		s.mu.Unlock()
 		releaseQuota()
-		return "", ErrAgentSessionRemoved
+		return session.Admission{}, ErrAgentSessionRemoved
 	}
 	if s.shuttingDown {
 		s.mu.Unlock()
 		releaseQuota()
-		return "", ErrUserSessionClosed
+		return session.Admission{}, ErrUserSessionClosed
+	}
+	admission, err := s.admitLocked(ctx, messageID, content)
+	if err != nil {
+		s.mu.Unlock()
+		releaseQuota()
+		return session.Admission{}, err
+	}
+	if !admission.Created {
+		s.mu.Unlock()
+		releaseQuota()
+		return admission, nil
 	}
 	state.status.Turn++
 	state.status.State, state.status.StartedAt, state.status.FinishedAt = StatusRunning, time.Now().UTC(), time.Time{}
@@ -273,11 +313,12 @@ retry:
 	state.status.Usage, state.status.ToolUses = ChildUsage{}, 0
 	state.request = ChildRequest{Prompt: content, Agent: state.status.Agent, Model: state.status.Model, Name: state.status.Name}
 	turnCtx, cancel := context.WithCancel(context.Background())
-	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), releaseQuota: releaseQuota}
+	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), releaseQuota: releaseQuota, cutoff: cutoff}
 	state.turn, state.cancel = turn, cancel
+	turn.drain = s.startOrJoinLocked(true)
 	s.mu.Unlock()
 	go s.runChild(turn)
-	return "", nil
+	return admission, nil
 }
 
 type childObserver struct{ turn *childTurnState }

@@ -41,7 +41,7 @@ type Backend interface {
 	GetGoal(context.Context, string) (v1.Goal, error)
 	PutGoal(context.Context, string, v1.PutGoalRequest) (v1.Goal, error)
 	DeleteGoal(context.Context, string) error
-	AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error)
+	SubmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error)
 	Wake(string)
 	Interrupt(context.Context, string) error
 	OpenEvents(context.Context, string, int64) (*EventStream, error)

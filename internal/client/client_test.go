@@ -84,7 +84,7 @@ func TestInternalErrorRetriesOnlyIdempotentRequests(t *testing.T) {
 	client, _ := New(server.URL, nil)
 	client.retryDelay = func(context.Context, time.Duration) error { return nil }
 
-	accepted, promptErr := client.Prompt(context.Background(), "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "follow_up"})
+	accepted, promptErr := client.Prompt(context.Background(), "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello"})
 	_, createErr := client.CreateSession(context.Background(), v1.CreateSessionRequest{})
 	if promptErr != nil || accepted.MessageID != "msg_test" || attempts["/api/v1/sessions/ses_test/prompts"] != 2 {
 		t.Fatalf("accepted = %#v, attempts = %v, err = %v", accepted, attempts, promptErr)

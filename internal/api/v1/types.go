@@ -157,7 +157,6 @@ type PutGoalRequest struct {
 type PromptRequest struct {
 	MessageID string `json:"message_id"`
 	Content   string `json:"content"`
-	Delivery  string `json:"delivery"`
 }
 
 type PromptAccepted struct {

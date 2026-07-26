@@ -82,7 +82,7 @@ func TestAgentSessionShutdownBlocksRejectsNewTurnsAndHonorsContext(t *testing.T)
 	default:
 		t.Fatal("Shutdown did not cancel the active turn")
 	}
-	if _, err := s.admit(t.Context(), "new"); !errors.Is(err, ErrUserSessionClosed) {
+	if _, err := s.Send(t.Context(), "msg_new", "new"); !errors.Is(err, ErrUserSessionClosed) {
 		t.Fatalf("admit after shutdown error = %v, want %v", err, ErrUserSessionClosed)
 	}
 	close(done)

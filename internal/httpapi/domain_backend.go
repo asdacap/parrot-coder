@@ -328,7 +328,7 @@ func (b *DomainBackend) ListTodos(ctx context.Context, id string) (v1.TodoList, 
 	return out, nil
 }
 
-func (b *DomainBackend) AdmitPrompt(ctx context.Context, id string, request v1.PromptRequest) (v1.PromptAccepted, error) {
+func (b *DomainBackend) SubmitPrompt(ctx context.Context, id string, request v1.PromptRequest) (v1.PromptAccepted, error) {
 	selected, err := b.GetSession(ctx, id)
 	if err != nil {
 		return v1.PromptAccepted{}, err
@@ -340,16 +340,14 @@ func (b *DomainBackend) AdmitPrompt(ctx context.Context, id string, request v1.P
 	if err != nil {
 		return v1.PromptAccepted{}, err
 	}
-	admission, err := runtime.Admit(ctx, session.AdmitParams{MessageID: request.MessageID, Content: request.Content, Delivery: session.Delivery(request.Delivery)})
-	if errors.Is(err, session.ErrInvalidDelivery) {
-		return v1.PromptAccepted{}, ErrInvalid
-	}
+	admission, err := runtime.Send(ctx, request.MessageID, request.Content)
 	if errors.Is(err, session.ErrIdempotencyConflict) {
 		return v1.PromptAccepted{}, ErrIdempotencyConflict
 	}
 	if err != nil {
 		return v1.PromptAccepted{}, err
 	}
+	b.publishRunning(id)
 	return v1.PromptAccepted{InputID: admission.Input.ID, MessageID: admission.Input.MessageID, Delivery: string(admission.Input.Delivery), Status: admission.Input.Status, Created: admission.Created}, nil
 }
 
@@ -362,6 +360,10 @@ func (b *DomainBackend) Wake(id string) {
 		return
 	}
 	runtime.Wake()
+	b.publishRunning(id)
+}
+
+func (b *DomainBackend) publishRunning(id string) {
 	if b.Events != nil {
 		data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 		b.Events.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: id, Data: data})

@@ -7,13 +7,15 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
 type notificationSession struct{ messages chan string }
 
-func (s *notificationSession) Send(_ context.Context, content string) (string, error) {
+func (s *notificationSession) Send(_ context.Context, _, content string) (session.Admission, error) {
 	s.messages <- content
-	return "", nil
+	return session.Admission{}, nil
 }
 
 type notificationSessions struct{ session AgentSession }

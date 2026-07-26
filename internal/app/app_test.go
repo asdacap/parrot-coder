@@ -214,7 +214,7 @@ providers:
 	if err != nil || connected.Type != v1.EventServerConnected {
 		t.Fatalf("connected = %#v, %v", connected, err)
 	}
-	if _, err := runtime.Client.Prompt(context.Background(), created.ID, v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "steer"}); err != nil {
+	if _, err := runtime.Client.Prompt(context.Background(), created.ID, v1.PromptRequest{MessageID: "msg_test", Content: "hello"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.After(5 * time.Second)
@@ -350,7 +350,7 @@ func TestOpenModelLessCatalogsAndExplicitSessionSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = runtime.Client.Prompt(context.Background(), legacy.ID, v1.PromptRequest{MessageID: "msg_legacy", Content: "hello", Delivery: "steer"})
+	_, err = runtime.Client.Prompt(context.Background(), legacy.ID, v1.PromptRequest{MessageID: "msg_legacy", Content: "hello"})
 	assertAppProblem(t, err, "model_required")
 }
 
@@ -758,7 +758,7 @@ providers:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.Client.Prompt(context.Background(), parent.ID, v1.PromptRequest{MessageID: "msg_parent", Content: "delegate", Delivery: "steer"}); err != nil {
+	if _, err := runtime.Client.Prompt(context.Background(), parent.ID, v1.PromptRequest{MessageID: "msg_parent", Content: "delegate"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
@@ -859,7 +859,7 @@ providers:
 		t.Fatal(err)
 	}
 	parentID.Store(parent.ID)
-	if _, err := runtime.Client.Prompt(context.Background(), parent.ID, v1.PromptRequest{MessageID: "msg_parent_send", Content: "delegate upward report", Delivery: "steer"}); err != nil {
+	if _, err := runtime.Client.Prompt(context.Background(), parent.ID, v1.PromptRequest{MessageID: "msg_parent_send", Content: "delegate upward report"}); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(5 * time.Second)

@@ -25,8 +25,6 @@ import (
 )
 
 type stubBackend struct {
-	mu         sync.Mutex
-	order      []string
 	backendErr error
 	stream     *EventStream
 }
@@ -64,17 +62,10 @@ func (b *stubBackend) PutGoal(context.Context, string, v1.PutGoalRequest) (v1.Go
 	return v1.Goal{ID: "goal_test", SessionID: "ses_test", Objective: "ship it", Status: "active"}, b.backendErr
 }
 func (b *stubBackend) DeleteGoal(context.Context, string) error { return b.backendErr }
-func (b *stubBackend) AdmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error) {
-	b.mu.Lock()
-	b.order = append(b.order, "admit")
-	b.mu.Unlock()
+func (b *stubBackend) SubmitPrompt(context.Context, string, v1.PromptRequest) (v1.PromptAccepted, error) {
 	return v1.PromptAccepted{InputID: "inp_test", MessageID: "msg_test", Delivery: "steer", Status: "pending", Created: true}, b.backendErr
 }
-func (b *stubBackend) Wake(string) {
-	b.mu.Lock()
-	b.order = append(b.order, "wake")
-	b.mu.Unlock()
-}
+func (b *stubBackend) Wake(string)                             {}
 func (b *stubBackend) Interrupt(context.Context, string) error { return b.backendErr }
 func (b *stubBackend) CompactSession(context.Context, string) (v1.Compaction, error) {
 	return v1.Compaction{Status: "skipped", Reason: "no safe history cutoff"}, b.backendErr
@@ -130,7 +121,7 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"GET", "/api/v1/sessions/ses_test/goal", "", 200},
 		{"PUT", "/api/v1/sessions/ses_test/goal", `{"objective":"ship it"}`, 200},
 		{"DELETE", "/api/v1/sessions/ses_test/goal", "", 204},
-		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello","delivery":"steer"}`, 202},
+		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello"}`, 202},
 		{"POST", "/api/v1/sessions/ses_test/interrupt", "", 204},
 		{"POST", "/api/v1/sessions/ses_test/compact", "", 202},
 		{"GET", "/api/v1/sessions/ses_test/permissions", "", 200},
@@ -373,6 +364,13 @@ type testAgentSession struct {
 	id         string
 }
 
+func (s testAgentSession) Send(ctx context.Context, messageID, content string) (session.Admission, error) {
+	admission, err := s.AgentSession.Send(ctx, messageID, content)
+	if err == nil {
+		s.controller.wake(s.id)
+	}
+	return admission, err
+}
 func (s testAgentSession) Wake() { s.controller.wake(s.id) }
 func (s testAgentSession) Resume(context.Context) error {
 	return errors.New("not implemented")
@@ -471,6 +469,32 @@ func (d blockingDrainer) Drain(ctx context.Context, _ string) error {
 	return ctx.Err()
 }
 
+func TestSubmitPromptAdmitsAndWakes(t *testing.T) {
+	backend, sessions := newSelectionBackend(t)
+	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	started := make(chan struct{}, 1)
+	backend.AgentSessions = newTestSessionController(blockingDrainer{started: started}, sessions)
+	created, err := backend.CreateSession(context.Background(), v1.CreateSessionRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	accepted, err := backend.SubmitPrompt(context.Background(), created.ID, v1.PromptRequest{MessageID: "msg_test", Content: "hello"})
+	if err != nil || accepted.MessageID != "msg_test" || accepted.Delivery != "steer" || accepted.Status != "pending" || !accepted.Created {
+		t.Fatalf("SubmitPrompt = %#v, %v", accepted, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("submitted prompt did not wake session")
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = backend.AgentSessions.Interrupt(ctx, created.ID)
+	})
+}
+
 func TestSelectionRejectsActiveSession(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
@@ -556,16 +580,14 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := sessions.Get(created.ID)
+	runtime, err := backend.AgentSessions.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := runtime.Admit(ctx, session.AdmitParams{MessageID: "msg_steer", Content: "queued", Delivery: session.DeliverySteer}); err != nil {
+	if _, err := runtime.Send(ctx, "msg_steer", "queued"); err != nil {
 		t.Fatal(err)
 	}
 
-	runtime, _ = backend.AgentSessions.Get(created.ID)
-	runtime.Wake()
 	select {
 	case <-drainer.started:
 	case <-time.After(time.Second):
@@ -646,23 +668,6 @@ func TestStrictJSONContentTypeAndLimit(t *testing.T) {
 	}
 }
 
-func TestPromptAdmissionPrecedesWake(t *testing.T) {
-	backend := &stubBackend{}
-	server := New(backend, Config{})
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/ses_test/prompts", strings.NewReader(`{"message_id":"msg_test","content":"hello","delivery":"queue"}`))
-	request.Header.Set("Content-Type", v1.MediaTypeJSON)
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
-	if response.Code != http.StatusAccepted {
-		t.Fatalf("status = %d", response.Code)
-	}
-	backend.mu.Lock()
-	defer backend.mu.Unlock()
-	if strings.Join(backend.order, ",") != "admit,wake" {
-		t.Fatalf("order = %v", backend.order)
-	}
-}
-
 func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	ctx := context.Background()
 	db := store.NewRegistry(t.TempDir(), "host-test")
@@ -679,7 +684,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	server := New(&DomainBackend{AgentSessions: newTestSessionController(nil, userSession), Events: event.NewBroker(repository, event.NewTransientRepository())}, Config{})
-	body := `{"message_id":"msg_retry","content":"hello","delivery":"steer"}`
+	body := `{"message_id":"msg_retry","content":"hello"}`
 	for attempt := 0; attempt < 2; attempt++ {
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(body))
 		request.Header.Set("Content-Type", v1.MediaTypeJSON)
@@ -704,7 +709,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 		t.Fatalf("events = %#v", items)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(`{"message_id":"msg_retry","content":"different","delivery":"steer"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(`{"message_id":"msg_retry","content":"different"}`))
 	request.Header.Set("Content-Type", v1.MediaTypeJSON)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -997,7 +1002,7 @@ func TestClientParityNetworkAndInProcess(t *testing.T) {
 			if err != nil || selected.Agent != "plan" || selected.Model != "code" {
 				t.Fatalf("UpdateSessionSelection = %#v, %v", selected, err)
 			}
-			accepted, err := apiClient.Prompt(ctx, "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello", Delivery: "steer"})
+			accepted, err := apiClient.Prompt(ctx, "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello"})
 			if err != nil || accepted.InputID != "inp_test" {
 				t.Fatalf("Prompt = %#v, %v", accepted, err)
 			}

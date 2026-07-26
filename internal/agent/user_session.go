@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
@@ -631,8 +632,16 @@ type agentToolChild struct{ session AgentSession }
 
 func (c agentToolChild) Status() tool.AgentTask { return toolAgentTask(c.session.Status()) }
 func (c agentToolChild) Send(ctx context.Context, message tool.AgentMessage) (tool.AgentTask, string, error) {
-	messageID, err := c.session.SendAgentMessage(ctx, message)
-	return c.Status(), messageID, err
+	messageID, err := id.New("msg")
+	if err != nil {
+		return c.Status(), "", err
+	}
+	runtime, ok := c.session.(*agentSession)
+	if !ok {
+		return c.Status(), "", ErrChildNotFound
+	}
+	admission, err := runtime.send(ctx, messageID, message.String(), message.Content)
+	return c.Status(), admission.Input.MessageID, err
 }
 
 func toolAgentTask(status Status) tool.AgentTask {

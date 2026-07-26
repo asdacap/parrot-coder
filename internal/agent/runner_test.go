@@ -604,8 +604,8 @@ func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 	sent := make(chan sendResult, 1)
 	go func() {
-		messageID, sendErr := child.Send(context.Background(), "follow-up")
-		sent <- sendResult{status: child.Status(), messageID: messageID, err: sendErr}
+		admission, sendErr := child.Send(context.Background(), "msg_follow_up", "follow-up")
+		sent <- sendResult{status: child.Status(), messageID: admission.Input.MessageID, err: sendErr}
 	}()
 	select {
 	case result := <-sent:
@@ -615,7 +615,7 @@ func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 	item.childOp.Unlock()
 	result := <-sent
-	if result.err != nil || result.messageID != "" || result.status.Turn != 2 || result.status.State != StatusRunning {
+	if result.err != nil || result.messageID != "msg_follow_up" || result.status.Turn != 2 || result.status.State != StatusRunning {
 		t.Fatalf("serialized Send = %#v", result)
 	}
 	observation, err := child.Observe()
@@ -678,10 +678,14 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		t.Fatal("child turn did not start")
 	}
 
-	messageID, err := child.Send(context.Background(), "steer")
+	admission, err := child.Send(context.Background(), "msg_steer", "steer")
 	status := child.Status()
-	if err != nil || messageID == "" || status.Turn != 1 || status.State != StatusRunning {
-		t.Fatalf("running Send = %#v, %q, %v", status, messageID, err)
+	if err != nil || admission.Input.MessageID != "msg_steer" || admission.Input.ID == "" || status.Turn != 1 || status.State != StatusRunning {
+		t.Fatalf("running Send = %#v, %#v, %v", status, admission, err)
+	}
+	retry, err := child.Send(context.Background(), "msg_steer", "steer")
+	if err != nil || retry.Created || retry.Input.ID != admission.Input.ID || child.Status().Turn != 1 {
+		t.Fatalf("running Send retry = %#v, %#v, %v", child.Status(), retry, err)
 	}
 	close(release)
 	completed, err := observation.Wait(context.Background())
@@ -690,10 +694,10 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		t.Fatalf("first turn = %#v, status = %#v, %v", completed, status, err)
 	}
 
-	messageID, err = child.Send(context.Background(), "follow-up")
+	admission, err = child.Send(context.Background(), "msg_follow_up", "follow-up")
 	status = child.Status()
-	if err != nil || messageID != "" || status.Turn != 2 || status.State != StatusRunning {
-		t.Fatalf("follow-up Send = %#v, %q, %v", status, messageID, err)
+	if err != nil || admission.Input.MessageID != "msg_follow_up" || admission.Input.ID == "" || status.Turn != 2 || status.State != StatusRunning {
+		t.Fatalf("follow-up Send = %#v, %#v, %v", status, admission, err)
 	}
 	observation, err = child.Observe()
 	if err != nil {
@@ -702,6 +706,10 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	completed, err = observation.Wait(context.Background())
 	if err != nil || completed.Turn != 2 || completed.Output != "answer-follow-up" {
 		t.Fatalf("second turn = %#v, %v", completed, err)
+	}
+	retry, err = child.Send(context.Background(), "msg_follow_up", "follow-up")
+	if err != nil || retry.Created || retry.Input.ID != admission.Input.ID || child.Status().Turn != 2 {
+		t.Fatalf("idle Send retry = %#v, %#v, %v", child.Status(), retry, err)
 	}
 	resolved, err := parent.ResolveChild("inspect")
 	if err != nil || resolved != child {
@@ -789,7 +797,7 @@ func TestAgentToolSessionResolvesDirectParentAndDescendantsOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := send.Execute(context.Background(), plan, call)
-	if err != nil || result.Metadata["message_id"] != nil || result.Metadata["session_id"] != parent.ID() || result.Metadata["status"] != "running" {
+	if err != nil || result.Metadata["message_id"] == nil || result.Metadata["session_id"] != parent.ID() || result.Metadata["status"] != "running" {
 		t.Fatalf("Execute() = %#v, %v", result, err)
 	}
 	observation, err := parent.Observe()
@@ -843,16 +851,16 @@ func TestAgentSessionPromptAndSendOwnAdmissionAndResultHandling(t *testing.T) {
 	if err != nil || result != "answer-initial" {
 		t.Fatalf("Prompt = %q, %v; want answer-initial", result, err)
 	}
-	messageID, err := h.runner.Send(context.Background(), "steer")
-	if err != nil || !strings.HasPrefix(messageID, "msg_") {
-		t.Fatalf("Send = %q, %v; want message ID", messageID, err)
+	admission, err := h.runner.Send(context.Background(), "msg_steer", "steer")
+	if err != nil || admission.Input.MessageID != "msg_steer" || admission.Input.ID == "" {
+		t.Fatalf("Send = %#v, %v; want message and input IDs", admission, err)
 	}
 	if err := h.runner.Resume(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	messages, err := h.sessions.GetSession(h.sessionID).ListMessages(context.Background())
-	if err != nil || messages[len(messages)-1].Content != "answer-steer" {
-		t.Fatalf("last message = %#v, %v; want answer-steer", messages[len(messages)-1], err)
+	if err != nil || messages[len(messages)-1].Content != "answer-steer" || messages[len(messages)-2].ID != admission.Input.MessageID || messages[len(messages)-2].InputID != admission.Input.ID {
+		t.Fatalf("messages = %#v, %v; want returned IDs and answer-steer", messages, err)
 	}
 }
 
@@ -935,7 +943,7 @@ func TestAgentSessionsResolvePersistenceOnceWhenBound(t *testing.T) {
 	}
 	agentSessions := created.(*userSession)
 	parent := mustGetAgentSession(t, agentSessions, h.sessionID)
-	if _, err := parent.(*agentSession).admit(context.Background(), "root input"); err != nil {
+	if _, err := parent.(*agentSession).store.Admit(context.Background(), session.AdmitParams{MessageID: "msg_root", Content: "root input", Delivery: session.DeliverySteer}); err != nil {
 		t.Fatal(err)
 	}
 	child, err := agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{
@@ -945,7 +953,7 @@ func TestAgentSessionsResolvePersistenceOnceWhenBound(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := child.(*agentSession).admit(context.Background(), "child input"); err != nil {
+	if _, err := child.(*agentSession).store.Admit(context.Background(), session.AdmitParams{MessageID: "msg_child", Content: "child input", Delivery: session.DeliverySteer}); err != nil {
 		t.Fatal(err)
 	}
 	lazy, err := h.sessions.CreateSelected(context.Background(), session.CreateParams{
@@ -1141,7 +1149,7 @@ func TestRemoveIsAtomicWithIdleSessionAdmission(t *testing.T) {
 	sendResult := make(chan error, 1)
 	removeResult := make(chan error, 1)
 	go func() {
-		_, err := runtime.Send(context.Background(), "race")
+		_, err := runtime.Send(context.Background(), "msg_race", "race")
 		sendResult <- err
 	}()
 	go func() { removeResult <- h.agentSessions.Remove(h.sessionID) }()
@@ -1329,6 +1337,29 @@ func (h *runnerHarness) admit(t *testing.T, id, content string, delivery session
 	if _, err := h.sessions.GetSession(h.sessionID).Admit(context.Background(), session.AdmitParams{MessageID: id, Content: content, Delivery: delivery}); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestAgentSessionSendStartsExecution(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h.runner.execute = func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}
+
+	admission, err := h.runner.Send(context.Background(), "msg_test", "hello")
+	if err != nil || !admission.Created || admission.Input.MessageID != "msg_test" || admission.Input.Delivery != session.DeliverySteer {
+		t.Fatalf("Send = %#v, %v", admission, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("Send did not start execution")
+	}
+	close(release)
+	waitForAgentSession(t, func() bool { return h.runner.executionStatus() == StatusIdle })
 }
 
 func TestRunnerPersistsStreamedFinalText(t *testing.T) {
