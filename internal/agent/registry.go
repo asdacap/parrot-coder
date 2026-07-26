@@ -4,11 +4,13 @@ package agent
 import (
 	"errors"
 	"fmt"
+	"reflect"
 	"sort"
 	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent/profiles"
 	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 const (
@@ -21,6 +23,10 @@ const (
 )
 
 type Profile = profiles.Profile
+
+func NewProfile(id, prompt string, hardRules []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule, statusProvider status.Provider) Profile {
+	return profiles.New(id, prompt, hardRules, maxTurns, recursionLimit, readOnly, sandboxRules, statusProvider)
+}
 
 // TurnProfile combines a reusable profile with capabilities granted while
 // preparing one session's turn.
@@ -60,7 +66,7 @@ func NewRegistry(profiles ...Profile) (*Registry, error) {
 		}
 	}
 	if _, ok := r.profiles[r.def]; !ok {
-		r.def = r.List()[0].ID
+		r.def = r.List()[0].ID()
 	}
 	return r, nil
 }
@@ -87,17 +93,33 @@ func Subagents() []Profile {
 func (r *Registry) GetProfile(id string) (Profile, error) { return r.Get(id) }
 
 func (r *Registry) Register(profile Profile) error {
-	if profile.ID == "" || profile.Prompt == "" || profile.MaxTurns <= 0 {
+	if nilProfile(profile) {
 		return errors.New("agent: ID, prompt, and positive max turns are required")
 	}
-	profile.HardRules = append([]string(nil), profile.HardRules...)
+	profile = NewProfile(profile.ID(), profile.Prompt(), profile.HardRules(), profile.MaxTurns(), profile.RecursionLimit(), profile.IsReadOnly(), profile.Rules(), profile.Status())
+	if profile.ID() == "" || profile.Prompt() == "" || profile.MaxTurns() <= 0 {
+		return errors.New("agent: ID, prompt, and positive max turns are required")
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if _, exists := r.profiles[profile.ID]; exists {
-		return fmt.Errorf("agent: duplicate profile %q", profile.ID)
+	if _, exists := r.profiles[profile.ID()]; exists {
+		return fmt.Errorf("agent: duplicate profile %q", profile.ID())
 	}
-	r.profiles[profile.ID] = profile
+	r.profiles[profile.ID()] = profile
 	return nil
+}
+
+func nilProfile(profile Profile) bool {
+	if profile == nil {
+		return true
+	}
+	value := reflect.ValueOf(profile)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func (r *Registry) Get(id string) (Profile, error) {
@@ -111,9 +133,8 @@ func (r *Registry) Get(id string) (Profile, error) {
 	}
 	r.mu.RUnlock()
 	if !ok {
-		return Profile{}, fmt.Errorf("agent: unknown profile %q", id)
+		return nil, fmt.Errorf("agent: unknown profile %q", id)
 	}
-	profile.HardRules = append([]string(nil), profile.HardRules...)
 	return profile, nil
 }
 
@@ -121,10 +142,9 @@ func (r *Registry) List() []Profile {
 	r.mu.RLock()
 	result := make([]Profile, 0, len(r.profiles))
 	for _, profile := range r.profiles {
-		profile.HardRules = append([]string(nil), profile.HardRules...)
 		result = append(result, profile)
 	}
 	r.mu.RUnlock()
-	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	sort.Slice(result, func(i, j int) bool { return result[i].ID() < result[j].ID() })
 	return result
 }

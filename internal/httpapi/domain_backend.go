@@ -674,7 +674,7 @@ func (b *DomainBackend) ListAgents(context.Context) (v1.AgentList, error) {
 		return out, nil
 	}
 	for _, profile := range b.Agents.List() {
-		out.Items = append(out.Items, v1.Agent{ID: profile.ID, ReadOnly: profile.ReadOnly, MaxTurns: profile.MaxTurns})
+		out.Items = append(out.Items, v1.Agent{ID: profile.ID(), ReadOnly: profile.IsReadOnly(), MaxTurns: profile.MaxTurns()})
 	}
 	return out, nil
 }
@@ -706,7 +706,7 @@ func (b *DomainBackend) ListModes(context.Context) (v1.ModeList, error) {
 	}
 	for _, item := range b.Modes.List() {
 		profile := item.Profile()
-		entry := v1.Mode{ID: item.ID(), ReadOnly: profile.ReadOnly, MaxTurns: profile.MaxTurns}
+		entry := v1.Mode{ID: item.ID(), ReadOnly: profile.IsReadOnly(), MaxTurns: profile.MaxTurns()}
 		if result := item.OnTurnComplete(); result != (mode.TurnCompleteResult{}) {
 			if raw, err := json.Marshal(result); err == nil {
 				entry.TurnComplete = raw

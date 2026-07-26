@@ -86,8 +86,8 @@ func TestAgentRecursionLimitPolicy(t *testing.T) {
 		if resolveErr != nil {
 			t.Fatal(resolveErr)
 		}
-		if profile.ID != test.identity || profile.RecursionLimit != test.limit {
-			t.Fatalf("policy for %q = identity %q, limit %d", test.id, profile.ID, profile.RecursionLimit)
+		if profile.ID() != test.identity || profile.RecursionLimit() != test.limit {
+			t.Fatalf("policy for %q = identity %q, limit %d", test.id, profile.ID(), profile.RecursionLimit())
 		}
 	}
 }

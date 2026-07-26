@@ -5,8 +5,18 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/amirulashraf/parrot-coder/internal/agent"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 )
+
+type profileWithRules struct {
+	agent.Profile
+	rules []security.Rule
+}
+
+type typedNilModeProfile struct{ agent.Profile }
+
+func (p profileWithRules) Rules() []security.Rule { return append([]security.Rule(nil), p.rules...) }
 
 func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 	r, err := NewRegistry()
@@ -17,11 +27,15 @@ func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 	if len(items) != 3 || items[0].ID() != BuildID || items[1].ID() != PlanID || items[2].ID() != QueryID {
 		t.Fatalf("modes = %#v", items)
 	}
-	if items[0].Profile().ReadOnly || !items[1].Profile().ReadOnly || !items[2].Profile().ReadOnly || items[0].Profile().Status == nil || items[1].Profile().Status == nil || items[2].Profile().Status == nil {
+	if items[0].Profile().IsReadOnly() || !items[1].Profile().IsReadOnly() || !items[2].Profile().IsReadOnly() || items[0].Profile().Status() == nil || items[1].Profile().Status() == nil || items[2].Profile().Status() == nil {
 		t.Fatal("unexpected mode policies")
 	}
 	if _, err := r.Get("explorer"); err == nil {
 		t.Fatal("explorer exposed as foreground mode")
+	}
+	var typedNil *typedNilModeProfile
+	if _, err := NewRegistry(builtin{profile: typedNil}); err == nil {
+		t.Fatal("typed-nil mode profile was accepted")
 	}
 }
 
@@ -35,14 +49,14 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 		t.Fatal(err)
 	}
 	baseRule := security.Rule{Path: "/protected", Action: security.ActionDenyWrite}
-	plan.(*planMode).profile.SandboxRules = []security.Rule{baseRule}
+	plan.(*planMode).profile = profileWithRules{Profile: plan.Profile(), rules: []security.Rule{baseRule}}
 	prepared, err := r.PrepareTurn(PlanID, "session")
 	if err != nil {
 		t.Fatal(err)
 	}
 	profile := prepared.Profile()
 	capabilities := prepared.CapabilityRules()
-	if len(profile.SandboxRules) != 1 || profile.SandboxRules[0] != baseRule || len(capabilities) != 1 || capabilities[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt, "This mode is read-only except for the designated plan file.") {
+	if rules := profile.Rules(); len(rules) != 1 || rules[0] != baseRule || len(capabilities) != 1 || capabilities[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt(), "This mode is read-only except for the designated plan file.") {
 		t.Fatalf("plan profile = %#v, capabilities = %#v", profile, capabilities)
 	}
 	path := capabilities[0].Path
@@ -62,8 +76,8 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	}
 	revisedProfile := revised.Profile()
 	revisedCapabilities := revised.CapabilityRules()
-	if len(revisedProfile.SandboxRules) != 1 || revisedProfile.SandboxRules[0] != baseRule || len(revisedCapabilities) != 1 || revisedCapabilities[0] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
-		t.Fatalf("revised security layers = base %#v, capabilities %#v", revisedProfile.SandboxRules, revisedCapabilities)
+	if rules := revisedProfile.Rules(); len(rules) != 1 || rules[0] != baseRule || len(revisedCapabilities) != 1 || revisedCapabilities[0] != (security.Rule{Path: path, Action: security.ActionAllowWrite}) {
+		t.Fatalf("revised security layers = base %#v, capabilities %#v", revisedProfile.Rules(), revisedCapabilities)
 	}
 	if info, err := os.Stat(path); err != nil || info.Size() != int64(len(existingPlan)) || info.Mode().Perm() != 0o600 {
 		t.Fatalf("revised plan artifact = %#v, %v", info, err)

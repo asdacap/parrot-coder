@@ -184,7 +184,7 @@ type profileStatus struct {
 }
 
 func newProfileStatus(profile Profile) statusinfo.Provider {
-	return profileStatus{prompt: profile.Prompt, hardRules: profile.HardRules, provider: profile.Status}
+	return profileStatus{prompt: profile.Prompt(), hardRules: profile.HardRules(), provider: profile.Status()}
 }
 
 func (s profileStatus) Key() string {

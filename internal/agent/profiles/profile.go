@@ -5,19 +5,49 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
-type Profile struct {
-	ID             string
-	Prompt         string
-	HardRules      []string
-	MaxTurns       int
-	RecursionLimit int
-	ReadOnly       bool
-	SandboxRules   []security.Rule
-	Status         status.Provider
+// Profile describes an agent's instructions, limits, status, and security
+// policy.
+type Profile interface {
+	security.SecurityProfile
+
+	ID() string
+	Prompt() string
+	HardRules() []string
+	MaxTurns() int
+	RecursionLimit() int
+	Status() status.Provider
 }
 
-// IsReadOnly reports whether the profile is read-only.
-func (p Profile) IsReadOnly() bool { return p.ReadOnly }
+type profile struct {
+	id             string
+	prompt         string
+	hardRules      []string
+	maxTurns       int
+	recursionLimit int
+	readOnly       bool
+	sandboxRules   []security.Rule
+	statusProvider status.Provider
+}
 
-// Rules returns the profile's ordered sandbox rules.
-func (p Profile) Rules() []security.Rule { return append([]security.Rule(nil), p.SandboxRules...) }
+// New constructs an immutable Profile.
+func New(id, prompt string, hardRules []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule, statusProvider status.Provider) Profile {
+	return profile{
+		id:             id,
+		prompt:         prompt,
+		hardRules:      append([]string(nil), hardRules...),
+		maxTurns:       maxTurns,
+		recursionLimit: recursionLimit,
+		readOnly:       readOnly,
+		sandboxRules:   append([]security.Rule(nil), sandboxRules...),
+		statusProvider: statusProvider,
+	}
+}
+
+func (p profile) ID() string              { return p.id }
+func (p profile) Prompt() string          { return p.prompt }
+func (p profile) MaxTurns() int           { return p.maxTurns }
+func (p profile) RecursionLimit() int     { return p.recursionLimit }
+func (p profile) IsReadOnly() bool        { return p.readOnly }
+func (p profile) Status() status.Provider { return p.statusProvider }
+func (p profile) HardRules() []string     { return append([]string(nil), p.hardRules...) }
+func (p profile) Rules() []security.Rule  { return append([]security.Rule(nil), p.sandboxRules...) }

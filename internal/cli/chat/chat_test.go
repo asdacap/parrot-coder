@@ -606,7 +606,7 @@ func testModeList(t *testing.T) v1.ModeList {
 	out := v1.ModeList{Items: make([]v1.Mode, len(items))}
 	for i, item := range items {
 		profile := item.Profile()
-		entry := v1.Mode{ID: item.ID(), ReadOnly: profile.ReadOnly, MaxTurns: profile.MaxTurns}
+		entry := v1.Mode{ID: item.ID(), ReadOnly: profile.IsReadOnly(), MaxTurns: profile.MaxTurns()}
 		if result := item.OnTurnComplete(); result != (mode.TurnCompleteResult{}) {
 			raw, err := json.Marshal(result)
 			if err != nil {
