@@ -726,7 +726,7 @@ func TestLiveRendererKeepsStreamingRowAtTopOfCompositeFrame(t *testing.T) {
 		t.Fatal(err)
 	}
 	promotion := output.String()[before:]
-	if !strings.Contains(promotion, "- partial response t\n  hat wraps\n") {
+	if !strings.Contains(promotion, "- partial response\n  that wraps\n") {
 		t.Fatalf("top streaming row was not promoted at the live boundary: %q", promotion)
 	}
 	if len(renderer.rows) == 0 || renderer.rows[0] != "  next" {

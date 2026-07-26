@@ -992,7 +992,7 @@ func writeStreamStatus(options streamOptions, label string, flush bool) error {
 		return err
 	}
 	if flush {
-		return options.renderer.Commit(label)
+		return options.renderer.CommitStyled(terminal.MutedText(label))
 	}
 	return options.renderer.Update([]string{label})
 }
