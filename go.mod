@@ -7,6 +7,7 @@ require (
 	github.com/bluekeyes/go-gitdiff v0.9.0
 	github.com/creack/pty v1.1.24
 	github.com/dustinkirkland/golang-petname v0.0.0-20260215035315-f0c533e9ce9b
+	github.com/tiktoken-go/tokenizer v0.7.0
 	go.yaml.in/yaml/v3 v3.0.4
 	golang.org/x/sys v0.44.0
 	modernc.org/sqlite v1.53.0

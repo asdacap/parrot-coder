@@ -47,6 +47,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
+	"github.com/amirulashraf/parrot-coder/internal/tokenizer"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 	"github.com/amirulashraf/parrot-coder/internal/transport/inproc"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
@@ -374,6 +375,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: commands: %w", err)
 	}
 	result.Skills, result.Commands = skills, commands
+	textTokenizer, err := tokenizer.New()
+	if err != nil {
+		return nil, fmt.Errorf("app: tokenizer: %w", err)
+	}
 	outputs, err := tool.NewOutputStore(tool.OutputConfig{Directory: filepath.Join(paths.State, "session"), PreviewBytes: 32 << 10, PreviewLines: 400})
 	if err != nil {
 		return nil, fmt.Errorf("app: outputs: %w", err)
@@ -381,7 +386,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	result.outputs = outputs
 	changes := change.NewService(change.Config{})
 	tasks := managedtask.NewManager()
-	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs), Tasks: tasks, SandboxRules: convertSandboxRules(loaded.Config.SandboxRules)})
+	processes, err := process.NewRunner(process.Config{Workspace: ws, WorkingDirectory: cwd, OutputStore: tool.NewProcessOutputStore(outputs), Tasks: tasks, SandboxRules: convertSandboxRules(loaded.Config.SandboxRules)}, textTokenizer)
 	if err != nil {
 		return nil, fmt.Errorf("app: process: %w", err)
 	}
@@ -464,7 +469,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	compactionRepository := compaction.NewRepository(sessionStore, repository)
 	compactionService, err := compaction.NewService(compactionRepository,
-		compaction.ProviderSummarizer{Providers: providerRegistry}, compaction.Config{})
+		compaction.ProviderSummarizer{Providers: providerRegistry}, textTokenizer, compaction.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("app: compaction: %w", err)
 	}

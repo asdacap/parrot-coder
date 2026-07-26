@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
@@ -27,6 +26,10 @@ type Summarizer interface {
 	Summarize(context.Context, SummaryRequest) (SummaryResult, error)
 }
 
+type TokenCounter interface {
+	Count(string) (int, error)
+}
+
 type Config struct {
 	ReserveTokens        int
 	TriggerFraction      float64
@@ -35,14 +38,15 @@ type Config struct {
 }
 
 type Service struct {
-	store      Store
-	summarizer Summarizer
-	config     Config
+	store        Store
+	summarizer   Summarizer
+	tokenCounter TokenCounter
+	config       Config
 }
 
-func NewService(store Store, summarizer Summarizer, config Config) (*Service, error) {
-	if store == nil || summarizer == nil {
-		return nil, errors.New("compaction: store and summarizer are required")
+func NewService(store Store, summarizer Summarizer, tokenCounter TokenCounter, config Config) (*Service, error) {
+	if store == nil || summarizer == nil || tokenCounter == nil {
+		return nil, errors.New("compaction: store, summarizer, and token counter are required")
 	}
 	if config.TriggerFraction == 0 {
 		config.TriggerFraction = .8
@@ -56,7 +60,7 @@ func NewService(store Store, summarizer Summarizer, config Config) (*Service, er
 	if config.MaxSummaryInputBytes <= 0 {
 		config.MaxSummaryInputBytes = 2 << 20
 	}
-	return &Service{store: store, summarizer: summarizer, config: config}, nil
+	return &Service{store: store, summarizer: summarizer, tokenCounter: tokenCounter, config: config}, nil
 }
 
 func (s *Service) Compact(ctx context.Context, request Request) (result Result, err error) {
@@ -90,7 +94,10 @@ func (s *Service) Compact(ctx context.Context, request Request) (result Result, 
 	if err != nil {
 		return Result{}, err
 	}
-	plan, reason := s.plan(state, request)
+	plan, reason, err := s.plan(state, request)
+	if err != nil {
+		return Result{}, err
+	}
 	if reason != "" {
 		return Result{Status: "skipped", SourceEpochID: state.Checkpoint.ID, Reason: reason}, nil
 	}
@@ -142,17 +149,20 @@ func (s *Service) Compact(ctx context.Context, request Request) (result Result, 
 	return completedResult(record), nil
 }
 
-func (s *Service) plan(state State, request Request) (Plan, string) {
-	estimate := EstimateRequest(request.Instructions, state.Messages, request.Tools)
+func (s *Service) plan(state State, request Request) (Plan, string, error) {
+	estimate, err := EstimateRequest(s.tokenCounter, request.Instructions, state.Messages, request.Tools)
+	if err != nil {
+		return Plan{}, "", err
+	}
 	usable := request.Model.ContextWindow - request.Model.MaxOutputTokens - s.config.ReserveTokens
 	if usable <= 0 {
 		if !request.Force {
-			return Plan{}, "model has no usable input budget"
+			return Plan{}, "model has no usable input budget", nil
 		}
 	} else {
 		trigger := int(float64(usable) * s.config.TriggerFraction)
 		if !request.Force && estimate.Total() < trigger {
-			return Plan{}, "under budget trigger"
+			return Plan{}, "under budget trigger", nil
 		}
 	}
 	cut, ok := SafeCut(state.Messages, s.config.RecentMessages)
@@ -166,7 +176,7 @@ func (s *Service) plan(state State, request Request) (Plan, string) {
 		cut, ok = SafeCut(state.Messages, 1)
 	}
 	if !ok {
-		return Plan{}, ErrNoSafeCut.Error()
+		return Plan{}, ErrNoSafeCut.Error(), nil
 	}
 	covered := make([]Message, 0, len(state.Messages))
 	for _, message := range state.Messages {
@@ -176,28 +186,29 @@ func (s *Service) plan(state State, request Request) (Plan, string) {
 		covered = append(covered, message)
 	}
 	if len(covered) == 0 {
-		return Plan{}, ErrNoSafeCut.Error()
+		return Plan{}, ErrNoSafeCut.Error(), nil
 	}
-	return Plan{SourceEpochID: state.Checkpoint.ID, CoveredFrom: state.Checkpoint.HistoryCutoff, CoveredTo: covered[len(covered)-1].Sequence, HistoryCutoff: cut, Messages: covered, Estimate: estimate}, ""
+	return Plan{SourceEpochID: state.Checkpoint.ID, CoveredFrom: state.Checkpoint.HistoryCutoff, CoveredTo: covered[len(covered)-1].Sequence, HistoryCutoff: cut, Messages: covered, Estimate: estimate}, "", nil
 }
 
-// HeuristicTextTokens is deterministic and intentionally conservative. It is
-// an accounting heuristic based on UTF-8 bytes and runes, not a tokenizer.
-func HeuristicTextTokens(text string) int {
-	if text == "" {
-		return 0
+func EstimateRequest(tokenCounter TokenCounter, instructions string, messages []Message, tools []protocol.ToolDefinition) (Estimate, error) {
+	instructionTokens, err := tokenCounter.Count(instructions)
+	if err != nil {
+		return Estimate{}, fmt.Errorf("compaction: count instruction tokens: %w", err)
 	}
-	bytes := len(text)
-	runes := utf8.RuneCountInString(text)
-	return (bytes+2)/3 + (runes+3)/4
-}
-
-func EstimateRequest(instructions string, messages []Message, tools []protocol.ToolDefinition) Estimate {
-	estimate := Estimate{HeuristicTokens: HeuristicTextTokens(instructions) + 4}
+	estimate := Estimate{EstimatedTokens: instructionTokens + 4}
 	providerContext, suffixTokens := 0, 0
 	for _, message := range messages {
 		raw, _ := json.Marshal(message.Parts)
-		heuristic := HeuristicTextTokens(message.Content) + HeuristicTextTokens(string(raw)) + 4
+		contentTokens, err := tokenCounter.Count(message.Content)
+		if err != nil {
+			return Estimate{}, fmt.Errorf("compaction: count message content tokens: %w", err)
+		}
+		partTokens, err := tokenCounter.Count(string(raw))
+		if err != nil {
+			return Estimate{}, fmt.Errorf("compaction: count message part tokens: %w", err)
+		}
+		estimated := contentTokens + partTokens + 4
 		measured := 0
 		if message.Role == protocol.RoleAssistant {
 			measured = message.Usage.OutputTokens
@@ -215,17 +226,29 @@ func EstimateRequest(instructions string, messages []Message, tools []protocol.T
 		if measured > 0 {
 			estimate.MeasuredTokens += measured
 		} else {
-			estimate.HeuristicTokens += heuristic
+			estimate.EstimatedTokens += estimated
 		}
 		if providerContext > 0 {
-			suffixTokens += heuristic
+			suffixTokens += estimated
 		}
 	}
 	estimate.ProviderContextTokens = providerContext + suffixTokens
 	for _, definition := range tools {
-		estimate.HeuristicTokens += HeuristicTextTokens(definition.Name) + HeuristicTextTokens(definition.Description) + HeuristicTextTokens(string(definition.InputSchema)) + 8
+		nameTokens, err := tokenCounter.Count(definition.Name)
+		if err != nil {
+			return Estimate{}, fmt.Errorf("compaction: count tool name tokens: %w", err)
+		}
+		descriptionTokens, err := tokenCounter.Count(definition.Description)
+		if err != nil {
+			return Estimate{}, fmt.Errorf("compaction: count tool description tokens: %w", err)
+		}
+		schemaTokens, err := tokenCounter.Count(string(definition.InputSchema))
+		if err != nil {
+			return Estimate{}, fmt.Errorf("compaction: count tool schema tokens: %w", err)
+		}
+		estimate.EstimatedTokens += nameTokens + descriptionTokens + schemaTokens + 8
 	}
-	return estimate
+	return estimate, nil
 }
 
 // SafeCut returns the sequence of the first retained message. It retains at

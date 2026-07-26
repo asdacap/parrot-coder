@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -33,7 +32,7 @@ const (
 	DefaultExecYieldTime  = 10 * time.Second
 	DefaultWriteYieldTime = 250 * time.Millisecond
 	DefaultOutputTokens   = 10_000
-	MaxOutputTokens       = (1 << 20) / 4
+	MaxOutputTokens       = 262_144
 	persistentOutputBytes = 1 << 20
 )
 
@@ -338,7 +337,11 @@ func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
 		waitErr, maxOutputTokens := item.waitErr, item.maxOutputTokens
 		item.mu.Unlock()
 
-		result := r.persistentResult(item, 0, false, maxOutputTokens)
+		result, err := r.persistentResult(item, 0, false, maxOutputTokens)
+		if err != nil {
+			diagnostics.Error("shell_process_output_failed", "session_id", item.sessionID, "process_name", item.name, "error_type", diagnostics.ErrorType(err))
+			result = r.persistentResultFallback(item, 0, false)
+		}
 		content := result.completionNotification(waitErr)
 		sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer sendCancel()
@@ -581,13 +584,13 @@ func (r *Runner) collectPersistent(ctx context.Context, item *persistentProcess,
 	for {
 		select {
 		case <-item.finished:
-			return r.persistentResult(item, time.Since(started), false, maxTokens), nil
+			return r.persistentResult(item, time.Since(started), false, maxTokens)
 		case <-timer.C:
 			select {
 			case <-item.finished:
-				return r.persistentResult(item, time.Since(started), false, maxTokens), nil
+				return r.persistentResult(item, time.Since(started), false, maxTokens)
 			default:
-				return r.persistentResult(item, time.Since(started), true, maxTokens), nil
+				return r.persistentResult(item, time.Since(started), true, maxTokens)
 			}
 		case <-ctx.Done():
 			return PersistentResult{}, ctx.Err()
@@ -616,7 +619,7 @@ func (result PersistentResult) completionNotification(waitErr error) string {
 	return content
 }
 
-func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duration, running bool, maxTokens *int) PersistentResult {
+func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duration, running bool, maxTokens *int) (PersistentResult, error) {
 	item.mu.Lock()
 	output := item.output.drain()
 	exitCode := item.exitCode
@@ -640,32 +643,51 @@ func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duratio
 	}
 
 	if running {
-		result.Output = truncatePersistentOutput(output.text(), maxTokens, tokensForBytes(output.totalBytes()), output.omitted)
-		result.OriginalTokenCount = tokensForBytes(output.totalBytes())
+		text := output.text()
+		truncated, totalTokens, omittedTokens, err := r.tokenizer.TruncateMiddle(text, normalizeOutputTokens(maxTokens))
+		if err != nil {
+			return PersistentResult{}, fmt.Errorf("process: truncate running output: %w", err)
+		}
+		result.Output = formatPersistentOutput(text, truncated, totalTokens, omittedTokens, output.omitted)
+		result.OriginalTokenCount = totalTokens
 		result.OmittedBytes = output.omitted
-		result.Truncated = output.omitted > 0 || maxTokens != nil && result.OriginalTokenCount > normalizeOutputTokens(maxTokens)
+		result.Truncated = output.omitted > 0 || omittedTokens > 0
 		id := item.id
 		result.ProcessID, result.ExitCode = &id, nil
-		return result
+		return result, nil
 	}
 
 	if storeErr != nil {
 		result.Output = fmt.Sprintf("Error storing output: %v", storeErr)
 	} else if storedOutput != nil {
 		result.OutputSize = storedOutput.Size
-		result.OriginalTokenCount = tokensForBytes(int(storedOutput.Size))
-		budget := int64(normalizeOutputTokens(maxTokens) * 4)
-		if budget == 0 {
-			result.Truncated = storedOutput.Size > 0
-		} else {
-			text, truncated, err := r.readStoredOutputTailWithBudget(*storedOutput, budget)
-			if err != nil {
-				result.Output = fmt.Sprintf("Error reading output: %v", err)
-			} else {
-				result.Output = text
-				result.Truncated = truncated
-			}
+		text, readTokens, truncated, err := r.readStoredOutputTail(*storedOutput, normalizeOutputTokens(maxTokens))
+		if err != nil {
+			return PersistentResult{}, err
 		}
+		result.Output = text
+		result.OriginalTokenCount = storedOutput.TokenCount
+		if result.OriginalTokenCount == 0 {
+			result.OriginalTokenCount = readTokens
+		}
+		result.Truncated = truncated
+	}
+	return result, nil
+}
+
+func (r *Runner) persistentResultFallback(item *persistentProcess, wallTime time.Duration, running bool) PersistentResult {
+	item.mu.Lock()
+	output := item.output.drain()
+	exitCode, storedOutput := item.exitCode, item.storedOutput
+	item.mu.Unlock()
+	result := PersistentResult{ChunkID: generateChunkID(), Name: item.name, WallTime: wallTime, ExitCode: exitCode}
+	if running {
+		result.Output, result.OmittedBytes, result.Truncated = output.text(), output.omitted, output.omitted > 0
+		id := item.id
+		result.ProcessID, result.ExitCode = &id, nil
+	} else if storedOutput != nil {
+		result.OutputPath, result.OutputSize = storedOutput.Path, storedOutput.Size
+		result.Truncated = storedOutput.Size > 0
 	}
 	return result
 }
@@ -698,59 +720,20 @@ func normalizeOutputTokens(value *int) int {
 	return max(*value, 0)
 }
 
-func truncatePersistentOutput(text string, requestedTokens *int, originalTokens, omittedBytes int) string {
-	maxTokens := normalizeOutputTokens(requestedTokens)
-	budget := maxTokens * 4
+func formatPersistentOutput(original, truncated string, originalTokens, omittedTokens, omittedBytes int) string {
+	if omittedTokens == 0 {
+		return truncated
+	}
 	if omittedBytes == 0 {
-		if len(text) <= budget {
-			return text
-		}
-		return fmt.Sprintf("Warning: truncated output (original token count: %d)\nTotal output lines: %d\n\n%s", originalTokens, rustLineCount(text), truncateMiddleTokens(text, maxTokens))
+		return fmt.Sprintf("Warning: truncated output (original token count: %d)\nTotal output lines: %d\n\n%s", originalTokens, rustLineCount(original), truncated)
 	}
 	marker := fmt.Sprintf("... %d bytes omitted ...", omittedBytes)
-	if len(text) <= budget {
-		return text
-	}
-	truncated := truncateMiddleTokens(text, maxTokens)
 	if !containsString(truncated, marker) {
 		marker += "\n"
 	} else {
 		marker = ""
 	}
 	return fmt.Sprintf("Warning: truncated output (original token count: %d)\n%s\n%s", originalTokens, marker, truncated)
-}
-
-func truncateMiddleTokens(value string, tokens int) string {
-	budget := tokens * 4
-	if budget > 0 && len(value) <= budget {
-		return value
-	}
-	leftBudget, rightBudget := budget/2, budget-budget/2
-	left := validPrefix(value, leftBudget)
-	right := validSuffix(value, rightBudget)
-	removed := len(value) - len(left) - len(right)
-	return left + fmt.Sprintf("…%d tokens truncated…", tokensForBytes(removed)) + right
-}
-
-func validPrefix(value string, limit int) string {
-	if limit >= len(value) {
-		return value
-	}
-	for limit > 0 && !utf8.ValidString(value[:limit]) {
-		limit--
-	}
-	return value[:limit]
-}
-
-func validSuffix(value string, limit int) string {
-	if limit >= len(value) {
-		return value
-	}
-	start := len(value) - limit
-	for start < len(value) && !utf8.ValidString(value[start:]) {
-		start++
-	}
-	return value[start:]
 }
 
 func rustLineCount(value string) int {
@@ -768,8 +751,6 @@ func rustLineCount(value string) int {
 	}
 	return count
 }
-
-func tokensForBytes(bytes int) int { return int(math.Ceil(float64(bytes) / 4)) }
 
 func generateChunkID() string {
 	var value [3]byte

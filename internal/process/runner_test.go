@@ -21,6 +21,29 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
+type runeTokenizer struct{}
+
+func (runeTokenizer) Count(value string) (int, error) { return utf8.RuneCountInString(value), nil }
+
+func (runeTokenizer) TruncateMiddle(value string, maxTokens int) (string, int, int, error) {
+	runes := []rune(value)
+	total := len(runes)
+	maxTokens = min(max(maxTokens, 0), total)
+	if maxTokens == total {
+		return value, total, 0, nil
+	}
+	left := maxTokens / 2
+	right := maxTokens - left
+	return string(runes[:left]) + "…" + strconv.Itoa(total-maxTokens) + " tokens truncated…" + string(runes[total-right:]), total, total - maxTokens, nil
+}
+
+func (runeTokenizer) TruncateTail(value string, maxTokens int) (string, int, int, error) {
+	runes := []rune(value)
+	total := len(runes)
+	maxTokens = min(max(maxTokens, 0), total)
+	return string(runes[total-maxTokens:]), total, total - maxTokens, nil
+}
+
 type memoryOutputStore struct {
 	data []byte
 	path string
@@ -43,7 +66,7 @@ func (o *memoryManagedOutput) Finalize(context.Context) (StoredOutput, error) {
 	if err := os.WriteFile(o.store.path, o.data, 0o600); err != nil {
 		return StoredOutput{}, err
 	}
-	return StoredOutput{Path: o.store.path, Size: int64(len(o.data))}, nil
+	return StoredOutput{Path: o.store.path, Size: int64(len(o.data)), TokenCount: utf8.RuneCount(o.data)}, nil
 }
 
 func (o *memoryManagedOutput) Discard() {}
@@ -88,7 +111,7 @@ func TestRunnerWritablePathsAreExactAndSessionScoped(t *testing.T) {
 		t.Fatal(err)
 	}
 	sandbox := &recordingSandbox{}
-	runner, err := NewRunner(Config{Workspace: ws, MaxOutputBytes: 1024, OutputStore: &memoryOutputStore{}})
+	runner, err := NewRunner(Config{Workspace: ws, MaxOutputBytes: 1024, OutputStore: &memoryOutputStore{}}, runeTokenizer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -204,7 +227,7 @@ func TestRunnerRejectsWritablePathChangedAfterApproval(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	runner, err := NewRunner(Config{Workspace: ws, OutputStore: &memoryOutputStore{}})
+	runner, err := NewRunner(Config{Workspace: ws, OutputStore: &memoryOutputStore{}}, runeTokenizer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -288,7 +311,7 @@ func testRunner(t *testing.T, config Config) *Runner {
 	} else if store, ok := config.OutputStore.(*memoryOutputStore); ok && store.path == "" {
 		store.path = filepath.Join(root, "output.txt")
 	}
-	runner, err := NewRunner(config)
+	runner, err := NewRunner(config, runeTokenizer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -351,7 +374,7 @@ func TestRunRequiresOutputStore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runner, err := NewRunner(Config{Workspace: ws})
+	runner, err := NewRunner(Config{Workspace: ws}, runeTokenizer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +479,7 @@ func TestStartFailureClosesLargeOutput(t *testing.T) {
 		t.Fatal(err)
 	}
 	store := &recordingStore{done: make(chan struct{})}
-	runner, err := NewRunner(Config{Workspace: ws, OutputStore: store})
+	runner, err := NewRunner(Config{Workspace: ws, OutputStore: store}, runeTokenizer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -776,10 +799,13 @@ func TestPersistentOutputFormattingPreservesHeadTailAndUTF8(t *testing.T) {
 	if !utf8.ValidString(output) || !strings.Contains(output, "bytes omitted") {
 		t.Fatalf("output = %q", output)
 	}
-	tokens := 1
-	truncated := truncatePersistentOutput("abcdefgh", &tokens, 2, 0)
-	if !strings.Contains(truncated, "Warning: truncated output") || !strings.Contains(truncated, "tokens truncated") {
-		t.Fatalf("truncated = %q", truncated)
+	truncated, total, omitted, err := (runeTokenizer{}).TruncateMiddle("abcdefgh", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	formatted := formatPersistentOutput("abcdefgh", truncated, total, omitted, 0)
+	if !strings.Contains(formatted, "Warning: truncated output") || !strings.Contains(formatted, "tokens truncated") {
+		t.Fatalf("truncated = %q", formatted)
 	}
 }
 
@@ -886,7 +912,7 @@ func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.
 		{Path: artifact, Action: security.ActionDenyWrite},
 		{Path: "/secret", Action: security.ActionDenyRead},
 	}
-	runner, err := NewRunner(Config{Workspace: ws, OutputStore: &memoryOutputStore{}, SandboxRules: rules})
+	runner, err := NewRunner(Config{Workspace: ws, OutputStore: &memoryOutputStore{}, SandboxRules: rules}, runeTokenizer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -951,7 +977,7 @@ func TestBuildProfileAppendsSessionProfileRulesAfterConfiguredRestrictions(t *te
 		Workspace:    ws,
 		OutputStore:  &memoryOutputStore{},
 		SandboxRules: []security.Rule{{Path: filepath.Dir(scratch), Action: security.ActionDenyWrite}},
-	})
+	}, runeTokenizer{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -990,7 +1016,7 @@ func TestBuildProfileIncludesSandboxRules(t *testing.T) {
 		OutputStore:  &memoryOutputStore{},
 		SandboxRules: configRules,
 		sandbox:      sandbox,
-	})
+	}, runeTokenizer{})
 	if err != nil {
 		t.Fatal(err)
 	}
