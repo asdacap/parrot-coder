@@ -63,6 +63,49 @@ func TestShellCallbacksSynchronizeExtractedState(t *testing.T) {
 	}
 }
 
+func TestEnhancedYieldedShellTaskSurvivesToolSettlementUntilFinished(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})
+	presentations := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "exec_command", Presentation: v1.ToolPresentation{Output: chatview.ToolOutputTail},
+	}}})
+	shell := &chatShell{renderer: renderer, config: &Config{Presentation: func() chatview.Presentations { return presentations }}}
+	runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
+
+	tool := func(eventType string) v1.Event {
+		return v1.Event{Type: eventType, Data: json.RawMessage(`{"call_id":"call","name":"exec_command","input":{"name":"tests","cmd":"go test ./..."}}`)}
+	}
+	lifecycle := func(eventType, status string) v1.Event {
+		data, _ := json.Marshal(v1.TaskEvent{TaskID: "proc", SessionID: "session", Kind: "shell", Name: "tests", Status: status})
+		return v1.Event{Type: eventType, SessionID: "session", TaskID: "proc", Data: data}
+	}
+
+	outputDelta, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "call", Delta: "still running\n"})
+	for _, event := range []v1.Event{tool("session.tool.running"), lifecycle(v1.EventTaskStart, ""), {Type: v1.EventToolOutputDelta, Data: outputDelta}} {
+		if err := runtime.handleEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(runtime.activity) != 2 {
+		t.Fatalf("activity before yield settlement = %#v", runtime.activity)
+	}
+	if err := runtime.handleEvent(tool("session.tool.success")); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 || runtime.activity[0].id != "proc:lifecycle" || runtime.activity[0].rendered != "  ⠋ [shell:tests] running" {
+		t.Fatalf("shell task did not survive tool settlement: %#v", runtime.activity)
+	}
+	if len(runtime.pendingToolOutput) != 0 || !strings.Contains(output.String(), "still running") {
+		t.Fatalf("tool output was not committed and cleared: pending=%#v output=%q", runtime.pendingToolOutput, output.String())
+	}
+	if err := runtime.handleEvent(lifecycle(v1.EventTaskFinished, "succeeded")); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 0 || !strings.Contains(output.String(), "✓ [shell:tests] completed") {
+		t.Fatalf("finished shell task activity=%#v output=%q", runtime.activity, output.String())
+	}
+}
+
 func TestEnhancedSubmissionCommitsUserMessage(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Color: true, MaxRows: 6})

@@ -782,7 +782,12 @@ func (t *TaskTracker) depth(node *taskNode) int {
 
 func (t *TaskTracker) eventLine(node *taskNode, event string) string {
 	label := taskAgentLabel(node.agent, node.name)
-	if label == "" {
+	if node.kind == string(managedtask.KindShell) {
+		label = "shell"
+		if node.name != "" {
+			label += ":" + node.name
+		}
+	} else if label == "" {
 		label = "agent"
 	}
 	return EventLine(max(1, t.depth(node)), label, event)
@@ -1009,6 +1014,11 @@ func (t *TaskTracker) activeChildCount(node *taskNode) int {
 func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 	var reports []TaskReport
 	for node := t.tasks[taskID]; node != nil && node.id != managedtask.MainTaskID; node = t.sessions[node.parentSessionID] {
+		// Shell lifecycle has its own stable live row. Unlike agent progress it
+		// settles directly on task.finished and has no later progress event.
+		if node.kind == string(managedtask.KindShell) {
+			continue
+		}
 		children := t.activeChildCount(node)
 		if node.progress == nil {
 			if !node.finished || node.lifecycleFlushed || children != 0 {
@@ -1346,12 +1356,24 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 		node.progressOpen = true
 		node.sessionID = event.SessionID
 		node.parentSessionID = event.ParentSessionID
-		if event.SessionID != "" {
+		if node.kind == string(managedtask.KindShell) && node.parentSessionID == "" && t.sessions[event.SessionID] != nil {
+			node.parentSessionID = event.SessionID
+		}
+		// An agent task owns its session, while a shell task merely runs within
+		// the owning agent session. Multiple shells can therefore carry the same
+		// SessionID and must not replace that session's ancestry node.
+		if event.SessionID != "" && node.kind != string(managedtask.KindShell) {
 			t.sessions[event.SessionID] = node
 		}
 		if event.ParentSessionID != "" && t.sessions[event.ParentSessionID] == nil {
 			node.orphan = true
 			return t.unknownTask(event.ParentSessionID, "parent session of "+event.SessionID), nil
+		}
+		if node.kind == string(managedtask.KindShell) {
+			return []TaskReport{{
+				ID: node.id + ":lifecycle", Line: t.eventLine(node, SpinnerFrames[0]+" running"),
+				Style: terminal.TextStyleMuted,
+			}}, nil
 		}
 		return nil, nil
 	case v1.EventTaskWorking:
@@ -1380,6 +1402,23 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 		node.status = event.Status
 		node.error = event.Error
 		node.finished = true
+		if node.kind == string(managedtask.KindShell) {
+			if node.lifecycleFlushed {
+				return nil, nil
+			}
+			icon, body, style := SuccessIcon, "completed", terminal.TextStyleMuted
+			if node.status != "" && node.status != "succeeded" {
+				icon, body, style = FailureIcon, node.status, terminal.TextStyleDefault
+				if node.error != "" {
+					body += ": " + cleanActivityDetail(node.error)
+				}
+			}
+			node.lifecycleFlushed = true
+			return []TaskReport{{
+				ID: node.id + ":lifecycle", Line: t.eventLine(node, icon+" "+body),
+				Terminal: true, EmitPlain: true, Style: style,
+			}}, nil
+		}
 		node.lifecycleFlushed = false
 		if node.id == managedtask.MainTaskID {
 			return nil, nil

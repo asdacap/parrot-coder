@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
+	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
 func TestShellOutputTailKeepsLastTenLines(t *testing.T) {
@@ -371,6 +372,69 @@ func TestTaskTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	}
 	if report := reports[0]; report.TaskID != "task-child" || report.SessionID != "task-child" || report.ParentSessionID != "task-z" || !report.MainStatus {
 		t.Fatalf("progress report metadata = %#v", report)
+	}
+}
+
+func TestTaskTrackerShellLifecycleUsesStableLiveReport(t *testing.T) {
+	tests := []struct {
+		name, shellName, wantStart string
+		finish                     v1.TaskEvent
+		wantLine                   string
+		wantStyle                  terminal.TextStyle
+	}{
+		{name: "success", shellName: "tests", wantStart: "  ⠋ [shell:tests] running", finish: v1.TaskEvent{TaskID: "proc", Status: "succeeded"}, wantLine: "  ✓ [shell:tests] completed", wantStyle: terminal.TextStyleMuted},
+		{name: "failure", shellName: "tests", wantStart: "  ⠋ [shell:tests] running", finish: v1.TaskEvent{TaskID: "proc", Status: "failed", Error: "exit status 2\nmore"}, wantLine: "  ✗ [shell:tests] failed: exit status 2 more", wantStyle: terminal.TextStyleDefault},
+		{name: "unnamed", wantStart: "  ⠋ [shell] running", finish: v1.TaskEvent{TaskID: "proc", Status: "succeeded"}, wantLine: "  ✓ [shell] completed", wantStyle: terminal.TextStyleMuted},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tracker := NewTaskTracker()
+			startMainTask(tracker)
+			reports, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, v1.TaskEvent{TaskID: "proc", SessionID: "session-main", Kind: "shell", Name: test.shellName}), false)
+			if err != nil || len(reports) != 1 {
+				t.Fatalf("start reports = %#v, %v", reports, err)
+			}
+			start := reports[0]
+			if start.ID != "proc:lifecycle" || start.Line != test.wantStart || start.Terminal || start.EmitPlain || start.Style != terminal.TextStyleMuted {
+				t.Fatalf("start report = %#v", start)
+			}
+
+			reports, err = tracker.Apply(taskLifecycleEvent(v1.EventTaskFinished, test.finish), false)
+			if err != nil || len(reports) != 1 {
+				t.Fatalf("finish reports = %#v, %v", reports, err)
+			}
+			finish := reports[0]
+			if finish.ID != start.ID || finish.Line != test.wantLine || !finish.Terminal || !finish.EmitPlain || finish.Style != test.wantStyle {
+				t.Fatalf("finish report = %#v", finish)
+			}
+			duplicate, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskFinished, test.finish), false)
+			if err != nil || len(duplicate) != 0 {
+				t.Fatalf("duplicate finish reports = %#v, %v", duplicate, err)
+			}
+		})
+	}
+}
+
+func TestTaskTrackerShellDoesNotOwnAgentSessionAncestry(t *testing.T) {
+	tracker := NewTaskTracker()
+	startMainTask(tracker)
+	for _, event := range []v1.TaskEvent{
+		{TaskID: "agent", SessionID: "agent-session", ParentSessionID: "session-main", Kind: "agent", Agent: "worker"},
+		{TaskID: "proc-a", SessionID: "agent-session", Kind: "shell", Name: "one"},
+		{TaskID: "proc-b", SessionID: "agent-session", Kind: "shell", Name: "two"},
+		{TaskID: "child", SessionID: "child-session", ParentSessionID: "agent-session", Kind: "agent", Agent: "explore"},
+	} {
+		if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, event), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	reports, err := tracker.Apply(taskDelta("child", v1.MessagePartDelta{MessageID: "m", Kind: "text", Delta: "work"}), false)
+	if err != nil || len(reports) != 1 {
+		t.Fatalf("child reports = %#v, %v", reports, err)
+	}
+	if got := reports[0].Line; got != "    ○ [explore] response: work" {
+		t.Fatalf("child line = %q", got)
 	}
 }
 
