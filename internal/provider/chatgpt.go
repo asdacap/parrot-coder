@@ -49,6 +49,7 @@ type ChatGPT struct {
 	sessionID string
 	modelsMu  sync.RWMutex
 	models    []Model
+	responses responseChain
 }
 
 // SubscriptionUsage is the quota information exposed by the ChatGPT Codex
@@ -293,6 +294,8 @@ func mapUsageWindow(window *wireUsageWindow) *UsageWindow {
 }
 
 func (p *ChatGPT) Stream(ctx context.Context, request protocol.Request) (Stream, error) {
+	fullRequest := request
+	request = p.responses.prepare(request)
 	credential, err := p.tokens.Token(ctx)
 	if err != nil {
 		return nil, err
@@ -313,7 +316,11 @@ func (p *ChatGPT) Stream(ctx context.Context, request protocol.Request) (Stream,
 	headers.Set("User-Agent", "parrot")
 	headers.Set("session-id", p.sessionID)
 	parser := func(reader io.Reader, limit int) Stream { return responses.NewParser(reader, limit) }
-	return startStream(ctx, p.stream, p.endpoint, body, headers, []string{credential.AccessToken.Value()}, chatGPTHeaderTimeout, parser)
+	stream, err := startStream(ctx, p.stream, p.endpoint, body, headers, []string{credential.AccessToken.Value()}, chatGPTHeaderTimeout, parser)
+	if err != nil {
+		return nil, err
+	}
+	return p.responses.observe(stream, fullRequest), nil
 }
 
 var chatGPTModels = []Model{
