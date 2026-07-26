@@ -9,13 +9,14 @@ import (
 )
 
 const (
-	sessionStateDirectoryName = "session"
-	scratchDirectoryName      = "scratch"
-	queuesDirectoryName       = "queues"
+	sessionStateDirectoryName     = "session"
+	userSessionStateDirectoryName = "user-session"
+	scratchDirectoryName          = "scratch"
+	queuesDirectoryName           = "queues"
 )
 
-// UserSessionStateDirectory is the private application state owned by one user
-// session. Scratch is the only part exposed as a writable agent capability.
+// UserSessionStateDirectory is the private application state owned by one agent
+// session. Scratch is exposed as a writable agent capability.
 type UserSessionStateDirectory struct {
 	path string
 }
@@ -29,14 +30,20 @@ func (d UserSessionStateDirectory) ScratchPath() string {
 	return filepath.Join(d.path, scratchDirectoryName)
 }
 
-func (d UserSessionStateDirectory) QueuesPath() string {
-	if d.path == "" {
-		return ""
+// UserSessionQueuesPath resolves the durable queue directory owned by one
+// logical user session. Project IDs are the stable user-session identity in the
+// single-project application composition.
+func UserSessionQueuesPath(stateRoot, projectID string) (string, error) {
+	if stateRoot == "" || !filepath.IsAbs(stateRoot) {
+		return "", errors.New("agent: application state directory must be absolute")
 	}
-	return filepath.Join(d.path, queuesDirectoryName)
+	if !validSessionStateID(projectID) {
+		return "", fmt.Errorf("agent: invalid project ID for user session state %q", projectID)
+	}
+	return filepath.Join(filepath.Clean(stateRoot), userSessionStateDirectoryName, projectID, queuesDirectoryName), nil
 }
 
-// UserSessionStateDirectories resolves and provisions per-user-session state.
+// UserSessionStateDirectories resolves and provisions per-agent-session state.
 type UserSessionStateDirectories interface {
 	Directory(sessionID string) (UserSessionStateDirectory, error)
 	Prepare(sessionID string) (UserSessionStateDirectory, error)
@@ -47,8 +54,8 @@ type localUserSessionStateDirectories struct {
 	root string
 }
 
-// NewUserSessionStateDirectories creates a filesystem-backed user-session state
-// provider rooted below the application state directory.
+// NewUserSessionStateDirectories creates a filesystem-backed agent-session
+// state provider rooted below the application state directory.
 func NewUserSessionStateDirectories(stateRoot string) (UserSessionStateDirectories, error) {
 	if stateRoot == "" || !filepath.IsAbs(stateRoot) {
 		return nil, errors.New("agent: application state directory must be absolute")
@@ -68,12 +75,10 @@ func (d localUserSessionStateDirectories) Prepare(sessionID string) (UserSession
 	if err != nil {
 		return UserSessionStateDirectory{}, err
 	}
-	for _, path := range []string{directory.ScratchPath(), directory.QueuesPath()} {
-		if err := os.MkdirAll(path, 0o700); err != nil {
-			return UserSessionStateDirectory{}, fmt.Errorf("agent: create session state subdirectory: %w", err)
-		}
+	if err := os.MkdirAll(directory.ScratchPath(), 0o700); err != nil {
+		return UserSessionStateDirectory{}, fmt.Errorf("agent: create session state subdirectory: %w", err)
 	}
-	for _, path := range []string{directory.Path(), directory.ScratchPath(), directory.QueuesPath()} {
+	for _, path := range []string{directory.Path(), directory.ScratchPath()} {
 		if err := os.Chmod(path, 0o700); err != nil {
 			return UserSessionStateDirectory{}, fmt.Errorf("agent: secure session state directory: %w", err)
 		}

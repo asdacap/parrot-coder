@@ -3,7 +3,7 @@ package tool
 import (
 	"context"
 	"encoding/json"
-	"os"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -11,13 +11,15 @@ import (
 )
 
 func TestQueueToolsLifecycle(t *testing.T) {
-	state := t.TempDir()
-	sessionID := "ses_test"
-	if err := os.MkdirAll(filepath.Join(state, "session", sessionID), 0o700); err != nil {
+	store, err := queue.New(filepath.Join(t.TempDir(), "bound-session"))
+	if err != nil {
 		t.Fatal(err)
 	}
-	store := queue.New(state)
-	call := CallContext{SessionID: sessionID}
+	redirected, err := queue.New(filepath.Join(t.TempDir(), "redirected-session"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := CallContext{SessionID: "redirected-session"}
 	tests := []struct {
 		kind  string
 		input string
@@ -33,9 +35,9 @@ func TestQueueToolsLifecycle(t *testing.T) {
 				t.Fatalf("push output = %#v", got)
 			}
 		}},
-		{kind: "queue_monitor", input: `{"name":"build-work-now"}`, check: func(got map[string]any) {
+		{kind: "queue_listen", input: `{"name":"build-work-now"}`, check: func(got map[string]any) {
 			if got["size"] != float64(1) || got["monitored"] != true {
-				t.Fatalf("monitor output = %#v", got)
+				t.Fatalf("listen output = %#v", got)
 			}
 		}},
 		{kind: "queue_info", input: `{"name":"build-work-now"}`, check: func(got map[string]any) {
@@ -49,7 +51,7 @@ func TestQueueToolsLifecycle(t *testing.T) {
 			}
 		}},
 	}
-	for _, test := range tests {
+	for i, test := range tests {
 		tool := &QueueTool{Kind: test.kind, Store: store}
 		if _, err := parseSchema(tool.JSONSchema()); err != nil {
 			t.Fatalf("%s schema: %v", test.kind, err)
@@ -70,5 +72,14 @@ func TestQueueToolsLifecycle(t *testing.T) {
 			t.Fatalf("%s result = %#v", test.kind, result)
 		}
 		test.check(got)
+		if i == 0 {
+			info, err := store.Get("build-work-now")
+			if err != nil || filepath.Dir(info.Path) != store.Directory() {
+				t.Fatalf("queue was not created in bound manager: %#v, %v", info, err)
+			}
+			if _, err := redirected.Get("build-work-now"); !errors.Is(err, queue.ErrNotFound) {
+				t.Fatalf("CallContext.SessionID redirected queue tool: %v", err)
+			}
+		}
 	}
 }

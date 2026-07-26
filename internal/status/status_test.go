@@ -15,9 +15,9 @@ type activeTaskListerFunc func(string) []task.Active
 
 func (list activeTaskListerFunc) ListActive(sessionID string) []task.Active { return list(sessionID) }
 
-type queueListerFunc func(string) ([]queue.Info, error)
+type queueListerFunc func() ([]queue.Info, error)
 
-func (list queueListerFunc) List(sessionID string) ([]queue.Info, error) { return list(sessionID) }
+func (list queueListerFunc) List() ([]queue.Info, error) { return list() }
 
 type providerFunc struct {
 	key string
@@ -59,6 +59,22 @@ func TestRegistryComposesDynamicStatus(t *testing.T) {
 	failure, _ := NewRegistry(providerFunc{key: "runtime:failure", fn: func(Query) (Observation, error) { return Observation{}, errors.New("failed") }})
 	if _, err := failure.Observe(context.Background(), query, nil); err == nil || !strings.Contains(err.Error(), "runtime:failure") {
 		t.Fatalf("error = %v", err)
+	}
+
+	derived, err := registry.With(providerFunc{key: "session:queues", fn: func(Query) (Observation, error) {
+		return Observation{Available: true, Text: "session queues"}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := registry.Observe(context.Background(), query, nil); err != nil || strings.Contains(got, "session queues") {
+		t.Fatalf("base registry changed by With: %q, %v", got, err)
+	}
+	if got, err := derived.Observe(context.Background(), query, nil); err != nil || !strings.Contains(got, "session queues") {
+		t.Fatalf("derived registry omitted With provider: %q, %v", got, err)
+	}
+	if _, err := registry.With(providerFunc{key: "runtime:selection", fn: func(Query) (Observation, error) { return Observation{}, nil }}); err == nil {
+		t.Fatal("With accepted a duplicate provider")
 	}
 }
 
@@ -113,11 +129,14 @@ func TestQueuesStatus(t *testing.T) {
 		{name: "summaries", items: []queue.Info{{Name: "alpha-beta-gamma", Description: "work\n- forged", Size: 2}, {Name: "one-two-three"}}, want: "Queues:\n- alpha-beta-gamma (2 items, description: \"work\\n- forged\")\n- one-two-three (0 items)"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			var sessionID string
-			provider := NewQueues(queueListerFunc(func(got string) ([]queue.Info, error) { sessionID = got; return test.items, nil }))
-			observation, err := provider.Observe(context.Background(), Query{SessionID: "session"})
-			if err != nil || provider.Key() != "runtime:queues" || sessionID != "session" || !observation.Available || observation.Text != test.want {
-				t.Fatalf("Observe() = %#v, %v; key=%q session=%q", observation, err, provider.Key(), sessionID)
+			listed := false
+			provider := NewQueues(queueListerFunc(func() ([]queue.Info, error) {
+				listed = true
+				return test.items, nil
+			}))
+			observation, err := provider.Observe(context.Background(), Query{SessionID: "cannot-redirect"})
+			if err != nil || provider.Key() != "runtime:queues" || !listed || !observation.Available || observation.Text != test.want {
+				t.Fatalf("Observe() = %#v, %v; key=%q listed=%t", observation, err, provider.Key(), listed)
 			}
 		})
 	}

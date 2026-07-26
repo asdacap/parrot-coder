@@ -2,25 +2,52 @@ package queue
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
+	"time"
 )
 
-func TestQueueLifecycleDirectionsAndJSONL(t *testing.T) {
-	state := t.TempDir()
-	sessionID := "ses_test"
-	if err := os.MkdirAll(filepath.Join(state, "session", sessionID), 0o700); err != nil {
-		t.Fatal(err)
+func TestNewValidatesAndProvisionsAbsoluteDirectory(t *testing.T) {
+	if _, err := New(""); err == nil {
+		t.Fatal("New accepted an empty directory")
 	}
-	queues := New(state)
-	created, err := queues.Create(sessionID, "build-work-now", "release tasks")
+	if _, err := New("relative/queues"); err == nil {
+		t.Fatal("New accepted a relative directory")
+	}
+
+	directory := filepath.Join(t.TempDir(), "nested", "queues", "..", "queues")
+	queues, err := New(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantPath := filepath.Join(state, "session", sessionID, "queues", "build-work-now.jsonl")
+	if want := filepath.Clean(directory); queues.Directory() != want {
+		t.Fatalf("Directory() = %q, want %q", queues.Directory(), want)
+	}
+	if stat, err := os.Stat(queues.Directory()); err != nil || !stat.IsDir() || stat.Mode().Perm() != 0o700 {
+		t.Fatalf("provisioned directory stat = %#v, %v", stat, err)
+	}
+
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := New(file); err == nil {
+		t.Fatal("New accepted a file")
+	}
+}
+
+func TestQueueLifecycleDirectionsAndJSONL(t *testing.T) {
+	queues := newStore(t, filepath.Join(t.TempDir(), "queues"))
+	created, err := queues.Create("build-work-now", "release tasks")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantPath := filepath.Join(queues.Directory(), "build-work-now.jsonl")
 	if created != (Info{Path: wantPath, Name: "build-work-now", Description: "release tasks"}) {
 		t.Fatalf("Create() = %#v", created)
 	}
@@ -32,39 +59,25 @@ func TestQueueLifecycleDirectionsAndJSONL(t *testing.T) {
 		t.Fatalf("empty JSONL = %q, want %q", data, want)
 	}
 
-	pushes := []struct {
+	for _, push := range []struct {
 		item string
 		dir  Direction
-	}{
-		{"one", ""},
-		{"three", Back},
-		{"zero", Front},
-		{"two", Front},
-	}
-	for _, push := range pushes {
-		if _, err := queues.Push(sessionID, "build-work-now", push.item, push.dir); err != nil {
+	}{{"one", ""}, {"three", Back}, {"zero", Front}, {"two", Front}} {
+		if _, err := queues.Push("build-work-now", push.item, push.dir); err != nil {
 			t.Fatalf("Push(%q, %q): %v", push.item, push.dir, err)
 		}
 	}
-	// Order is now two, zero, one, three. Exercise both explicit and default
-	// take directions while checking that size tracks persisted contents.
-	takes := []struct {
+	for _, take := range []struct {
 		dir  Direction
 		want string
 		size int
-	}{
-		{Back, "three", 3},
-		{"", "two", 2},
-		{Front, "zero", 1},
-		{Back, "one", 0},
-	}
-	for _, take := range takes {
-		got, info, err := queues.Take(sessionID, "build-work-now", take.dir)
+	}{{Back, "three", 3}, {"", "two", 2}, {Front, "zero", 1}, {Back, "one", 0}} {
+		got, info, err := queues.Take("build-work-now", take.dir)
 		if err != nil || got != take.want || info.Size != take.size {
 			t.Fatalf("Take(%q) = %q, %#v, %v; want %q size %d", take.dir, got, info, err, take.want, take.size)
 		}
 	}
-	_, emptyInfo, err := queues.Take(sessionID, "build-work-now", "")
+	_, emptyInfo, err := queues.Take("build-work-now", "")
 	if !errors.Is(err, ErrEmpty) || emptyInfo.Size != 0 {
 		t.Fatalf("empty Take() = %#v, %v", emptyInfo, err)
 	}
@@ -73,112 +86,133 @@ func TestQueueLifecycleDirectionsAndJSONL(t *testing.T) {
 	}
 }
 
-func TestValidationExplicitCreationAndSessionScope(t *testing.T) {
-	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "session", "ses_a"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	queues := New(state)
-
-	invalidNames := []string{"", "one", "one-two", "one-two-three-four", "One-two-three", "one_two-three", "one--three", "é-one-two"}
-	for _, name := range invalidNames {
-		if _, err := queues.Create("ses_a", name, ""); !errors.Is(err, ErrInvalidName) {
+func TestValidationAndExplicitCreation(t *testing.T) {
+	queues := newStore(t, filepath.Join(t.TempDir(), "queues"))
+	for _, name := range []string{"", "one", "one-two", "one-two-three-four", "One-two-three", "one_two-three", "one--three", "é-one-two"} {
+		if _, err := queues.Create(name, ""); !errors.Is(err, ErrInvalidName) {
 			t.Errorf("Create(%q) error = %v, want ErrInvalidName", name, err)
 		}
 	}
-	for _, sessionID := range []string{"", ".", "..", "../ses_a", "a/b", `a\b`} {
-		if _, err := queues.Create(sessionID, "one-two-three", ""); err == nil {
-			t.Errorf("Create session %q unexpectedly succeeded", sessionID)
-		}
-	}
-	if _, err := queues.Create("missing", "one-two-three", ""); err == nil {
-		t.Fatal("Create unexpectedly created a missing session")
-	}
-	if _, err := queues.Push("ses_a", "one-two-three", "item", ""); !errors.Is(err, ErrNotFound) {
+	if _, err := queues.Push("one-two-three", "item", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Push without Create error = %v, want ErrNotFound", err)
 	}
-	if _, err := queues.Create("ses_a", "one-two-three", ""); err != nil {
+	if _, err := queues.Create("one-two-three", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := queues.Create("ses_a", "one-two-three", "changed"); !errors.Is(err, ErrAlreadyExists) {
+	if _, err := queues.Create("one-two-three", "changed"); !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("duplicate Create error = %v", err)
 	}
-	if _, err := queues.Push("ses_a", "one-two-three", "item", Direction("side")); !errors.Is(err, ErrInvalidDirection) {
+	if _, err := queues.Push("one-two-three", "item", Direction("side")); !errors.Is(err, ErrInvalidDirection) {
 		t.Fatalf("invalid Push direction error = %v", err)
 	}
-	if _, _, err := queues.Take("ses_a", "one-two-three", Direction("side")); !errors.Is(err, ErrInvalidDirection) {
+	if _, _, err := queues.Take("one-two-three", Direction("side")); !errors.Is(err, ErrInvalidDirection) {
 		t.Fatalf("invalid Take direction error = %v", err)
 	}
 }
 
 func TestListSortedEmptyAndMalformed(t *testing.T) {
-	state := t.TempDir()
-	queues := New(state)
-	got, err := queues.List("ses_no_directory")
+	queues := newStore(t, filepath.Join(t.TempDir(), "queues"))
+	got, err := queues.List()
 	if err != nil || got == nil || len(got) != 0 {
-		t.Fatalf("List absent directory = %#v, %v; want non-nil empty", got, err)
+		t.Fatalf("List empty directory = %#v, %v; want non-nil empty", got, err)
 	}
-	if err := os.MkdirAll(filepath.Join(state, "session", "ses_a"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	for _, item := range []struct{ name, description string }{
-		{"zebra-work-now", "last"},
-		{"alpha-work-now", "first"},
-	} {
-		if _, err := queues.Create("ses_a", item.name, item.description); err != nil {
+	for _, item := range []struct{ name, description string }{{"zebra-work-now", "last"}, {"alpha-work-now", "first"}} {
+		if _, err := queues.Create(item.name, item.description); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if _, err := queues.Push("ses_a", "zebra-work-now", "a", ""); err != nil {
+	if _, err := queues.Push("zebra-work-now", "a", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := queues.Push("ses_a", "zebra-work-now", "b", ""); err != nil {
+	if _, err := queues.Push("zebra-work-now", "b", ""); err != nil {
 		t.Fatal(err)
 	}
-	got, err = queues.List("ses_a")
+	got, err = queues.List()
 	if err != nil {
 		t.Fatal(err)
 	}
 	want := []Info{
-		{Path: filepath.Join(state, "session", "ses_a", "queues", "alpha-work-now.jsonl"), Name: "alpha-work-now", Description: "first", Size: 0},
-		{Path: filepath.Join(state, "session", "ses_a", "queues", "zebra-work-now.jsonl"), Name: "zebra-work-now", Description: "last", Size: 2},
+		{Path: filepath.Join(queues.Directory(), "alpha-work-now.jsonl"), Name: "alpha-work-now", Description: "first"},
+		{Path: filepath.Join(queues.Directory(), "zebra-work-now.jsonl"), Name: "zebra-work-now", Description: "last", Size: 2},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("List() = %#v, want %#v", got, want)
 	}
 
-	malformed := filepath.Join(state, "session", "ses_a", "queues", "bad-queue-name.jsonl")
+	malformed := filepath.Join(queues.Directory(), "bad-queue-name.jsonl")
 	if err := os.WriteFile(malformed, []byte("not json\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := queues.List("ses_a"); err == nil {
+	if _, err := queues.List(); err == nil {
 		t.Fatal("List accepted malformed queue")
 	}
 }
 
-func TestMonitorPersistenceSelectionAndFIFO(t *testing.T) {
-	state := t.TempDir()
-	sessionID := "ses_monitor"
-	if err := os.MkdirAll(filepath.Join(state, "session", sessionID), 0o700); err != nil {
+func TestPersistenceAcrossReconstructedStoresAndDirectoryIsolation(t *testing.T) {
+	root := t.TempDir()
+	firstDirectory := filepath.Join(root, "first")
+	first := newStore(t, firstDirectory)
+	if _, err := first.Create("persist-work-here", "kept"); err != nil {
 		t.Fatal(err)
 	}
-	queues := New(state)
-	for _, name := range []string{"zebra-work-now", "alpha-work-now", "empty-work-now"} {
-		if _, err := queues.Create(sessionID, name, ""); err != nil {
+	for _, item := range []string{"one", "two"} {
+		if _, err := first.Push("persist-work-here", item, ""); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := queues.Monitor(sessionID, name, true); err != nil {
+	}
+	if _, err := first.Monitor("persist-work-here", true); err != nil {
+		t.Fatal(err)
+	}
+
+	reconstructed := newStore(t, firstDirectory)
+	info, err := reconstructed.Get("persist-work-here")
+	if err != nil || info.Description != "kept" || info.Size != 2 || !info.Monitored {
+		t.Fatalf("reconstructed Get() = %#v, %v", info, err)
+	}
+	for _, want := range []string{"one", "two"} {
+		got, _, err := reconstructed.Take("persist-work-here", "")
+		if err != nil || got != want {
+			t.Fatalf("reconstructed Take() = %q, %v; want %q", got, err, want)
+		}
+	}
+
+	second := newStore(t, filepath.Join(root, "second"))
+	if got, err := second.List(); err != nil || len(got) != 0 {
+		t.Fatalf("isolated List() = %#v, %v", got, err)
+	}
+	if _, err := second.Create("persist-work-here", "independent"); err != nil {
+		t.Fatal(err)
+	}
+	firstInfo, err := reconstructed.Get("persist-work-here")
+	if err != nil || firstInfo.Description != "kept" || firstInfo.Size != 0 {
+		t.Fatalf("first directory changed through second: %#v, %v", firstInfo, err)
+	}
+	secondInfo, err := second.Get("persist-work-here")
+	if err != nil || secondInfo.Description != "independent" || secondInfo.Size != 0 {
+		t.Fatalf("second directory Get() = %#v, %v", secondInfo, err)
+	}
+}
+
+func TestMonitorPersistenceSelectionAndFIFO(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), "queues")
+	queues := newStore(t, directory)
+	for _, name := range []string{"zebra-work-now", "alpha-work-now", "empty-work-now"} {
+		if _, err := queues.Create(name, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := queues.Monitor(name, true); err != nil {
 			t.Fatal(err)
 		}
 	}
 	for _, item := range []struct{ name, value string }{{"zebra-work-now", "zebra"}, {"alpha-work-now", "first"}, {"alpha-work-now", "second"}} {
-		if _, err := queues.Push(sessionID, item.name, item.value, ""); err != nil {
+		if _, err := queues.Push(item.name, item.value, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
+	queues = newStore(t, directory)
 	for _, want := range []Notification{{Name: "alpha-work-now", Item: "first"}, {Name: "alpha-work-now", Item: "second"}, {Name: "zebra-work-now", Item: "zebra"}} {
 		var got Notification
-		delivered, err := queues.DeliverMonitored(sessionID, func(notification Notification) (bool, error) {
+		delivered, err := queues.DeliverMonitored(func(notification Notification) (bool, error) {
 			got = notification
 			return true, nil
 		})
@@ -186,22 +220,25 @@ func TestMonitorPersistenceSelectionAndFIFO(t *testing.T) {
 			t.Fatalf("DeliverMonitored() = %#v, %v, %v; want %#v", got, delivered, err, want)
 		}
 	}
-	if delivered, err := queues.DeliverMonitored(sessionID, func(Notification) (bool, error) { return true, nil }); err != nil || delivered {
+	if delivered, err := queues.DeliverMonitored(func(Notification) (bool, error) { return true, nil }); err != nil || delivered {
 		t.Fatalf("empty DeliverMonitored() = %v, %v", delivered, err)
 	}
-	if _, err := queues.Push(sessionID, "alpha-work-now", "retained", ""); err != nil {
+	if delivered, err := queues.DeliverMonitored(nil); err == nil || delivered {
+		t.Fatalf("nil DeliverMonitored() = %v, %v", delivered, err)
+	}
+	if _, err := queues.Push("alpha-work-now", "retained", ""); err != nil {
 		t.Fatal(err)
 	}
 	var deliveryID string
-	delivered, err := queues.DeliverMonitored(sessionID, func(notification Notification) (bool, error) {
+	delivered, err := queues.DeliverMonitored(func(notification Notification) (bool, error) {
 		deliveryID = notification.ID
 		return false, nil
 	})
-	if err != nil || delivered {
-		t.Fatalf("rejected DeliverMonitored() = %v, %v", delivered, err)
+	if err != nil || delivered || deliveryID == "" {
+		t.Fatalf("rejected DeliverMonitored() = %v, %v, ID %q", delivered, err, deliveryID)
 	}
 	callbackErr := errors.New("delivery failed")
-	if delivered, err = queues.DeliverMonitored(sessionID, func(notification Notification) (bool, error) {
+	if delivered, err = queues.DeliverMonitored(func(notification Notification) (bool, error) {
 		if notification.ID != deliveryID {
 			t.Fatalf("delivery ID changed from %q to %q", deliveryID, notification.ID)
 		}
@@ -209,82 +246,138 @@ func TestMonitorPersistenceSelectionAndFIFO(t *testing.T) {
 	}); delivered || !errors.Is(err, callbackErr) {
 		t.Fatalf("failed DeliverMonitored() = %v, %v", delivered, err)
 	}
-	item, _, err := queues.Take(sessionID, "alpha-work-now", "")
+	item, _, err := queues.Take("alpha-work-now", "")
 	if err != nil || item != "retained" {
 		t.Fatalf("retained item = %q, %v", item, err)
 	}
-	info, err := queues.Get(sessionID, "alpha-work-now")
+	info, err := queues.Get("alpha-work-now")
 	if err != nil || !info.Monitored || info.Size != 0 {
 		t.Fatalf("monitor retained = %#v, %v", info, err)
 	}
-	info, err = queues.Monitor(sessionID, "alpha-work-now", false)
+	info, err = queues.Monitor("alpha-work-now", false)
 	if err != nil || info.Monitored {
 		t.Fatalf("disable monitor = %#v, %v", info, err)
 	}
-	if _, err := queues.Monitor(sessionID, "missing-work-now", true); !errors.Is(err, ErrNotFound) {
+	if _, err := queues.Monitor("missing-work-now", true); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("monitor missing error = %v", err)
 	}
 }
 
-func TestConcurrentPushAndTake(t *testing.T) {
-	state := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(state, "session", "ses_a"), 0o700); err != nil {
+func TestConcurrentMultiProducerMultiConsumerExactlyOnce(t *testing.T) {
+	const (
+		producerCount  = 6
+		consumerCount  = 6
+		itemsPerWorker = 40
+	)
+	const itemCount = producerCount * itemsPerWorker
+
+	directory := filepath.Join(t.TempDir(), "queues")
+	stores := make([]*Store, producerCount)
+	for i := range stores {
+		stores[i] = newStore(t, directory)
+	}
+	if _, err := stores[0].Create("many-items-here", ""); err != nil {
 		t.Fatal(err)
-	}
-	queues := New(state)
-	otherStore := New(state)
-	if _, err := queues.Create("ses_a", "many-items-here", ""); err != nil {
-		t.Fatal(err)
-	}
-	const count = 100
-	var wg sync.WaitGroup
-	errs := make(chan error, count)
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			store := queues
-			if index%2 == 0 {
-				store = otherStore
-			}
-			_, err := store.Push("ses_a", "many-items-here", "item", "")
-			errs <- err
-		}(i)
-	}
-	wg.Wait()
-	close(errs)
-	for err := range errs {
-		if err != nil {
-			t.Fatal(err)
-		}
-	}
-	listed, err := queues.Get("ses_a", "many-items-here")
-	if err != nil || listed.Size != count {
-		t.Fatalf("after concurrent Push: %#v, %v", listed, err)
 	}
 
-	errs = make(chan error, count)
-	for i := 0; i < count; i++ {
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			store := queues
-			if index%2 == 0 {
-				store = otherStore
+	producerDone := make(chan struct{})
+	consumed := make(chan string, itemCount)
+	errs := make(chan error, producerCount+consumerCount)
+	var producers sync.WaitGroup
+	for producer := 0; producer < producerCount; producer++ {
+		producers.Add(1)
+		go func(producer int) {
+			defer producers.Done()
+			for item := 0; item < itemsPerWorker; item++ {
+				value := fmt.Sprintf("%d-%d", producer, item)
+				if _, err := stores[producer].Push("many-items-here", value, ""); err != nil {
+					errs <- err
+					return
+				}
 			}
-			_, _, err := store.Take("ses_a", "many-items-here", "")
-			errs <- err
-		}(i)
+		}(producer)
 	}
-	wg.Wait()
+	go func() {
+		producers.Wait()
+		close(producerDone)
+	}()
+
+	var consumers sync.WaitGroup
+	for consumer := 0; consumer < consumerCount; consumer++ {
+		consumers.Add(1)
+		go func(consumer int) {
+			defer consumers.Done()
+			for {
+				item, _, err := stores[consumer].Take("many-items-here", "")
+				if err == nil {
+					consumed <- item
+					continue
+				}
+				if !errors.Is(err, ErrEmpty) {
+					errs <- err
+					return
+				}
+				select {
+				case <-producerDone:
+					return
+				default:
+					runtime.Gosched()
+				}
+			}
+		}(consumer)
+	}
+	completed := make(chan struct{})
+	go func() {
+		consumers.Wait()
+		close(completed)
+	}()
+	select {
+	case <-completed:
+	case <-time.After(15 * time.Second):
+		t.Fatal("concurrent producers and consumers timed out")
+	}
+	close(consumed)
 	close(errs)
 	for err := range errs {
 		if err != nil {
 			t.Fatal(err)
 		}
 	}
-	listed, err = queues.Get("ses_a", "many-items-here")
-	if err != nil || listed.Size != 0 {
-		t.Fatalf("after concurrent Take: %#v, %v", listed, err)
+
+	seen := make(map[string]int, itemCount)
+	for item := range consumed {
+		seen[item]++
 	}
+	if len(seen) != itemCount {
+		t.Fatalf("consumed %d unique items, want %d (total deliveries %d)", len(seen), itemCount, totalCounts(seen))
+	}
+	for producer := 0; producer < producerCount; producer++ {
+		for item := 0; item < itemsPerWorker; item++ {
+			value := fmt.Sprintf("%d-%d", producer, item)
+			if seen[value] != 1 {
+				t.Errorf("item %q delivered %d times, want exactly once", value, seen[value])
+			}
+		}
+	}
+	info, err := stores[0].Get("many-items-here")
+	if err != nil || info.Size != 0 {
+		t.Fatalf("after concurrent operations Get() = %#v, %v", info, err)
+	}
+}
+
+func newStore(t *testing.T, directory string) *Store {
+	t.Helper()
+	store, err := New(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return store
+}
+
+func totalCounts(counts map[string]int) int {
+	total := 0
+	for _, count := range counts {
+		total += count
+	}
+	return total
 }

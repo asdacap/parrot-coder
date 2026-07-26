@@ -27,11 +27,10 @@ import (
 type agentSession struct {
 	dto                    session.AgentSessionDto
 	parent                 AgentSession
-	user                   UserSession
+	user                   *userSession
 	agentSessionRepository *agentSessionRepository
 	store                  session.AgentSessionStore
 	systemContext          SystemContextPrompt
-	queueMonitor           QueueMonitor
 	config                 AgentSessionConfig
 	stateDirectories       UserSessionStateDirectories
 	profiles               ProfileResolver
@@ -822,11 +821,10 @@ func (s *agentSession) reportTurnProgress(turn *turnState, progress ChildProgres
 func newAgentSession(
 	dto session.AgentSessionDto,
 	parent AgentSession,
-	user UserSession,
+	user *userSession,
 	repository *agentSessionRepository,
 	store session.AgentSessionStore,
 	systemContext SystemContextPrompt,
-	queueMonitor QueueMonitor,
 	config AgentSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
@@ -846,7 +844,7 @@ func newAgentSession(
 		status.Depth = parentStatus.Depth + 1
 	}
 	return &agentSession{
-		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, queueMonitor: queueMonitor, config: config,
+		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, config: config,
 		stateDirectories: stateDirectories, profiles: profiles, providers: providers,
 		workspace: workspace, outputs: outputs, processes: processes,
 		live: live, compactor: compactor, goals: goals, statusObserver: statusObserver, toolPanicLogger: toolPanicLogger,
@@ -942,7 +940,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			profile = turnProfile.Profile()
 			r.securityProfile = newAgentSessionSecurityProfile(turnProfile)
 			r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
-			r.securityProfile.AddCapability(security.Rule{Path: stateDirectory.QueuesPath(), Action: security.ActionAllowRead})
+			r.securityProfile.AddCapability(security.Rule{Path: r.user.queues.Directory(), Action: security.ActionAllowRead})
 		}
 		providerClient, model, err := r.providers.Resolve(selected.Provider, selected.Model)
 		if err != nil {
@@ -1000,7 +998,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		definitions := toolDefinitions(r.toolSnapshot)
 		turn++
 		maxTurnsReached := turn >= profile.MaxTurns
-		instructions := runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, maxTurnsReached)
+		instructions := runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), maxTurnsReached)
 		if maxTurnsReached {
 			definitions = nil
 			r.publishMaxTurnsReached(profile.MaxTurns)
@@ -1022,7 +1020,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				if err != nil {
 					return err
 				}
-				instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, turn >= profile.MaxTurns)
+				instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), turn >= profile.MaxTurns)
 			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
@@ -1060,7 +1058,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
-			request.Instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, turn >= profile.MaxTurns)
+			request.Instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), turn >= profile.MaxTurns)
 			request.Messages = history
 			calls, finish, err = r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 			if err != nil {
@@ -1135,13 +1133,22 @@ func (r *agentSession) publishMaxTurnsReached(maxTurns int) {
 // successful drain. The queue keeps the item locked and durable until the
 // synthetic turn is accepted, so regular input wins without requiring rollback.
 func (r *agentSession) prepareQueueNotification(ctx context.Context) (bool, error) {
-	if r.queueMonitor == nil {
+	if r.parent != nil || r.user == nil {
 		return false, nil
 	}
+	return r.user.deliverQueueNotification(ctx, r)
+}
+
+func (s *userSession) deliverQueueNotification(ctx context.Context, target *agentSession) (bool, error) {
+	if s == nil || s.queues == nil || target == nil {
+		return false, nil
+	}
+	s.queueDeliveryMu.Lock()
+	defer s.queueDeliveryMu.Unlock()
 	var process bool
-	delivered, err := r.queueMonitor.DeliverMonitored(r.dto.ID, func(notification queue.Notification) (bool, error) {
+	delivered, err := s.queues.DeliverMonitored(func(notification queue.Notification) (bool, error) {
 		message := fmt.Sprintf("Queue notification from %q:\n\n%s", notification.Name, notification.Item)
-		appendedMessage, appended, err := r.store.AppendMessageIfNoPendingInputs(ctx, notification.ID, protocol.Message{
+		appendedMessage, appended, err := target.store.AppendMessageIfNoPendingInputs(ctx, notification.ID, protocol.Message{
 			Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: message}},
 		})
 		if err != nil {

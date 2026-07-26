@@ -59,31 +59,45 @@ type metadata struct {
 	DeliveryID  string `json:"delivery_id,omitempty"`
 }
 
-// Store owns queues rooted in a state directory. Operations are serialized
+// Store owns queues rooted in one absolute directory. Operations are serialized
 // within the Store and by filesystem locks shared with other Store instances.
 type Store struct {
-	state string
-	mu    sync.Mutex
+	directory string
+	mu        sync.Mutex
 }
 
-func New(state string) *Store { return &Store{state: state} }
+// New provisions directory and returns a Store bound to it.
+func New(directory string) (*Store, error) {
+	if directory == "" || !filepath.IsAbs(directory) {
+		return nil, errors.New("queue: absolute directory is required")
+	}
+	directory = filepath.Clean(directory)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		return nil, fmt.Errorf("queue: create directory: %w", err)
+	}
+	stat, err := os.Stat(directory)
+	if err != nil {
+		return nil, fmt.Errorf("queue: inspect directory: %w", err)
+	}
+	if !stat.IsDir() {
+		return nil, errors.New("queue: path is not a directory")
+	}
+	if err := os.Chmod(directory, 0o700); err != nil {
+		return nil, fmt.Errorf("queue: secure directory: %w", err)
+	}
+	return &Store{directory: directory}, nil
+}
 
-// Create explicitly creates an empty queue for an existing session.
-func (s *Store) Create(sessionID, name, description string) (Info, error) {
+// Directory returns the absolute directory containing the Store's queues.
+func (s *Store) Directory() string { return s.directory }
+
+// Create explicitly creates an empty queue.
+func (s *Store) Create(name, description string) (Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.path(sessionID, name)
+	path, err := s.path(name)
 	if err != nil {
 		return Info{}, err
-	}
-	if _, err := os.Stat(sessionDir(s.state, sessionID)); err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return Info{}, fmt.Errorf("queue: session does not exist: %w", err)
-		}
-		return Info{}, fmt.Errorf("queue: locate session: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return Info{}, fmt.Errorf("queue: create directory: %w", err)
 	}
 	data, err := encode(metadata{Name: name, Description: description}, nil)
 	if err != nil {
@@ -98,7 +112,7 @@ func (s *Store) Create(sessionID, name, description string) (Info, error) {
 }
 
 // Push inserts item at direction. The empty direction appends at the back.
-func (s *Store) Push(sessionID, name, item string, direction Direction) (Info, error) {
+func (s *Store) Push(name, item string, direction Direction) (Info, error) {
 	if direction == "" {
 		direction = Back
 	}
@@ -107,7 +121,7 @@ func (s *Store) Push(sessionID, name, item string, direction Direction) (Info, e
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.path(sessionID, name)
+	path, err := s.path(name)
 	if err != nil {
 		return Info{}, err
 	}
@@ -137,7 +151,7 @@ func (s *Store) Push(sessionID, name, item string, direction Direction) (Info, e
 
 // Take removes and returns an item from direction. The empty direction removes
 // from the front, making default Push and Take FIFO. Empty queues are retained.
-func (s *Store) Take(sessionID, name string, direction Direction) (string, Info, error) {
+func (s *Store) Take(name string, direction Direction) (string, Info, error) {
 	if direction == "" {
 		direction = Front
 	}
@@ -146,7 +160,7 @@ func (s *Store) Take(sessionID, name string, direction Direction) (string, Info,
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.path(sessionID, name)
+	path, err := s.path(name)
 	if err != nil {
 		return "", Info{}, err
 	}
@@ -181,10 +195,10 @@ func (s *Store) Take(sessionID, name string, direction Direction) (string, Info,
 }
 
 // Monitor enables or disables idle notification delivery for a queue.
-func (s *Store) Monitor(sessionID, name string, enabled bool) (Info, error) {
+func (s *Store) Monitor(name string, enabled bool) (Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.path(sessionID, name)
+	path, err := s.path(name)
 	if err != nil {
 		return Info{}, err
 	}
@@ -211,17 +225,13 @@ func (s *Store) Monitor(sessionID, name string, enabled bool) (Info, error) {
 // queue in canonical name order to deliver. The item is removed only when
 // deliver accepts it, while the queue remains locked against other consumers.
 // Monitoring remains enabled after delivery.
-func (s *Store) DeliverMonitored(sessionID string, deliver func(Notification) (bool, error)) (bool, error) {
+func (s *Store) DeliverMonitored(deliver func(Notification) (bool, error)) (bool, error) {
 	if deliver == nil {
 		return false, errors.New("queue: delivery callback is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sessionID == "" || sessionID == "." || sessionID == ".." || strings.ContainsAny(sessionID, `/\\`) {
-		return false, errors.New("queue: valid session ID is required")
-	}
-	dir := filepath.Join(sessionDir(s.state, sessionID), "queues")
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(s.directory)
 	if errors.Is(err, fs.ErrNotExist) {
 		return false, nil
 	}
@@ -236,7 +246,7 @@ func (s *Store) DeliverMonitored(sessionID string, deliver func(Notification) (b
 		if !validName(name) {
 			return false, fmt.Errorf("queue: malformed filename %q: %w", entry.Name(), ErrInvalidName)
 		}
-		path := filepath.Join(dir, entry.Name())
+		path := filepath.Join(s.directory, entry.Name())
 		release, err := lock(path)
 		if err != nil {
 			return false, err
@@ -281,10 +291,10 @@ func (s *Store) DeliverMonitored(sessionID string, deliver func(Notification) (b
 }
 
 // Get returns queue metadata and size without changing it.
-func (s *Store) Get(sessionID, name string) (Info, error) {
+func (s *Store) Get(name string) (Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	path, err := s.path(sessionID, name)
+	path, err := s.path(name)
 	if err != nil {
 		return Info{}, err
 	}
@@ -298,16 +308,11 @@ func (s *Store) Get(sessionID, name string) (Info, error) {
 	return info(path, meta, len(items)), nil
 }
 
-// List returns every queue in a session, ordered by canonical name. A session
-// with no queues directory has an empty list.
-func (s *Store) List(sessionID string) ([]Info, error) {
+// List returns every queue ordered by canonical name.
+func (s *Store) List() ([]Info, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if sessionID == "" || sessionID == "." || sessionID == ".." || strings.ContainsAny(sessionID, `/\\`) {
-		return nil, errors.New("queue: valid session ID is required")
-	}
-	dir := filepath.Join(sessionDir(s.state, sessionID), "queues")
-	entries, err := os.ReadDir(dir)
+	entries, err := os.ReadDir(s.directory)
 	if errors.Is(err, fs.ErrNotExist) {
 		return []Info{}, nil
 	}
@@ -323,7 +328,7 @@ func (s *Store) List(sessionID string) ([]Info, error) {
 		if !validName(name) {
 			return nil, fmt.Errorf("queue: malformed filename %q: %w", entry.Name(), ErrInvalidName)
 		}
-		path := filepath.Join(dir, entry.Name())
+		path := filepath.Join(s.directory, entry.Name())
 		meta, items, err := read(path)
 		if err != nil {
 			return nil, fmt.Errorf("queue: read %q: %w", name, err)
@@ -337,18 +342,11 @@ func (s *Store) List(sessionID string) ([]Info, error) {
 	return result, nil
 }
 
-func (s *Store) path(sessionID, name string) (string, error) {
-	if sessionID == "" || sessionID == "." || sessionID == ".." || strings.ContainsAny(sessionID, `/\\`) {
-		return "", errors.New("queue: valid session ID is required")
-	}
+func (s *Store) path(name string) (string, error) {
 	if !validName(name) {
 		return "", ErrInvalidName
 	}
-	return filepath.Join(sessionDir(s.state, sessionID), "queues", name+".jsonl"), nil
-}
-
-func sessionDir(state, sessionID string) string {
-	return filepath.Join(state, "session", sessionID)
+	return filepath.Join(s.directory, name+".jsonl"), nil
 }
 
 // lock serializes read-modify-write operations across Store instances and

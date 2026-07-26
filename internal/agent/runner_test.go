@@ -82,7 +82,7 @@ func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
 	if got, want := observation.Text, "profile prompt\n\nHard rules:\n- rule\n\nprofile status"; got != want {
 		t.Fatalf("profile status = %q, want %q", got, want)
 	}
-	if got, want := runnerInstructions("baseline", "", "/state/session/ses_test/scratch", false), "baseline\n\nScratch directory: /state/session/ses_test/scratch\n\nQueues directory (read-only; use queue tools to modify): /state/session/ses_test/queues"; got != want {
+	if got, want := runnerInstructions("baseline", "", "/state/session/ses_test/scratch", "/state/user-session/project/queues", false), "baseline\n\nScratch directory: /state/session/ses_test/scratch\n\nQueues directory (read-only; use queue tools to modify): /state/user-session/project/queues"; got != want {
 		t.Fatalf("runner instructions = %q, want %q", got, want)
 	}
 }
@@ -142,7 +142,7 @@ func (failingGetUserSession) Get(context.Context) (session.AgentSessionDto, erro
 func newUserSessionFromHarness(ctx context.Context, sessions SessionRuntime, h *runnerHarness, config UserSessionConfig) (UserSession, error) {
 	r := h.agentSessions.repository
 	s := h.agentSessions
-	return NewUserSession(ctx, sessions, s.systemContext, s.queueMonitor, config,
+	return NewUserSession(ctx, sessions, s.systemContext, s.queues, config,
 		r.stateDirectories, r.profiles, r.providers, r.toolProviders, r.toolAuthorizer, r.toolErrorAdvisor,
 		r.workspace, r.outputs, r.processes, r.live, r.events, r.compactor, r.goals, r.status, r.toolPanicLogger,
 		s.childTasks, s.identityFor, s.recursionLimitFor, s.childNameGenerator, s.onChildDiscard)
@@ -306,8 +306,8 @@ func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 	buildStatus := "build prompt\n\nBuild mode status\n\nActive profile: build\nModel: fake/model"
 	planStatus := "plan prompt\n\nPlan mode status\n\nActive profile: plan\nModel: fake/model"
 	for index, request := range requests {
-		if !strings.HasPrefix(request.Instructions, "baseline\n\nScratch directory: ") || !strings.HasSuffix(request.Instructions, "/session/"+h.sessionID+"/queues") || !strings.Contains(request.Instructions, "\n\nQueues directory (read-only; use queue tools to modify): ") {
-			t.Errorf("request %d instructions = %q, want baseline and session scratch and queues paths", index, request.Instructions)
+		if !strings.HasPrefix(request.Instructions, "baseline\n\nScratch directory: ") || !strings.HasSuffix(request.Instructions, h.queues.Directory()) || !strings.Contains(request.Instructions, "\n\nQueues directory (read-only; use queue tools to modify): ") {
+			t.Errorf("request %d instructions = %q, want baseline, session scratch, and user-session queues paths", index, request.Instructions)
 		}
 		var statuses []string
 		for _, message := range request.Messages {
@@ -574,7 +574,10 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
-	queues := queue.New(stateRoot)
+	queues, err := queue.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := stateDirectories.Prepare(created.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -1888,13 +1891,13 @@ func TestPromptReturnsTerminalResponseBeforeMonitoredQueueResponse(t *testing.T)
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: answer}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h := newRunnerHarness(t, fake, nil, &fakeTool{id: "inspect"})
-	if _, err := h.queues.Create(h.sessionID, "incoming-work-now", ""); err != nil {
+	if _, err := h.queues.Create("incoming-work-now", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.queues.Monitor(h.sessionID, "incoming-work-now", true); err != nil {
+	if _, err := h.queues.Monitor("incoming-work-now", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.queues.Push(h.sessionID, "incoming-work-now", "queued", ""); err != nil {
+	if _, err := h.queues.Push("incoming-work-now", "queued", ""); err != nil {
 		t.Fatal(err)
 	}
 	answer, err := h.runner.Prompt(context.Background(), "direct")
@@ -1903,6 +1906,85 @@ func TestPromptReturnsTerminalResponseBeforeMonitoredQueueResponse(t *testing.T)
 	}
 	if requests := fake.Requests(); len(requests) != 3 {
 		t.Fatalf("provider turns = %d, want 3", len(requests))
+	}
+}
+
+func TestUserSessionSharesQueuesWithChildrenButOnlyRootReceivesNotifications(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answered"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	root := h.runner
+	child, err := root.CreateChild(t.Context(), ChildRequest{Prompt: "child initial", Agent: BuildID, Name: "queue-child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observer, err := child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observer.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	childRuntime := child.(*agentSession)
+	if rootQueues, childQueues := (agentToolSession{root}).Queues(), (agentToolSession{childRuntime}).Queues(); rootQueues != h.queues || childQueues != rootQueues {
+		t.Fatalf("queue managers = root %p, child %p, want %p", rootQueues, childQueues, h.queues)
+	}
+
+	if _, err := h.queues.Create("incoming-work-now", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.queues.Monitor("incoming-work-now", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.queues.Push("incoming-work-now", "root only", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.Prompt(t.Context(), "child follow-up"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := h.queues.Get("incoming-work-now"); err != nil || info.Size != 1 {
+		t.Fatalf("queue after child turn = %#v, %v; want item retained", info, err)
+	}
+	if _, err := root.Prompt(t.Context(), "root direct"); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := h.queues.Get("incoming-work-now"); err != nil || info.Size != 0 {
+		t.Fatalf("queue after root turn = %#v, %v; want notification consumed", info, err)
+	}
+
+	rootState, err := root.stateDirectories.Directory(root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	childState, err := childRuntime.stateDirectories.Directory(child.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	queuePath := h.queues.Directory()
+	var rootRequests, childRequests, notifications int
+	for _, request := range fake.Requests() {
+		switch {
+		case containsRoleText(request.Messages, protocol.RoleUser, "child initial"), containsRoleText(request.Messages, protocol.RoleUser, "child follow-up"):
+			childRequests++
+			if !strings.Contains(request.Instructions, "Scratch directory: "+childState.ScratchPath()) || !strings.Contains(request.Instructions, "Queues directory (read-only; use queue tools to modify): "+queuePath) {
+				t.Fatalf("child instructions = %q", request.Instructions)
+			}
+		case containsRoleText(request.Messages, protocol.RoleUser, "root direct"):
+			rootRequests++
+			if !strings.Contains(request.Instructions, "Scratch directory: "+rootState.ScratchPath()) || !strings.Contains(request.Instructions, "Queues directory (read-only; use queue tools to modify): "+queuePath) {
+				t.Fatalf("root instructions = %q", request.Instructions)
+			}
+		}
+		if containsRoleText(request.Messages, protocol.RoleUser, "Queue notification from \"incoming-work-now\":\n\nroot only") {
+			notifications++
+			if !strings.Contains(request.Instructions, "Scratch directory: "+rootState.ScratchPath()) || strings.Contains(request.Instructions, "Scratch directory: "+childState.ScratchPath()) {
+				t.Fatalf("notification instructions = %q", request.Instructions)
+			}
+		}
+	}
+	if rootRequests == 0 || childRequests < 2 || notifications != 1 || rootState.ScratchPath() == childState.ScratchPath() {
+		t.Fatalf("requests = root %d, child %d, notifications %d; scratch = %q, %q", rootRequests, childRequests, notifications, rootState.ScratchPath(), childState.ScratchPath())
 	}
 }
 
@@ -1915,13 +1997,13 @@ func TestRunnerProcessesMonitoredQueueItemAsSyntheticTurn(t *testing.T) {
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answered"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
-	if _, err := h.queues.Create(h.sessionID, "incoming-work-now", ""); err != nil {
+	if _, err := h.queues.Create("incoming-work-now", ""); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.queues.Monitor(h.sessionID, "incoming-work-now", true); err != nil {
+	if _, err := h.queues.Monitor("incoming-work-now", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.queues.Push(h.sessionID, "incoming-work-now", "review item 42", ""); err != nil {
+	if _, err := h.queues.Push("incoming-work-now", "review item 42", ""); err != nil {
 		t.Fatal(err)
 	}
 	h.admit(t, "user", "initial question", session.DeliverySteer)
@@ -1939,7 +2021,7 @@ func TestRunnerProcessesMonitoredQueueItemAsSyntheticTurn(t *testing.T) {
 	if !containsRoleText(requests[1].Messages, protocol.RoleUser, "Queue notification from \"incoming-work-now\":\n\nreview item 42") {
 		t.Fatalf("synthetic queue notification missing: %#v", requests[1].Messages)
 	}
-	info, err := h.queues.Get(h.sessionID, "incoming-work-now")
+	info, err := h.queues.Get("incoming-work-now")
 	if err != nil || info.Size != 0 || !info.Monitored {
 		t.Fatalf("queue after notification = %#v, %v", info, err)
 	}
@@ -2394,7 +2476,7 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	if len(capture.writePaths) != 2 || capture.writePaths[0] != "/tmp/plan.md" || !strings.HasSuffix(capture.writePaths[1], "/session/"+h.sessionID+"/scratch") {
 		t.Fatalf("session profile allow_write rules = %#v", capture.writePaths)
 	}
-	if len(capture.readPaths) != 1 || !strings.HasSuffix(capture.readPaths[0], "/session/"+h.sessionID+"/queues") {
+	if len(capture.readPaths) != 1 || capture.readPaths[0] != h.queues.Directory() {
 		t.Fatalf("session profile allow_read rules = %#v", capture.readPaths)
 	}
 	if len(resolver.base.SandboxRules) != 0 {

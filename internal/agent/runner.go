@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -20,8 +19,10 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
-type QueueMonitor interface {
-	DeliverMonitored(string, func(queue.Notification) (bool, error)) (bool, error)
+type QueueManager interface {
+	tool.QueueService
+	Directory() string
+	DeliverMonitored(func(queue.Notification) (bool, error)) (bool, error)
 }
 
 type StatusObserver interface {
@@ -159,9 +160,8 @@ func overflowMessage(message string) bool {
 	return false
 }
 
-func runnerInstructions(systemPrompt, summaryPrompt, scratchPath string, final bool) string {
+func runnerInstructions(systemPrompt, summaryPrompt, scratchPath, queuesPath string, final bool) string {
 	sections := make([]string, 0, 5)
-	queuesPath := filepath.Join(filepath.Dir(scratchPath), "queues")
 	for _, section := range []string{systemPrompt, summaryPrompt, "Scratch directory: " + scratchPath, "Queues directory (read-only; use queue tools to modify): " + queuesPath, finalTurnInstructions(final)} {
 		if section != "" {
 			sections = append(sections, section)

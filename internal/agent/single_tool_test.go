@@ -12,6 +12,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
+	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
@@ -166,7 +167,11 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 		t.Fatal(err)
 	}
 	contextRegistry, _ := systemcontext.NewRegistry(source)
-	agentSessions, err := NewUserSession(ctx, sessions, contextRegistry, nil, UserSessionConfig{AgentSession: AgentSessionConfig{
+	queues, err := queue.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentSessions, err := NewUserSession(ctx, sessions, contextRegistry, queues, UserSessionConfig{AgentSession: AgentSessionConfig{
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
 	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4},

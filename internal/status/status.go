@@ -88,7 +88,7 @@ func activeIdentifier(item task.Active) string {
 }
 
 type queueLister interface {
-	List(sessionID string) ([]queue.Info, error)
+	List() ([]queue.Info, error)
 }
 
 type Queues struct{ queues queueLister }
@@ -96,11 +96,11 @@ type Queues struct{ queues queueLister }
 func NewQueues(queues queueLister) Queues { return Queues{queues: queues} }
 
 func (Queues) Key() string { return "runtime:queues" }
-func (p Queues) Observe(_ context.Context, query Query) (Observation, error) {
+func (p Queues) Observe(_ context.Context, _ Query) (Observation, error) {
 	if p.queues == nil {
 		return Observation{Available: true, Text: "Queues: none"}, nil
 	}
-	items, err := p.queues.List(query.SessionID)
+	items, err := p.queues.List()
 	if err != nil {
 		return Observation{}, err
 	}
@@ -150,6 +150,22 @@ func NewRegistry(providers ...Provider) (*Registry, error) {
 		}
 	}
 	return r, nil
+}
+
+// With returns an independent registry containing the current providers plus
+// the supplied session-bound providers.
+func (r *Registry) With(providers ...Provider) (*Registry, error) {
+	if r == nil {
+		return nil, errors.New("status: registry is unavailable")
+	}
+	r.mu.RLock()
+	items := make([]Provider, 0, len(r.providers)+len(providers))
+	for _, provider := range r.providers {
+		items = append(items, provider)
+	}
+	r.mu.RUnlock()
+	items = append(items, providers...)
+	return NewRegistry(items...)
 }
 
 func (r *Registry) Register(provider Provider) error {

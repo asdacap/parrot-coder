@@ -18,6 +18,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
+	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
@@ -201,7 +202,11 @@ func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *age
 	if err != nil {
 		t.Fatal(err)
 	}
-	userSession, err := agent.NewUserSession(context.Background(), sessions, contextRegistry, nil, agent.UserSessionConfig{
+	queues, err := queue.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSession, err := agent.NewUserSession(context.Background(), sessions, contextRegistry, queues, agent.UserSessionConfig{
 		MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 1,
 	}, stateDirectories, agents, selectionResolver{}, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil)

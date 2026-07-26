@@ -119,6 +119,7 @@ type AgentSession interface {
 	SessionID() string
 	SessionName() string
 	IsSubagent() bool
+	Queues() QueueService
 	CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error)
 	ResolveAgent(string) (ResolvedAgent, error)
 }
