@@ -44,7 +44,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/skill"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/store"
-	"github.com/amirulashraf/parrot-coder/internal/subagent"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
@@ -175,7 +174,7 @@ type App struct {
 	compactions   *compaction.Repository
 	outputs       *tool.OutputStore
 	processes     *process.Runner
-	notifications *subagent.CompletionNotifier
+	notifications *agent.CompletionNotifier
 	mcp           *mcp.Manager
 	providers     *agent.ProviderRegistry
 	httpClient    *http.Client
@@ -419,7 +418,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	web := webfetch.New(webfetch.Config{AllowPrivate: loaded.Config.WebFetch.AllowPrivate})
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
-	notifications := subagent.NewCompletionNotifier()
+	notifications := agent.NewCompletionNotifier()
 	result.notifications = notifications
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
 		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Name: item.Name, Kind: string(managedtask.KindShell), Error: item.Error}
@@ -521,7 +520,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		ObserveChildProgress: func(sessionID string, report func(agent.ChildProgress)) func() {
 			return live.ObserveTransient(sessionID, func(item v1.Event) { reportChildEvent(report, item) })
 		},
-		OnChildComplete: func(task agent.Status) { notifications.Notify(childNotificationTask(task)) },
+		OnChildComplete: notifications.Notify,
 		OnChildProgress: func(task agent.Status) {
 			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
 			live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.ParentSession, TaskID: task.SessionID, Data: data})
@@ -536,7 +535,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		runtime, _ := userSession.Get(id)
 		return runtime
 	}
-	notifications.SetLookup(func(sessionID string) (subagent.NotificationSession, bool) {
+	notifications.SetLookup(func(sessionID string) (agent.NotificationSession, bool) {
 		session, ok := userSession.Lookup(sessionID)
 		return session, ok
 	})
@@ -748,7 +747,7 @@ func (a *App) Close() error {
 }
 
 type processLifecycle struct {
-	notifications *subagent.CompletionNotifier
+	notifications *agent.CompletionNotifier
 	processes     *process.Runner
 }
 
@@ -1233,10 +1232,6 @@ type childSessionObserver struct{ events *event.Broker }
 
 func (o childSessionObserver) ChildCreated(child agent.ChildSession) {
 	o.events.ObserveSession(child.SessionID)
-}
-
-func childNotificationTask(task agent.Status) subagent.Task {
-	return subagent.Task{SessionID: task.SessionID, ParentSession: task.ParentSession, Agent: task.Agent, Name: task.Name, Turn: task.Turn, Status: subagent.Status(task.State), Output: task.Output, Error: task.Error}
 }
 
 // publishChildLifecycle publishes one flat task lifecycle event for an agent

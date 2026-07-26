@@ -5,142 +5,46 @@ import (
 	"encoding/json"
 	"errors"
 	"strings"
-	"sync"
 	"testing"
-	"time"
-
-	"github.com/amirulashraf/parrot-coder/internal/subagent"
 )
 
-type toolTestTurnPermit struct{}
-
-func (toolTestTurnPermit) Release() {}
-
-type reusableAgentExecutor struct {
-	mu       sync.Mutex
-	runs     chan subagent.Execution
-	releases map[string]chan string
-	sends    chan string
+type agentTestChild struct {
+	task      AgentTask
+	messageID string
+	messages  []string
 }
 
-func newReusableAgentExecutor() *reusableAgentExecutor {
-	return &reusableAgentExecutor{runs: make(chan subagent.Execution, 4), releases: make(map[string]chan string), sends: make(chan string, 4)}
-}
-
-func (e *reusableAgentExecutor) Prepare(context.Context, subagent.Preparation) (string, error) {
-	return "session-child", nil
-}
-
-func (*reusableAgentExecutor) TryAdmitTurn(string) (subagent.TurnPermit, bool, error) {
-	return toolTestTurnPermit{}, true, nil
-}
-
-func (e *reusableAgentExecutor) Execute(ctx context.Context, execution subagent.Execution) (string, error) {
-	release := make(chan string, 1)
-	e.mu.Lock()
-	e.releases[execution.SessionID] = release
-	e.mu.Unlock()
-	e.runs <- execution
-	select {
-	case output := <-release:
-		return output, nil
-	case <-ctx.Done():
-		return "", ctx.Err()
-	}
-}
-
-func (e *reusableAgentExecutor) Send(_ context.Context, execution subagent.Execution, message string) (string, error) {
-	e.sends <- execution.SessionID + ":" + message
-	return "message-1", nil
-}
-
-func (e *reusableAgentExecutor) release(id, output string) {
-	e.mu.Lock()
-	release := e.releases[id]
-	e.mu.Unlock()
-	release <- output
-}
-
-type managerAgentChildren struct{ manager *subagent.Manager }
-
-type managerChildAgent struct {
-	manager       *subagent.Manager
-	parentSession string
-	sessionID     string
-}
-
-func (c managerAgentChildren) Create(ctx context.Context, parentSession, callerAgent, prompt, agent, model, name string) (ChildAgent, error) {
-	sessionID, err := c.manager.Spawn(ctx, parentSession, callerAgent, subagent.Request{
-		Prompt: prompt, Agent: agent, Model: model, Name: name,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return managerChildAgent{manager: c.manager, parentSession: parentSession, sessionID: sessionID}, nil
-}
-
-func (c managerAgentChildren) Resolve(parentSession, identifier string) (ChildAgent, error) {
-	task, err := c.manager.Resolve(parentSession, identifier)
-	if err != nil {
-		return nil, err
-	}
-	return managerChildAgent{manager: c.manager, parentSession: parentSession, sessionID: task.SessionID}, nil
-}
-
-func (c managerChildAgent) Status() AgentTask {
-	task, _ := c.manager.Status(c.parentSession, c.sessionID)
-	return testAgentTask(task)
-}
-
-func (c managerChildAgent) Send(ctx context.Context, message AgentMessage) (AgentTask, string, error) {
-	task, err := c.manager.Status(c.parentSession, c.sessionID)
-	if err != nil {
-		return AgentTask{}, "", err
-	}
-	if task.Status == subagent.StatusRunning || task.Status == subagent.StatusPending {
-		messageID, sendErr := c.manager.SendAttributed(ctx, c.parentSession, c.sessionID, message.String(), message.Content)
-		if sendErr == nil {
-			task, err = c.manager.Status(c.parentSession, c.sessionID)
-			return testAgentTask(task), messageID, err
-		}
-		if !errors.Is(sendErr, subagent.ErrNotRunning) {
-			return AgentTask{}, "", sendErr
-		}
-	}
-	task, err = c.manager.FollowUpAttributed(c.parentSession, c.sessionID, subagent.Request{Prompt: message.String()}, message.Content)
-	return testAgentTask(task), "", err
-}
-
-func testAgentTask(task subagent.Task) AgentTask {
-	return AgentTask{
-		SessionID: task.SessionID, Agent: task.Agent, Name: task.Name, Status: string(task.Status),
-		Turn: task.Turn, Depth: task.Depth, Output: task.Output, Error: task.Error,
-	}
-}
-
-type agentSendTestChild struct {
-	task     AgentTask
-	messages []string
-}
-
-func (c *agentSendTestChild) Status() AgentTask { return c.task }
-func (c *agentSendTestChild) Send(_ context.Context, message AgentMessage) (AgentTask, string, error) {
+func (c *agentTestChild) Status() AgentTask { return c.task }
+func (c *agentTestChild) Send(_ context.Context, message AgentMessage) (AgentTask, string, error) {
 	c.messages = append(c.messages, message.String())
-	return c.task, "message-parent", nil
+	return c.task, c.messageID, nil
 }
 
-type agentSendTestSession struct {
+type agentTestSession struct {
 	name    string
+	child   ChildAgent
 	targets map[string]ResolvedAgent
+	created struct {
+		callerAgent string
+		prompt      string
+		agent       string
+		model       string
+		name        string
+	}
 }
 
-func (s *agentSendTestSession) SessionID() string   { return "caller-session" }
-func (s *agentSendTestSession) SessionName() string { return s.name }
-func (*agentSendTestSession) IsSubagent() bool      { return true }
-func (*agentSendTestSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
-	return nil, errors.New("not implemented")
+func (*agentTestSession) SessionID() string     { return "caller-session" }
+func (s *agentTestSession) SessionName() string { return s.name }
+func (*agentTestSession) IsSubagent() bool      { return true }
+func (s *agentTestSession) CreateAgent(_ context.Context, callerAgent, prompt, agent, model, name string) (ChildAgent, error) {
+	s.created.callerAgent = callerAgent
+	s.created.prompt = prompt
+	s.created.agent = agent
+	s.created.model = model
+	s.created.name = name
+	return s.child, nil
 }
-func (s *agentSendTestSession) ResolveAgent(identifier string) (ResolvedAgent, error) {
+func (s *agentTestSession) ResolveAgent(identifier string) (ResolvedAgent, error) {
 	target, ok := s.targets[identifier]
 	if !ok {
 		return ResolvedAgent{}, errors.New("not found")
@@ -164,8 +68,8 @@ func TestAgentSendTrustRelationshipMatrix(t *testing.T) {
 		{name: "empty friendly name falls back to canonical caller", caller: "build", target: "build", relationship: AgentRelationshipDescendant},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			child := &agentSendTestChild{task: AgentTask{SessionID: "canonical-target", Agent: testCase.target, Status: "running"}}
-			session := &agentSendTestSession{name: testCase.senderName, targets: map[string]ResolvedAgent{
+			child := &agentTestChild{task: AgentTask{SessionID: "canonical-target", Agent: testCase.target, Status: "running"}, messageID: "message-parent"}
+			session := &agentTestSession{name: testCase.senderName, targets: map[string]ResolvedAgent{
 				"friendly-target": {Agent: child, Relationship: testCase.relationship},
 			}}
 			send := &AgentTool{Kind: agentSendID, Session: session, Agents: func(agent string) (bool, error) {
@@ -203,15 +107,22 @@ func TestAgentSendTrustRelationshipMatrix(t *testing.T) {
 	}
 }
 
-func TestAgentToolsReusableLifecycle(t *testing.T) {
-	executor := newReusableAgentExecutor()
-	// The caller content, rather than the trusted attribution envelope, consumes
-	// the configured prompt allowance for both steering and follow-up turns.
-	manager := subagent.NewManager(executor, subagent.Config{MaxPromptBytes: len("continue")})
+func TestAgentToolsContract(t *testing.T) {
+	child := &agentTestChild{
+		task:      AgentTask{SessionID: "session-child", Agent: "explorer", Name: "code-review", Status: "running", Turn: 1, Depth: 1},
+		messageID: "message-1",
+	}
+	session := &agentTestSession{
+		name:  "root",
+		child: child,
+		targets: map[string]ResolvedAgent{
+			"code-review": {Agent: child, Relationship: AgentRelationshipDescendant},
+		},
+	}
 	lookup := func(id string) (bool, error) { return id != "build", nil }
-	tools := make(map[string]Tool)
-	for _, item := range NewAgentTools(managerAgentChildren{manager: manager}, lookup) {
-		tools[item.ID()] = item
+	tools := map[string]Tool{
+		agentSpawnID: &AgentTool{Kind: agentSpawnID, Session: session, Agents: lookup},
+		agentSendID:  &AgentTool{Kind: agentSendID, Session: session, Agents: lookup},
 	}
 	call := CallContext{SessionID: "root", Agent: "build", ToolCallID: "call-1"}
 	spawn := tools[agentSpawnID]
@@ -238,44 +149,20 @@ func TestAgentToolsReusableLifecycle(t *testing.T) {
 		return result
 	}
 
-	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer","name":"code-review"}`)
-	sessionID, ok := spawned.Metadata["session_id"].(string)
-	if !ok || sessionID == "" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != string(subagent.StatusRunning) {
+	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer","model":"fast","name":"code-review"}`)
+	if spawned.Metadata["session_id"] != "session-child" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != "running" || spawned.Metadata["turn"] != 1 {
 		t.Fatalf("spawned = %#v", spawned)
 	}
-	first := <-executor.runs
-	if first.Request.Prompt != "inspect" || first.Turn != 1 || sessionID != first.SessionID {
-		t.Fatalf("first execution = %#v, session ID = %q", first, sessionID)
+	if session.created.callerAgent != "build" || session.created.prompt != "inspect" || session.created.agent != "explorer" || session.created.model != "fast" || session.created.name != "code-review" {
+		t.Fatalf("created = %#v", session.created)
 	}
-	id := first.SessionID
 	sent := execute(agentSendID, `{"session_id":"code-review","message":"focus"}`)
-	if sent.Metadata["message_id"] != "message-1" || sent.Metadata["session_id"] != sessionID || <-executor.sends != sessionID+":Agent message from root:\n\nfocus" {
-		t.Fatalf("sent = %#v", sent)
-	}
-	executor.release(id, "first output")
-	if _, err := manager.Await(context.Background(), "root", id); err != nil {
-		t.Fatal(err)
-	}
-	followed := execute(agentSendID, `{"session_id":"code-review","message":"continue"}`)
-	if followed.Metadata["turn"] != 2 || followed.Metadata["status"] != string(subagent.StatusRunning) {
-		t.Fatalf("followed = %#v", followed)
-	}
-	second := <-executor.runs
-	if second.SessionID != sessionID || second.Request.Prompt != "Agent message from root:\n\ncontinue" || second.Turn != 2 {
-		t.Fatalf("second execution = %#v", second)
-	}
-	interrupted, err := manager.Interrupt(context.Background(), "root", id)
-	if err != nil || interrupted.Status != subagent.StatusCanceled {
-		t.Fatalf("interrupted = %#v, %v", interrupted, err)
-	}
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := manager.Shutdown(shutdownCtx); err != nil {
-		t.Fatal(err)
+	if sent.Metadata["message_id"] != "message-1" || sent.Metadata["session_id"] != "session-child" || len(child.messages) != 1 || child.messages[0] != "Agent message from root:\n\nfocus" {
+		t.Fatalf("sent = %#v, messages = %#v", sent, child.messages)
 	}
 
 	send := tools[agentSendID]
-	if _, err := send.Plan(context.Background(), json.RawMessage(`{"task_id":"`+id+`","message":"legacy"}`), call); err == nil {
+	if _, err := send.Plan(context.Background(), json.RawMessage(`{"task_id":"session-child","message":"legacy"}`), call); err == nil {
 		t.Fatal("agent_send accepted task_id")
 	}
 	presentation := send.Presentation()

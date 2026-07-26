@@ -1,4 +1,4 @@
-package subagent
+package agent
 
 import (
 	"context"
@@ -54,7 +54,7 @@ func (n *CompletionNotifier) SetLookup(lookup func(string) (NotificationSession,
 }
 
 // Notify asynchronously delivers one terminal turn to its direct parent.
-func (n *CompletionNotifier) Notify(task Task) {
+func (n *CompletionNotifier) Notify(task Status) {
 	if n == nil || task.ParentSession == "" {
 		return
 	}
@@ -95,12 +95,12 @@ func (n *CompletionNotifier) Notify(task Task) {
 	}()
 }
 
-func completionNotification(task Task) string {
+func completionNotification(task Status) string {
 	content := fmt.Sprintf("Agent task notification: task %s", task.SessionID)
 	if task.Name != "" {
 		content += fmt.Sprintf(" (%s)", task.Name)
 	}
-	content += fmt.Sprintf(" finished with status %s.", task.Status)
+	content += fmt.Sprintf(" finished with status %s.", task.State)
 	if task.Output != "" {
 		content += "\n\n" + task.Output
 	}
