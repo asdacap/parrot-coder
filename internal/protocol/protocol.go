@@ -15,8 +15,6 @@ type Request struct {
 	Messages     []Message
 	Tools        []ToolDefinition
 	Reasoning    *ReasoningOptions
-	// PreviousResponseID continues a provider response chain when supported.
-	PreviousResponseID string
 	// ProviderPreferences carries provider-specific request body extensions
 	// as opaque JSON. OpenAI-compatible routers (such as OpenRouter) read it
 	// as the top-level "provider" object to influence routing, fallback, and
@@ -150,7 +148,6 @@ const (
 	EventToolOutputDelta       EventType = "tool_output_delta"
 	EventCodeDisplay           EventType = "code_display"
 	EventRouterMetadata        EventType = "router_metadata"
-	EventResponseID            EventType = "response_id"
 )
 
 // ToolInputDelta is an incremental fragment of a function's JSON arguments.
@@ -199,5 +196,4 @@ type Event struct {
 	ToolCallID     string
 	CodeDisplay    *CodeDisplay
 	RouterMetadata *RouterMetadata
-	ResponseID     string
 }

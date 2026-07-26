@@ -13,7 +13,7 @@ import (
 
 func TestEncodeRequest(t *testing.T) {
 	encoded, err := EncodeRequest(protocol.Request{
-		Model: "model", Instructions: "instructions", PreviousResponseID: "resp_previous",
+		Model: "model", Instructions: "instructions",
 		Messages: []protocol.Message{
 			{Role: protocol.RoleSystem, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "context changed"}}},
 			{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "hello"}}},
@@ -28,7 +28,7 @@ func TestEncodeRequest(t *testing.T) {
 	if err := json.Unmarshal(encoded, &body); err != nil {
 		t.Fatal(err)
 	}
-	if body["instructions"] != "instructions" || body["previous_response_id"] != "resp_previous" || body["store"] != false || body["stream"] != true {
+	if body["instructions"] != "instructions" || body["store"] != false || body["stream"] != true {
 		t.Fatalf("unexpected body: %s", encoded)
 	}
 	input := body["input"].([]any)
@@ -81,35 +81,6 @@ func TestEncodeRequestProviderPreferences(t *testing.T) {
 	}
 	if _, err := EncodeRequest(protocol.Request{ProviderPreferences: json.RawMessage(`"nope"`)}); err == nil || !strings.Contains(err.Error(), "JSON object") {
 		t.Fatalf("non-object preferences error = %v", err)
-	}
-}
-
-func TestParserResponseIdentityCreatedAndTerminalFallback(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		fixture string
-		wantID  string
-	}{
-		{
-			name: "created identity is not duplicated by terminal event",
-			fixture: streamFixture(
-				`{"type":"response.created","response":{"id":"resp_created"}}`,
-				`{"type":"response.completed","response":{"id":"resp_created"}}`,
-			),
-			wantID: "resp_created",
-		},
-		{
-			name:    "terminal identity is fallback",
-			fixture: streamFixture(`{"type":"response.completed","response":{"id":"resp_terminal"}}`),
-			wantID:  "resp_terminal",
-		},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			events := collect(t, NewParser(strings.NewReader(test.fixture), 2048))
-			if len(events) != 2 || events[0].Type != protocol.EventResponseID || events[0].ResponseID != test.wantID || events[1].Type != protocol.EventFinish {
-				t.Fatalf("events = %#v", events)
-			}
-		})
 	}
 }
 
