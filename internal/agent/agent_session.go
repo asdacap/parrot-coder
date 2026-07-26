@@ -116,7 +116,7 @@ func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
 // Prompt admits input, runs the session to idle, and returns the assistant
 // message produced by that execution lifecycle.
 func (s *agentSession) Prompt(ctx context.Context, content string) (string, error) {
-	messages, err := s.config.Sessions.GetSession(s.dto.ID).ListMessages(ctx)
+	messages, err := s.user.persistent(s.dto.ID).ListMessages(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +136,7 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 		}
 		return "", err
 	}
-	messages, err = s.config.Sessions.GetSession(s.dto.ID).ListMessages(ctx)
+	messages, err = s.user.persistent(s.dto.ID).ListMessages(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -196,7 +196,7 @@ func (s *agentSession) admitLocked(ctx context.Context, content string) (string,
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.config.Sessions.GetSession(s.dto.ID).Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
+	if _, err := s.user.persistent(s.dto.ID).Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
 		return "", err
 	}
 	return messageID, nil

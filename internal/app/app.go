@@ -490,9 +490,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: session state directories: %w", err)
 	}
-	userSession, err := agent.NewUserSession(ctx, agent.UserSessionConfig{
+	userSession, err := agent.NewUserSession(ctx, sessions, agent.UserSessionConfig{
 		AgentSession: agent.AgentSessionConfig{
-			Sessions: sessions, Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
+			Contexts: contexts, StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
 			ToolProviders: toolProviders, ToolPermissionAuthorizer: permissions, ToolErrorAdvisor: pathErrorAdvisor,
 			Workspace: ws, Outputs: outputs, Processes: processes, TaskIDFor: func(sessionID string) string {
 				return live.TaskIDFor(sessionID, managedtask.MainTaskID)

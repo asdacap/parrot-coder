@@ -85,12 +85,37 @@ func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
 	}
 }
 
-type failingGetSessionRuntime struct{ SessionRuntime }
+type recordingSessionRuntime struct {
+	SessionRuntime
+	mu  sync.Mutex
+	ids []string
+}
+
+func (r *recordingSessionRuntime) GetSession(sessionID string) session.UserSession {
+	r.mu.Lock()
+	r.ids = append(r.ids, sessionID)
+	r.mu.Unlock()
+	return r.SessionRuntime.GetSession(sessionID)
+}
+
+func (r *recordingSessionRuntime) IDs() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.ids...)
+}
+
+type failingGetSessionRuntime struct {
+	SessionRuntime
+	sessionID string
+}
 
 type failingGetUserSession struct{ session.UserSession }
 
-func (failingGetSessionRuntime) GetSession(string) session.UserSession {
-	return failingGetUserSession{}
+func (r failingGetSessionRuntime) GetSession(sessionID string) session.UserSession {
+	if sessionID == r.sessionID {
+		return failingGetUserSession{}
+	}
+	return r.SessionRuntime.GetSession(sessionID)
 }
 
 func (failingGetUserSession) Get(context.Context) (session.AgentSessionDto, error) {
@@ -98,10 +123,12 @@ func (failingGetUserSession) Get(context.Context) (session.AgentSessionDto, erro
 }
 
 func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
-	runner := &agentSession{
-		dto:    session.AgentSessionDto{ID: "ses_child"},
-		config: AgentSessionConfig{Sessions: failingGetSessionRuntime{}},
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	created, err := NewUserSession(t.Context(), failingGetSessionRuntime{SessionRuntime: h.sessions, sessionID: "ses_deleted_parent"}, h.agentSessions.config)
+	if err != nil {
+		t.Fatal(err)
 	}
+	runner := mustGetAgentSession(t, created.(*userSession), h.sessionID).(*agentSession)
 	query := runner.statusQuery(context.Background(), session.AgentSessionDto{
 		ParentSessionID: "ses_deleted_parent",
 		Provider:        "openai",
@@ -452,8 +479,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		t.Fatal(err)
 	}
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
-	createdAgentSessions, err := NewUserSession(ctx, UserSessionConfig{AgentSession: AgentSessionConfig{
-		Sessions:           sessions,
+	createdAgentSessions, err := NewUserSession(ctx, sessions, UserSessionConfig{AgentSession: AgentSessionConfig{
 		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
 		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
@@ -840,6 +866,34 @@ func (r deleteFailSessionRuntime) GetSession(sessionID string) session.UserSessi
 
 func (r deleteFailUserSession) Delete(context.Context) error { return r.err }
 
+func TestAgentSessionsResolvePersistenceThroughOwningUserSession(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	recording := &recordingSessionRuntime{SessionRuntime: h.sessions}
+	created, err := NewUserSession(t.Context(), recording, h.agentSessions.config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentSessions := created.(*userSession)
+	parent := mustGetAgentSession(t, agentSessions, h.sessionID)
+	if _, err := parent.(*agentSession).admit(context.Background(), "root input"); err != nil {
+		t.Fatal(err)
+	}
+	child, err := agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{
+		ProjectID: parent.(*agentSession).dto.ProjectID, Name: "bound", Agent: BuildID,
+		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := child.(*agentSession).admit(context.Background(), "child input"); err != nil {
+		t.Fatal(err)
+	}
+	ids := recording.IDs()
+	if len(ids) != 3 || ids[0] != parent.ID() || ids[1] != parent.ID() || ids[2] != child.ID() {
+		t.Fatalf("persistent session resolutions = %q, want [%q %q %q]", ids, parent.ID(), parent.ID(), child.ID())
+	}
+}
+
 func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	providerErr := errors.New("child provider failed")
@@ -871,11 +925,18 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	}
 
 	cleanupErr := errors.New("delete failed")
-	h.agentSessions.repository.config.Sessions = deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}
-	if child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{ProjectID: parent.(*agentSession).dto.ProjectID, Name: "retained", Agent: BuildID, DefaultSelection: session.Selection{Provider: "fake", Model: "model"}}); !errors.Is(err, providerErr) || !errors.Is(err, cleanupErr) || child != nil {
+	cleanupConfig := h.agentSessions.config
+	cleanupConfig.AgentSession.ToolProviders = providers
+	created, err := NewUserSession(t.Context(), deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}, cleanupConfig)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cleanupSessions := created.(*userSession)
+	parent = mustGetAgentSession(t, cleanupSessions, h.sessionID)
+	if child, err := cleanupSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{ProjectID: parent.(*agentSession).dto.ProjectID, Name: "retained", Agent: BuildID, DefaultSelection: session.Selection{Provider: "fake", Model: "model"}}); !errors.Is(err, providerErr) || !errors.Is(err, cleanupErr) || child != nil {
 		t.Fatalf("CreateChild cleanup failure = %#v, %v", child, err)
 	}
-	children := h.agentSessions.ChildSessions(h.sessionID)
+	children := cleanupSessions.ChildSessions(h.sessionID)
 	if len(children) != 1 {
 		t.Fatalf("cleanup failure children = %#v, want retained relation", children)
 	}
@@ -1089,7 +1150,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 
 	restartedConfig := h.agentSessions.config
 	restartedConfig.MaxChildTasks = 1
-	createdRestarted, err := NewUserSession(ctx, restartedConfig)
+	createdRestarted, err := NewUserSession(ctx, h.sessions, restartedConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
