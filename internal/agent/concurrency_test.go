@@ -40,12 +40,12 @@ func TestWorkerQuotaRespectsShutdownAndGlobalAndParentRelease(t *testing.T) {
 	parent := &agentSession{childTurns: newChildTurnSemaphore(1)}
 	child := &agentSession{user: user, parent: parent}
 
-	release, err := child.tryAcquireWorkerQuota()
-	if err != nil {
-		t.Fatal(err)
+	release, blocked, err := child.tryAcquireTurnQuota()
+	if err != nil || blocked {
+		t.Fatalf("first acquisition = %v, %v", blocked, err)
 	}
-	if _, err := child.tryAcquireWorkerQuota(); !errors.Is(err, ErrChildConcurrency) {
-		t.Fatalf("second acquisition error = %v, want %v", err, ErrChildConcurrency)
+	if _, blocked, err := child.tryAcquireTurnQuota(); err != nil || !blocked {
+		t.Fatalf("second acquisition = %v, %v; want blocked", blocked, err)
 	}
 	release()
 	release()
@@ -66,6 +66,14 @@ func TestWorkerQuotaRespectsShutdownAndGlobalAndParentRelease(t *testing.T) {
 	if _, err := user.TryAcquireWorkerQuota(); !errors.Is(err, ErrUserSessionClosed) {
 		t.Fatalf("closed acquisition error = %v, want %v", err, ErrUserSessionClosed)
 	}
+	if _, err := child.acquireTurnQuota(t.Context()); !errors.Is(err, ErrUserSessionClosed) {
+		t.Fatalf("blocking acquisition error = %v, want %v", err, ErrUserSessionClosed)
+	}
+	parentPermit, ok = parent.childTurns.tryAcquire()
+	if !ok {
+		t.Fatal("failed blocking acquisition did not release parent quota")
+	}
+	parentPermit.Release()
 }
 
 func TestAgentSessionShutdownBlocksRejectsNewTurnsAndHonorsContext(t *testing.T) {

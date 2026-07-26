@@ -49,14 +49,6 @@ type turnState struct {
 	releaseQuota func()
 }
 
-type turnPolicy interface {
-	Validate(string) error
-	TryAcquire() (func(), bool, error)
-	Acquire(context.Context) (func(), error)
-	CapturesOutput() bool
-	Finished(Status, string, error, bool) (string, error, bool)
-}
-
 type turnEvents interface {
 	Started(Status)
 	Working(string, Status, func(ChildProgress)) func()
@@ -93,16 +85,6 @@ func (e callbackTurnEvents) Finished(status Status) {
 	e.progress(status)
 }
 func (e callbackTurnEvents) Completed(status Status) { e.complete(status) }
-
-type ordinaryTurnPolicy struct{}
-
-func (ordinaryTurnPolicy) Validate(string) error                   { return nil }
-func (ordinaryTurnPolicy) TryAcquire() (func(), bool, error)       { return nil, false, nil }
-func (ordinaryTurnPolicy) Acquire(context.Context) (func(), error) { return nil, nil }
-func (ordinaryTurnPolicy) CapturesOutput() bool                    { return false }
-func (ordinaryTurnPolicy) Finished(_ Status, output string, err error, _ bool) (string, error, bool) {
-	return output, err, false
-}
 
 // AgentSession is the runtime for one persisted agent session. It owns both
 // execution and the synchronization which ensures only one execution lifecycle
@@ -236,16 +218,26 @@ func (s *agentSession) Send(ctx context.Context, messageID, content string) (ses
 }
 
 func (s *agentSession) send(ctx context.Context, messageID, content, measuredContent string) (session.Admission, error) {
-	admission, _, err := s.admitAndStart(ctx, messageID, content, measuredContent, false, true)
+	if s.parent != nil {
+		if err := validateChildPrompt(measuredContent, s.maxChildPromptBytes); err != nil {
+			return session.Admission{}, err
+		}
+	}
+	admission, _, err := s.admitAndStart(ctx, messageID, content, false, true)
 	return admission, err
 }
 
 func (s *agentSession) sendAndWait(ctx context.Context, content string) (string, error) {
+	if s.parent != nil {
+		if err := validateChildPrompt(content, s.maxChildPromptBytes); err != nil {
+			return "", err
+		}
+	}
 	messageID, err := id.New("msg")
 	if err != nil {
 		return "", err
 	}
-	_, state, err := s.admitAndStart(ctx, messageID, content, content, false, true)
+	_, state, err := s.admitAndStart(ctx, messageID, content, false, true)
 	if err != nil {
 		return "", err
 	}
@@ -289,18 +281,7 @@ func (s *agentSession) messageResponse(ctx context.Context, messageID string) (s
 	return "", errors.New("agent: session produced no assistant output")
 }
 
-func (s *agentSession) effectiveTurnPolicy() turnPolicy {
-	if s.turnPolicy == nil {
-		return ordinaryTurnPolicy{}
-	}
-	return s.turnPolicy
-}
-
-func (s *agentSession) admitAndStart(ctx context.Context, messageID, content, measuredContent string, waitForPermit, start bool) (session.Admission, *turnState, error) {
-	policy := s.effectiveTurnPolicy()
-	if err := policy.Validate(measuredContent); err != nil {
-		return session.Admission{}, nil, err
-	}
+func (s *agentSession) admitAndStart(ctx context.Context, messageID, content string, waitForPermit, start bool) (session.Admission, *turnState, error) {
 retry:
 	s.mu.Lock()
 	if s.removed {
@@ -332,7 +313,7 @@ retry:
 	}
 	s.mu.Unlock()
 
-	release, blocked, err := policy.TryAcquire()
+	release, blocked, err := s.tryAcquireTurnQuota()
 	if err != nil || blocked && !waitForPermit {
 		if blocked {
 			err = ErrChildConcurrency
@@ -427,7 +408,7 @@ retry:
 	}
 	s.mu.Unlock()
 
-	release, blocked, err := s.effectiveTurnPolicy().TryAcquire()
+	release, blocked, err := s.tryAcquireTurnQuota()
 	if err != nil {
 		return nil, err
 	}
@@ -566,7 +547,7 @@ func (s *agentSession) removeIfIdle(remove func() error) error {
 }
 
 func (s *agentSession) waitForTurnPermit(state *turnState) {
-	release, err := s.effectiveTurnPolicy().Acquire(state.ctx)
+	release, err := s.acquireTurnQuota(state.ctx)
 	if err != nil {
 		s.finishTurn(state, "", err)
 		return
@@ -596,7 +577,6 @@ func (s *agentSession) runTurn(state *turnState) {
 		return
 	}
 	s.started()
-	policy := s.effectiveTurnPolicy()
 	stop := s.turnEvents.Working(s.ID(), s.Status(), func(progress ChildProgress) { s.reportTurnProgress(state, progress) })
 	var err error
 	for {
@@ -630,7 +610,7 @@ func (s *agentSession) runTurn(state *turnState) {
 	}
 	stop()
 	output := ""
-	if policy.CapturesOutput() && state.messageID != "" && err == nil {
+	if s.parent != nil && state.messageID != "" && err == nil {
 		output, err = s.messageResponse(context.Background(), state.messageID)
 	}
 	s.finishTurn(state, output, err)
@@ -639,8 +619,22 @@ func (s *agentSession) runTurn(state *turnState) {
 func (s *agentSession) finishTurn(state *turnState, output string, runErr error) {
 	canceled := state.ctx.Err() != nil
 	state.cancel()
-	policy := s.effectiveTurnPolicy()
-	output, runErr, truncated := policy.Finished(s.Status(), output, runErr, canceled)
+	truncated := false
+	if s.parent != nil {
+		if canceled && errors.Is(runErr, context.Canceled) {
+			runErr = ErrChildCanceled
+		}
+		var outputTruncated, errorTruncated bool
+		output, outputTruncated = truncateChild(output, s.maxChildResultBytes)
+		if runErr != nil {
+			var errText string
+			errText, errorTruncated = truncateChild(runErr.Error(), s.maxChildResultBytes)
+			if errorTruncated {
+				runErr = errors.New(errText)
+			}
+		}
+		truncated = outputTruncated || errorTruncated
+	}
 	s.mu.Lock()
 	s.status.Truncated = truncated
 	state.err = runErr
@@ -692,19 +686,11 @@ func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (A
 	return s.user.CreateChild(ctx, s, request)
 }
 
-func (s *agentSession) tryAcquireWorkerQuota() (func(), error) {
-	release, blocked, err := s.tryAcquireWorkerQuotaWait()
-	if err != nil {
-		return nil, err
+func (s *agentSession) tryAcquireTurnQuota() (func(), bool, error) {
+	if s.parent == nil {
+		return nil, false, nil
 	}
-	if blocked {
-		return nil, ErrChildConcurrency
-	}
-	return release, nil
-}
-
-func (s *agentSession) tryAcquireWorkerQuotaWait() (func(), bool, error) {
-	if s.user == nil || s.parent == nil {
+	if s.user == nil {
 		return nil, false, ErrChildNotFound
 	}
 	parent, ok := s.parent.(*agentSession)
@@ -726,6 +712,27 @@ func (s *agentSession) tryAcquireWorkerQuotaWait() (func(), bool, error) {
 	}
 	var once sync.Once
 	return func() { once.Do(func() { parentPermit.Release(); globalRelease() }) }, false, nil
+}
+
+func (s *agentSession) acquireTurnQuota(ctx context.Context) (func(), error) {
+	if s.user == nil || s.parent == nil {
+		return nil, ErrChildNotFound
+	}
+	parent, ok := s.parent.(*agentSession)
+	if !ok || parent == nil {
+		return nil, ErrChildNotFound
+	}
+	parentPermit, err := parent.childTurns.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	globalPermit, err := s.user.AcquireWorkerQuota(ctx)
+	if err != nil {
+		parentPermit.Release()
+		return nil, err
+	}
+	var once sync.Once
+	return func() { once.Do(func() { parentPermit.Release(); globalPermit.Release() }) }, nil
 }
 
 func (s *agentSession) statusSnapshot() Status {

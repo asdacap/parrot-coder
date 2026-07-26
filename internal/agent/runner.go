@@ -135,7 +135,6 @@ type agentSession struct {
 	selectionMu            sync.Mutex
 	status                 Status
 	turn                   *turnState
-	turnPolicy             turnPolicy
 	turnEvents             turnEvents
 	managedTask            bool
 	childCreations         int
@@ -174,7 +173,7 @@ func newAgentSession(
 	}
 	return &agentSession{
 		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, queueMonitor: queueMonitor, config: config,
-		status: status, turnPolicy: ordinaryTurnPolicy{}, turnEvents: events, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
+		status: status, turnEvents: events, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
 		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
 	}
 }

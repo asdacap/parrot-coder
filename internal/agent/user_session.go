@@ -597,28 +597,6 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		dto, parent, user, r, store, systemContext, queueMonitor, r.config, r.maxConcurrentChildTurns, r.observers,
 		maxChildPromptBytes, maxChildResultBytes, events,
 	)
-	if parent != nil {
-		boundParent := parent.(*agentSession)
-		policy := managedTurnPolicy{
-			maxPromptBytes: maxChildPromptBytes,
-			maxResultBytes: maxChildResultBytes,
-			tryAcquire:     candidate.tryAcquireWorkerQuotaWait,
-			acquire: func(ctx context.Context) (func(), error) {
-				parentPermit, err := boundParent.childTurns.acquire(ctx)
-				if err != nil {
-					return nil, err
-				}
-				globalPermit, err := r.user.AcquireWorkerQuota(ctx)
-				if err != nil {
-					parentPermit.Release()
-					return nil, err
-				}
-				var once sync.Once
-				return func() { once.Do(func() { parentPermit.Release(); globalPermit.Release() }) }, nil
-			},
-		}
-		candidate.turnPolicy = policy
-	}
 	rolledBack := false
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -831,7 +809,7 @@ func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, r
 	messageID, err := id.New("msg")
 	var turn *turnState
 	if err == nil {
-		_, turn, err = created.admitAndStart(ctx, messageID, request.Prompt, request.Prompt, true, false)
+		_, turn, err = created.admitAndStart(ctx, messageID, request.Prompt, true, false)
 	}
 	if err != nil {
 		return nil, errors.Join(err, user.discardChild(context.WithoutCancel(ctx), child.ID()))
@@ -851,11 +829,11 @@ func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, r
 }
 
 func (s *userSession) validateChild(parent string, lineage []string, request ChildRequest) error {
-	if strings.TrimSpace(parent) == "" || strings.TrimSpace(request.Prompt) == "" || !validChildAgent(request.Agent) {
+	if strings.TrimSpace(parent) == "" || !validChildAgent(request.Agent) {
 		return ErrInvalidChildRequest
 	}
-	if len(request.Prompt) > s.config.MaxChildPromptBytes {
-		return ErrChildRequestLimit
+	if err := validateChildPrompt(request.Prompt, s.config.MaxChildPromptBytes); err != nil {
+		return err
 	}
 	if len(lineage) > s.config.MaxChildDepth {
 		return ErrChildDepth

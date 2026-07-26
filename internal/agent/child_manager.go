@@ -2,28 +2,10 @@ package agent
 
 import (
 	"context"
-	"errors"
 	"strings"
 
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 )
-
-type managedTurnPolicy struct {
-	maxPromptBytes int
-	maxResultBytes int
-	tryAcquire     func() (func(), bool, error)
-	acquire        func(context.Context) (func(), error)
-}
-
-func (p managedTurnPolicy) Validate(content string) error {
-	if strings.TrimSpace(content) == "" {
-		return ErrInvalidChildRequest
-	}
-	if len(content) > p.maxPromptBytes {
-		return ErrChildRequestLimit
-	}
-	return nil
-}
 
 func applyChildDefaults(config *UserSessionConfig) {
 	if config.ObserveTurnProgress == nil {
@@ -50,24 +32,6 @@ func applyChildDefaults(config *UserSessionConfig) {
 	if config.MaxChildResultBytes <= 0 {
 		config.MaxChildResultBytes = 1 << 20
 	}
-}
-
-func (p managedTurnPolicy) TryAcquire() (func(), bool, error)           { return p.tryAcquire() }
-func (p managedTurnPolicy) Acquire(ctx context.Context) (func(), error) { return p.acquire(ctx) }
-func (p managedTurnPolicy) CapturesOutput() bool                        { return true }
-func (p managedTurnPolicy) Finished(_ Status, output string, runErr error, canceled bool) (string, error, bool) {
-	if canceled && errors.Is(runErr, context.Canceled) {
-		runErr = ErrChildCanceled
-	}
-	output, outputTruncated := truncateChild(output, p.maxResultBytes)
-	if runErr == nil {
-		return output, nil, outputTruncated
-	}
-	errText, errorTruncated := truncateChild(runErr.Error(), p.maxResultBytes)
-	if errorTruncated {
-		runErr = errors.New(errText)
-	}
-	return output, runErr, outputTruncated || errorTruncated
 }
 
 type turnObserver struct{ turn *turnState }
@@ -135,6 +99,16 @@ func cloneStatus(task Status) Status {
 	task.Lineage = append([]string(nil), task.Lineage...)
 	return task
 }
+func validateChildPrompt(prompt string, limit int) error {
+	if strings.TrimSpace(prompt) == "" {
+		return ErrInvalidChildRequest
+	}
+	if len(prompt) > limit {
+		return ErrChildRequestLimit
+	}
+	return nil
+}
+
 func truncateChild(value string, limit int) (string, bool) {
 	if len(value) <= limit {
 		return value, false

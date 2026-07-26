@@ -719,6 +719,60 @@ func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 }
 
+func TestAgentSessionOwnsTurnQuotaAdmission(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		prompt := request.Messages[len(request.Messages)-1].Content[0].Text
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + prompt},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	root := mustGetAgentSession(t, h.agentSessions, h.sessionID).(*agentSession)
+	child, err := root.CreateChild(t.Context(), ChildRequest{Prompt: "initial", Agent: BuildID, Name: "quota-owner"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observation.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	h.agentSessions.childTurns = newChildTurnSemaphore(1)
+	root.childTurns = newChildTurnSemaphore(1)
+	parentPermit, ok := root.childTurns.tryAcquire()
+	if !ok {
+		t.Fatal("failed to saturate parent quota")
+	}
+	globalRelease, err := h.agentSessions.TryAcquireWorkerQuota()
+	if err != nil {
+		parentPermit.Release()
+		t.Fatal(err)
+	}
+	defer func() { parentPermit.Release(); globalRelease() }()
+
+	turn := child.Status().Turn
+	if admission, err := child.Send(t.Context(), "msg_blocked_follow_up", "blocked"); !errors.Is(err, ErrChildConcurrency) || admission.Created {
+		t.Fatalf("blocked child Send = %#v, %v", admission, err)
+	}
+	if status := child.Status(); status.Turn != turn || status.State != StatusSucceeded {
+		t.Fatalf("child status after rejected Send = %#v", status)
+	}
+	if _, err := root.Send(t.Context(), "msg_root_unaffected", "root"); err != nil {
+		t.Fatalf("root Send under saturated child quota = %v", err)
+	}
+	observation, err = root.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observation.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestAgentSessionEmitsTurnEventsUniformly(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -802,6 +856,126 @@ func TestAgentSessionEmitsTurnEventsUniformly(t *testing.T) {
 			}
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("events = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestAgentSessionOwnsChildInputValidation(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		prompt := request.Messages[len(request.Messages)-1].Content[0].Text
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + prompt},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	h.agentSessions.config.MaxChildPromptBytes = 4
+	root := mustGetAgentSession(t, h.agentSessions, h.sessionID)
+	before, err := h.sessions.List(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if child, err := root.CreateChild(t.Context(), ChildRequest{Prompt: " \t", Agent: BuildID, Name: "invalid"}); !errors.Is(err, ErrInvalidChildRequest) || child != nil {
+		t.Fatalf("invalid initial child = %#v, %v", child, err)
+	}
+	after, err := h.sessions.List(t.Context())
+	if err != nil || len(after) != len(before) {
+		t.Fatalf("sessions after invalid child = %d, %v; want %d", len(after), err, len(before))
+	}
+	child, err := root.CreateChild(t.Context(), ChildRequest{Prompt: "init", Agent: BuildID, Name: "validated"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := observation.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+
+	runtime := child.(*agentSession)
+	admission, err := runtime.send(t.Context(), "msg_envelope", "formatted-envelope", "1234")
+	if err != nil || !admission.Created {
+		t.Fatalf("raw input at limit = %#v, %v", admission, err)
+	}
+	observation, _ = child.Observe()
+	if _, err := observation.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	turn := child.Status().Turn
+	for _, test := range []struct {
+		name string
+		run  func() error
+		want error
+	}{
+		{name: "blank Send", run: func() error { _, err := child.Send(t.Context(), "msg_blank", " \t"); return err }, want: ErrInvalidChildRequest},
+		{name: "long Send", run: func() error { _, err := child.Send(t.Context(), "msg_long", "12345"); return err }, want: ErrChildRequestLimit},
+		{name: "blank Prompt", run: func() error { _, err := child.Prompt(t.Context(), " \t"); return err }, want: ErrInvalidChildRequest},
+		{name: "long measured envelope", run: func() error { _, err := runtime.send(t.Context(), "msg_long_envelope", "x", "12345"); return err }, want: ErrChildRequestLimit},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.run(); !errors.Is(err, test.want) {
+				t.Fatalf("error = %v, want %v", err, test.want)
+			}
+			if status := child.Status(); status.Turn != turn {
+				t.Fatalf("turn = %d, want %d", status.Turn, turn)
+			}
+		})
+	}
+
+	if _, err := root.Send(t.Context(), "msg_root_long", "12345"); err != nil {
+		t.Fatalf("root input over child limit = %v", err)
+	}
+	observation, _ = root.Observe()
+	if _, err := observation.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if output := root.Status().Output; output != "" {
+		t.Fatalf("root status captured output %q", output)
+	}
+}
+
+func TestAgentSessionOwnsChildResultNormalization(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		stream     func() (provider.Stream, error)
+		wantOutput string
+		wantError  string
+	}{
+		{name: "output", stream: func() (provider.Stream, error) {
+			return events(protocol.Event{Type: protocol.EventTextDelta, Text: "abcdefgh"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+		}, wantOutput: "abcd"},
+		{name: "error", stream: func() (provider.Stream, error) { return nil, errors.New("abcdefgh") }, wantError: "abcd"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) { return test.stream() }}
+			h := newRunnerHarness(t, fake, nil)
+			h.agentSessions.config.MaxChildResultBytes = 4
+			root := mustGetAgentSession(t, h.agentSessions, h.sessionID)
+			if _, err := root.Send(t.Context(), "msg_root_result", "root"); err != nil {
+				t.Fatal(err)
+			}
+			rootObservation, err := root.Observe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			rootResult, err := rootObservation.Wait(t.Context())
+			if err != nil || rootResult.Truncated || rootResult.Output != "" || test.wantError != "" && rootResult.Error != "abcdefgh" {
+				t.Fatalf("root result = %#v, %v", rootResult, err)
+			}
+			child, err := root.CreateChild(t.Context(), ChildRequest{Prompt: "result", Agent: BuildID, Name: "normalized"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			observation, err := child.Observe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			result, err := observation.Wait(t.Context())
+			if err != nil || result.Output != test.wantOutput || result.Error != test.wantError || !result.Truncated {
+				t.Fatalf("result = %#v, %v", result, err)
 			}
 		})
 	}
@@ -1432,6 +1606,13 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 		t.Fatalf("historical nested hierarchy after managed create = %q, %v", got, ok)
 	}
 	nestedRuntime := mustGetAgentSession(t, restarted, nested.ID)
+	turn := nestedRuntime.Status().Turn
+	if admission, err := nestedRuntime.Send(ctx, "msg_restored_invalid", strings.Repeat("x", restartedConfig.MaxChildPromptBytes+1)); !errors.Is(err, ErrChildRequestLimit) || admission.Created {
+		t.Fatalf("restored child invalid Send = %#v, %v", admission, err)
+	}
+	if nestedRuntime.Status().Turn != turn {
+		t.Fatalf("restored child invalid Send incremented turn to %d", nestedRuntime.Status().Turn)
+	}
 	admission, err := nestedRuntime.Send(ctx, "msg_restored_child", "resume restored work")
 	if err != nil || !admission.Created {
 		t.Fatalf("restored child Send = %#v, %v", admission, err)
