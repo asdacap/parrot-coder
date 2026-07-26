@@ -96,12 +96,10 @@ func (s *agentSession) applySelection(updated session.AgentSessionDto) {
 	s.dto.Provider = updated.Provider
 	s.dto.Model = updated.Model
 	s.dto.Variant = updated.Variant
-	if s.childTurn != nil {
-		s.childStatus.Agent = updated.Agent
-		s.childStatus.Provider = updated.Provider
-		s.childStatus.Model = updated.Model
-		s.childStatus.Variant = updated.Variant
-	}
+	s.status.Agent = updated.Agent
+	s.status.Provider = updated.Provider
+	s.status.Model = updated.Model
+	s.status.Variant = updated.Variant
 	s.mu.Unlock()
 	if s.agentSessionRepository != nil {
 		s.agentSessionRepository.updateSelection(s, updated)
@@ -119,25 +117,11 @@ func (s *agentSession) LatestSequence(ctx context.Context) (int64, error) {
 }
 func (s *agentSession) Status() Status {
 	s.mu.Lock()
-	if s.childTurn != nil {
-		status := cloneStatus(s.childStatus)
-		s.mu.Unlock()
-		return status
+	status := cloneStatus(s.status)
+	if s.childTurn == nil && s.drain != nil {
+		status.State = s.drain.status
 	}
-	state := StatusIdle
-	if s.drain != nil {
-		state = s.drain.status
-	}
-	status := Status{SessionID: s.dto.ID, RootSession: s.dto.ID, Agent: s.dto.Agent, Provider: s.dto.Provider, Model: s.dto.Model, Variant: s.dto.Variant, Name: s.dto.Name, State: state}
 	s.mu.Unlock()
-
-	if s.parent != nil {
-		parent := s.parent.Status()
-		status.ParentSession = parent.SessionID
-		status.RootSession = parent.RootSession
-		status.Lineage = append(parent.Lineage, parent.Agent)
-		status.Depth = parent.Depth + 1
-	}
 	return status
 }
 
@@ -309,7 +293,7 @@ func (s *agentSession) wait(ctx context.Context, state *drainState) error {
 
 func (s *agentSession) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
-	if s.childTurn != nil && childTurnActive(s.childStatus.State) {
+	if s.childTurn != nil && childTurnActive(s.status.State) {
 		s.cancelChild()
 		done := s.childTurn.done
 		s.mu.Unlock()
@@ -330,7 +314,7 @@ func (s *agentSession) Shutdown(ctx context.Context) error {
 	var childDone <-chan struct{}
 	if s.childTurn != nil {
 		childDone = s.childTurn.done
-		if childTurnActive(s.childStatus.State) {
+		if childTurnActive(s.status.State) {
 			s.cancelChild()
 		}
 	}
@@ -418,7 +402,7 @@ func (s *agentSession) removeIfIdle(remove func() error) error {
 	if s.removed {
 		return nil
 	}
-	if s.drain != nil || s.childCreations != 0 || s.childTurn != nil && childTurnActive(s.childStatus.State) {
+	if s.drain != nil || s.childCreations != 0 || s.childTurn != nil && childTurnActive(s.status.State) {
 		return ErrAgentSessionActive
 	}
 	if err := remove(); err != nil {

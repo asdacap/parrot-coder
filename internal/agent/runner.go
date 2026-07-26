@@ -134,7 +134,7 @@ type agentSession struct {
 	mu                     sync.Mutex
 	selectionMu            sync.Mutex
 	childOp                sync.Mutex
-	childStatus            Status
+	status                 Status
 	childRequest           ChildRequest
 	childTurn              *childTurnState
 	cancelChild            context.CancelFunc
@@ -171,9 +171,17 @@ func newAgentSession(
 	onChildProgress, onChildComplete func(Status),
 	onChildLifecycle func(ChildLifecycleEvent),
 ) *agentSession {
+	status := Status{SessionID: dto.ID, RootSession: dto.ID, Agent: dto.Agent, Provider: dto.Provider, Model: dto.Model, Variant: dto.Variant, Name: dto.Name, State: StatusIdle}
+	if parent != nil {
+		parentStatus := parent.Status()
+		status.ParentSession = parentStatus.SessionID
+		status.RootSession = parentStatus.RootSession
+		status.Lineage = append(parentStatus.Lineage, parentStatus.Agent)
+		status.Depth = parentStatus.Depth + 1
+	}
 	return &agentSession{
 		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, queueMonitor: queueMonitor, config: config,
-		childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
+		status: status, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
 		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
 		observeChildProgress: observeChildProgress, onChildProgress: onChildProgress,
 		onChildComplete: onChildComplete, onChildLifecycle: onChildLifecycle,
