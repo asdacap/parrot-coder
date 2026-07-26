@@ -356,8 +356,10 @@ type fakeTool struct {
 	execute func(context.Context) (tool.Result, error)
 }
 
-func (t *fakeTool) ID() string                                      { return t.id }
-func (t *fakeTool) Description() string                             { return t.id }
+func (t *fakeTool) ID() string { return t.id }
+func (t *fakeTool) Descriptor() tool.Descriptor {
+	return tool.Descriptor{ID: t.ID(), Description: t.id, Schema: t.JSONSchema(), Presentation: t.Presentation()}
+}
 func (t *fakeTool) DescribeRequest(json.RawMessage) (string, error) { return t.id, nil }
 func (t *fakeTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","additionalProperties":true}`)

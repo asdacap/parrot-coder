@@ -24,8 +24,8 @@ func (*TodoWriteTool) Presentation() Presentation {
 	}
 }
 
-func (*TodoWriteTool) Description() string {
-	return "Transactionally replace the current session's ordered todo list."
+func (t *TodoWriteTool) Descriptor() Descriptor {
+	return Descriptor{ID: t.ID(), Description: "Transactionally replace the current session's ordered todo list.", Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
 func (*TodoWriteTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input todoWriteInput

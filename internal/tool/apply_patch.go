@@ -30,8 +30,13 @@ func (*ApplyPatchTool) Presentation() Presentation {
 	}
 }
 
-func (*ApplyPatchTool) Description() string {
-	return "Apply reviewed workspace edits written as aider SEARCH/REPLACE blocks: a file path, <<<<<<< SEARCH, existing lines, =======, replacement lines, and >>>>>>> REPLACE. Empty SEARCH creates a missing file or matches an empty file. SEARCH matches regardless of LF, CRLF, or CR terminators; replacements use the matched location's terminator, while untouched bytes (including mixed line endings and a UTF-8 BOM) are preserved. Set format to \"unified\" for git-style unified diff text with the same line-ending behavior."
+func (t *ApplyPatchTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Apply reviewed workspace edits written as aider SEARCH/REPLACE blocks: a file path, <<<<<<< SEARCH, existing lines, =======, replacement lines, and >>>>>>> REPLACE. Empty SEARCH creates a missing file or matches an empty file. SEARCH matches regardless of LF, CRLF, or CR terminators; replacements use the matched location's terminator, while untouched bytes (including mixed line endings and a UTF-8 BOM) are preserved. Set format to \"unified\" for git-style unified diff text with the same line-ending behavior.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (*ApplyPatchTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	format, err := patchFormat(raw)

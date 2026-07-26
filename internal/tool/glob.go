@@ -43,8 +43,13 @@ func (*GlobTool) Presentation() Presentation {
 	}
 }
 
-func (*GlobTool) Description() string {
-	return "Find workspace paths with deterministic glob matching, including **."
+func (t *GlobTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Find workspace paths with deterministic glob matching, including **.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (*GlobTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input globInput

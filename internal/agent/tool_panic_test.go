@@ -17,8 +17,10 @@ type panicTool struct {
 	inExecute bool
 }
 
-func (*panicTool) ID() string                                      { return "boom" }
-func (*panicTool) Description() string                             { return "panics for testing" }
+func (*panicTool) ID() string { return "boom" }
+func (t *panicTool) Descriptor() tool.Descriptor {
+	return tool.Descriptor{ID: t.ID(), Description: "panics for testing", Schema: t.JSONSchema(), Presentation: t.Presentation()}
+}
 func (*panicTool) DescribeRequest(json.RawMessage) (string, error) { return "Panic", nil }
 func (*panicTool) JSONSchema() json.RawMessage                     { return json.RawMessage(`{"type":"object"}`) }
 

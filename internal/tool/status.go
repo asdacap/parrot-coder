@@ -15,8 +15,8 @@ type StatusTool struct {
 
 func NewStatusTool(registry *statusinfo.Registry) *StatusTool { return &StatusTool{Registry: registry} }
 func (*StatusTool) ID() string                                { return "status" }
-func (*StatusTool) Description() string {
-	return "Query current runtime, mode, and profile status without adding it to the system prompt."
+func (t *StatusTool) Descriptor() Descriptor {
+	return Descriptor{ID: t.ID(), Description: "Query current runtime, mode, and profile status without adding it to the system prompt.", Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
 func (*StatusTool) DescribeRequest(json.RawMessage) (string, error) {
 	return "Query current status", nil

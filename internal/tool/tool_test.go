@@ -25,9 +25,11 @@ type testTool struct {
 	presentation Presentation
 }
 
-func (t testTool) ID() string                                    { return t.id }
-func (testTool) Description() string                             { return "test" }
-func (t testTool) Presentation() Presentation                    { return t.presentation }
+func (t testTool) ID() string                 { return t.id }
+func (t testTool) Presentation() Presentation { return t.presentation }
+func (t testTool) Descriptor() Descriptor {
+	return Descriptor{ID: t.ID(), Description: "test", Schema: t.JSONSchema(), Presentation: t.Presentation()}
+}
 func (testTool) DescribeRequest(json.RawMessage) (string, error) { return "Test request", nil }
 func (testTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"value":{"type":"string"}},"required":["value"],"additionalProperties":false}`)
@@ -399,8 +401,10 @@ type outputTestTool struct {
 	BasePresentation
 }
 
-func (outputTestTool) ID() string          { return "output_test" }
-func (outputTestTool) Description() string { return "output test" }
+func (outputTestTool) ID() string { return "output_test" }
+func (t outputTestTool) Descriptor() Descriptor {
+	return Descriptor{ID: t.ID(), Description: "output test", Schema: t.JSONSchema(), Presentation: t.Presentation()}
+}
 func (outputTestTool) DescribeRequest(json.RawMessage) (string, error) {
 	return "Produce test output", nil
 }
@@ -800,7 +804,11 @@ type guidanceTestTool struct {
 	guidance string
 }
 
-func (t guidanceTestTool) SystemPromptGuidance() string { return t.guidance }
+func (t guidanceTestTool) Descriptor() Descriptor {
+	descriptor := t.testTool.Descriptor()
+	descriptor.SystemPromptGuidance = t.guidance
+	return descriptor
+}
 
 func TestSnapshotSystemPromptGuidanceCollectsNonEmpty(t *testing.T) {
 	for _, test := range []struct {
@@ -842,7 +850,7 @@ func TestSnapshotSystemPromptGuidanceCollectsNonEmpty(t *testing.T) {
 }
 
 func TestExecCommandSystemPromptGuidanceExplainsSandbox(t *testing.T) {
-	guidance := (&ExecCommandTool{}).SystemPromptGuidance()
+	guidance := (&ExecCommandTool{}).Descriptor().SystemPromptGuidance
 	if guidance == "" {
 		t.Fatal("exec_command guidance should not be empty")
 	}
@@ -854,7 +862,7 @@ func TestExecCommandSystemPromptGuidanceExplainsSandbox(t *testing.T) {
 }
 
 func TestWritePermissionSystemPromptGuidanceExplainsSandbox(t *testing.T) {
-	guidance := (&WritePermissionTool{}).SystemPromptGuidance()
+	guidance := (&WritePermissionTool{}).Descriptor().SystemPromptGuidance
 	if guidance == "" {
 		t.Fatal("request_write_permission guidance should not be empty")
 	}

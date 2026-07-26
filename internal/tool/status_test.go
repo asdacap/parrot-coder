@@ -18,7 +18,7 @@ func TestStatusToolReturnsSelectionAndProfileStatus(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(plan.Permissions) != 0 || item.SystemPromptGuidance() != "" {
+	if len(plan.Permissions) != 0 || item.Descriptor().SystemPromptGuidance != "" {
 		t.Fatalf("status tool unexpectedly affects permissions or prompt: %#v", plan)
 	}
 	result, err := item.Execute(context.Background(), plan, CallContext{

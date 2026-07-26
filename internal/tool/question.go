@@ -25,8 +25,13 @@ func (*QuestionTool) Presentation() Presentation {
 	}}}}
 }
 
-func (*QuestionTool) Description() string {
-	return "Ask typed questions and block until the user replies or rejects them. Use this tool rather than asking the user through normal message."
+func (t *QuestionTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Ask typed questions and block until the user replies or rejects them. Use this tool rather than asking the user through normal message.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (*QuestionTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input question.Request

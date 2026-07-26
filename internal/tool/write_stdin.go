@@ -41,8 +41,13 @@ func (*WriteStdinTool) Presentation() Presentation {
 	}
 }
 
-func (*WriteStdinTool) Description() string {
-	return "Writes characters to a running shell task and returns recent output."
+func (t *WriteStdinTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Writes characters to a running shell task and returns recent output.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 
 func (*WriteStdinTool) JSONSchema() json.RawMessage { return json.RawMessage(writeStdinSchema) }

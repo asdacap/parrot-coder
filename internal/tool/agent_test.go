@@ -126,7 +126,7 @@ func TestAgentToolsContract(t *testing.T) {
 	}
 	call := CallContext{SessionID: "root", Agent: "build", ToolCallID: "call-1"}
 	spawn := tools[agentSpawnID]
-	if description := spawn.Description(); !strings.Contains(description, "final result will automatically be sent to the caller") {
+	if description := spawn.Descriptor().Description; !strings.Contains(description, "final result will automatically be sent to the caller") {
 		t.Fatalf("agent_spawn description = %q", description)
 	}
 	if schema := string(spawn.JSONSchema()); !strings.Contains(schema, "friendly name for easy identification") || strings.Contains(schema, "UI name") {
@@ -172,7 +172,7 @@ func TestAgentToolsContract(t *testing.T) {
 	if schema := string(send.JSONSchema()); !strings.Contains(schema, `"session_id"`) || !strings.Contains(schema, "friendly name") || strings.Contains(schema, `"task_id"`) {
 		t.Fatalf("agent_send schema = %s", schema)
 	}
-	if description := send.Description(); !strings.Contains(description, "direct parent or descendant") || !strings.Contains(description, "friendly name") {
+	if description := send.Descriptor().Description; !strings.Contains(description, "direct parent or descendant") || !strings.Contains(description, "friendly name") {
 		t.Fatalf("agent_send description = %q", description)
 	}
 	request, err := send.DescribeRequest(json.RawMessage(`{"session_id":"parent","message":"status"}`))

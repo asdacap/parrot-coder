@@ -44,8 +44,13 @@ func (*ReadTool) Presentation() Presentation {
 	}
 }
 
-func (*ReadTool) Description() string {
-	return "Read a bounded line range from a text file or list a directory. Relative paths resolve within the workspace. File reads include the whole-file content sha256."
+func (t *ReadTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Read a bounded line range from a text file or list a directory. Relative paths resolve within the workspace. File reads include the whole-file content sha256.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (*ReadTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input readInput

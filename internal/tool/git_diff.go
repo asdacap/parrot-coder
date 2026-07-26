@@ -19,8 +19,13 @@ type GitDiffTool struct {
 
 func NewGitDiffTool() Tool        { return &GitDiffTool{} }
 func (t *GitDiffTool) ID() string { return "git_diff" }
-func (t *GitDiffTool) Description() string {
-	return "Read a bounded Git diff for uncommitted changes, a base branch, or a commit. Uncommitted output also lists untracked paths."
+func (t *GitDiffTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Read a bounded Git diff for uncommitted changes, a base branch, or a commit. Uncommitted output also lists untracked paths.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (t *GitDiffTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input gitDiffInput

@@ -39,7 +39,7 @@ func TestSkillToolLoadsExactBodyAndMetadata(t *testing.T) {
 		t.Fatal(err)
 	}
 	result, err := item.Execute(context.Background(), plan, CallContext{})
-	if err != nil || result.Text != body || result.Metadata["agent"] != "explorer" || !strings.Contains(item.Description(), "review") {
+	if err != nil || result.Text != body || result.Metadata["agent"] != "explorer" || !strings.Contains(item.Descriptor().Description, "review") {
 		t.Fatalf("result = %#v, error = %v", result, err)
 	}
 }

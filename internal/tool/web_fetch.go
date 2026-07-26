@@ -25,8 +25,13 @@ func (*WebFetchTool) Presentation() Presentation {
 	}
 }
 
-func (*WebFetchTool) Description() string {
-	return "Fetch bounded HTTP or HTTPS text with GET or HEAD after exact network permission review."
+func (t *WebFetchTool) Descriptor() Descriptor {
+	return Descriptor{
+		ID:           t.ID(),
+		Description:  "Fetch bounded HTTP or HTTPS text with GET or HEAD after exact network permission review.",
+		Schema:       t.JSONSchema(),
+		Presentation: t.Presentation(),
+	}
 }
 func (*WebFetchTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input webFetchInput
