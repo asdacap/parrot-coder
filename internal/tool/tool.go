@@ -57,6 +57,7 @@ type CallContext struct {
 	SecurityProfile security.SecurityProfile
 	StatusQuery     statusinfo.Query
 	StatusProvider  statusinfo.Provider
+	Steer           <-chan struct{}
 }
 
 type Plan struct {

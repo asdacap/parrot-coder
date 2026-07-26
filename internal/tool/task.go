@@ -115,10 +115,12 @@ func taskResult(item managedtask.Active) Result {
 }
 
 const (
-	waitAgentSchema   = `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"description":"Child agent session ID or friendly name."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the agent has not completed after this many milliseconds. Zero or omitted waits indefinitely."}},"required":["session_id"],"additionalProperties":false}`
-	waitProcessSchema = `{"type":"object","properties":{"process_id":{"type":"string","minLength":1,"description":"Shell process ID or friendly name."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the process has not completed after this many milliseconds. Zero or omitted waits indefinitely."}},"required":["process_id"],"additionalProperties":false}`
+	waitAgentSchema   = `{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"description":"Child agent session ID or friendly name."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the agent has not completed after this many milliseconds. Zero or omitted waits indefinitely until completion or steer input."}},"required":["session_id"],"additionalProperties":false}`
+	waitProcessSchema = `{"type":"object","properties":{"process_id":{"type":"string","minLength":1,"description":"Shell process ID or friendly name."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Yield if the process has not completed after this many milliseconds. Zero or omitted waits indefinitely until completion or steer input."}},"required":["process_id"],"additionalProperties":false}`
 	maxTaskWaitMS     = int64(^uint64(0)>>1) / int64(time.Millisecond)
 )
+
+var errWaitSteered = errors.New("wait: steer input arrived")
 
 type WaitTool struct {
 	BasePresentation
@@ -147,9 +149,9 @@ func (t *WaitTool) identifier(input waitInput) string {
 }
 
 func (t *WaitTool) Descriptor() Descriptor {
-	description := "Wait for a shell process to complete, yielding if the requested period elapses. process_id accepts the canonical process ID or friendly name. Waiting never stops the process."
+	description := "Wait for a shell process to complete, yielding if the requested period elapses or steer input arrives. process_id accepts the canonical process ID or friendly name. Waiting never stops the process."
 	if t.Kind == managedtask.KindAgent {
-		description = "Wait for a child agent session to complete, yielding if the requested period elapses. session_id accepts the canonical child session ID or friendly name. Waiting never stops the agent."
+		description = "Wait for a child agent session to complete, yielding if the requested period elapses or steer input arrives. session_id accepts the canonical child session ID or friendly name. Waiting never stops the agent."
 	}
 	return Descriptor{ID: t.ID(), Description: description, Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
@@ -205,16 +207,35 @@ func (t *WaitTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	if !ok {
 		return Result{}, fmt.Errorf("%s: incompatible plan", t.ID())
 	}
-	waitCtx := ctx
-	var cancel context.CancelFunc
+	waitCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(context.Canceled)
 	if input.YieldAfterMS > 0 {
-		waitCtx, cancel = context.WithTimeout(ctx, time.Duration(input.YieldAfterMS)*time.Millisecond)
-		defer cancel()
+		var timeoutCancel context.CancelFunc
+		waitCtx, timeoutCancel = context.WithTimeout(waitCtx, time.Duration(input.YieldAfterMS)*time.Millisecond)
+		defer timeoutCancel()
 	}
+	steerWatchDone := make(chan struct{})
+	if call.Steer != nil {
+		select {
+		case <-call.Steer:
+			cancel(errWaitSteered)
+		default:
+			go func() {
+				select {
+				case <-call.Steer:
+					cancel(errWaitSteered)
+				case <-steerWatchDone:
+				}
+			}()
+		}
+	}
+	defer close(steerWatchDone)
 	started := time.Now()
 	item, err := t.Controller.WaitKind(waitCtx, call.SessionID, t.identifier(input), t.Kind)
 	item.ElapsedMS = time.Since(started).Milliseconds()
-	if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+	waitEnded := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
+	yielded := errors.Is(context.Cause(waitCtx), errWaitSteered) || errors.Is(context.Cause(waitCtx), context.DeadlineExceeded)
+	if waitEnded && yielded && ctx.Err() == nil {
 		item.Yielded = true
 		return taskWaitResult(item), nil
 	}

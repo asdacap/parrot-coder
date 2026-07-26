@@ -27,6 +27,7 @@ import (
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
+	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
@@ -447,6 +448,24 @@ func (s *callThenBlockingStream) Next(ctx context.Context) (protocol.Event, erro
 }
 
 func (*callThenBlockingStream) Close() error { return nil }
+
+type blockingTaskController struct {
+	started    chan struct{}
+	interrupts atomic.Int32
+}
+
+func (c *blockingTaskController) Interrupt(context.Context, string, string) (managedtask.Active, error) {
+	c.interrupts.Add(1)
+	return managedtask.Active{}, nil
+}
+
+func (*blockingTaskController) ListActive(string) []managedtask.Active { return nil }
+
+func (c *blockingTaskController) WaitKind(ctx context.Context, _, taskID string, kind managedtask.Kind) (managedtask.Result, error) {
+	close(c.started)
+	<-ctx.Done()
+	return managedtask.Result{ID: taskID, Kind: kind, Status: "running"}, ctx.Err()
+}
 
 type fakeTool struct {
 	tool.BasePresentation
@@ -1970,6 +1989,71 @@ func TestRunnerBoundsConcurrentToolsAndSettlesAllBeforeContinuation(t *testing.T
 		if status != "success" {
 			t.Fatalf("tool %d status = %s", i, status)
 		}
+	}
+}
+
+func TestTurnSteerSignalTracksAdmissionAndPromotedSequences(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	runner := h.runner
+	runner.mu.Lock()
+	state := runner.newTurnLocked("message", nil, false)
+	runner.mu.Unlock()
+
+	admission, err := runner.Send(context.Background(), "steer", "change direction")
+	if err != nil || !admission.Created {
+		t.Fatalf("Send() = %#v, %v", admission, err)
+	}
+	select {
+	case <-runner.steerSignal():
+	default:
+		t.Fatal("admitted steer did not signal the active turn")
+	}
+	runner.acknowledgeSteers(admission.Input.AdmittedSequence - 1)
+	select {
+	case <-runner.steerSignal():
+	default:
+		t.Fatal("steer newer than cutoff was acknowledged")
+	}
+	runner.acknowledgeSteers(admission.Input.AdmittedSequence)
+	select {
+	case <-runner.steerSignal():
+		t.Fatal("acknowledged steer channel remained closed")
+	default:
+	}
+	runner.abortTurn(state)
+}
+
+func TestRunnerSteerYieldsTaskWaitAndContinuesWithSteer(t *testing.T) {
+	controller := &blockingTaskController{started: make(chan struct{})}
+	wait := &tool.WaitTool{Kind: managedtask.KindShell, Controller: controller}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			call := protocol.ToolCall{ID: "wait", Name: "wait_process", Input: json.RawMessage(`{"process_id":"proc_test"}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}
+		if !containsText(request.Messages, "change direction") || !containsText(request.Messages, `"yielded":true`) {
+			return nil, fmt.Errorf("continuation omitted steer or yielded result: %#v", request.Messages)
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil, wait)
+	if _, err := h.runner.Send(context.Background(), "initial", "wait for process"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-controller.started:
+	case <-time.After(time.Second):
+		t.Fatal("wait_process did not start")
+	}
+	if _, err := h.runner.Send(context.Background(), "steer", "change direction"); err != nil {
+		t.Fatal(err)
+	}
+	waitForAgentSession(t, func() bool { return h.runner.executionStatus() == StatusIdle })
+	if controller.interrupts.Load() != 0 {
+		t.Fatalf("task was interrupted %d times", controller.interrupts.Load())
+	}
+	if requests := fake.Requests(); len(requests) < 2 {
+		t.Fatalf("provider requests = %d; want at least 2", len(requests))
 	}
 }
 
