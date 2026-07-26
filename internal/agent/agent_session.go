@@ -993,11 +993,11 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 
 		definitions := toolDefinitions(r.toolSnapshot)
 		turn++
-		maxTurnsReached := turn >= profile.MaxTurns
+		maxTurnsReached := turn >= profile.MaxTurns()
 		instructions := runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), maxTurnsReached)
 		if maxTurnsReached {
 			definitions = nil
-			r.publishMaxTurnsReached(profile.MaxTurns)
+			r.publishMaxTurnsReached(profile.MaxTurns())
 		}
 		if r.compactor != nil {
 			result, compactErr := r.compactor.Compact(ctx, compaction.Request{
@@ -1016,7 +1016,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				if err != nil {
 					return err
 				}
-				instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), turn >= profile.MaxTurns)
+				instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), turn >= profile.MaxTurns())
 			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
@@ -1050,7 +1050,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
-			request.Instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), turn >= profile.MaxTurns)
+			request.Instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), turn >= profile.MaxTurns())
 			request.Messages = history
 			calls, finish, err = r.loggedProviderTurn(ctx, providerClient.ID(), turn, providerClient, model, request)
 			if err != nil {
@@ -1058,7 +1058,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 		}
 		if len(calls) > 0 {
-			if turn >= profile.MaxTurns {
+			if turn >= profile.MaxTurns() {
 				return errors.New("agent: provider returned tools after max-turn tool omission")
 			}
 			if err := r.executeTools(ctx, selected, profile, calls); err != nil {
@@ -1096,7 +1096,7 @@ func (r *agentSession) statusQuery(selected session.AgentSessionDto, profile Pro
 	query := statusinfo.Query{
 		SessionID:       r.dto.ID,
 		ParentSessionID: selected.ParentSessionID,
-		Agent:           profile.ID,
+		Agent:           profile.ID(),
 		Model:           selected.Model,
 	}
 	if selected.ParentSessionID != "" {
@@ -1351,7 +1351,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 					logger(ctx, r.dto.ID, call.call.Name, recovered, stack)
 				}
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.workspace, Outputs: r.outputs, SessionID: r.dto.ID, Processes: r.processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile), Steer: r.steerSignal()}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.workspace, Outputs: r.outputs, SessionID: r.dto.ID, Processes: r.processes, Agent: profile.ID(), ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile), Steer: r.steerSignal()}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

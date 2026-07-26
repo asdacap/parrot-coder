@@ -306,7 +306,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	subagentIDs := make([]string, 0, len(agent.Subagents()))
 	for _, p := range taskAgents.List() {
-		subagentIDs = append(subagentIDs, p.ID)
+		subagentIDs = append(subagentIDs, p.ID())
 	}
 	identity, err := processidentity.Load(paths.State)
 	if err != nil {
@@ -426,7 +426,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	agentLookup := func(id string) (bool, error) {
 		profile, err := profileResolver.GetProfile(id)
-		return profile.ReadOnly, err
+		return profile != nil && profile.IsReadOnly(), err
 	}
 	toolProviders, err := tool.BuiltinProviders(tool.BuiltinServices{
 		Changes: changes, Processes: processes, Tasks: &managedTaskController{tasks: tasks}, Todos: todos, Goals: goals, Questions: questions,
@@ -487,14 +487,14 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			if resolveErr != nil {
 				return id
 			}
-			return profile.ID
+			return profile.ID()
 		},
 		func(id string) int {
 			profile, resolveErr := profileResolver.GetProfile(id)
 			if resolveErr != nil {
 				return 0
 			}
-			return profile.RecursionLimit
+			return profile.RecursionLimit()
 		}, nil, live.ForgetSession, reporter)
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
@@ -546,9 +546,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		for _, definition := range toolProviders.Definitions() {
 			definitions = append(definitions, protocol.ToolDefinition{Name: definition.ID, Description: definition.Description, InputSchema: definition.Schema})
 		}
-		instructions := profile.Prompt
-		if len(profile.HardRules) > 0 {
-			instructions += "\n\nHard rules:\n- " + strings.Join(profile.HardRules, "\n- ")
+		instructions := profile.Prompt()
+		if hardRules := profile.HardRules(); len(hardRules) > 0 {
+			instructions += "\n\nHard rules:\n- " + strings.Join(hardRules, "\n- ")
 		}
 		item, err := compactionService.Compact(ctx, compaction.Request{SessionID: sessionID, ProviderID: selectedProvider.ID(), Model: model, Instructions: instructions, Tools: definitions, Force: true})
 		return v1.Compaction{Status: item.Status, AttemptID: item.AttemptID, RecordID: item.RecordID, SourceEpochID: item.SourceEpochID, TargetEpochID: item.TargetEpochID, HistoryCutoff: item.HistoryCutoff, Reason: item.Reason}, err

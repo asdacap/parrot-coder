@@ -11,13 +11,14 @@ Inspect the complete requested diff or target and enough surrounding code, tests
 Return all actionable findings, ordered by severity. For each finding, include a concise severity-tagged title, an exact file path and line, and a short explanation of the affected scenario. If there are no actionable findings, say so explicitly. Do not modify files.`
 
 func Review() Profile {
-	return Profile{
-		ID:             ReviewID,
-		Prompt:         reviewPrompt,
-		HardRules:      []string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."},
-		MaxTurns:       32,
-		RecursionLimit: 3,
-		ReadOnly:       true,
-		Status:         status.Static{ProviderKey: "profile:review", Text: "Review profile: perform a defect-first code review. Read-only mode is enforced and review delegation is not permitted."},
-	}
+	return New(
+		ReviewID,
+		reviewPrompt,
+		[]string{"Read-only mode is enforced by the runtime.", "Do not delegate the review to another agent."},
+		32,
+		3,
+		true,
+		nil,
+		status.Static{ProviderKey: "profile:review", Text: "Review profile: perform a defect-first code review. Read-only mode is enforced and review delegation is not permitted."},
+	)
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"sync"
@@ -87,7 +88,14 @@ type builtin struct {
 	profile agent.Profile
 }
 
-func (m builtin) ID() string                       { return m.profile.ID }
+type profileWithPrompt struct {
+	agent.Profile
+	prompt string
+}
+
+func (p profileWithPrompt) Prompt() string { return p.prompt }
+
+func (m builtin) ID() string                       { return m.profile.ID() }
 func (m builtin) Profile() agent.Profile           { return m.profile }
 func (builtin) OnTurnComplete() TurnCompleteResult { return TurnCompleteResult{} }
 func (m builtin) PrepareTurn(string) (agent.TurnProfile, error) {
@@ -145,8 +153,10 @@ func (m *planMode) PrepareTurn(sessionID string) (agent.TurnProfile, error) {
 	if err := os.Chmod(path, 0o600); err != nil {
 		return agent.TurnProfile{}, fmt.Errorf("mode: make plan file writable: %w", err)
 	}
-	profile := m.profile
-	profile.Prompt += "\n\nWrite the complete implementation plan as Markdown to this exact file: " + path + ". Do not include the plan in your assistant response. Finish only after writing the file."
+	profile := profileWithPrompt{
+		Profile: m.profile,
+		prompt:  m.profile.Prompt() + "\n\nWrite the complete implementation plan as Markdown to this exact file: " + path + ". Do not include the plan in your assistant response. Finish only after writing the file.",
+	}
 	return agent.NewTurnProfile(profile, security.Rule{Path: path, Action: security.ActionAllowWrite}), nil
 }
 
@@ -172,9 +182,9 @@ func Builtins() []Mode { return BuiltinsWithPlanDirectory(filepath.Join(os.TempD
 
 func BuiltinsWithPlanDirectory(directory string) []Mode {
 	return []Mode{
-		builtin{profile: agent.Profile{ID: BuildID, Prompt: "You are Parrot's build mode. Implement and verify the requested changes.", HardRules: []string{"Keep tool side effects within the authorized workspace."}, MaxTurns: 64, RecursionLimit: 3, Status: status.Static{ProviderKey: "profile:build-mode", Text: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."}}},
-		&planMode{builtin: builtin{profile: agent.Profile{ID: PlanID, Prompt: "You are Parrot's plan mode. Inspect the project and write an implementation plan to the designated plan file. This mode is read-only except for the designated plan file.", HardRules: []string{"Read-only mode is enforced by the runtime except for the designated plan file."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true, Status: status.Static{ProviderKey: "profile:plan-mode", Text: "Plan mode: inspect the project and write the plan artifact. The workspace remains read-only."}}}, directory: directory, files: make(map[string]string)},
-		builtin{profile: agent.Profile{ID: QueryID, Prompt: "You are Parrot's query mode. Inspect the project and answer the user's question without making changes.", HardRules: []string{"Read-only mode is enforced by the runtime."}, MaxTurns: 24, RecursionLimit: 1, ReadOnly: true, Status: status.Static{ProviderKey: "profile:query-mode", Text: "Query mode: inspect the project and answer questions. The workspace remains read-only."}}},
+		builtin{profile: agent.NewProfile(BuildID, "You are Parrot's build mode. Implement and verify the requested changes.", []string{"Keep tool side effects within the authorized workspace."}, 64, 3, false, nil, status.Static{ProviderKey: "profile:build-mode", Text: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."})},
+		&planMode{builtin: builtin{profile: agent.NewProfile(PlanID, "You are Parrot's plan mode. Inspect the project and write an implementation plan to the designated plan file. This mode is read-only except for the designated plan file.", []string{"Read-only mode is enforced by the runtime except for the designated plan file."}, 24, 1, true, nil, status.Static{ProviderKey: "profile:plan-mode", Text: "Plan mode: inspect the project and write the plan artifact. The workspace remains read-only."})}, directory: directory, files: make(map[string]string)},
+		builtin{profile: agent.NewProfile(QueryID, "You are Parrot's query mode. Inspect the project and answer the user's question without making changes.", []string{"Read-only mode is enforced by the runtime."}, 24, 1, true, nil, status.Static{ProviderKey: "profile:query-mode", Text: "Query mode: inspect the project and answer questions. The workspace remains read-only."})},
 	}
 }
 
@@ -186,7 +196,11 @@ func NewRegistry(modes ...Mode) (*Registry, error) {
 	}
 	r := &Registry{items: make(map[string]Mode, len(modes))}
 	for _, item := range modes {
-		if item == nil || item.ID() == "" || item.Profile().ID != item.ID() {
+		if item == nil {
+			return nil, errors.New("mode: valid ID and matching profile are required")
+		}
+		profile := item.Profile()
+		if nilProfile(profile) || item.ID() == "" || profile.ID() != item.ID() {
 			return nil, errors.New("mode: valid ID and matching profile are required")
 		}
 		if _, exists := r.items[item.ID()]; exists {
@@ -195,6 +209,19 @@ func NewRegistry(modes ...Mode) (*Registry, error) {
 		r.items[item.ID()] = item
 	}
 	return r, nil
+}
+
+func nilProfile(profile agent.Profile) bool {
+	if profile == nil {
+		return true
+	}
+	value := reflect.ValueOf(profile)
+	switch value.Kind() {
+	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
+		return value.IsNil()
+	default:
+		return false
+	}
 }
 
 func NewRegistryWithPlanDirectory(directory string) (*Registry, error) {
@@ -240,7 +267,7 @@ func (r *Registry) CompleteTurn(id, sessionID, messageID string) (TurnCompleteRe
 func (r *Registry) GetProfile(id string) (agent.Profile, error) {
 	item, err := r.Get(id)
 	if err != nil {
-		return agent.Profile{}, err
+		return nil, err
 	}
 	return item.Profile(), nil
 }

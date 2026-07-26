@@ -75,7 +75,7 @@ func (*sliceStream) Close() error { return nil }
 func events(items ...protocol.Event) provider.Stream { return &sliceStream{events: items} }
 
 func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
-	profile := Profile{Prompt: "profile prompt", HardRules: []string{"rule"}, Status: statusinfo.Static{ProviderKey: "profile:test", Text: "profile status"}}
+	profile := NewProfile("", "profile prompt", []string{"rule"}, 0, 0, false, nil, statusinfo.Static{ProviderKey: "profile:test", Text: "profile status"})
 	observation, err := newProfileStatus(profile).Observe(context.Background(), statusinfo.Query{})
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +196,7 @@ func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 	query := runner.statusQuery(session.AgentSessionDto{
 		ParentSessionID: "ses_deleted_parent",
 		Model:           "openai/gpt",
-	}, Profile{ID: "build"})
+	}, NewProfile("build", "", nil, 0, 0, false, nil, nil))
 	if query.ParentSessionID != "ses_deleted_parent" || query.ParentSessionName != "" {
 		t.Fatalf("parent status = %q (%q), want %q with no details", query.ParentSessionID, query.ParentSessionName, "ses_deleted_parent")
 	}
@@ -262,8 +262,8 @@ func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "done"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	profiles := []Profile{
-		{ID: "build", Prompt: "build prompt", MaxTurns: 10, Status: statusinfo.Static{ProviderKey: "profile:mode", Text: "Build mode status"}},
-		{ID: "plan", Prompt: "plan prompt", MaxTurns: 10, Status: statusinfo.Static{ProviderKey: "profile:mode", Text: "Plan mode status"}},
+		NewProfile("build", "build prompt", nil, 10, 0, false, nil, statusinfo.Static{ProviderKey: "profile:mode", Text: "Build mode status"}),
+		NewProfile("plan", "plan prompt", nil, 10, 0, false, nil, statusinfo.Static{ProviderKey: "profile:mode", Text: "Plan mode status"}),
 	}
 	h := newRunnerHarness(t, fake, profiles)
 	registry, err := statusinfo.NewRegistry(statusinfo.Selection{})
@@ -574,7 +574,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	}
 	profile := BuildID
 	if len(profiles) > 0 {
-		profile = profiles[0].ID
+		profile = profiles[0].ID()
 	}
 	if err := sessions.GetSession(created.ID).SetSelection(ctx, session.Selection{Agent: profile, Model: "fake/model"}); err != nil {
 		t.Fatal(err)
@@ -2498,7 +2498,7 @@ func TestRunnerCancellationDuringProviderStreamDropsUnexecutedToolCalls(t *testi
 type preparedProfileResolver struct{ base Profile }
 
 func (*preparedProfileResolver) GetProfile(string) (Profile, error) {
-	return Profile{}, errors.New("GetProfile called before PrepareTurn")
+	return nil, errors.New("GetProfile called before PrepareTurn")
 }
 func (r *preparedProfileResolver) PrepareTurn(string, string) (TurnProfile, error) {
 	return NewTurnProfile(r.base, security.Rule{Path: "/tmp/plan.md", Action: security.ActionAllowWrite}), nil
@@ -2532,7 +2532,7 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 		}
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
-	base := Profile{ID: "plan", Prompt: "plan", ReadOnly: true, MaxTurns: 10}
+	base := NewProfile("plan", "plan", nil, 10, 0, true, nil, nil)
 	h := newRunnerHarness(t, fake, []Profile{base}, &fakeTool{id: "status"}, capture)
 	resolver := &preparedProfileResolver{base: base}
 	h.runner.profiles = resolver
@@ -2546,8 +2546,8 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	if len(capture.readPaths) != 1 || capture.readPaths[0] != h.queues.Directory() {
 		t.Fatalf("session profile allow_read rules = %#v", capture.readPaths)
 	}
-	if len(resolver.base.SandboxRules) != 0 {
-		t.Fatalf("reusable profile rules = %#v", resolver.base.SandboxRules)
+	if rules := resolver.base.Rules(); len(rules) != 0 {
+		t.Fatalf("reusable profile rules = %#v", rules)
 	}
 }
 
@@ -2598,7 +2598,7 @@ func TestRunnerMaxTurnsOmitsToolsAndPublishesNotice(t *testing.T) {
 				}
 				return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 			}}
-			profile := Profile{ID: "limited", Prompt: "finish", MaxTurns: maxTurns}
+			profile := NewProfile("limited", "finish", nil, maxTurns, 0, false, nil, nil)
 			h := newRunnerHarness(t, fake, []Profile{profile}, item)
 			live := &recordingPublisher{}
 			h.runner.live = live
