@@ -421,6 +421,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	profileResolver := combinedProfileResolver{modes: modes, agents: taskAgents}
 	notifications := agent.NewCompletionNotifier()
 	result.notifications = notifications
+	live.SetEventHandler(func(item event.BrokerEvent) func() { return publishAgentTurnEvent(live, notifications, item) })
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
 		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Name: item.Name, Kind: string(managedtask.KindShell), Error: item.Error}
 		eventType := managedtask.EventStart
@@ -496,7 +497,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		MaxChildDepth:                    loaded.Config.Subagents.MaxDepth, ProjectID: info.ID, DefaultSelection: defaultSelection,
 	}, stateDirectories, profileResolver, providerRegistry, toolProviders, permissions, pathErrorAdvisor,
 		ws, outputs, processes, func(sessionID string) string { return live.TaskIDFor(sessionID, managedtask.MainTaskID) },
-		live, compactionService, goals, statusRegistry, toolPanicLogger(), tasks,
+		live, live, compactionService, goals, statusRegistry, toolPanicLogger(), tasks,
 		func(id string) string {
 			profile, resolveErr := profileResolver.GetProfile(id)
 			if resolveErr != nil {
@@ -510,14 +511,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 				return 0
 			}
 			return profile.RecursionLimit
-		}, nil,
-		func(sessionID string, report func(agent.ChildProgress)) func() {
-			return live.ObserveTransient(sessionID, func(item v1.Event) { reportChildEvent(report, item) })
-		},
-		func(task agent.Status) {
-			data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
-			live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: turnEventSession(task), TaskID: task.SessionID, Data: data})
-		}, notifications.Notify, func(item agent.TurnLifecycleEvent) { publishTurnLifecycle(live, item) }, live.ForgetSession, reporter)
+		}, nil, live.ForgetSession, reporter)
 	if err != nil {
 		return nil, fmt.Errorf("app: agent sessions: %w", err)
 	}
@@ -1235,6 +1229,40 @@ func (c *managedTaskController) Wait(ctx context.Context, callerSession, id stri
 
 func (c *managedTaskController) WaitKind(ctx context.Context, callerSession, id string, kind managedtask.Kind) (managedtask.Result, error) {
 	return c.tasks.WaitKind(ctx, callerSession, id, kind)
+}
+
+func publishAgentTurnEvent(live *event.Broker, notifications *agent.CompletionNotifier, item event.BrokerEvent) func() {
+	stop := func() {}
+	switch item.Name {
+	case event.TurnStarted:
+		if task, ok := item.Payload.(agent.Status); ok {
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleStart, Task: task})
+		}
+	case event.TurnWorking:
+		if working, ok := item.Payload.(agent.TurnWorkingEvent); ok {
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleWorking, Task: working.Task})
+			stop = live.ObserveTransient(working.Task.SessionID, func(item v1.Event) { reportChildEvent(working.Report, item) })
+		}
+	case event.TurnProgress:
+		if task, ok := item.Payload.(agent.Status); ok {
+			publishTurnProgress(live, task)
+		}
+	case event.TurnFinished:
+		if task, ok := item.Payload.(agent.Status); ok {
+			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleFinished, Task: task})
+			publishTurnProgress(live, task)
+		}
+	case event.TurnCompleted:
+		if task, ok := item.Payload.(agent.Status); ok {
+			notifications.Notify(task)
+		}
+	}
+	return stop
+}
+
+func publishTurnProgress(live *event.Broker, task agent.Status) {
+	data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
+	live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: turnEventSession(task), TaskID: task.SessionID, Data: data})
 }
 
 func turnEventSession(task agent.Status) string {

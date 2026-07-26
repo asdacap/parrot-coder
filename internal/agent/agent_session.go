@@ -11,6 +11,7 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
+	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
@@ -49,7 +50,7 @@ type agentSession struct {
 	selectionMu            sync.Mutex
 	status                 Status
 	turn                   *turnState
-	turnEvents             turnEvents
+	events                 event.EventBroker
 	managedTask            bool
 	childCreations         int
 	removed                bool
@@ -100,42 +101,10 @@ type turnState struct {
 	releaseQuota func()
 }
 
-type turnEvents interface {
-	Started(Status)
-	Working(string, Status, func(ChildProgress)) func()
-	Progress(Status)
-	Finished(Status)
-	Completed(Status)
+type TurnWorkingEvent struct {
+	Task   Status
+	Report func(ChildProgress)
 }
-
-type noopTurnEvents struct{}
-
-func (noopTurnEvents) Started(Status)                                     {}
-func (noopTurnEvents) Working(string, Status, func(ChildProgress)) func() { return func() {} }
-func (noopTurnEvents) Progress(Status)                                    {}
-func (noopTurnEvents) Finished(Status)                                    {}
-func (noopTurnEvents) Completed(Status)                                   {}
-
-type callbackTurnEvents struct {
-	observe   func(string, func(ChildProgress)) func()
-	progress  func(Status)
-	complete  func(Status)
-	lifecycle func(TurnLifecycleEvent)
-}
-
-func (e callbackTurnEvents) Started(status Status) {
-	e.lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleStart, Task: status})
-}
-func (e callbackTurnEvents) Working(sessionID string, status Status, report func(ChildProgress)) func() {
-	e.lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleWorking, Task: status})
-	return e.observe(sessionID, report)
-}
-func (e callbackTurnEvents) Progress(status Status) { e.progress(status) }
-func (e callbackTurnEvents) Finished(status Status) {
-	e.lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleFinished, Task: status})
-	e.progress(status)
-}
-func (e callbackTurnEvents) Completed(status Status) { e.complete(status) }
 
 // AgentSession is the runtime for one persisted agent session. It owns both
 // execution and the synchronization which ensures only one execution lifecycle
@@ -405,7 +374,7 @@ func (s *agentSession) startTurn(state *turnState) {
 		go s.finishTurn(state, "", context.Canceled)
 		return
 	}
-	s.turnEvents.Started(task)
+	s.events.Publish(event.BrokerEvent{Name: event.TurnStarted, Payload: task})
 	if status == StatusBlocked {
 		go s.waitForTurnPermit(state)
 	} else {
@@ -628,7 +597,7 @@ func (s *agentSession) runTurn(state *turnState) {
 		return
 	}
 	s.started()
-	stop := s.turnEvents.Working(s.ID(), s.Status(), func(progress ChildProgress) { s.reportTurnProgress(state, progress) })
+	stop := s.events.Publish(event.BrokerEvent{Name: event.TurnWorking, Payload: TurnWorkingEvent{Task: s.Status(), Report: func(progress ChildProgress) { s.reportTurnProgress(state, progress) }}})
 	var err error
 	for {
 		err = s.drainOnce(state.ctx)
@@ -701,12 +670,12 @@ func (s *agentSession) finishTurn(state *turnState, output string, runErr error)
 		state.releaseQuota = nil
 	}
 	s.mu.Unlock()
-	s.turnEvents.Finished(state.result)
+	s.events.Publish(event.BrokerEvent{Name: event.TurnFinished, Payload: state.result})
 	s.mu.Lock()
 	state.status = status
 	close(state.done)
 	s.mu.Unlock()
-	s.turnEvents.Completed(state.result)
+	s.events.Publish(event.BrokerEvent{Name: event.TurnCompleted, Payload: state.result})
 	s.completed(runErr)
 }
 
@@ -805,7 +774,7 @@ func (s *agentSession) reportTurnProgress(turn *turnState, progress ChildProgres
 	s.status.ToolUses += progress.ToolUses
 	task := cloneStatus(s.status)
 	s.mu.Unlock()
-	s.turnEvents.Progress(task)
+	s.events.Publish(event.BrokerEvent{Name: event.TurnProgress, Payload: task})
 }
 
 func newAgentSession(
@@ -824,7 +793,7 @@ func newAgentSession(
 	maxConcurrentChildTurns int,
 	observers []LifecycleObserver,
 	maxChildPromptBytes, maxChildResultBytes int,
-	events turnEvents,
+	events event.EventBroker,
 ) *agentSession {
 	status := Status{SessionID: dto.ID, RootSession: dto.ID, Agent: dto.Agent, Provider: dto.Provider, Model: dto.Model, Variant: dto.Variant, Name: dto.Name, State: StatusIdle}
 	if parent != nil {
@@ -839,7 +808,7 @@ func newAgentSession(
 		stateDirectories: stateDirectories, profiles: profiles, providers: providers,
 		workspace: workspace, outputs: outputs, processes: processes, taskIDFor: taskIDFor,
 		live: live, compactor: compactor, goals: goals, statusObserver: statusObserver, toolPanicLogger: toolPanicLogger,
-		status: status, turnEvents: events, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
+		status: status, events: events, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
 		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
 	}
 }
@@ -1109,13 +1078,13 @@ func (r *agentSession) statusQuery(selected session.AgentSessionDto, profile Pro
 
 func (r *agentSession) publishStatusPromptInjected() {
 	if r.live != nil {
-		r.live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
+		r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
 	}
 }
 
 func (r *agentSession) publishMaxTurnsReached(maxTurns int) {
 	if r.live != nil {
-		r.live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventMaxTurnsReached, Text: fmt.Sprintf("Maximum turn limit reached (%d); producing final response", maxTurns)})
+		r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventMaxTurnsReached, Text: fmt.Sprintf("Maximum turn limit reached (%d); producing final response", maxTurns)})
 	}
 }
 
@@ -1199,7 +1168,7 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 	}
 	stream, err := provider.StreamWithRetry(ctx, client, request, func(notice provider.RetryNotice) {
 		if r.live != nil {
-			r.live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventProviderRetry, Text: notice.String()})
+			r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventProviderRetry, Text: notice.String()})
 		}
 	})
 	if err != nil {
@@ -1240,7 +1209,7 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		}
 		if r.live != nil {
 			item.MessageID = assistant.ID
-			r.live.Publish(r.dto.ID, item)
+			r.live.PublishProtocol(r.dto.ID, item)
 		}
 		switch item.Type {
 		case protocol.EventTextDelta:

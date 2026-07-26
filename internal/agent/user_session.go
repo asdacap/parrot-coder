@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -79,39 +80,36 @@ type UserSessionConfig struct {
 }
 
 type userSession struct {
-	config              UserSessionConfig
-	sessions            SessionRuntime
-	systemContext       SystemContextPrompt
-	queueMonitor        QueueMonitor
-	stateDirectories    UserSessionStateDirectories
-	profiles            ProfileResolver
-	providers           ProviderResolver
-	toolProviders       tool.Providers
-	toolAuthorizer      tool.Authorizer
-	toolErrorAdvisor    tool.ErrorAdvisor
-	workspace           *workspace.Workspace
-	outputs             *tool.OutputStore
-	processes           *process.Runner
-	taskIDFor           func(string) string
-	live                LivePublisher
-	compactor           Compactor
-	goals               *session.GoalService
-	statusObserver      StatusObserver
-	toolPanicLogger     func(context.Context, string, string, any, []byte)
-	identityFor         func(string) string
-	recursionLimitFor   func(string) int
-	childNameGenerator  func() string
-	childTasks          *managedtask.Manager
-	observeTurnProgress func(sessionID string, report func(ChildProgress)) func()
-	onTurnProgress      func(Status)
-	onTurnComplete      func(Status)
-	onTurnLifecycle     func(TurnLifecycleEvent)
-	onChildDiscard      func(string)
-	repository          *agentSessionRepository
-	childTurns          *childTurnSemaphore
-	quotaMu             sync.Mutex
-	childMu             sync.Mutex
-	closed              bool
+	config             UserSessionConfig
+	sessions           SessionRuntime
+	systemContext      SystemContextPrompt
+	queueMonitor       QueueMonitor
+	stateDirectories   UserSessionStateDirectories
+	profiles           ProfileResolver
+	providers          ProviderResolver
+	toolProviders      tool.Providers
+	toolAuthorizer     tool.Authorizer
+	toolErrorAdvisor   tool.ErrorAdvisor
+	workspace          *workspace.Workspace
+	outputs            *tool.OutputStore
+	processes          *process.Runner
+	taskIDFor          func(string) string
+	live               LivePublisher
+	compactor          Compactor
+	goals              *session.GoalService
+	statusObserver     StatusObserver
+	toolPanicLogger    func(context.Context, string, string, any, []byte)
+	identityFor        func(string) string
+	recursionLimitFor  func(string) int
+	childNameGenerator func() string
+	childTasks         *managedtask.Manager
+	events             event.EventBroker
+	onChildDiscard     func(string)
+	repository         *agentSessionRepository
+	childTurns         *childTurnSemaphore
+	quotaMu            sync.Mutex
+	childMu            sync.Mutex
+	closed             bool
 }
 
 var _ UserSession = (*userSession)(nil)
@@ -122,11 +120,10 @@ func NewUserSession(
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner, taskIDFor func(string) string,
-	live LivePublisher, compactor Compactor, goals *session.GoalService, status StatusObserver,
+	live LivePublisher, events event.EventBroker, compactor Compactor, goals *session.GoalService, status StatusObserver,
 	toolPanicLogger func(context.Context, string, string, any, []byte), childTasks *managedtask.Manager,
 	childAgentIdentity func(string) string, childAgentRecursionLimit func(string) int, childNameGenerator func() string,
-	observeTurnProgress func(string, func(ChildProgress)) func(), onTurnProgress, onTurnComplete func(Status),
-	onTurnLifecycle func(TurnLifecycleEvent), onChildDiscard func(string), observers ...LifecycleObserver,
+	onChildDiscard func(string), observers ...LifecycleObserver,
 ) (UserSession, error) {
 	if config.MaxConcurrentChildTurns <= 0 || config.MaxConcurrentChildTurnsPerParent <= 0 || config.MaxConcurrentChildTurnsPerParent > config.MaxConcurrentChildTurns {
 		return nil, errors.New("agent: child turn concurrency limits are invalid")
@@ -147,6 +144,9 @@ func NewUserSession(
 	if taskIDFor == nil {
 		taskIDFor = func(string) string { return "" }
 	}
+	if events == nil {
+		events = event.NoopBroker{}
+	}
 	if toolPanicLogger == nil {
 		toolPanicLogger = func(context.Context, string, string, any, []byte) {}
 	}
@@ -155,12 +155,11 @@ func NewUserSession(
 		toolAuthorizer: toolAuthorizer, toolErrorAdvisor: toolErrorAdvisor, workspace: workspace, outputs: outputs,
 		processes: processes, taskIDFor: taskIDFor, live: live, compactor: compactor, goals: goals, statusObserver: status,
 		toolPanicLogger: toolPanicLogger, identityFor: childAgentIdentity, recursionLimitFor: childAgentRecursionLimit, childNameGenerator: childNameGenerator,
-		childTasks: childTasks, observeTurnProgress: observeTurnProgress, onTurnProgress: onTurnProgress, onTurnComplete: onTurnComplete,
-		onTurnLifecycle: onTurnLifecycle, onChildDiscard: onChildDiscard, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
+		childTasks: childTasks, events: events, onChildDiscard: onChildDiscard, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
 	applyChildDefaults(&created.config)
 	applyChildCollaboratorDefaults(created)
 	repository, err := newAgentSessionRepository(ctx, created, config.AgentSession, created.stateDirectories, created.profiles, created.providers, created.toolProviders, created.toolAuthorizer, created.toolErrorAdvisor,
-		created.workspace, created.outputs, created.processes, created.taskIDFor, created.live, created.compactor, created.goals, created.statusObserver, created.toolPanicLogger, config.MaxConcurrentChildTurnsPerParent, observers...)
+		created.workspace, created.outputs, created.processes, created.taskIDFor, created.live, created.events, created.compactor, created.goals, created.statusObserver, created.toolPanicLogger, config.MaxConcurrentChildTurnsPerParent, observers...)
 	if err != nil {
 		return nil, err
 	}
@@ -321,6 +320,7 @@ type agentSessionRepository struct {
 	processes               *process.Runner
 	taskIDFor               func(string) string
 	live                    LivePublisher
+	events                  event.EventBroker
 	compactor               Compactor
 	goals                   *session.GoalService
 	status                  StatusObserver
@@ -340,7 +340,7 @@ func newAgentSessionRepository(
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner, taskIDFor func(string) string,
-	live LivePublisher, compactor Compactor, goals *session.GoalService, status StatusObserver,
+	live LivePublisher, events event.EventBroker, compactor Compactor, goals *session.GoalService, status StatusObserver,
 	toolPanicLogger func(context.Context, string, string, any, []byte), maxConcurrentChildTurns int, observers ...LifecycleObserver,
 ) (*agentSessionRepository, error) {
 	items, err := user.list(ctx)
@@ -350,7 +350,7 @@ func newAgentSessionRepository(
 	repository := &agentSessionRepository{
 		user: user, config: config, stateDirectories: stateDirectories, profiles: profiles, providers: providers,
 		toolProviders: toolProviders, toolAuthorizer: toolAuthorizer, toolErrorAdvisor: toolErrorAdvisor,
-		workspace: workspace, outputs: outputs, processes: processes, taskIDFor: taskIDFor, live: live, compactor: compactor,
+		workspace: workspace, outputs: outputs, processes: processes, taskIDFor: taskIDFor, live: live, events: events, compactor: compactor,
 		goals: goals, status: status, toolPanicLogger: toolPanicLogger, observers: observers, maxConcurrentChildTurns: maxConcurrentChildTurns,
 		sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession),
 	}
@@ -652,25 +652,18 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		systemContext                            SystemContextPrompt
 		queueMonitor                             QueueMonitor
 		maxChildPromptBytes, maxChildResultBytes int
-		events                                   turnEvents = noopTurnEvents{}
 	)
 	if r.user != nil {
 		user = r.user
 		systemContext = r.user.systemContext
 		queueMonitor = r.user.queueMonitor
 		maxChildPromptBytes, maxChildResultBytes = r.user.config.MaxChildPromptBytes, r.user.config.MaxChildResultBytes
-		events = callbackTurnEvents{
-			observe:   r.user.observeTurnProgress,
-			progress:  r.user.onTurnProgress,
-			complete:  r.user.onTurnComplete,
-			lifecycle: r.user.onTurnLifecycle,
-		}
 	}
 	candidate := newAgentSession(
 		dto, parent, user, r, store, systemContext, queueMonitor, r.config,
 		r.stateDirectories, r.profiles, r.providers, r.workspace, r.outputs, r.processes, r.taskIDFor,
 		r.live, r.compactor, r.goals, r.status, r.toolPanicLogger,
-		r.maxConcurrentChildTurns, r.observers, maxChildPromptBytes, maxChildResultBytes, events,
+		r.maxConcurrentChildTurns, r.observers, maxChildPromptBytes, maxChildResultBytes, r.events,
 	)
 	rolledBack := false
 	defer func() {
@@ -1007,18 +1000,6 @@ func applyChildDefaults(config *UserSessionConfig) {
 }
 
 func applyChildCollaboratorDefaults(session *userSession) {
-	if session.observeTurnProgress == nil {
-		session.observeTurnProgress = func(string, func(ChildProgress)) func() { return func() {} }
-	}
-	if session.onTurnProgress == nil {
-		session.onTurnProgress = func(Status) {}
-	}
-	if session.onTurnComplete == nil {
-		session.onTurnComplete = func(Status) {}
-	}
-	if session.onTurnLifecycle == nil {
-		session.onTurnLifecycle = func(TurnLifecycleEvent) {}
-	}
 	if session.onChildDiscard == nil {
 		session.onChildDiscard = func(string) {}
 	}

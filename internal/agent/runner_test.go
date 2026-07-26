@@ -143,9 +143,8 @@ func newUserSessionFromHarness(ctx context.Context, sessions SessionRuntime, h *
 	s := h.agentSessions
 	return NewUserSession(ctx, sessions, s.systemContext, s.queueMonitor, config,
 		r.stateDirectories, r.profiles, r.providers, r.toolProviders, r.toolAuthorizer, r.toolErrorAdvisor,
-		r.workspace, r.outputs, r.processes, r.taskIDFor, r.live, r.compactor, r.goals, r.status, r.toolPanicLogger,
-		s.childTasks, s.identityFor, s.recursionLimitFor, s.childNameGenerator, s.observeTurnProgress,
-		s.onTurnProgress, s.onTurnComplete, s.onTurnLifecycle, s.onChildDiscard)
+		r.workspace, r.outputs, r.processes, r.taskIDFor, r.live, r.events, r.compactor, r.goals, r.status, r.toolPanicLogger,
+		s.childTasks, s.identityFor, s.recursionLimitFor, s.childNameGenerator, s.onChildDiscard)
 }
 
 func TestUpdateSelectionReconcilesCommittedSelectionAfterError(t *testing.T) {
@@ -343,7 +342,7 @@ type recordingPublisher struct {
 	events []protocol.Event
 }
 
-func (p *recordingPublisher) Publish(_ string, item protocol.Event) {
+func (p *recordingPublisher) PublishProtocol(_ string, item protocol.Event) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if item.Usage != nil {
@@ -558,8 +557,8 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
 	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4},
-		stateDirectories, agents, providers, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, goals, nil, nil, nil,
-		nil, nil, nil, nil, nil, nil, nil, nil)
+		stateDirectories, agents, providers, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, nil, goals, nil, nil, nil,
+		nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -814,14 +813,32 @@ func TestAgentSessionEmitsTurnEventsUniformly(t *testing.T) {
 				record("complete:" + string(status.State))
 				completed <- status
 			}
-			lifecycle := func(event TurnLifecycleEvent) { record("lifecycle:" + event.Kind) }
-			h.agentSessions.observeTurnProgress = observe
-			h.agentSessions.onTurnProgress = progress
-			h.agentSessions.onTurnComplete = complete
-			h.agentSessions.onTurnLifecycle = lifecycle
+			lifecycle := func(item TurnLifecycleEvent) { record("lifecycle:" + item.Kind) }
+			broker := event.NewBroker(nil, nil)
+			broker.SetEventHandler(func(item event.BrokerEvent) func() {
+				switch item.Name {
+				case event.TurnStarted:
+					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleStart, Task: item.Payload.(Status)})
+				case event.TurnWorking:
+					working := item.Payload.(TurnWorkingEvent)
+					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleWorking, Task: working.Task})
+					return observe(working.Task.SessionID, working.Report)
+				case event.TurnProgress:
+					progress(item.Payload.(Status))
+				case event.TurnFinished:
+					status := item.Payload.(Status)
+					lifecycle(TurnLifecycleEvent{Kind: TurnLifecycleFinished, Task: status})
+					progress(status)
+				case event.TurnCompleted:
+					complete(item.Payload.(Status))
+				}
+				return func() {}
+			})
+			h.agentSessions.events = broker
+			h.agentSessions.repository.events = broker
 
 			root := mustGetAgentSession(t, h.agentSessions, h.sessionID).(*agentSession)
-			root.turnEvents = callbackTurnEvents{observe: observe, progress: progress, complete: complete, lifecycle: lifecycle}
+			root.events = broker
 			var subject AgentSession = root
 			var err error
 			if test.managed {
