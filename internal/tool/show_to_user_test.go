@@ -15,7 +15,7 @@ type displayRecorder struct{ displays []CodeDisplay }
 
 func (r *displayRecorder) DisplayCode(display CodeDisplay) { r.displays = append(r.displays, display) }
 
-func TestShowDisplaysBoundedRawSource(t *testing.T) {
+func TestShowToUserDisplaysBoundedRawSource(t *testing.T) {
 	root := t.TempDir()
 	ws, err := workspace.New(root)
 	if err != nil {
@@ -25,7 +25,7 @@ func TestShowDisplaysBoundedRawSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := &displayRecorder{}
-	item := NewShowTool(ReadConfig{MaxLines: 20, MaxBytes: 1024})
+	item := NewShowToUserTool(ReadConfig{MaxLines: 20, MaxBytes: 1024})
 	plan, err := item.Plan(context.Background(), json.RawMessage(`{"path":"main.go","offset":2,"limit":2}`), CallContext{Workspace: ws})
 	if err != nil {
 		t.Fatal(err)
@@ -40,12 +40,15 @@ func TestShowDisplaysBoundedRawSource(t *testing.T) {
 	if strings.Contains(recorder.displays[0].Source, "2:") || strings.Contains(recorder.displays[0].Source, "sha256") {
 		t.Fatalf("display contains read formatting: %q", recorder.displays[0].Source)
 	}
-	if result.Text == "" || result.ModelText == "" {
+	if result.Text != "2 lines shown to user" || result.ModelText != "2 lines shown to user" {
 		t.Fatalf("result = %#v", result)
+	}
+	if strings.Contains(result.Text, "func main") || strings.Contains(result.ModelText, "main.go") {
+		t.Fatalf("result disclosed displayed content or path: %#v", result)
 	}
 }
 
-func TestShowRejectsInvalidFilesAndDoesNotPublishFailures(t *testing.T) {
+func TestShowToUserRejectsInvalidFilesAndDoesNotPublishFailures(t *testing.T) {
 	root := t.TempDir()
 	ws, err := workspace.New(root)
 	if err != nil {
@@ -57,7 +60,7 @@ func TestShowRejectsInvalidFilesAndDoesNotPublishFailures(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "huge"), []byte(strings.Repeat("x", 100)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	item := NewShowTool(ReadConfig{MaxLines: 10, MaxBytes: 32})
+	item := NewShowToUserTool(ReadConfig{MaxLines: 10, MaxBytes: 32})
 	recorder := &displayRecorder{}
 	for _, test := range []struct {
 		name, input string
@@ -73,11 +76,11 @@ func TestShowRejectsInvalidFilesAndDoesNotPublishFailures(t *testing.T) {
 				_, planErr = item.Execute(context.Background(), plan, CallContext{Workspace: ws, Displays: recorder})
 			}
 			if planErr == nil {
-				t.Fatal("invalid show succeeded")
+				t.Fatal("invalid show_to_user succeeded")
 			}
 		})
 	}
 	if len(recorder.displays) != 0 {
-		t.Fatalf("failed show published %#v", recorder.displays)
+		t.Fatalf("failed show_to_user published %#v", recorder.displays)
 	}
 }
