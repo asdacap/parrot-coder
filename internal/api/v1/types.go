@@ -79,6 +79,12 @@ type ClaimSessionRequest struct {
 	ForceNew         bool    `json:"force_new,omitempty"`
 }
 
+const (
+	ClaimSessionExisting  = "existing"
+	ClaimSessionReclaimed = "reclaimed"
+	ClaimSessionCreated   = "created"
+)
+
 type ClaimSessionResponse struct {
 	Session     Session `json:"session"`
 	Disposition string  `json:"disposition"`
