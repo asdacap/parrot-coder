@@ -43,6 +43,7 @@ type AgentSessionStore interface {
 	HasPendingInputs(context.Context) (bool, error)
 	ListMessages(context.Context) ([]Message, error)
 	AppendMessage(context.Context, protocol.Message) (Message, error)
+	AppendMessageIfNoPendingInputs(context.Context, string, protocol.Message) (Message, bool, error)
 	AppendStatusPrompt(context.Context, string) (Message, error)
 	ListModelHistory(context.Context, int64) ([]protocol.Message, error)
 	LatestSequence(context.Context) (int64, error)
@@ -239,6 +240,67 @@ func (s *agentSessionStore) AppendMessage(ctx context.Context, message protocol.
 		return err
 	})
 	return out, err
+}
+
+// AppendMessageIfNoPendingInputs appends a message only when every admitted
+// input has already been promoted. The pending-input check and append share the
+// aggregate transaction so an admission cannot slip between them. A repeated
+// message ID is accepted idempotently and needs processing only when no later
+// assistant response exists.
+func (s *agentSessionStore) AppendMessageIfNoPendingInputs(ctx context.Context, messageID string, message protocol.Message) (Message, bool, error) {
+	sessionID := s.sessionID
+	if messageID == "" {
+		return Message{}, false, errors.New("session: message ID is required")
+	}
+	parts, err := json.Marshal(message.Content)
+	if err != nil {
+		return Message{}, false, err
+	}
+	content := textContent(message.Content)
+	payload, _ := json.Marshal(map[string]any{"message_id": messageID, "role": message.Role})
+	var out Message
+	needsProcessing := false
+	_, err = s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
+		var created string
+		var existingParts []byte
+		err := tx.QueryRowContext(ctx, `SELECT role,content,parts_json,status,sequence,created_at FROM session_message WHERE session_id=? AND id=?`, sessionID, messageID).Scan(&out.Role, &out.Content, &existingParts, &out.Status, &out.Sequence, &created)
+		if err == nil {
+			out.ID, out.SessionID, out.Parts = messageID, sessionID, append(json.RawMessage(nil), existingParts...)
+			out.CreatedAt, err = parseTime(created)
+			if err != nil {
+				return nil, nil, err
+			}
+			var answered bool
+			if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM session_message WHERE session_id=? AND role='assistant' AND sequence>?)`, sessionID, out.Sequence).Scan(&answered); err != nil {
+				return nil, nil, fmt.Errorf("session: check conditional message response: %w", err)
+			}
+			needsProcessing = !answered
+			return nil, nil, nil
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return nil, nil, fmt.Errorf("session: find conditional message: %w", err)
+		}
+		var pending int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_input WHERE session_id=? AND status='pending'`, sessionID).Scan(&pending); err != nil {
+			return nil, nil, fmt.Errorf("session: count pending inputs: %w", err)
+		}
+		if pending != 0 {
+			return nil, nil, nil
+		}
+		needsProcessing = true
+		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+			_, err := tx.ExecContext(ctx, `INSERT INTO session_message(id,session_id,role,content,parts_json,status,sequence,created_at) VALUES(?,?,?,?,?,'complete',?,?)`, messageID, sessionID, message.Role, content, parts, events[0].Sequence, formatTime(events[0].CreatedAt))
+			if err == nil {
+				out = Message{ID: messageID, SessionID: sessionID, Role: string(message.Role), Content: content, Parts: parts, Status: "complete", Sequence: events[0].Sequence, CreatedAt: events[0].CreatedAt}
+			}
+			return err
+		}
+		return []event.NewEvent{{Type: "session.message.appended", Data: payload}}, project, nil
+	})
+	if err != nil {
+		return Message{}, false, err
+	}
+	return out, needsProcessing, nil
 }
 
 // AppendStatusPrompt persists rendered runtime status in its model-history

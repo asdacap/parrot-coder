@@ -21,6 +21,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
+	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
@@ -178,7 +179,7 @@ func TestUpdateSelectionSynchronizesRuntimeAndRepositoryStatus(t *testing.T) {
 
 func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
-	created, err := NewUserSession(t.Context(), failingGetSessionRuntime{SessionRuntime: h.sessions, sessionID: "ses_deleted_parent"}, h.agentSessions.systemContext, h.agentSessions.config)
+	created, err := NewUserSession(t.Context(), failingGetSessionRuntime{SessionRuntime: h.sessions, sessionID: "ses_deleted_parent"}, h.agentSessions.systemContext, nil, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -472,6 +473,7 @@ type runnerHarness struct {
 	agentSessions *userSession
 	sessionID     string
 	runner        *agentSession
+	queues        *queue.Store
 }
 
 type fakeCompactor struct {
@@ -533,8 +535,17 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		t.Fatal(err)
 	}
 	contextRegistry, _ := systemcontext.NewRegistry(systemcontext.StaticSource{SourceKey: "agent:context", Text: "baseline"})
-	createdAgentSessions, err := NewUserSession(ctx, sessions, contextRegistry, UserSessionConfig{AgentSession: AgentSessionConfig{
-		StateDirectories:   testSessionStateDirectories(t),
+	stateRoot := t.TempDir()
+	stateDirectories, err := NewUserSessionStateDirectories(stateRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	queues := queue.New(stateRoot)
+	if _, err := stateDirectories.Prepare(created.ID); err != nil {
+		t.Fatal(err)
+	}
+	createdAgentSessions, err := NewUserSession(ctx, sessions, contextRegistry, queues, UserSessionConfig{AgentSession: AgentSessionConfig{
+		StateDirectories:   stateDirectories,
 		Agents:             agents,
 		Providers:          providers,
 		ToolProviders:      toolProviders,
@@ -555,7 +566,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, agentSessions: agentSessions, sessionID: created.ID, runner: runner}
+	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, agentSessions: agentSessions, sessionID: created.ID, runner: runner, queues: queues}
 }
 
 func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
@@ -644,7 +655,7 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
-	other, err := NewUserSession(t.Context(), h.sessions, h.agentSessions.systemContext, h.agentSessions.config)
+	other, err := NewUserSession(t.Context(), h.sessions, h.agentSessions.systemContext, nil, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -936,7 +947,7 @@ func (r deleteFailUserSession) Delete(context.Context) error { return r.err }
 func TestAgentSessionsResolvePersistenceOnceWhenBound(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	recording := &recordingSessionRuntime{SessionRuntime: h.sessions}
-	created, err := NewUserSession(t.Context(), recording, h.agentSessions.systemContext, h.agentSessions.config)
+	created, err := NewUserSession(t.Context(), recording, h.agentSessions.systemContext, nil, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1019,7 +1030,7 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	cleanupErr := errors.New("delete failed")
 	cleanupConfig := h.agentSessions.config
 	cleanupConfig.AgentSession.ToolProviders = providers
-	created, err := NewUserSession(t.Context(), deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}, h.agentSessions.systemContext, cleanupConfig)
+	created, err := NewUserSession(t.Context(), deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}, h.agentSessions.systemContext, nil, cleanupConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1206,7 +1217,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 
 	restartedConfig := h.agentSessions.config
 	restartedConfig.MaxChildTasks = 1
-	createdRestarted, err := NewUserSession(ctx, h.sessions, h.agentSessions.systemContext, restartedConfig)
+	createdRestarted, err := NewUserSession(ctx, h.sessions, h.agentSessions.systemContext, nil, restartedConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1359,6 +1370,67 @@ func TestAgentSessionSendStartsExecution(t *testing.T) {
 	}
 	close(release)
 	waitForAgentSession(t, func() bool { return h.runner.executionStatus() == StatusIdle })
+}
+
+func TestPromptReturnsItsResponseBeforeMonitoredQueueResponse(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		last := request.Messages[len(request.Messages)-1]
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + last.Content[0].Text}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	if _, err := h.queues.Create(h.sessionID, "incoming-work-now", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.queues.Monitor(h.sessionID, "incoming-work-now", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.queues.Push(h.sessionID, "incoming-work-now", "queued", ""); err != nil {
+		t.Fatal(err)
+	}
+	answer, err := h.runner.Prompt(context.Background(), "direct")
+	if err != nil || answer != "answer-direct" {
+		t.Fatalf("Prompt() = %q, %v", answer, err)
+	}
+	if requests := fake.Requests(); len(requests) != 2 {
+		t.Fatalf("provider turns = %d, want 2", len(requests))
+	}
+}
+
+func TestRunnerProcessesMonitoredQueueItemAsSyntheticTurn(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		last := request.Messages[len(request.Messages)-1]
+		if last.Role != protocol.RoleUser {
+			return nil, fmt.Errorf("last role = %q", last.Role)
+		}
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answered"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	if _, err := h.queues.Create(h.sessionID, "incoming-work-now", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.queues.Monitor(h.sessionID, "incoming-work-now", true); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.queues.Push(h.sessionID, "incoming-work-now", "review item 42", ""); err != nil {
+		t.Fatal(err)
+	}
+	h.admit(t, "user", "initial question", session.DeliverySteer)
+	state := &drainState{done: make(chan struct{}), status: StatusRunning}
+	h.runner.run(context.Background(), state)
+	if state.err != nil {
+		t.Fatal(state.err)
+	}
+	requests := fake.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("provider turns = %d, want 2", len(requests))
+	}
+	if !containsRoleText(requests[1].Messages, protocol.RoleUser, "Queue notification from \"incoming-work-now\":\n\nreview item 42") {
+		t.Fatalf("synthetic queue notification missing: %#v", requests[1].Messages)
+	}
+	info, err := h.queues.Get(h.sessionID, "incoming-work-now")
+	if err != nil || info.Size != 0 || !info.Monitored {
+		t.Fatalf("queue after notification = %#v, %v", info, err)
+	}
 }
 
 func TestRunnerPersistsStreamedFinalText(t *testing.T) {

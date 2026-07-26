@@ -156,6 +156,76 @@ func TestListSortedEmptyAndMalformed(t *testing.T) {
 	}
 }
 
+func TestMonitorPersistenceSelectionAndFIFO(t *testing.T) {
+	state := t.TempDir()
+	sessionID := "ses_monitor"
+	if err := os.MkdirAll(filepath.Join(state, "session", sessionID), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	queues := New(state)
+	for _, name := range []string{"zebra-work-now", "alpha-work-now", "empty-work-now"} {
+		if _, err := queues.Create(sessionID, name, ""); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := queues.Monitor(sessionID, name, true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, item := range []struct{ name, value string }{{"zebra-work-now", "zebra"}, {"alpha-work-now", "first"}, {"alpha-work-now", "second"}} {
+		if _, err := queues.Push(sessionID, item.name, item.value, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, want := range []Notification{{Name: "alpha-work-now", Item: "first"}, {Name: "alpha-work-now", Item: "second"}, {Name: "zebra-work-now", Item: "zebra"}} {
+		var got Notification
+		delivered, err := queues.DeliverMonitored(sessionID, func(notification Notification) (bool, error) {
+			got = notification
+			return true, nil
+		})
+		if err != nil || !delivered || got.ID == "" || got.Name != want.Name || got.Item != want.Item {
+			t.Fatalf("DeliverMonitored() = %#v, %v, %v; want %#v", got, delivered, err, want)
+		}
+	}
+	if delivered, err := queues.DeliverMonitored(sessionID, func(Notification) (bool, error) { return true, nil }); err != nil || delivered {
+		t.Fatalf("empty DeliverMonitored() = %v, %v", delivered, err)
+	}
+	if _, err := queues.Push(sessionID, "alpha-work-now", "retained", ""); err != nil {
+		t.Fatal(err)
+	}
+	var deliveryID string
+	delivered, err := queues.DeliverMonitored(sessionID, func(notification Notification) (bool, error) {
+		deliveryID = notification.ID
+		return false, nil
+	})
+	if err != nil || delivered {
+		t.Fatalf("rejected DeliverMonitored() = %v, %v", delivered, err)
+	}
+	callbackErr := errors.New("delivery failed")
+	if delivered, err = queues.DeliverMonitored(sessionID, func(notification Notification) (bool, error) {
+		if notification.ID != deliveryID {
+			t.Fatalf("delivery ID changed from %q to %q", deliveryID, notification.ID)
+		}
+		return false, callbackErr
+	}); delivered || !errors.Is(err, callbackErr) {
+		t.Fatalf("failed DeliverMonitored() = %v, %v", delivered, err)
+	}
+	item, _, err := queues.Take(sessionID, "alpha-work-now", "")
+	if err != nil || item != "retained" {
+		t.Fatalf("retained item = %q, %v", item, err)
+	}
+	info, err := queues.Get(sessionID, "alpha-work-now")
+	if err != nil || !info.Monitored || info.Size != 0 {
+		t.Fatalf("monitor retained = %#v, %v", info, err)
+	}
+	info, err = queues.Monitor(sessionID, "alpha-work-now", false)
+	if err != nil || info.Monitored {
+		t.Fatalf("disable monitor = %#v, %v", info, err)
+	}
+	if _, err := queues.Monitor(sessionID, "missing-work-now", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("monitor missing error = %v", err)
+	}
+}
+
 func TestConcurrentPushAndTake(t *testing.T) {
 	state := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(state, "session", "ses_a"), 0o700); err != nil {

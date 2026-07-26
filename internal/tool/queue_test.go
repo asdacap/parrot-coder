@@ -33,8 +33,13 @@ func TestQueueToolsLifecycle(t *testing.T) {
 				t.Fatalf("push output = %#v", got)
 			}
 		}},
+		{kind: "queue_monitor", input: `{"name":"build-work-now"}`, check: func(got map[string]any) {
+			if got["size"] != float64(1) || got["monitored"] != true {
+				t.Fatalf("monitor output = %#v", got)
+			}
+		}},
 		{kind: "queue_info", input: `{"name":"build-work-now"}`, check: func(got map[string]any) {
-			if got["size"] != float64(1) {
+			if got["size"] != float64(1) || got["monitored"] != true {
 				t.Fatalf("info output = %#v", got)
 			}
 		}},

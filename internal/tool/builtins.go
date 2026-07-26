@@ -63,7 +63,7 @@ func BuiltinProviders(services BuiltinServices) (Providers, error) {
 		func() Tool { return NewSetConfigTool(services.ConfigDir) },
 		func() Tool { return NewStatusTool(services.Status) },
 	}
-	for _, kind := range []string{"queue_create", "queue_info", "queue_push", "queue_take"} {
+	for _, kind := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
 		kind := kind
 		constructors = append(constructors, func() Tool { return &QueueTool{Kind: kind, Store: services.Queues} })
 	}

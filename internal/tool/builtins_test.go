@@ -32,6 +32,19 @@ func (builtinTestAgentSession) ResolveAgent(string) (ResolvedAgent, error) {
 	return ResolvedAgent{}, errors.New("not implemented")
 }
 
+func TestQueueToolsHonorCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, kind := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
+		t.Run(kind, func(t *testing.T) {
+			item := &QueueTool{Kind: kind, Store: queue.New(t.TempDir())}
+			if _, err := item.Plan(ctx, json.RawMessage(`{"name":"work-now","item":"x"}`), CallContext{SessionID: "session"}); !errors.Is(err, context.Canceled) {
+				t.Fatalf("Plan() error = %v, want context canceled", err)
+			}
+		})
+	}
+}
+
 func TestBuiltinProvidersDefinitions(t *testing.T) {
 	skills, err := skill.Discover(skill.Options{ProjectRoot: t.TempDir()})
 	if err != nil {
@@ -105,7 +118,7 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 	definitions := providers.Definitions()
 	want := []string{
 		"agent_send", "agent_spawn", "apply_patch", "create_goal", "exec_command", "get_goal", "git_diff", "glob", "question",
-		"queue_create", "queue_info", "queue_push", "queue_take", "read", "request_write_permission", "rg", "set_config", "show", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "update_goal", "wait_agent", "wait_process", "web_fetch", "write_stdin",
+		"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take", "read", "request_write_permission", "rg", "set_config", "show", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "update_goal", "wait_agent", "wait_process", "web_fetch", "write_stdin",
 	}
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions = %#v", definitions)

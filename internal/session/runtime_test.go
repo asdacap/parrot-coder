@@ -99,6 +99,68 @@ func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 	}
 }
 
+func TestAppendMessageIfNoPendingInputs(t *testing.T) {
+	ctx, _, repository, service, sessionID := newService(t)
+	store := service.GetSession(sessionID)
+	message := protocol.Message{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: "conditional"}}}
+
+	appendedMessage, appended, err := store.AppendMessageIfNoPendingInputs(ctx, "notification-message", message)
+	if err != nil || !appended {
+		t.Fatalf("initial append = %#v, %v, %v; want appended", appendedMessage, appended, err)
+	}
+	if appendedMessage.Role != string(protocol.RoleUser) || appendedMessage.Content != "conditional" {
+		t.Fatalf("appended message = %#v", appendedMessage)
+	}
+	duplicate, appended, err := store.AppendMessageIfNoPendingInputs(ctx, "notification-message", message)
+	if err != nil || !appended || duplicate.ID != appendedMessage.ID || duplicate.Sequence != appendedMessage.Sequence {
+		t.Fatalf("idempotent append = %#v, %v, %v", duplicate, appended, err)
+	}
+
+	assistant, err := store.StartAssistant(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.FinishAssistant(ctx, assistant.ID, session.AssistantFinal{Status: "complete", Parts: []protocol.ContentPart{{Type: protocol.ContentText, Text: "answered"}}}); err != nil {
+		t.Fatal(err)
+	}
+	if duplicate, process, err := store.AppendMessageIfNoPendingInputs(ctx, "notification-message", message); err != nil || process || duplicate.ID != appendedMessage.ID {
+		t.Fatalf("answered idempotent append = %#v, %v, %v", duplicate, process, err)
+	}
+
+	if _, err := store.Admit(ctx, session.AdmitParams{MessageID: "pending-message", Content: "pending", Delivery: session.DeliveryQueue}); err != nil {
+		t.Fatal(err)
+	}
+	eventsBefore, err := repository.List(ctx, sessionID, -1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	skippedMessage, appended, err := store.AppendMessageIfNoPendingInputs(ctx, "skipped-message", message)
+	if err != nil || appended || !reflect.DeepEqual(skippedMessage, session.Message{}) {
+		t.Fatalf("append with pending input = %#v, %v, %v; want zero, false, nil", skippedMessage, appended, err)
+	}
+	eventsAfter, err := repository.List(ctx, sessionID, -1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(eventsAfter) != len(eventsBefore) {
+		t.Fatalf("skipped append added events: %d -> %d", len(eventsBefore), len(eventsAfter))
+	}
+
+	messages, err := store.ListMessages(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 2 || messages[0].ID != appendedMessage.ID {
+		t.Fatalf("messages after skipped append = %#v", messages)
+	}
+	if _, err := store.PromoteNextQueue(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, appended, err := store.AppendMessageIfNoPendingInputs(ctx, "promoted-message", message); err != nil || !appended {
+		t.Fatalf("append after promotion = %v, %v; want true, nil", appended, err)
+	}
+}
+
 func TestModelHistoryCutoffIsInclusive(t *testing.T) {
 	ctx, _, _, service, sessionID := newService(t)
 	for _, text := range []string{"zero", "one", "two"} {

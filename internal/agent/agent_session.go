@@ -35,11 +35,12 @@ type Active struct {
 }
 
 type drainState struct {
-	done   chan struct{}
-	cancel context.CancelFunc
-	wake   bool
-	status AgentStatus
-	err    error
+	done                 chan struct{}
+	cancel               context.CancelFunc
+	wake                 bool
+	status               AgentStatus
+	err                  error
+	notificationSequence int64
 }
 
 // AgentSession is the runtime for one persisted agent session. It owns both
@@ -232,13 +233,14 @@ func (s *agentSession) awaitPrompt(ctx context.Context, state *drainState, cutof
 		return "", err
 	}
 	for i := len(messages) - 1; i >= 0; i-- {
-		if messages[i].Role != "assistant" || messages[i].Sequence <= cutoff {
+		message := messages[i]
+		if message.Role != "assistant" || message.Sequence <= cutoff || state.notificationSequence != 0 && message.Sequence >= state.notificationSequence {
 			continue
 		}
-		if messages[i].Error != "" {
-			return messages[i].Content, errors.New(messages[i].Error)
+		if message.Error != "" {
+			return message.Content, errors.New(message.Error)
 		}
-		return messages[i].Content, nil
+		return message.Content, nil
 	}
 	return "", errors.New("agent: session produced no assistant output")
 }
@@ -437,9 +439,19 @@ func (s *agentSession) run(ctx context.Context, state *drainState) {
 		}
 		if err == nil && ctx.Err() == nil {
 			var prepared bool
-			prepared, err = s.prepareContinuation(ctx)
+			var sequence int64
+			prepared, sequence, err = s.prepareQueueNotification(ctx)
+			if sequence != 0 && state.notificationSequence == 0 {
+				state.notificationSequence = sequence
+			}
 			if err == nil && prepared {
 				continue
+			}
+			if err == nil {
+				prepared, err = s.prepareContinuation(ctx)
+				if err == nil && prepared {
+					continue
+				}
 			}
 		}
 

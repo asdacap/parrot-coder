@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/atomicfile"
+	"github.com/amirulashraf/parrot-coder/internal/id"
 )
 
 var (
@@ -42,11 +43,20 @@ type Info struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
 	Size        int    `json:"size"`
+	Monitored   bool   `json:"monitored,omitempty"`
+}
+
+type Notification struct {
+	ID   string
+	Name string
+	Item string
 }
 
 type metadata struct {
 	Name        string `json:"name"`
 	Description string `json:"description,omitempty"`
+	Monitored   bool   `json:"monitored,omitempty"`
+	DeliveryID  string `json:"delivery_id,omitempty"`
 }
 
 // Store owns queues rooted in a state directory. Operations are serialized
@@ -114,6 +124,7 @@ func (s *Store) Push(sessionID, name, item string, direction Direction) (Info, e
 		return Info{}, errors.New("queue: metadata name does not match path")
 	}
 	if direction == Front {
+		meta.DeliveryID = ""
 		items = append([]string{item}, items...)
 	} else {
 		items = append(items, item)
@@ -160,10 +171,113 @@ func (s *Store) Take(sessionID, name string, direction Direction) (string, Info,
 	}
 	item := items[index]
 	items = append(items[:index], items[index+1:]...)
+	if index == 0 {
+		meta.DeliveryID = ""
+	}
 	if err := write(path, meta, items); err != nil {
 		return "", Info{}, err
 	}
 	return item, info(path, meta, len(items)), nil
+}
+
+// Monitor enables or disables idle notification delivery for a queue.
+func (s *Store) Monitor(sessionID, name string, enabled bool) (Info, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	path, err := s.path(sessionID, name)
+	if err != nil {
+		return Info{}, err
+	}
+	release, err := lock(path)
+	if err != nil {
+		return Info{}, err
+	}
+	defer release()
+	meta, items, err := read(path)
+	if err != nil {
+		return Info{}, err
+	}
+	if meta.Name != name {
+		return Info{}, errors.New("queue: metadata name does not match path")
+	}
+	meta.Monitored = enabled
+	if err := write(path, meta, items); err != nil {
+		return Info{}, err
+	}
+	return info(path, meta, len(items)), nil
+}
+
+// DeliverMonitored offers the oldest item from the first non-empty monitored
+// queue in canonical name order to deliver. The item is removed only when
+// deliver accepts it, while the queue remains locked against other consumers.
+// Monitoring remains enabled after delivery.
+func (s *Store) DeliverMonitored(sessionID string, deliver func(Notification) (bool, error)) (bool, error) {
+	if deliver == nil {
+		return false, errors.New("queue: delivery callback is required")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sessionID == "" || sessionID == "." || sessionID == ".." || strings.ContainsAny(sessionID, `/\\`) {
+		return false, errors.New("queue: valid session ID is required")
+	}
+	dir := filepath.Join(sessionDir(s.state, sessionID), "queues")
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, fs.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("queue: list monitored: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".jsonl" {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), ".jsonl")
+		if !validName(name) {
+			return false, fmt.Errorf("queue: malformed filename %q: %w", entry.Name(), ErrInvalidName)
+		}
+		path := filepath.Join(dir, entry.Name())
+		release, err := lock(path)
+		if err != nil {
+			return false, err
+		}
+		meta, items, readErr := read(path)
+		if readErr == nil && meta.Name != name {
+			readErr = errors.New("queue: metadata name does not match path")
+		}
+		if readErr != nil {
+			release()
+			return false, fmt.Errorf("queue: read %q: %w", name, readErr)
+		}
+		if !meta.Monitored || len(items) == 0 {
+			release()
+			continue
+		}
+		if meta.DeliveryID == "" {
+			meta.DeliveryID, err = id.New("qnt")
+			if err != nil {
+				release()
+				return false, err
+			}
+			if err := write(path, meta, items); err != nil {
+				release()
+				return false, err
+			}
+		}
+		accepted, deliverErr := deliver(Notification{ID: meta.DeliveryID, Name: name, Item: items[0]})
+		if deliverErr != nil || !accepted {
+			release()
+			return false, deliverErr
+		}
+		meta.DeliveryID = ""
+		writeErr := write(path, meta, items[1:])
+		release()
+		if writeErr != nil {
+			return false, writeErr
+		}
+		return true, nil
+	}
+	return false, nil
 }
 
 // Get returns queue metadata and size without changing it.
@@ -387,5 +501,5 @@ func encode(meta metadata, items []string) ([]byte, error) {
 }
 
 func info(path string, meta metadata, size int) Info {
-	return Info{Path: path, Name: meta.Name, Description: meta.Description, Size: size}
+	return Info{Path: path, Name: meta.Name, Description: meta.Description, Size: size, Monitored: meta.Monitored}
 }

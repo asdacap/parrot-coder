@@ -490,7 +490,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: session state directories: %w", err)
 	}
-	userSession, err := agent.NewUserSession(ctx, sessions, contextRegistry, agent.UserSessionConfig{
+	userSession, err := agent.NewUserSession(ctx, sessions, contextRegistry, queues, agent.UserSessionConfig{
 		AgentSession: agent.AgentSessionConfig{
 			StateDirectories: stateDirectories, Profiles: profileResolver, Providers: providerRegistry,
 			ToolProviders: toolProviders, ToolPermissionAuthorizer: permissions, ToolErrorAdvisor: pathErrorAdvisor,
