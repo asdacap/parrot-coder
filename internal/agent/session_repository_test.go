@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/amirulashraf/parrot-coder/internal/protocol"
+	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
@@ -41,25 +43,11 @@ func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
 		t.Fatal("Lookup created a missing session")
 	}
 
-	started := make(chan string, 2)
-	release := make(chan struct{})
 	for _, id := range []string{"a", "b"} {
 		session := mustGetRepositorySession(t, repository, id).(*agentSession)
-		session.execute = func(context.Context) error {
-			started <- session.ID()
-			<-release
-			return nil
-		}
-		session.Wake()
-	}
-	seen := map[string]bool{}
-	for len(seen) != 2 {
-		select {
-		case id := <-started:
-			seen[id] = true
-		case <-time.After(time.Second):
-			t.Fatal("different sessions did not execute concurrently")
-		}
+		session.mu.Lock()
+		session.turn = &turnState{status: StatusRunning}
+		session.mu.Unlock()
 	}
 	active := repository.Active()
 	if len(active) != 2 || active[0].SessionID != "a" || active[1].SessionID != "b" {
@@ -68,8 +56,12 @@ func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
 	if !errors.Is(repository.Remove("a"), ErrAgentSessionActive) {
 		t.Fatal("removed an active session")
 	}
-	close(release)
-	waitForAgentSession(t, func() bool { return len(repository.Active()) == 0 })
+	for _, id := range []string{"a", "b"} {
+		session := mustGetRepositorySession(t, repository, id).(*agentSession)
+		session.mu.Lock()
+		session.turn.status = StatusSucceeded
+		session.mu.Unlock()
+	}
 	cleanup := &retrySessionStateDirectories{err: errors.New("cleanup failed")}
 	repository.config.StateDirectories = cleanup
 	if err := repository.Remove("a"); !errors.Is(err, cleanup.err) {
@@ -272,7 +264,7 @@ func TestAgentSessionConcurrentResumeJoinsLifecycle(t *testing.T) {
 	var mu sync.Mutex
 	entered := make(chan struct{})
 	release := make(chan struct{})
-	session := &agentSession{dto: session.AgentSessionDto{ID: "same"}, turnEvents: noopTurnEvents{}, execute: func(context.Context) error {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		mu.Lock()
 		calls++
 		if calls == 1 {
@@ -280,14 +272,17 @@ func TestAgentSessionConcurrentResumeJoinsLifecycle(t *testing.T) {
 		}
 		mu.Unlock()
 		<-release
-		return nil
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
+	h := newRunnerHarness(t, fake, nil)
+	h.admit(t, "user", "work", session.DeliverySteer)
+	runtime := h.runner
 	const waiters = 32
 	results := make(chan error, waiters)
-	go func() { results <- session.Resume(context.Background()) }()
+	go func() { results <- runtime.Resume(context.Background()) }()
 	<-entered
 	for range waiters - 1 {
-		go func() { results <- session.Resume(context.Background()) }()
+		go func() { results <- runtime.Resume(context.Background()) }()
 	}
 	time.Sleep(10 * time.Millisecond)
 	close(release)

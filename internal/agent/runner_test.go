@@ -1484,16 +1484,13 @@ func TestCreateChildIsAtomicWithParentRemoval(t *testing.T) {
 }
 
 func TestRemoveIsAtomicWithIdleSessionAdmission(t *testing.T) {
+	release := make(chan struct{})
 	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		<-release
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	runtime := mustGetAgentSession(t, h.agentSessions, h.sessionID).(*agentSession)
-	release := make(chan struct{})
-	runtime.execute = func(context.Context) error {
-		<-release
-		return nil
-	}
 
 	// Hold the runtime boundary until both operations are waiting on it. Whichever
 	// operation acquires it first must exclude the other: removal retires this
@@ -1712,14 +1709,14 @@ func (h *runnerHarness) admit(t *testing.T, id, content string, delivery session
 }
 
 func TestAgentSessionSendStartsExecution(t *testing.T) {
-	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	started := make(chan struct{})
 	release := make(chan struct{})
-	h.runner.execute = func(context.Context) error {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		close(started)
 		<-release
-		return nil
-	}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
 
 	admission, err := h.runner.Send(context.Background(), "msg_test", "hello")
 	if err != nil || !admission.Created || admission.Input.MessageID != "msg_test" || admission.Input.Delivery != session.DeliverySteer {
