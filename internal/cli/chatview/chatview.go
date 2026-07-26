@@ -901,20 +901,25 @@ func (t *TaskTracker) AddUsage(taskID string, usage v1.Usage) {
 }
 
 // CumulativeUsage returns what the task and all its descendants spent. This
-// walks the tree once per call — safe for small task counts (<100).
+// walks the tree once per call — safe for small task counts (<100). Malformed
+// cyclic ancestry counts each reachable task once instead of recursing forever.
 func (t *TaskTracker) CumulativeUsage(taskID string) TaskUsage {
 	node := t.tasks[taskID]
 	if node == nil {
 		return TaskUsage{}
 	}
-	return t.nodeCumulativeUsage(node)
+	return t.nodeCumulativeUsage(node, make(map[*taskNode]bool, len(t.tasks)))
 }
 
-func (t *TaskTracker) nodeCumulativeUsage(node *taskNode) TaskUsage {
+func (t *TaskTracker) nodeCumulativeUsage(node *taskNode, seen map[*taskNode]bool) TaskUsage {
+	if seen[node] {
+		return TaskUsage{}
+	}
+	seen[node] = true
 	total := node.direct
 	for _, child := range t.tasks {
 		if child != node && child.parentSessionID == node.sessionID {
-			total.add(t.nodeCumulativeUsage(child))
+			total.add(t.nodeCumulativeUsage(child, seen))
 		}
 	}
 	return total
