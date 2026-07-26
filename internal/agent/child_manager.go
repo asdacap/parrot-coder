@@ -12,13 +12,6 @@ import (
 	petname "github.com/dustinkirkland/golang-petname"
 )
 
-type childState struct {
-	status  Status
-	request ChildRequest
-	turn    *childTurnState
-	cancel  context.CancelFunc
-}
-
 type childTurnState struct {
 	ctx          context.Context
 	cancel       context.CancelFunc
@@ -77,9 +70,9 @@ func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, r
 	s.mu.Lock()
 	lineage := []string{s.dto.Agent}
 	root := s.dto.ID
-	if s.child != nil {
-		lineage = append(append([]string(nil), s.child.status.Lineage...), s.child.status.Agent)
-		root = s.child.status.RootSession
+	if s.childTurn != nil {
+		lineage = append(append([]string(nil), s.childStatus.Lineage...), s.childStatus.Agent)
+		root = s.childStatus.RootSession
 	}
 	s.mu.Unlock()
 	if err := user.validateChild(s.ID(), lineage, request); err != nil {
@@ -113,11 +106,13 @@ func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, r
 		}
 		return nil, errors.Join(ErrUserSessionClosed, user.discardChild(context.WithoutCancel(ctx), child.ID()))
 	}
-	created.child = &childState{status: Status{SessionID: child.ID(), ParentSession: s.ID(), RootSession: root, Agent: created.dto.Agent, Provider: created.dto.Provider, Model: created.dto.Model, Variant: created.dto.Variant, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, State: status, StartedAt: startedAt}, request: request, turn: turn, cancel: cancel}
+	created.childStatus = Status{SessionID: child.ID(), ParentSession: s.ID(), RootSession: root, Agent: created.dto.Agent, Provider: created.dto.Provider, Model: created.dto.Model, Variant: created.dto.Variant, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, State: status, StartedAt: startedAt}
+	created.childRequest, created.childTurn, created.cancelChild = request, turn, cancel
 	created.mu.Unlock()
 	if err := user.registerChild(created); err != nil {
 		created.mu.Lock()
-		created.child = nil
+		created.childStatus, created.childRequest = Status{}, ChildRequest{}
+		created.childTurn, created.cancelChild = nil, nil
 		created.mu.Unlock()
 		cancel()
 		if releaseQuota != nil {
@@ -230,16 +225,16 @@ func (s *agentSession) waitForWorkerQuota(turn *childTurnState) {
 		s.finishChild(turn, "", context.Canceled)
 		return
 	}
-	s.child.status.State = StatusRunning
-	s.child.status.StartedAt = time.Now().UTC()
+	s.childStatus.State = StatusRunning
+	s.childStatus.StartedAt = time.Now().UTC()
 	s.mu.Unlock()
 	s.runChild(turn)
 }
 
 func (s *agentSession) runChild(turn *childTurnState) {
 	s.mu.Lock()
-	state := s.child
-	task := cloneStatus(state.status)
+	task := cloneStatus(s.childStatus)
+	request := s.childRequest
 	s.mu.Unlock()
 	s.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleWorking, Task: task})
 	stop := func() {}
@@ -249,7 +244,7 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	var output string
 	var runErr error
 	if turn.drain == nil {
-		output, runErr = s.sendAndWait(turn.ctx, state.request.Prompt)
+		output, runErr = s.sendAndWait(turn.ctx, request.Prompt)
 	} else {
 		output, runErr = s.awaitMessage(turn.ctx, turn.drain, turn.messageID)
 	}
@@ -261,7 +256,6 @@ func (s *agentSession) finishChild(turn *childTurnState, output string, runErr e
 	turn.cancel()
 	s.childOp.Lock()
 	s.mu.Lock()
-	state := s.child
 	status, errText := StatusSucceeded, ""
 	if runErr != nil {
 		status, errText = StatusFailed, runErr.Error()
@@ -271,10 +265,10 @@ func (s *agentSession) finishChild(turn *childTurnState, output string, runErr e
 	}
 	output, outputTruncated := truncateChild(output, s.maxChildResultBytes)
 	errText, errorTruncated := truncateChild(errText, s.maxChildResultBytes)
-	state.status.State, state.status.Output, state.status.Error = status, output, errText
-	state.status.Truncated = outputTruncated || errorTruncated
-	state.status.FinishedAt = time.Now().UTC()
-	result := cloneStatus(state.status)
+	s.childStatus.State, s.childStatus.Output, s.childStatus.Error = status, output, errText
+	s.childStatus.Truncated = outputTruncated || errorTruncated
+	s.childStatus.FinishedAt = time.Now().UTC()
+	result := cloneStatus(s.childStatus)
 	turn.result = result
 	s.mu.Unlock()
 	if turn.releaseQuota != nil {
@@ -304,15 +298,14 @@ func (s *agentSession) sendManagedTurn(ctx context.Context, messageID, content, 
 retry:
 	s.childOp.Lock()
 	s.mu.Lock()
-	state := s.child
-	if state == nil {
+	if s.childTurn == nil {
 		s.mu.Unlock()
 		s.childOp.Unlock()
 		return session.Admission{}, ErrChildNotFound
 	}
-	if childTurnActive(state.status.State) {
+	if childTurnActive(s.childStatus.State) {
 		if s.drain == nil {
-			turn := state.turn
+			turn := s.childTurn
 			s.mu.Unlock()
 			s.childOp.Unlock()
 			select {
@@ -358,14 +351,14 @@ retry:
 		releaseQuota()
 		return admission, nil
 	}
-	state.status.Turn++
-	state.status.State, state.status.StartedAt, state.status.FinishedAt = StatusRunning, time.Now().UTC(), time.Time{}
-	state.status.Output, state.status.Error, state.status.Truncated = "", "", false
-	state.status.Usage, state.status.ToolUses = ChildUsage{}, 0
-	state.request = ChildRequest{Prompt: content, Agent: state.status.Agent, Model: state.status.Model, Name: state.status.Name}
+	s.childStatus.Turn++
+	s.childStatus.State, s.childStatus.StartedAt, s.childStatus.FinishedAt = StatusRunning, time.Now().UTC(), time.Time{}
+	s.childStatus.Output, s.childStatus.Error, s.childStatus.Truncated = "", "", false
+	s.childStatus.Usage, s.childStatus.ToolUses = ChildUsage{}, 0
+	s.childRequest = ChildRequest{Prompt: content, Agent: s.childStatus.Agent, Model: s.childStatus.Model, Name: s.childStatus.Name}
 	turnCtx, cancel := context.WithCancel(context.Background())
 	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), releaseQuota: releaseQuota, messageID: admission.Input.MessageID}
-	state.turn, state.cancel = turn, cancel
+	s.childTurn, s.cancelChild = turn, cancel
 	turn.drain = s.startOrJoinLocked(true)
 	s.mu.Unlock()
 	go s.runChild(turn)
@@ -431,7 +424,7 @@ func (t managedChildTask) Wait(ctx context.Context) (managedtask.Completion, err
 }
 func (t managedChildTask) Observe() managedtask.Task {
 	t.child.mu.Lock()
-	turn := t.child.child.turn
+	turn := t.child.childTurn
 	t.child.mu.Unlock()
 	return managedChildTurn{child: t.child, turn: turn}
 }
@@ -453,7 +446,7 @@ func (t managedChildTurn) Wait(ctx context.Context) (managedtask.Completion, err
 }
 func (t managedChildTurn) Interrupt(ctx context.Context) (managedtask.Snapshot, error) {
 	t.child.mu.Lock()
-	current := t.child.child.turn == t.turn
+	current := t.child.childTurn == t.turn
 	t.child.mu.Unlock()
 	if !current {
 		return t.Snapshot(), nil
@@ -464,10 +457,10 @@ func (t managedChildTurn) Interrupt(ctx context.Context) (managedtask.Snapshot, 
 func (s *agentSession) statusSnapshot() Status {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.child == nil {
+	if s.childTurn == nil {
 		return Status{}
 	}
-	return cloneStatus(s.child.status)
+	return cloneStatus(s.childStatus)
 }
 
 func (s *agentSession) reportChildProgress(progress ChildProgress) {
@@ -475,17 +468,17 @@ func (s *agentSession) reportChildProgress(progress ChildProgress) {
 		return
 	}
 	s.mu.Lock()
-	if s.child == nil || s.child.status.State != StatusRunning {
+	if s.childTurn == nil || s.childStatus.State != StatusRunning {
 		s.mu.Unlock()
 		return
 	}
-	s.child.status.Usage.InputTokens += progress.Usage.InputTokens
-	s.child.status.Usage.OutputTokens += progress.Usage.OutputTokens
-	s.child.status.Usage.TotalTokens += progress.Usage.TotalTokens
-	s.child.status.Usage.ReasoningTokens += progress.Usage.ReasoningTokens
-	s.child.status.Usage.CachedInputTokens += progress.Usage.CachedInputTokens
-	s.child.status.ToolUses += progress.ToolUses
-	task := cloneStatus(s.child.status)
+	s.childStatus.Usage.InputTokens += progress.Usage.InputTokens
+	s.childStatus.Usage.OutputTokens += progress.Usage.OutputTokens
+	s.childStatus.Usage.TotalTokens += progress.Usage.TotalTokens
+	s.childStatus.Usage.ReasoningTokens += progress.Usage.ReasoningTokens
+	s.childStatus.Usage.CachedInputTokens += progress.Usage.CachedInputTokens
+	s.childStatus.ToolUses += progress.ToolUses
+	task := cloneStatus(s.childStatus)
 	s.mu.Unlock()
 	if s.onChildProgress != nil {
 		s.onChildProgress(task)

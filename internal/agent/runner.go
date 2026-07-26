@@ -134,7 +134,10 @@ type agentSession struct {
 	mu                     sync.Mutex
 	selectionMu            sync.Mutex
 	childOp                sync.Mutex
-	child                  *childState
+	childStatus            Status
+	childRequest           ChildRequest
+	childTurn              *childTurnState
+	cancelChild            context.CancelFunc
 	drain                  *drainState
 	childCreations         int
 	removed                bool

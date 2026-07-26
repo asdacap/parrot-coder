@@ -96,11 +96,11 @@ func (s *agentSession) applySelection(updated session.AgentSessionDto) {
 	s.dto.Provider = updated.Provider
 	s.dto.Model = updated.Model
 	s.dto.Variant = updated.Variant
-	if s.child != nil {
-		s.child.status.Agent = updated.Agent
-		s.child.status.Provider = updated.Provider
-		s.child.status.Model = updated.Model
-		s.child.status.Variant = updated.Variant
+	if s.childTurn != nil {
+		s.childStatus.Agent = updated.Agent
+		s.childStatus.Provider = updated.Provider
+		s.childStatus.Model = updated.Model
+		s.childStatus.Variant = updated.Variant
 	}
 	s.mu.Unlock()
 	if s.agentSessionRepository != nil {
@@ -119,8 +119,8 @@ func (s *agentSession) LatestSequence(ctx context.Context) (int64, error) {
 }
 func (s *agentSession) Status() Status {
 	s.mu.Lock()
-	if s.child != nil {
-		status := cloneStatus(s.child.status)
+	if s.childTurn != nil {
+		status := cloneStatus(s.childStatus)
 		s.mu.Unlock()
 		return status
 	}
@@ -153,10 +153,10 @@ func (s *agentSession) executionStatus() AgentStatus {
 func (s *agentSession) Observe() (ChildTurnObserver, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.child == nil {
+	if s.childTurn == nil {
 		return nil, ErrChildNotFound
 	}
-	return childObserver{turn: s.child.turn}, nil
+	return childObserver{turn: s.childTurn}, nil
 }
 
 func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
@@ -309,9 +309,9 @@ func (s *agentSession) wait(ctx context.Context, state *drainState) error {
 
 func (s *agentSession) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
-	if s.child != nil && childTurnActive(s.child.status.State) {
-		s.child.cancel()
-		done := s.child.turn.done
+	if s.childTurn != nil && childTurnActive(s.childStatus.State) {
+		s.cancelChild()
+		done := s.childTurn.done
 		s.mu.Unlock()
 		select {
 		case <-done:
@@ -328,10 +328,10 @@ func (s *agentSession) Shutdown(ctx context.Context) error {
 	s.mu.Lock()
 	s.shuttingDown = true
 	var childDone <-chan struct{}
-	if s.child != nil && s.child.turn != nil {
-		childDone = s.child.turn.done
-		if childTurnActive(s.child.status.State) {
-			s.child.cancel()
+	if s.childTurn != nil {
+		childDone = s.childTurn.done
+		if childTurnActive(s.childStatus.State) {
+			s.cancelChild()
 		}
 	}
 	var drainDone <-chan struct{}
@@ -418,7 +418,7 @@ func (s *agentSession) removeIfIdle(remove func() error) error {
 	if s.removed {
 		return nil
 	}
-	if s.drain != nil || s.childCreations != 0 || s.child != nil && childTurnActive(s.child.status.State) {
+	if s.drain != nil || s.childCreations != 0 || s.childTurn != nil && childTurnActive(s.childStatus.State) {
 		return ErrAgentSessionActive
 	}
 	if err := remove(); err != nil {

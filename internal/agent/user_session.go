@@ -432,10 +432,18 @@ func (r *agentSessionRepository) HasChildSessions(parentSessionID string) bool {
 // hierarchy traversal, but do not consume the managed task retention limit.
 func (r *agentSessionRepository) ManagedChildTasks() int {
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	count := 0
+	runtimes := make([]*agentSession, 0, len(r.sessions))
 	for _, runtime := range r.sessions {
-		if runtime.child != nil {
+		runtimes = append(runtimes, runtime)
+	}
+	r.mu.Unlock()
+
+	count := 0
+	for _, runtime := range runtimes {
+		runtime.mu.Lock()
+		managed := runtime.childTurn != nil
+		runtime.mu.Unlock()
+		if managed {
 			count++
 		}
 	}
