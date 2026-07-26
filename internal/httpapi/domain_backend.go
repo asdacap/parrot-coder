@@ -350,7 +350,6 @@ func (b *DomainBackend) SubmitPrompt(ctx context.Context, id string, request v1.
 	if err != nil {
 		return v1.PromptAccepted{}, err
 	}
-	runtime.Wake()
 	b.publishRunning(id)
 	return v1.PromptAccepted{InputID: admission.Input.ID, MessageID: admission.Input.MessageID, Delivery: string(admission.Input.Delivery), Status: admission.Input.Status, Created: admission.Created}, nil
 }

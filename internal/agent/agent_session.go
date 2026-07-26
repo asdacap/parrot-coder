@@ -90,7 +90,20 @@ func (s *agentSession) ListMessages(ctx context.Context) ([]session.Message, err
 	return s.store.ListMessages(ctx)
 }
 func (s *agentSession) Admit(ctx context.Context, params session.AdmitParams) (session.Admission, error) {
-	return s.store.Admit(ctx, params)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.removed {
+		return session.Admission{}, ErrAgentSessionRemoved
+	}
+	if s.shuttingDown {
+		return session.Admission{}, ErrUserSessionClosed
+	}
+	admission, err := s.store.Admit(ctx, params)
+	if err != nil {
+		return session.Admission{}, err
+	}
+	s.startOrJoinLocked(true)
+	return admission, nil
 }
 func (s *agentSession) HasPendingInputs(ctx context.Context) (bool, error) {
 	return s.store.HasPendingInputs(ctx)

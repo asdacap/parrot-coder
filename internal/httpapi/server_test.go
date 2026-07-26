@@ -360,6 +360,13 @@ type testAgentSession struct {
 	id         string
 }
 
+func (s testAgentSession) Admit(ctx context.Context, params session.AdmitParams) (session.Admission, error) {
+	admission, err := s.AgentSession.Admit(ctx, params)
+	if err == nil {
+		s.controller.wake(s.id)
+	}
+	return admission, err
+}
 func (s testAgentSession) Wake() { s.controller.wake(s.id) }
 func (s testAgentSession) Resume(context.Context) error {
 	return errors.New("not implemented")
@@ -569,7 +576,7 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtime, err := sessions.Get(created.ID)
+	runtime, err := backend.AgentSessions.Get(created.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -577,8 +584,6 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	runtime, _ = backend.AgentSessions.Get(created.ID)
-	runtime.Wake()
 	select {
 	case <-drainer.started:
 	case <-time.After(time.Second):

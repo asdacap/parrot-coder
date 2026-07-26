@@ -1325,6 +1325,29 @@ func (h *runnerHarness) admit(t *testing.T, id, content string, delivery session
 	}
 }
 
+func TestAgentSessionAdmitStartsExecution(t *testing.T) {
+	h := newRunnerHarness(t, &fakeProvider{}, nil)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h.runner.execute = func(context.Context) error {
+		close(started)
+		<-release
+		return nil
+	}
+
+	admission, err := h.runner.Admit(context.Background(), session.AdmitParams{MessageID: "msg_test", Content: "hello", Delivery: session.DeliverySteer})
+	if err != nil || !admission.Created {
+		t.Fatalf("Admit = %#v, %v", admission, err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("Admit did not start execution")
+	}
+	close(release)
+	waitForAgentSession(t, func() bool { return h.runner.executionStatus() == StatusIdle })
+}
+
 func TestRunnerPersistsStreamedFinalText(t *testing.T) {
 	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
 		return events(
