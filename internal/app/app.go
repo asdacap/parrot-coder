@@ -750,8 +750,8 @@ type statusReporter struct {
 	live       *event.Broker
 	sessionFor func(string) agent.AgentSession
 
-	// started records sessions whose main task already emitted task.start.
-	// It is a pointer so statusReporter value copies share one registry.
+	// started records user sessions whose lifecycle already emitted its start
+	// event. It is a pointer so statusReporter value copies share one registry.
 	started *sync.Map
 }
 
@@ -759,7 +759,7 @@ func (d statusReporter) LifecycleStarted(sessionID string) {
 	diagnostics.Event("session_run_started", "session_id", sessionID)
 	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
 	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
-	d.mainTaskStarted(sessionID)
+	d.userSessionStarted(sessionID)
 }
 
 func (d statusReporter) LifecycleComplete(sessionID string, err error) {
@@ -772,7 +772,7 @@ func (d statusReporter) LifecycleComplete(sessionID string, err error) {
 	}
 	data, _ := json.Marshal(status)
 	d.live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data})
-	d.mainTaskIdle(sessionID, err)
+	d.userSessionIdle(sessionID, err)
 	attributes := []any{"session_id", sessionID, "status", status.Kind}
 	if err != nil {
 		attributes = append(attributes, "error_type", diagnostics.ErrorType(err))
@@ -784,16 +784,16 @@ func (d statusReporter) LifecycleComplete(sessionID string, err error) {
 	diagnostics.Event("session_run_finished", attributes...)
 }
 
-// mainTaskOwns reports whether sessionID is a main session. Child session
+// userSessionOwns reports whether sessionID is a user session. Child session
 // lifecycles belong to their parent task instead.
-func (d statusReporter) mainTaskOwns(sessionID string) bool {
+func (d statusReporter) userSessionOwns(sessionID string) bool {
 	return d.sessionFor == nil || d.sessionFor(sessionID).Parent() == nil
 }
 
-// mainTaskStarted emits the main task's flat start and working events. Start
-// is emitted once per session; every drain marks the main task as working.
-func (d statusReporter) mainTaskStarted(sessionID string) {
-	if !d.mainTaskOwns(sessionID) {
+// userSessionStarted emits a user session's start and working events. Start is
+// emitted once per session; every drain marks the user session as working.
+func (d statusReporter) userSessionStarted(sessionID string) {
+	if !d.userSessionOwns(sessionID) {
 		return
 	}
 	first := true
@@ -802,25 +802,26 @@ func (d statusReporter) mainTaskStarted(sessionID string) {
 		first = !seen
 	}
 	if first {
-		data, _ := json.Marshal(v1.TaskEvent{SessionID: sessionID, Kind: string(managedtask.KindMain)})
-		d.live.PublishEvent(v1.Event{Type: managedtask.EventStart, SessionID: sessionID, Data: data})
+		data, _ := json.Marshal(v1.UserSessionEvent{SessionID: sessionID})
+		d.live.PublishEvent(v1.Event{Type: v1.EventUserSessionStart, SessionID: sessionID, Data: data})
 	}
-	data, _ := json.Marshal(v1.TaskEvent{SessionID: sessionID, Kind: string(managedtask.KindMain)})
-	d.live.PublishEvent(v1.Event{Type: managedtask.EventWorking, SessionID: sessionID, Data: data})
+	data, _ := json.Marshal(v1.UserSessionEvent{SessionID: sessionID})
+	d.live.PublishEvent(v1.Event{Type: v1.EventUserSessionWorking, SessionID: sessionID, Data: data})
 }
 
-// mainTaskIdle emits the main task's flat idle event when a drain completes.
-// The main task never finishes while the session lives; it waits for input.
-func (d statusReporter) mainTaskIdle(sessionID string, err error) {
-	if !d.mainTaskOwns(sessionID) {
+// userSessionIdle emits a user session's idle event when a drain completes. The
+// user session never finishes while it lives; it waits for input.
+func (d statusReporter) userSessionIdle(sessionID string, err error) {
+	if !d.userSessionOwns(sessionID) {
 		return
 	}
-	payload := v1.TaskEvent{SessionID: sessionID, Kind: string(managedtask.KindMain)}
+	payload := v1.UserSessionEvent{SessionID: sessionID}
 	if err != nil && err != context.Canceled {
 		payload.Status = "error"
+		payload.Error = err.Error()
 	}
 	data, _ := json.Marshal(payload)
-	d.live.PublishEvent(v1.Event{Type: managedtask.EventIdle, SessionID: sessionID, Data: data})
+	d.live.PublishEvent(v1.Event{Type: v1.EventUserSessionIdle, SessionID: sessionID, Data: data})
 }
 
 type questionPrompter struct{}
@@ -1209,10 +1210,10 @@ func (c *managedTaskController) WaitKind(ctx context.Context, callerSession, ide
 }
 
 func publishPersistentProcessEvent(live *event.Broker, item process.PersistentEvent) {
-	payload := v1.TaskEvent{SessionID: item.SessionID, ProcessID: item.ProcessID, Name: item.Name, Kind: string(managedtask.KindShell), Error: item.Error}
-	eventType := managedtask.EventStart
+	payload := v1.ProcessEvent{SessionID: item.SessionID, ProcessID: item.ProcessID, Name: item.Name, Error: item.Error}
+	eventType := v1.EventProcessStart
 	if item.Kind == process.PersistentEventFinished {
-		eventType = managedtask.EventFinished
+		eventType = v1.EventProcessFinished
 		payload.Status = "succeeded"
 		if item.ExitCode != nil && *item.ExitCode != 0 || item.Error != "" {
 			payload.Status = "failed"
@@ -1258,17 +1259,17 @@ func publishTurnProgress(live *event.Broker, task agent.Status) {
 
 func publishTurnLifecycle(live *event.Broker, item agent.TurnLifecycleEvent) {
 	task := item.Task
-	payload := v1.TaskEvent{SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
+	payload := v1.AgentSessionEvent{SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name}
 	eventType := ""
 	switch item.Kind {
 	case agent.TurnLifecycleStart:
-		eventType = managedtask.EventStart
+		eventType = v1.EventAgentSessionStart
 	case agent.TurnLifecycleWorking:
-		eventType = managedtask.EventWorking
+		eventType = v1.EventAgentSessionWorking
 	case agent.TurnLifecycleIdle:
-		eventType = managedtask.EventIdle
+		eventType = v1.EventAgentSessionIdle
 	case agent.TurnLifecycleFinished:
-		eventType = managedtask.EventFinished
+		eventType = v1.EventAgentSessionFinished
 		payload.Status = string(task.State)
 		payload.Error = task.Error
 	default:

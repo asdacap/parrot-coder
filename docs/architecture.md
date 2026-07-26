@@ -112,30 +112,41 @@ event publication is serialized and all tools settle before continuation.
 
 ## Sessions and Tasks
 
-A session is a user session; it has an ID and runs its own turns. Sessions can
-start child-agent sessions through `agent_spawn` and shell processes through
-`exec_command`. Child agents and yielded shell processes directly steer
-completion messages into their owning sessions. Agent lifecycle and tools use
-`session_id`; shell lifecycle and process tools use `process_id`.
+A user session has an ID and runs its own turns. It can start child agent
+sessions through `agent_spawn` and retained processes through `exec_command`.
+Child agents and yielded processes directly steer completion messages into
+their owning sessions. Agent lifecycle and tools use `session_id`; process
+lifecycle and process tools also use `process_id`.
 
-Child-agent sessions admitted while a child concurrency limit is full have a
+Child agent sessions admitted while a child concurrency limit is full have a
 `blocked` status until both their user-wide and direct-parent quotas are
 available. They can be waited on or interrupted like running agents.
 
-Work emits a flat lifecycle on the session event stream: `task.start`,
-`task.working`, `task.idle`, and `task.finished`. A blocked child emits
-`task.start`, followed by `task.working` when it acquires quota. Lifecycle
-events are never nested inside a parent's event. Every event identifies its
-producer by `session_id`. Agent `task.start` events carry `parent_session_id` to
-form the lifecycle hierarchy, while shell lifecycle events also carry
-`process_id` to distinguish processes in the producing session. A child
-session's events are republished on its parent's stream as-is, keeping their
-own type, data, and producer attribution, so a client needs one subscription
-regardless of subagent recursion.
+Lifecycle events are flat and domain-specific. User sessions emit
+`user_session.start`, `user_session.working`, and `user_session.idle`. Agent
+sessions emit `agent_session.start`, `agent_session.working`,
+`agent_session.idle`, and `agent_session.finished`; their payloads carry
+`parent_session_id` to form the hierarchy. A blocked child emits
+`agent_session.start`, followed by `agent_session.working` when it acquires
+quota. Commands that complete during the initial yield remain ordinary tool
+calls. Only yielded commands become managed processes and emit
+`process.start` and `process.finished`, identified by their owning `session_id`
+and distinct `process_id`.
 
-Clients own the lifecycle tree. The server emits only flat events; the client
-tracks agent-session parentage from `parent_session_id`. An event referencing
-a session the client has never seen produces an unknown-session error.
+A child session's events are republished on its parent's stream as-is, keeping
+their own type, data, and producer attribution, so a client needs one
+subscription regardless of subagent recursion. Clients own the presentation
+tree: “task” describes this CLI tree, not a common wire payload. The client
+tracks agent-session parentage from `parent_session_id`; processes remain
+children of their owning session and never become ancestry nodes. An event
+referencing an unseen session or process indicates a client tracking gap.
+
+Tool calls use the durable `session.tool.pending`, `session.tool.running`,
+`session.tool.success`, `session.tool.failure`, and `session.tool.interrupted`
+events. Their `ToolEvent` payload has canonical `call_id`, `tool_name`, `input`,
+`status`, `result`, `error`, and `output_tail` fields. A terminal event may omit
+`tool_name`; clients correlate it with the pending event by `call_id`.
+`task.progress` remains the separate agent progress contract.
 
 ## Context Epochs
 

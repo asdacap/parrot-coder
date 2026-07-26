@@ -119,7 +119,7 @@ func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
 		return item
 	}
 	if strings.HasPrefix(item.Type, "session.tool.") {
-		callID, name, input, _ := r.presentation.Payload(item.Data)
+		callID, name, input, _ := r.presentation.Payload(item)
 		if r.tools == nil {
 			r.tools = make(map[string]string)
 		}
@@ -131,17 +131,19 @@ func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
 			effectiveName = r.tools[callID]
 		}
 		if r.suppressed(effectiveName) {
-			var raw map[string]any
-			if json.Unmarshal(item.Data, &raw) == nil {
-				if input != nil {
-					redactToolEventInput(raw, input)
+			if payload, err := v1.DecodeEventData(item); err == nil {
+				toolEvent := *payload.(*v1.ToolEvent)
+				toolEvent.Input = input
+				if toolEvent.Result != nil {
+					toolEvent.Result = "<redacted>"
 				}
-				for _, key := range []string{"result", "Result", "error", "error_message", "message", "output_tail"} {
-					if _, exists := raw[key]; exists {
-						raw[key] = "<redacted>"
-					}
+				if toolEvent.Error != "" {
+					toolEvent.Error = "<redacted>"
 				}
-				item.Data, _ = json.Marshal(raw)
+				if toolEvent.OutputTail != "" {
+					toolEvent.OutputTail = "<redacted>"
+				}
+				item.Data, _ = json.Marshal(toolEvent)
 			}
 		}
 		return item
@@ -171,20 +173,6 @@ func (r *jsonlRedactor) redact(item v1.Event) v1.Event {
 	return item
 }
 
-func redactToolEventInput(raw map[string]any, input map[string]any) {
-	for _, key := range []string{"input", "Input", "arguments", "Arguments"} {
-		if _, exists := raw[key]; exists {
-			raw[key] = input
-		}
-	}
-	if call, ok := raw["call"].(map[string]any); ok {
-		for _, key := range []string{"input", "Input", "arguments", "Arguments"} {
-			if _, exists := call[key]; exists {
-				call[key] = input
-			}
-		}
-	}
-}
 func formatTokenCount(tokens int) string { return chatview.FormatTokenCount(tokens) }
 func cleanupEnhancedRenderer(renderer *terminal.LiveRenderer, code int) {
 	if renderer != nil && (code == exitOK || code == exitInterrupt) {

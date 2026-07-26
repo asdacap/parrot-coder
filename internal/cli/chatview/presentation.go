@@ -71,8 +71,8 @@ func (p Presentations) Redact(name string, input map[string]any) map[string]any 
 }
 
 // Payload decodes a tool activity event, redacting declared fields.
-func (p Presentations) Payload(data json.RawMessage) (string, string, map[string]any, string) {
-	callID, name, input, result := toolActivityRaw(data)
+func (p Presentations) Payload(item v1.Event) (string, string, map[string]any, string) {
+	callID, name, input, result := toolActivityRaw(item)
 	return callID, name, p.Redact(name, input), result
 }
 

@@ -72,21 +72,39 @@ token deltas are not authoritative.
 The event manifest is the source of truth for event names, payload codecs,
 OpenAPI schemas, and client dispatch.
 
-## Task lifecycle
+## Runtime lifecycle
 
-Sessions start child-agent sessions via `agent_spawn` and shell processes via
-backgrounded `exec_command` calls. Agents are identified by `session_id`; shell
-lifecycle and process tools use `process_id`.
+Sessions start child agent sessions via `agent_spawn` and retained processes
+via `exec_command`. Lifecycle events are flat: they are never nested inside a
+parent event, and the event namespace determines the payload type.
 
-Lifecycle events — `task.start`, `task.working`, `task.idle`, and
-`task.finished` — are flat: they are never nested inside a parent's event. Each
-event identifies its producer by `session_id`. Agent `task.start` events carry
-`parent_session_id`, allowing clients to rebuild the agent-session hierarchy.
-Shell lifecycle events carry `process_id` in addition to the owning
-`session_id`. Child-session events are also published on the parent's stream,
-so clients subscribe to one session while retaining the original producer
-attribution. Events referencing an unknown `session_id` indicate a client-side
-tracking gap and are reported as unknown-session errors.
+- User sessions emit `user_session.start`, `user_session.working`, and
+  `user_session.idle`, carrying `session_id`.
+- Agent sessions emit `agent_session.start`, `agent_session.working`,
+  `agent_session.idle`, and `agent_session.finished`, carrying `session_id` and
+  their optional `parent_session_id`, agent, name, status, and error.
+- Only commands that outlive the initial `exec_command` yield become managed
+  processes. They emit `process.start` and `process.finished`, carrying their
+  owning `session_id`, distinct `process_id`, name, status, and error.
+
+Child-session events are also published on the parent's stream, so clients
+subscribe once while retaining original producer attribution. Clients rebuild
+a presentation task tree from agent parentage and process ownership; “task” is
+a client presentation concept rather than a common lifecycle wire payload.
+`task.progress` remains the separate agent progress event. References to an
+unknown session or process indicate a client-side tracking gap.
+
+## Tool lifecycle
+
+Durable tool activity uses `session.tool.pending`, `session.tool.running`,
+`session.tool.success`, `session.tool.failure`, and
+`session.tool.interrupted`. Each decodes as a `ToolEvent` with canonical
+lower-snake-case fields: `call_id`, optional `tool_name`, `input`, `status`,
+`result`, `error`, and `output_tail`. Pending events establish the tool name and
+input. Later events may omit `tool_name`; clients retain the pending state and
+correlate lifecycle updates by `call_id`. Presentation redaction applies to the
+typed input, result, error, and output fields before they are rendered or
+exported.
 
 ## Local Transport
 

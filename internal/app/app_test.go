@@ -117,11 +117,20 @@ func TestStatusDrainerPublishesOnlyLifecycleCompletion(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("lifecycle completion event was not published")
 	}
+	item := <-events
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle := payload.(*v1.UserSessionEvent)
+	if item.Type != v1.EventUserSessionIdle || idle.SessionID != "session" || idle.Status != "" || idle.Error != "" {
+		t.Fatalf("user session idle event = %#v, payload = %#v", item, idle)
+	}
 }
 
 func TestStatusDrainerPublishesLifecycleError(t *testing.T) {
 	live := event.NewBroker(nil, nil)
-	events, unsubscribe := live.Subscribe("session", 1)
+	events, unsubscribe := live.Subscribe("session", 2)
 	defer unsubscribe()
 	drainer := statusReporter{live: live}
 	drainer.LifecycleComplete("session", errors.New("failed"))
@@ -134,6 +143,37 @@ func TestStatusDrainerPublishesLifecycleError(t *testing.T) {
 	status := payload.(*v1.SessionStatus)
 	if status.Kind != "error" || status.ErrorCode != "runner_error" {
 		t.Fatalf("completion status = %#v", status)
+	}
+	item = <-events
+	payload, err = v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	idle := payload.(*v1.UserSessionEvent)
+	if item.Type != v1.EventUserSessionIdle || idle.Status != "error" || idle.Error != "failed" {
+		t.Fatalf("user session idle event = %#v, payload = %#v", item, idle)
+	}
+}
+
+func TestStatusReporterPublishesUserSessionStartOnceAndWorkingEachTurn(t *testing.T) {
+	live := event.NewBroker(nil, nil)
+	events, unsubscribe := live.Subscribe("session", 3)
+	defer unsubscribe()
+	reporter := statusReporter{live: live, started: &sync.Map{}}
+
+	reporter.userSessionStarted("session")
+	reporter.userSessionStarted("session")
+
+	for index, eventType := range []string{v1.EventUserSessionStart, v1.EventUserSessionWorking, v1.EventUserSessionWorking} {
+		item := <-events
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			t.Fatal(err)
+		}
+		userSession := payload.(*v1.UserSessionEvent)
+		if item.Type != eventType || userSession.SessionID != "session" || userSession.Status != "" || userSession.Error != "" {
+			t.Fatalf("event %d = %#v, payload = %#v", index, item, userSession)
+		}
 	}
 }
 
@@ -1124,7 +1164,7 @@ func TestBrokerPreservesOriginSessionWhenRouting(t *testing.T) {
 	}
 }
 
-func TestPublishPersistentProcessEventUsesProcessIdentity(t *testing.T) {
+func TestPublishPersistentProcessEventUsesProcessLifecycle(t *testing.T) {
 	live := event.NewBroker(nil, nil)
 	events, unsubscribe := live.Subscribe("session", 2)
 	defer unsubscribe()
@@ -1133,16 +1173,17 @@ func TestPublishPersistentProcessEventUsesProcessIdentity(t *testing.T) {
 	publishPersistentProcessEvent(live, process.PersistentEvent{Kind: process.PersistentEventStart, SessionID: "session", ProcessID: "proc_1", Name: "server"})
 	publishPersistentProcessEvent(live, process.PersistentEvent{Kind: process.PersistentEventFinished, SessionID: "session", ProcessID: "proc_1", Name: "server", ExitCode: &exitCode})
 
-	started, finished := decodeTaskEvent(t, <-events), decodeTaskEvent(t, <-events)
-	if started.SessionID != "session" || started.ProcessID != "proc_1" || started.Name != "server" || started.Kind != "shell" || started.Status != "" {
-		t.Fatalf("start = %#v", started)
+	startedItem, finishedItem := <-events, <-events
+	started, finished := decodeProcessEvent(t, startedItem), decodeProcessEvent(t, finishedItem)
+	if startedItem.Type != v1.EventProcessStart || started.SessionID != "session" || started.ProcessID != "proc_1" || started.Name != "server" || started.Status != "" {
+		t.Fatalf("start event = %#v, payload = %#v", startedItem, started)
 	}
-	if finished.SessionID != "session" || finished.ProcessID != "proc_1" || finished.Kind != "shell" || finished.Status != "failed" {
-		t.Fatalf("finished = %#v", finished)
+	if finishedItem.Type != v1.EventProcessFinished || finished.SessionID != "session" || finished.ProcessID != "proc_1" || finished.Status != "failed" {
+		t.Fatalf("finished event = %#v, payload = %#v", finishedItem, finished)
 	}
 }
 
-func TestPublishTurnLifecycleEmitsFlatTaskEvents(t *testing.T) {
+func TestPublishTurnLifecycleEmitsAgentSessionEvents(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		status agent.Status
@@ -1153,13 +1194,29 @@ func TestPublishTurnLifecycleEmitsFlatTaskEvents(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent"}})
-			events, unsubscribe := live.Subscribe(test.stream, 4)
+			events, unsubscribe := live.Subscribe(test.stream, 5)
 			defer unsubscribe()
 
 			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleStart, Task: test.status})
-			started := decodeTaskEvent(t, <-events)
-			if started.SessionID != test.status.SessionID || started.ParentSessionID != test.status.ParentSession || started.Kind != "agent" || started.Agent != test.status.Agent {
-				t.Fatalf("start = %#v", started)
+			startedItem := <-events
+			started := decodeAgentSessionEvent(t, startedItem)
+			if startedItem.Type != v1.EventAgentSessionStart || started.SessionID != test.status.SessionID || started.ParentSessionID != test.status.ParentSession || started.Agent != test.status.Agent {
+				t.Fatalf("start event = %#v, payload = %#v", startedItem, started)
+			}
+
+			for _, lifecycle := range []struct {
+				kind      string
+				eventType string
+			}{
+				{kind: agent.TurnLifecycleWorking, eventType: v1.EventAgentSessionWorking},
+				{kind: agent.TurnLifecycleIdle, eventType: v1.EventAgentSessionIdle},
+			} {
+				publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: lifecycle.kind, Task: test.status})
+				item := <-events
+				payload := decodeAgentSessionEvent(t, item)
+				if item.Type != lifecycle.eventType || payload.SessionID != test.status.SessionID {
+					t.Fatalf("lifecycle event = %#v, payload = %#v", item, payload)
+				}
 			}
 
 			test.status.State, test.status.ToolUses = agent.StatusRunning, 3
@@ -1176,25 +1233,39 @@ func TestPublishTurnLifecycleEmitsFlatTaskEvents(t *testing.T) {
 
 			test.status.State, test.status.Error = agent.StatusFailed, "boom"
 			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleFinished, Task: test.status})
-			finished := decodeTaskEvent(t, <-events)
-			if finished.SessionID != test.status.SessionID || finished.Status != "failed" || finished.Error != "boom" {
-				t.Fatalf("finished = %#v", finished)
+			finishedItem := <-events
+			finished := decodeAgentSessionEvent(t, finishedItem)
+			if finishedItem.Type != v1.EventAgentSessionFinished || finished.SessionID != test.status.SessionID || finished.Status != "failed" || finished.Error != "boom" {
+				t.Fatalf("finished event = %#v, payload = %#v", finishedItem, finished)
 			}
 		})
 	}
 }
 
-func decodeTaskEvent(t *testing.T, item v1.Event) *v1.TaskEvent {
+func decodeProcessEvent(t *testing.T, item v1.Event) *v1.ProcessEvent {
 	t.Helper()
 	payload, err := v1.DecodeEventData(item)
 	if err != nil {
 		t.Fatal(err)
 	}
-	task, ok := payload.(*v1.TaskEvent)
+	processEvent, ok := payload.(*v1.ProcessEvent)
 	if !ok {
-		t.Fatalf("event type = %q, payload %T, want task event", item.Type, payload)
+		t.Fatalf("event type = %q, payload %T, want process event", item.Type, payload)
 	}
-	return task
+	return processEvent
+}
+
+func decodeAgentSessionEvent(t *testing.T, item v1.Event) *v1.AgentSessionEvent {
+	t.Helper()
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agentSession, ok := payload.(*v1.AgentSessionEvent)
+	if !ok {
+		t.Fatalf("event type = %q, payload %T, want agent session event", item.Type, payload)
+	}
+	return agentSession
 }
 
 func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {

@@ -3,9 +3,7 @@ package chatview
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"io"
 	"regexp"
 	"sort"
 	"strings"
@@ -328,72 +326,39 @@ func todoActivityMarker(status string) string {
 	}
 }
 
-func ToolActivityError(data json.RawMessage) string {
-	raw, ok := decodeJSONObject(data)
-	if !ok {
+func ToolActivityError(item v1.Event) string {
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
 		return ""
 	}
-	return firstString(raw, "error", "error_message", "message")
+	return payload.(*v1.ToolEvent).Error
 }
 
-func ToolActivityOutputTail(data json.RawMessage) string {
-	raw, ok := decodeJSONObject(data)
-	if !ok {
+func ToolActivityOutputTail(item v1.Event) string {
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
 		return ""
 	}
-	return firstString(raw, "output_tail")
+	return payload.(*v1.ToolEvent).OutputTail
 }
 
 // ToolActivityPayload decodes a tool activity event and applies the fallback
 // redaction. Prefer Presentations.Payload, which redacts the fields the tool
 // itself declared sensitive.
-func ToolActivityPayload(data json.RawMessage) (string, string, map[string]any, string) {
-	callID, name, input, result := toolActivityRaw(data)
+func ToolActivityPayload(item v1.Event) (string, string, map[string]any, string) {
+	callID, name, input, result := toolActivityRaw(item)
 	return callID, name, RedactToolInputForDisplay(name, input), result
 }
 
 // toolActivityRaw decodes without redacting. Callers must redact before display.
-func toolActivityRaw(data json.RawMessage) (string, string, map[string]any, string) {
-	raw, ok := decodeJSONObject(data)
-	if !ok {
+func toolActivityRaw(item v1.Event) (string, string, map[string]any, string) {
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
 		return "", "", nil, ""
 	}
-	callID := firstString(raw, "call_id", "callID", "id", "ID")
-	name := firstString(raw, "name", "Name", "tool", "tool_name", "toolID", "tool_id")
-	input := firstObject(raw, "input", "Input", "arguments", "Arguments")
-	result := firstString(raw, "result", "Result")
-	if nested, ok := raw["call"].(map[string]any); ok {
-		if callID == "" {
-			callID = firstString(nested, "call_id", "callID", "id", "ID")
-		}
-		if name == "" {
-			name = firstString(nested, "name", "Name", "tool", "tool_name", "toolID", "tool_id")
-		}
-		if input == nil {
-			input = firstObject(nested, "input", "Input", "arguments", "Arguments")
-		}
-		if result == "" {
-			result = firstString(nested, "result", "Result")
-		}
-	}
-	return callID, name, input, result
-}
-
-func decodeJSONObject(data json.RawMessage) (map[string]any, bool) {
-	if len(data) == 0 {
-		return nil, false
-	}
-	decoder := json.NewDecoder(strings.NewReader(string(data)))
-	decoder.UseNumber()
-	var raw map[string]any
-	if err := decoder.Decode(&raw); err != nil {
-		return nil, false
-	}
-	var extra any
-	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
-		return nil, false
-	}
-	return raw, true
+	event := payload.(*v1.ToolEvent)
+	result, _ := event.Result.(string)
+	return event.CallID, event.ToolName, event.Input, result
 }
 
 func todoWriteActivityLabel(_ string, count int) string {
@@ -958,14 +923,54 @@ func CodeDisplayStatus(display v1.CodeDisplay) string {
 
 // IsTaskEvent reports whether an event belongs to child-session or process
 // activity rather than the foreground transcript. Lifecycle events always do;
-// other events do when their origin differs from the foreground session or
-// carries a process ID.
+// other events do when their origin differs from the foreground session.
 func IsTaskEvent(item v1.Event, rootSessionID string) bool {
-	switch item.Type {
-	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
+	return isLifecycleEvent(item.Type) || item.SessionID != "" && item.SessionID != rootSessionID
+}
+
+type taskLifecycleEvent struct {
+	sessionID       string
+	processID       string
+	parentSessionID string
+	kind            string
+	agent           string
+	name            string
+	status          string
+	error           string
+}
+
+func isLifecycleEvent(eventType string) bool {
+	switch eventType {
+	case v1.EventUserSessionStart, v1.EventUserSessionWorking, v1.EventUserSessionIdle,
+		v1.EventAgentSessionStart, v1.EventAgentSessionWorking, v1.EventAgentSessionIdle, v1.EventAgentSessionFinished,
+		v1.EventProcessStart, v1.EventProcessFinished:
 		return true
+	default:
+		return false
 	}
-	return item.SessionID != "" && item.SessionID != rootSessionID
+}
+
+func decodeLifecycleEvent(item v1.Event) (taskLifecycleEvent, error) {
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		return taskLifecycleEvent{}, err
+	}
+	switch event := payload.(type) {
+	case *v1.UserSessionEvent:
+		return taskLifecycleEvent{sessionID: event.SessionID, kind: string(managedtask.KindMain), status: event.Status, error: event.Error}, nil
+	case *v1.AgentSessionEvent:
+		return taskLifecycleEvent{
+			sessionID: event.SessionID, parentSessionID: event.ParentSessionID, kind: string(managedtask.KindAgent),
+			agent: event.Agent, name: event.Name, status: event.Status, error: event.Error,
+		}, nil
+	case *v1.ProcessEvent:
+		return taskLifecycleEvent{
+			sessionID: event.SessionID, processID: event.ProcessID, parentSessionID: event.SessionID,
+			kind: string(managedtask.KindShell), name: event.Name, status: event.Status, error: event.Error,
+		}, nil
+	default:
+		return taskLifecycleEvent{}, fmt.Errorf("unexpected lifecycle payload %T", payload)
+	}
 }
 
 func (t *TaskTracker) eventOrigin(item v1.Event) (string, string) {
@@ -973,13 +978,12 @@ func (t *TaskTracker) eventOrigin(item v1.Event) (string, string) {
 	if sessionID == "" {
 		sessionID = t.rootSessionID
 	}
-	if item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
-		if payload, err := v1.DecodeEventData(item); err == nil {
-			event := payload.(*v1.TaskEvent)
-			if event.SessionID != "" {
-				sessionID = event.SessionID
+	if isLifecycleEvent(item.Type) {
+		if event, err := decodeLifecycleEvent(item); err == nil {
+			if event.sessionID != "" {
+				sessionID = event.sessionID
 			}
-			return sessionID, event.ProcessID
+			return sessionID, event.processID
 		}
 	}
 	return sessionID, ""
@@ -1001,13 +1005,13 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if owner != nil {
 			reports[i].ParentSessionID = owner.parentSessionID
 		}
-		reports[i].MainStatus = item.Type == v1.EventTaskFinished
+		reports[i].MainStatus = item.Type == v1.EventAgentSessionFinished || item.Type == v1.EventProcessFinished
 	}
 	if item.Type == v1.EventTaskProgress && owner != nil && owner.progressIgnored {
 		owner.progressIgnored = false
 		return reports, nil
 	}
-	if item.Type == v1.EventTaskProgress || item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
+	if item.Type == v1.EventTaskProgress || isLifecycleEvent(item.Type) {
 		reports = append(reports, t.taskStatusReports(ownerSessionID, ownerProcessID)...)
 	}
 	return reports, nil
@@ -1113,7 +1117,7 @@ func (t *TaskTracker) taskStatusReports(sessionID, processID string) []TaskRepor
 }
 
 func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) {
-	if item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
+	if isLifecycleEvent(item.Type) {
 		return t.applyLifecycle(item)
 	}
 	sessionID, processID := t.eventOrigin(item)
@@ -1277,7 +1281,7 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}
 		}
-		callID, _, _, _ := t.Presentation.Payload(item.Data)
+		callID, _, _, _ := t.Presentation.Payload(item)
 		report := node.tools.DescribeReport(item)
 		line := report.Line
 		if report.Label != "" {
@@ -1360,64 +1364,60 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	}
 }
 
-// applyLifecycle folds one flat lifecycle event into the tree. task.start is
-// the only event which introduces a session/process pair; every other lifecycle
-// event for an unregistered origin is reported as a tracking gap.
+// applyLifecycle folds one domain lifecycle event into the presentation tree.
+// Start events introduce a session/process pair; later events for an unknown
+// origin are reported as tracking gaps.
 func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
-	payload, err := v1.DecodeEventData(item)
+	event, err := decodeLifecycleEvent(item)
 	if err != nil {
 		return nil, err
 	}
-	event := payload.(*v1.TaskEvent)
-	if event.SessionID == "" {
+	if event.sessionID == "" {
 		return nil, nil
 	}
-	key := processKey(event.SessionID, event.ProcessID)
+	key := processKey(event.sessionID, event.processID)
 	switch item.Type {
-	case v1.EventTaskStart:
+	case v1.EventUserSessionStart, v1.EventAgentSessionStart, v1.EventProcessStart:
 		node := t.tasks[key]
 		if node == nil {
-			node = &taskNode{id: key, sessionID: event.SessionID, processID: event.ProcessID}
+			node = &taskNode{id: key, sessionID: event.sessionID, processID: event.processID}
 			t.tasks[key] = node
 		}
-		node.kind = event.Kind
-		if event.Agent != "" {
-			node.agent = event.Agent
+		node.kind = event.kind
+		if event.agent != "" {
+			node.agent = event.agent
 		}
-		if event.Name != "" {
-			node.name = event.Name
+		if event.name != "" {
+			node.name = event.name
 			if t.Presentation.taskNames == nil {
 				t.Presentation.taskNames = make(map[string]string)
 			}
-			nameKey := event.SessionID
-			if event.ProcessID != "" {
-				nameKey = event.ProcessID
+			nameKey := event.sessionID
+			if event.processID != "" {
+				nameKey = event.processID
 			}
-			t.Presentation.taskNames[nameKey] = event.Name
+			t.Presentation.taskNames[nameKey] = event.name
 		}
 		node.status = "working"
 		node.progressOpen = true
-		node.parentSessionID = event.ParentSessionID
-		if node.kind == string(managedtask.KindShell) && node.parentSessionID == "" {
-			node.parentSessionID = event.SessionID
+		node.parentSessionID = event.parentSessionID
+		// A session node owns ancestry. Processes run inside it and do not replace
+		// the session's ancestry entry.
+		if event.processID == "" {
+			t.sessions[event.sessionID] = node
 		}
-		// A session node owns ancestry. Shell processes run inside it and do not
-		// replace the session's ancestry entry.
-		if event.ProcessID == "" {
-			t.sessions[event.SessionID] = node
-		}
-		if event.ParentSessionID != "" && t.sessions[event.ParentSessionID] == nil {
+		if event.parentSessionID != "" && event.parentSessionID != event.sessionID && t.sessions[event.parentSessionID] == nil {
 			node.orphan = true
-			return t.unknownOrigin(event.ParentSessionID, "", "parent session of "+event.SessionID), nil
+			return t.unknownOrigin(event.parentSessionID, "", "parent session of "+event.sessionID), nil
 		}
 		if node.kind == string(managedtask.KindShell) {
 			return []TaskReport{{ID: node.id + ":lifecycle", Line: t.eventLine(node, SpinnerFrames[0]+" running"), Style: terminal.TextStyleMuted}}, nil
 		}
 		return nil, nil
-	case v1.EventTaskWorking:
-		node := t.known(event.SessionID, event.ProcessID)
+	case v1.EventUserSessionWorking, v1.EventAgentSessionWorking:
+		node := t.known(event.sessionID, event.processID)
 		if node == nil {
-			return t.unknownOrigin(event.SessionID, event.ProcessID, item.Type), nil
+			return t.unknownOrigin(event.sessionID, event.processID, item.Type), nil
 		}
 		node.status = "working"
 		node.error = ""
@@ -1425,20 +1425,20 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 		node.progressOpen = true
 		node.progressDone, node.progressFlushed, node.finished, node.lifecycleFlushed = false, false, false, false
 		return nil, nil
-	case v1.EventTaskIdle:
-		node := t.known(event.SessionID, event.ProcessID)
+	case v1.EventUserSessionIdle, v1.EventAgentSessionIdle:
+		node := t.known(event.sessionID, event.processID)
 		if node == nil {
-			return t.unknownOrigin(event.SessionID, event.ProcessID, item.Type), nil
+			return t.unknownOrigin(event.sessionID, event.processID, item.Type), nil
 		}
 		node.status = "idle"
 		return nil, nil
-	case v1.EventTaskFinished:
-		node := t.known(event.SessionID, event.ProcessID)
+	case v1.EventAgentSessionFinished, v1.EventProcessFinished:
+		node := t.known(event.sessionID, event.processID)
 		if node == nil {
-			return t.unknownOrigin(event.SessionID, event.ProcessID, item.Type), nil
+			return t.unknownOrigin(event.sessionID, event.processID, item.Type), nil
 		}
-		node.status = event.Status
-		node.error = event.Error
+		node.status = event.status
+		node.error = event.error
 		node.finished = true
 		if node.kind == string(managedtask.KindShell) {
 			if node.lifecycleFlushed {
@@ -1482,7 +1482,7 @@ func (t *StreamToolTracker) Describe(item v1.Event) (string, string, bool) {
 }
 
 func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
-	callID, name, input, result := t.Presentation.Payload(item.Data)
+	callID, name, input, result := t.Presentation.Payload(item)
 	if t.calls == nil {
 		t.calls = make(map[string]streamToolCall)
 	}
@@ -1520,7 +1520,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 			block = formatted
 		}
 	} else if status == "failure" && call.failure == ToolFailureErrorBlock {
-		block = FormatFailureErrorBlock(ToolActivityError(item.Data))
+		block = FormatFailureErrorBlock(ToolActivityError(item))
 	} else if status == "failure" && call.input != nil {
 		block = TruncateToolBlock(FormatFailedToolRequest(call.input), MaxToolBlockLines)
 	}
@@ -1530,7 +1530,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		}
 	}
 	if terminalEvent && call.stream == ToolOutputTail {
-		output := ToolActivityOutputTail(item.Data)
+		output := ToolActivityOutputTail(item)
 		if output == "" {
 			output = call.output.String()
 		}
@@ -1554,7 +1554,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		delete(t.pending, callID)
 		delete(t.calls, callID)
 	}
-	errorText := ToolActivityError(item.Data)
+	errorText := ToolActivityError(item)
 	if call.failure == ToolFailureErrorBlock {
 		errorText = FailureErrorSummary(errorText)
 	}

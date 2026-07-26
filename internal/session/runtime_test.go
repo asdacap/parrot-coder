@@ -1,11 +1,13 @@
 package session_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"reflect"
 	"testing"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -249,6 +251,72 @@ func TestModelHistoryDropsUnregisteredToolCall(t *testing.T) {
 	}
 }
 
+func TestToolLifecycleEventsUseCanonicalPayload(t *testing.T) {
+	ctx, _, repository, service, sessionID := newService(t)
+	store := service.GetSession(sessionID)
+	assistant, err := store.StartAssistant(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := []protocol.ToolCall{
+		{ID: "success-call", Name: "shell", Input: json.RawMessage(`{"command":"pwd","limit":9007199254740993}`)},
+		{ID: "failure-call", Name: "read", Input: json.RawMessage(`{"path":"missing"}`)},
+		{ID: "interrupted-call", Name: "agent", Input: json.RawMessage(`{"prompt":"work"}`)},
+	}
+	for _, call := range calls {
+		if _, err := store.AddToolCall(ctx, assistant.ID, call); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.StartTool(ctx, calls[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SettleToolWithOutput(ctx, calls[0].ID, "success", "done", "", "last line"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SettleTool(ctx, calls[1].ID, "failure", "partial", "not found"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SettleTool(ctx, calls[2].ID, "interrupted", "", "context canceled"); err != nil {
+		t.Fatal(err)
+	}
+
+	expected := map[string]v1.ToolEvent{
+		"session.tool.pending/success-call":     {CallID: "success-call", ToolName: "shell", Input: map[string]any{"command": "pwd", "limit": json.Number("9007199254740993")}, Status: "pending"},
+		"session.tool.running/success-call":     {CallID: "success-call", ToolName: "shell", Status: "running", Result: ""},
+		"session.tool.success/success-call":     {CallID: "success-call", ToolName: "shell", Status: "success", Result: "done", OutputTail: "last line"},
+		"session.tool.pending/failure-call":     {CallID: "failure-call", ToolName: "read", Input: map[string]any{"path": "missing"}, Status: "pending"},
+		"session.tool.failure/failure-call":     {CallID: "failure-call", ToolName: "read", Status: "failure", Result: "partial", Error: "not found"},
+		"session.tool.pending/interrupted-call": {CallID: "interrupted-call", ToolName: "agent", Input: map[string]any{"prompt": "work"}, Status: "pending"},
+		"session.tool.interrupted/interrupted-call": {
+			CallID: "interrupted-call", ToolName: "agent", Status: "interrupted", Result: "", Error: "context canceled",
+		},
+	}
+	events, err := repository.List(ctx, sessionID, -1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]v1.ToolEvent)
+	for _, item := range events {
+		switch item.Type {
+		case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
+		default:
+			continue
+		}
+		var payload v1.ToolEvent
+		decoder := json.NewDecoder(bytes.NewReader(item.Data))
+		decoder.UseNumber()
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil {
+			t.Fatalf("decode %s payload %s: %v", item.Type, item.Data, err)
+		}
+		seen[item.Type+"/"+payload.CallID] = payload
+	}
+	if !reflect.DeepEqual(seen, expected) {
+		t.Fatalf("tool events = %#v, want %#v", seen, expected)
+	}
+}
+
 func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	ctx := context.Background()
 	state := t.TempDir()
@@ -305,21 +373,23 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 		}
 	}
 	eventsBefore, _ := repository.List(ctx, created.ID, -1, 100)
-	interrupted := make(map[string]map[string]string)
+	interrupted := make(map[string]v1.ToolEvent)
 	for _, item := range eventsBefore {
 		if item.Type != "session.tool.interrupted" {
 			continue
 		}
-		var payload map[string]string
-		if err := json.Unmarshal(item.Data, &payload); err != nil {
+		var payload v1.ToolEvent
+		decoder := json.NewDecoder(bytes.NewReader(item.Data))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&payload); err != nil {
 			t.Fatalf("decode interrupted tool event: %s, %v", item.Data, err)
 		}
-		interrupted[payload["call_id"]] = payload
+		interrupted[payload.CallID] = payload
 	}
 	for _, call := range calls {
-		payload := interrupted[call.ID]
-		if payload["tool_name"] != call.Name || payload["status"] != "interrupted" || payload["error"] != "process restarted" {
-			t.Fatalf("interrupted event for %s = %#v", call.ID, payload)
+		want := v1.ToolEvent{CallID: call.ID, ToolName: call.Name, Status: "interrupted", Error: "process restarted"}
+		if payload := interrupted[call.ID]; !reflect.DeepEqual(payload, want) {
+			t.Fatalf("interrupted event for %s = %#v, want %#v", call.ID, payload, want)
 		}
 	}
 	if err := service.GetSession(created.ID).RepairActive(ctx); err != nil {

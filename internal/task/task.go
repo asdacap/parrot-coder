@@ -17,14 +17,6 @@ const (
 	KindShell Kind = "shell"
 )
 
-// Lifecycle statuses emitted as flat task events on a session's event stream.
-const (
-	EventStart    = "task.start"
-	EventWorking  = "task.working"
-	EventIdle     = "task.idle"
-	EventFinished = "task.finished"
-)
-
 type Snapshot struct {
 	Name      string    `json:"name,omitempty"`
 	SessionID string    `json:"session_id,omitempty"`

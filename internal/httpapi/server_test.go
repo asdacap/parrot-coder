@@ -776,15 +776,26 @@ func TestProblemDoesNotLeakBackendError(t *testing.T) {
 
 func TestOpenAPIHasExactlyDeclaredRoutesAndProblems(t *testing.T) {
 	var document struct {
-		OpenAPI string                    `json:"openapi"`
-		Paths   map[string]map[string]any `json:"paths"`
-		Events  []v1.EventDefinition      `json:"x-event-manifest"`
+		OpenAPI    string                    `json:"openapi"`
+		Paths      map[string]map[string]any `json:"paths"`
+		Events     []v1.EventDefinition      `json:"x-event-manifest"`
+		Components struct {
+			Schemas map[string]json.RawMessage `json:"schemas"`
+		} `json:"components"`
 	}
 	if err := json.Unmarshal(buildOpenAPI(), &document); err != nil {
 		t.Fatal(err)
 	}
 	if document.OpenAPI != "3.1.0" || len(document.Events) != len(v1.EventManifest) {
 		t.Fatalf("document metadata is incomplete")
+	}
+	for _, name := range []string{"UserSessionEvent", "AgentSessionEvent", "ProcessEvent", "ToolEvent"} {
+		if _, ok := document.Components.Schemas[name]; !ok {
+			t.Fatalf("missing event schema %s", name)
+		}
+	}
+	if _, ok := document.Components.Schemas["TaskEvent"]; ok {
+		t.Fatal("obsolete TaskEvent schema is still registered")
 	}
 	if len(operationSchemas) != len(Routes()) {
 		t.Fatalf("operation schema count = %d, route count = %d", len(operationSchemas), len(Routes()))

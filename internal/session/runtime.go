@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
@@ -8,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
@@ -377,7 +379,13 @@ func (s *agentSessionStore) AddToolCall(ctx context.Context, messageID string, c
 	if call.ID == "" || call.Name == "" || !json.Valid(call.Input) {
 		return ToolCall{}, errors.New("session: invalid tool call")
 	}
-	payload, _ := json.Marshal(call)
+	var input map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(call.Input))
+	decoder.UseNumber()
+	if err := decoder.Decode(&input); err != nil || input == nil {
+		return ToolCall{}, errors.New("session: invalid tool call")
+	}
+	payload, _ := json.Marshal(v1.ToolEvent{CallID: call.ID, ToolName: call.Name, Input: input, Status: "pending"})
 	var out ToolCall
 	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.tool.pending", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO session_tool_call(id,session_id,message_id,name,input_json,status,sequence,created_at) VALUES(?,?,?,?,?,'pending',?,?)`, call.ID, s.sessionID, messageID, call.Name, []byte(call.Input), events[0].Sequence, formatTime(events[0].CreatedAt))
@@ -412,7 +420,7 @@ func (s *agentSessionStore) transitionTool(ctx context.Context, callID, status, 
 		if len(outputTail) > 0 {
 			tail = outputTail[0]
 		}
-		payload, _ := json.Marshal(map[string]string{"call_id": callID, "tool_name": name, "status": status, "result": resultText, "error": errorText, "output_tail": tail})
+		payload, _ := json.Marshal(v1.ToolEvent{CallID: callID, ToolName: name, Status: status, Result: resultText, Error: errorText, OutputTail: tail})
 		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 			query := `UPDATE session_tool_call SET status=? WHERE id=? AND session_id=? AND status='pending'`
 			args := []any{status, callID, s.sessionID}
@@ -479,7 +487,7 @@ func (s *agentSessionStore) RepairActive(ctx context.Context) error {
 
 		pending := make([]event.NewEvent, 0, len(tools)+1)
 		for _, item := range tools {
-			payload, _ := json.Marshal(map[string]string{"call_id": item.id, "tool_name": item.name, "status": "interrupted", "error": reason})
+			payload, _ := json.Marshal(v1.ToolEvent{CallID: item.id, ToolName: item.name, Status: "interrupted", Error: reason})
 			pending = append(pending, event.NewEvent{Type: "session.tool.interrupted", Data: payload})
 		}
 		pending = append(pending, event.NewEvent{Type: "session.runtime.repaired", Data: data})

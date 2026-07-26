@@ -73,15 +73,16 @@ func TestEnhancedYieldedShellTaskSurvivesToolSettlementUntilFinished(t *testing.
 	runtime := &enhancedChatRuntime{shell: shell, knownMessages: map[string]bool{}}
 
 	tool := func(eventType string) v1.Event {
-		return v1.Event{Type: eventType, Data: json.RawMessage(`{"call_id":"call","name":"exec_command","input":{"name":"tests","cmd":"go test ./..."}}`)}
+		data, _ := json.Marshal(v1.ToolEvent{CallID: "call", ToolName: "exec_command", Input: map[string]any{"name": "tests", "cmd": "go test ./..."}})
+		return v1.Event{Type: eventType, Data: data}
 	}
 	lifecycle := func(eventType, status string) v1.Event {
-		data, _ := json.Marshal(v1.TaskEvent{SessionID: "session", ProcessID: "proc", Kind: "shell", Name: "tests", Status: status})
+		data, _ := json.Marshal(v1.ProcessEvent{SessionID: "session", ProcessID: "proc", Name: "tests", Status: status})
 		return v1.Event{Type: eventType, SessionID: "session", Data: data}
 	}
 
 	outputDelta, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "call", Delta: "still running\n"})
-	for _, event := range []v1.Event{tool("session.tool.running"), lifecycle(v1.EventTaskStart, ""), {Type: v1.EventToolOutputDelta, Data: outputDelta}} {
+	for _, event := range []v1.Event{tool(v1.EventSessionToolRunning), lifecycle(v1.EventProcessStart, ""), {Type: v1.EventToolOutputDelta, Data: outputDelta}} {
 		if err := runtime.handleEvent(event); err != nil {
 			t.Fatal(err)
 		}
@@ -89,7 +90,7 @@ func TestEnhancedYieldedShellTaskSurvivesToolSettlementUntilFinished(t *testing.
 	if len(runtime.activity) != 2 {
 		t.Fatalf("activity before yield settlement = %#v", runtime.activity)
 	}
-	if err := runtime.handleEvent(tool("session.tool.success")); err != nil {
+	if err := runtime.handleEvent(tool(v1.EventSessionToolSuccess)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 1 || runtime.activity[0].sessionID != "session" || runtime.activity[0].processID != "proc" || runtime.activity[0].rendered != "  ⠋ [shell:tests] running" {
@@ -98,7 +99,7 @@ func TestEnhancedYieldedShellTaskSurvivesToolSettlementUntilFinished(t *testing.
 	if len(runtime.pendingToolOutput) != 0 || !strings.Contains(output.String(), "still running") {
 		t.Fatalf("tool output was not committed and cleared: pending=%#v output=%q", runtime.pendingToolOutput, output.String())
 	}
-	if err := runtime.handleEvent(lifecycle(v1.EventTaskFinished, "succeeded")); err != nil {
+	if err := runtime.handleEvent(lifecycle(v1.EventProcessFinished, "succeeded")); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 || !strings.Contains(output.String(), "✓ [shell:tests] completed") {
@@ -655,12 +656,16 @@ func taskStart(sessionID, parentSessionID, agent string, name ...string) v1.Even
 }
 
 func taskStartInSession(sessionID, parentSessionID, agent string, name ...string) v1.Event {
-	event := v1.TaskEvent{SessionID: sessionID, ParentSessionID: parentSessionID, Kind: "agent", Agent: agent}
+	if parentSessionID == "" && agent == "" {
+		data, _ := json.Marshal(v1.UserSessionEvent{SessionID: sessionID})
+		return v1.Event{Type: v1.EventUserSessionStart, SessionID: sessionID, Data: data}
+	}
+	event := v1.AgentSessionEvent{SessionID: sessionID, ParentSessionID: parentSessionID, Agent: agent}
 	if len(name) > 0 {
 		event.Name = name[0]
 	}
 	data, _ := json.Marshal(event)
-	return v1.Event{Type: v1.EventTaskStart, SessionID: sessionID, Data: data}
+	return v1.Event{Type: v1.EventAgentSessionStart, SessionID: sessionID, Data: data}
 }
 
 func taskContent(sessionID string, eventType string, data json.RawMessage) v1.Event {
@@ -700,8 +705,8 @@ func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 		t.Fatalf("late task progress recreated activity: %#v", runtime.activity)
 	}
 
-	working, _ := json.Marshal(v1.TaskEvent{SessionID: "session-1", Kind: "agent"})
-	if err := runtime.handleEvent(taskContent("session-1", v1.EventTaskWorking, working)); err != nil {
+	working, _ := json.Marshal(v1.AgentSessionEvent{SessionID: "session-1"})
+	if err := runtime.handleEvent(taskContent("session-1", v1.EventAgentSessionWorking, working)); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = json.Marshal(v1.TaskProgress{Agent: "explore", Status: "running"})
@@ -1519,11 +1524,11 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 		streamMessageID: "assistant",
 	}
 	pending, _ := json.Marshal(map[string]any{"ID": "call_opaque", "Name": "read", "Input": map[string]any{"path": "internal/cli/enhanced_chat.go"}})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
 	running, _ := json.Marshal(map[string]string{"call_id": "call_opaque", "status": "running"})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.running", Data: running})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolRunning, Data: running})
 	success, _ := json.Marshal(map[string]string{"call_id": "call_opaque", "status": "success"})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolSuccess, Data: success})
 
 	if output.Len() != 0 {
 		t.Fatalf("completed tool split the active assistant message: %q", output.String())
@@ -1549,7 +1554,7 @@ func TestEnhancedLiveOnlyToolIsRemovedWithoutCommit(t *testing.T) {
 		config:   &Config{Presentation: func() chatview.Presentations { return presentation }},
 		renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{}),
 	}}
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"wait-call","name":"wait"}`)})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: json.RawMessage(`{"call_id":"wait-call","tool_name":"wait"}`)})
 	if len(runtime.activity) != 1 {
 		t.Fatalf("live activity = %#v", runtime.activity)
 	}
@@ -1557,7 +1562,7 @@ func TestEnhancedLiveOnlyToolIsRemovedWithoutCommit(t *testing.T) {
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventToolOutputDelta, Data: before}); err != nil {
 		t.Fatal(err)
 	}
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"wait-call"}`)})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolSuccess, Data: json.RawMessage(`{"call_id":"wait-call"}`)})
 	late, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "wait-call", Delta: "late"})
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventToolOutputDelta, Data: late}); err != nil {
 		t.Fatal(err)
@@ -1570,9 +1575,9 @@ func TestEnhancedLiveOnlyToolIsRemovedWithoutCommit(t *testing.T) {
 func TestShellOutputTailStreamsAndCommitsLastTenLines(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
-	pending := json.RawMessage(`{"call_id":"shell_call","name":"exec_command","input":{"command":"run"}}`)
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.running", Data: json.RawMessage(`{"call_id":"shell_call"}`)})
+	pending := json.RawMessage(`{"call_id":"shell_call","tool_name":"exec_command","input":{"command":"run"}}`)
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolRunning, Data: json.RawMessage(`{"call_id":"shell_call"}`)})
 
 	for _, delta := range []string{"one\ntw", "o\nthree\nfour\nfive\nsix", "\nseven\neight\nnine\nten\neleven\ntwelve"} {
 		data, _ := json.Marshal(v1.ToolOutputDelta{ToolCallID: "shell_call", Delta: delta})
@@ -1586,7 +1591,7 @@ func TestShellOutputTailStreamsAndCommitsLastTenLines(t *testing.T) {
 		t.Fatalf("live rows = %#v", rows)
 	}
 
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"shell_call","tool_name":"exec_command","result":"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve"}`)})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolSuccess, Data: json.RawMessage(`{"call_id":"shell_call","tool_name":"exec_command","result":"one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven\ntwelve"}`)})
 	got := output.String()
 	if !strings.Contains(got, tail) || strings.Contains(got, "one\ntwo") {
 		t.Fatalf("committed shell output = %q", got)
@@ -1599,17 +1604,17 @@ func TestEnhancedFailedToolCommitsInputAsIndentedYAML(t *testing.T) {
 		shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})},
 	}
 	pending, _ := json.Marshal(map[string]any{
-		"call_id": "shell_call",
-		"name":    "exec_command",
+		"call_id":   "shell_call",
+		"tool_name": "exec_command",
 		"input": map[string]any{
 			"shell":   "bash",
 			"command": "exit 1",
 			"options": map[string]any{"cwd": "/tmp", "env": []string{"CI=1", "COLOR=0"}},
 		},
 	})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
 	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "exec_command", "error": "exit status 1"})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolFailure, Data: failure})
 
 	got := output.String()
 	want := "request:\n  command: exit 1\n  options:\n    cwd: /tmp\n    env:\n      - CI=1\n      - COLOR=0\n  shell: bash"
@@ -1631,13 +1636,13 @@ func TestEnhancedFailedToolTruncatesRequestAfterTenLines(t *testing.T) {
 		arguments[i] = fmt.Sprintf("argument-%02d", i+1)
 	}
 	pending, _ := json.Marshal(map[string]any{
-		"call_id": "shell_call",
-		"name":    "exec_command",
-		"input":   map[string]any{"arguments": arguments, "command": "exit 1"},
+		"call_id":   "shell_call",
+		"tool_name": "exec_command",
+		"input":     map[string]any{"arguments": arguments, "command": "exit 1"},
 	})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
 	failure, _ := json.Marshal(map[string]string{"call_id": "shell_call", "tool_name": "exec_command", "error": "exit status 1"})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolFailure, Data: failure})
 
 	got := output.String()
 	if !strings.Contains(got, "    - argument-08\n… 5 more lines") {
@@ -1656,13 +1661,13 @@ func TestEnhancedFailedToolRetainsMoreThanTwelvePendingRequests(t *testing.T) {
 	}
 	for i := 1; i <= 13; i++ {
 		pending, _ := json.Marshal(map[string]any{
-			"call_id": fmt.Sprintf("call-%02d", i), "name": "shell", "input": map[string]any{"command": fmt.Sprintf("command-%02d", i)},
+			"call_id": fmt.Sprintf("call-%02d", i), "tool_name": "shell", "input": map[string]any{"command": fmt.Sprintf("command-%02d", i)},
 		})
-		runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+		runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
 	}
 	for i := 1; i <= 13; i++ {
 		failure, _ := json.Marshal(map[string]string{"call_id": fmt.Sprintf("call-%02d", i), "error": "failed"})
-		runtime.handleToolActivity(v1.Event{Type: "session.tool.failure", Data: failure})
+		runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolFailure, Data: failure})
 	}
 	runtime.streamMessageID = ""
 	if err := runtime.flushCompletedTools(); err != nil {
@@ -1683,10 +1688,10 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 		streamMessageID: "assistant",
 	}
 	pending, _ := json.Marshal(map[string]any{
-		"call_id": "todo_call", "name": "todowrite",
+		"call_id": "todo_call", "tool_name": "todowrite",
 		"input": map[string]any{"todos": []any{map[string]any{"content": "old input", "status": "pending", "priority": "low"}}},
 	})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
 	result, _ := json.Marshal([]map[string]any{
 		{"id": "todo_1", "content": "Plan work", "status": "pending", "priority": "high", "position": 0},
 		{"id": "todo_2", "content": "Implement UI", "status": "in_progress", "priority": "medium", "position": 1},
@@ -1694,7 +1699,7 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 		{"id": "todo_4", "content": "Discard old approach", "status": "cancelled", "priority": "low", "position": 3},
 	})
 	success, _ := json.Marshal(map[string]string{"call_id": "todo_call", "status": "success", "result": string(result)})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolSuccess, Data: success})
 
 	if output.Len() != 0 {
 		t.Fatalf("todowrite split the active assistant message: %q", output.String())
@@ -2078,11 +2083,11 @@ func TestEnhancedEditCommitsConfiguredDiffAsBlock(t *testing.T) {
 			if err := runtime.shell.renderer.Commit("✓ Done: read · README.md"); err != nil {
 				t.Fatal(err)
 			}
-			pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "apply_patch", "input": map[string]any{"path": "file.go"}})
-			runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+			pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "tool_name": "apply_patch", "input": map[string]any{"path": "file.go"}})
+			runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
 			diff := "--- a/file.go\n+++ b/file.go\n@@ -1,1 +1,1 @@\n-before\n+after\n"
 			success, _ := json.Marshal(map[string]string{"call_id": "edit_call", "tool_name": "apply_patch", "status": "success", "result": diff})
-			runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+			runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolSuccess, Data: success})
 			got := output.String()
 			if !strings.Contains(got, "README.md\n\n✓ apply_patch ·") {
 				t.Fatalf("edit block was not separated from compact output: %q", got)
@@ -2102,8 +2107,8 @@ func TestEnhancedEditCommitsConfiguredDiffAsBlock(t *testing.T) {
 func TestEnhancedEditTruncatesDiffAfterOneHundredRows(t *testing.T) {
 	var output bytes.Buffer
 	runtime := &enhancedChatRuntime{shell: &chatShell{renderer: terminal.NewLiveRenderer(&output, terminal.RendererConfig{Columns: 80})}}
-	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "name": "apply_patch", "input": map[string]any{"path": "file.go"}})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.pending", Data: pending})
+	pending, _ := json.Marshal(map[string]any{"call_id": "edit_call", "tool_name": "apply_patch", "input": map[string]any{"path": "file.go"}})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
 	diffLines := []string{"--- a/file.go", "+++ b/file.go", "@@ -1,101 +1,101 @@"}
 	for index := 1; index <= 101; index++ {
 		diffLines = append(diffLines, fmt.Sprintf(" context %d", index))
@@ -2111,7 +2116,7 @@ func TestEnhancedEditTruncatesDiffAfterOneHundredRows(t *testing.T) {
 	success, _ := json.Marshal(map[string]string{
 		"call_id": "edit_call", "tool_name": "apply_patch", "status": "success", "result": strings.Join(diffLines, "\n") + "\n",
 	})
-	runtime.handleToolActivity(v1.Event{Type: "session.tool.success", Data: success})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolSuccess, Data: success})
 
 	got := output.String()
 	if !strings.Contains(got, "context 97") || !strings.Contains(got, "… 4 omitted") {

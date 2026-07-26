@@ -888,22 +888,22 @@ func TestStreamToolTrackerCommitsEditAndFailureBlocks(t *testing.T) {
 	options := streamOptions{stderr: &output}
 	var tracker streamToolTracker
 
-	pendingEdit := json.RawMessage(`{"call_id":"edit_call","name":"apply_patch","input":{"path":"file.go"}}`)
-	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.pending", Data: pendingEdit}); err != nil {
+	pendingEdit := json.RawMessage(`{"call_id":"edit_call","tool_name":"apply_patch","input":{"path":"file.go"}}`)
+	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: v1.EventSessionToolPending, Data: pendingEdit}); err != nil {
 		t.Fatal(err)
 	}
 	diff := strings.Join([]string{"--- a/file.go", "+++ b/file.go", "@@ -1 +1 @@", "-old", "+new"}, "\n")
 	editSuccess, _ := json.Marshal(map[string]string{"call_id": "edit_call", "result": diff})
-	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.success", Data: editSuccess}); err != nil {
+	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: v1.EventSessionToolSuccess, Data: editSuccess}); err != nil {
 		t.Fatal(err)
 	}
 
-	pendingShell := json.RawMessage(`{"call_id":"shell_call","name":"exec_command","input":{"command":"exit 1","limit":9007199254740993}}`)
-	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.pending", Data: pendingShell}); err != nil {
+	pendingShell := json.RawMessage(`{"call_id":"shell_call","tool_name":"exec_command","input":{"command":"exit 1","limit":9007199254740993}}`)
+	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: v1.EventSessionToolPending, Data: pendingShell}); err != nil {
 		t.Fatal(err)
 	}
 	failure := json.RawMessage(`{"call_id":"shell_call","error":"exit status 1"}`)
-	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: "session.tool.failure", Data: failure}); err != nil {
+	if err := writeStreamToolEvent(options, &tracker, v1.Event{Type: v1.EventSessionToolFailure, Data: failure}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -929,8 +929,8 @@ func TestLiveOnlyToolDoesNotEnterPlainTranscript(t *testing.T) {
 	tracker := streamToolTracker{tracker: chatview.StreamToolTracker{Presentation: presentation}}
 	options := streamOptions{stderr: &output}
 	for _, event := range []v1.Event{
-		{Type: "session.tool.pending", Data: json.RawMessage(`{"call_id":"wait-call","name":"wait"}`)},
-		{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"wait-call"}`)},
+		{Type: v1.EventSessionToolPending, Data: json.RawMessage(`{"call_id":"wait-call","tool_name":"wait"}`)},
+		{Type: v1.EventSessionToolSuccess, Data: json.RawMessage(`{"call_id":"wait-call"}`)},
 	} {
 		if err := writeStreamToolEvent(options, &tracker, event); err != nil {
 			t.Fatal(err)
@@ -960,7 +960,7 @@ func TestJSONLRedactorOnlyRedactsWriteStdinAndKeepsLateOutputPrivate(t *testing.
 	if got := decodeDelta(redactor.redact(deltaEvent("stdin-call", "write_stdin", `{"chars":"secret"}`))); got != "<redacted>" {
 		t.Fatalf("stdin input delta = %q", got)
 	}
-	terminal := v1.Event{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"stdin-call","result":"secret"}`)}
+	terminal := v1.Event{Type: v1.EventSessionToolSuccess, Data: json.RawMessage(`{"call_id":"stdin-call","result":"secret"}`)}
 	if text := string(redactor.redact(terminal).Data); strings.Contains(text, "secret") {
 		t.Fatalf("terminal event exposed stdin: %s", text)
 	}
@@ -974,12 +974,12 @@ func TestJSONLRedactorOnlyRedactsWriteStdinAndKeepsLateOutputPrivate(t *testing.
 	}
 }
 
-// agentStart builds the flat task.start event introducing one agent session
-// into the tracker's session tree. Other events identify their owner through
-// the envelope SessionID; the start event links that session to its parent.
+// agentStart builds the domain event introducing one agent session into the
+// tracker's session tree. Other events identify their owner through the
+// envelope SessionID; the start event links that session to its parent.
 func agentStart(sessionID, parentSessionID, agent string) v1.Event {
-	data, _ := json.Marshal(v1.TaskEvent{SessionID: sessionID, ParentSessionID: parentSessionID, Kind: "agent", Agent: agent})
-	return v1.Event{Type: v1.EventTaskStart, SessionID: sessionID, Data: data}
+	data, _ := json.Marshal(v1.AgentSessionEvent{SessionID: sessionID, ParentSessionID: parentSessionID, Agent: agent})
+	return v1.Event{Type: v1.EventAgentSessionStart, SessionID: sessionID, Data: data}
 }
 
 func sessionEvent(sessionID string, eventType string, data json.RawMessage) v1.Event {
@@ -1083,8 +1083,8 @@ func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 	if output.Len() != before {
 		t.Fatal("late task progress repainted renderer")
 	}
-	working, _ := json.Marshal(v1.TaskEvent{SessionID: "session-explore"})
-	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventTaskWorking, working)); err != nil {
+	working, _ := json.Marshal(v1.AgentSessionEvent{SessionID: "session-explore"})
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventAgentSessionWorking, working)); err != nil {
 		t.Fatal(err)
 	}
 	data, _ = json.Marshal(v1.TaskProgress{SessionID: "session-explore", Agent: "explore", Status: "running"})
@@ -1201,15 +1201,15 @@ func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
 	if _, err := tracker.describe(agentStart("session-explore", "session-main", "explore"), false); err != nil {
 		t.Fatal(err)
 	}
-	pending := json.RawMessage(`{"call_id":"shell-call","name":"exec_command","input":{"cmd":"exit 1"}}`)
-	reports, err := tracker.describe(sessionEvent("session-explore", "session.tool.pending", pending), false)
+	pending := json.RawMessage(`{"call_id":"shell-call","tool_name":"exec_command","input":{"cmd":"exit 1"}}`)
+	reports, err := tracker.describe(sessionEvent("session-explore", v1.EventSessionToolPending, pending), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(reports) != 1 || reports[0].line != "  ○ [explore] Queued exec_command · exit 1" {
 		t.Fatalf("pending tool report = %#v", reports)
 	}
-	reports, err = tracker.describe(sessionEvent("session-explore", "session.tool.failure", json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)), false)
+	reports, err = tracker.describe(sessionEvent("session-explore", v1.EventSessionToolFailure, json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1233,10 +1233,10 @@ func TestStreamToolTrackerHandlesResultBlocks(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			tracker := streamToolTracker{tracker: chatview.StreamToolTracker{Presentation: test.presentation}}
-			pending, _ := json.Marshal(map[string]string{"call_id": "call", "name": test.tool})
-			tracker.describe(v1.Event{Type: "session.tool.pending", Data: pending})
+			pending, _ := json.Marshal(map[string]string{"call_id": "call", "tool_name": test.tool})
+			tracker.describe(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
 			success, _ := json.Marshal(map[string]string{"call_id": "call", "result": result})
-			_, block, terminalEvent := tracker.describe(v1.Event{Type: "session.tool.success", Data: success})
+			_, block, terminalEvent := tracker.describe(v1.Event{Type: v1.EventSessionToolSuccess, Data: success})
 			if !terminalEvent || block != test.want {
 				t.Fatalf("result block = %q, terminal = %t; want %q", block, terminalEvent, test.want)
 			}

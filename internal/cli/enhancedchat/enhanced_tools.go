@@ -37,7 +37,7 @@ func (r *enhancedChatRuntime) updateToolOutput(output *v1.ToolOutputDelta) {
 
 func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 	presentation := r.presentation()
-	callID, name, input, result := presentation.Payload(item.Data)
+	callID, name, input, result := presentation.Payload(item)
 	errorText := toolActivityError(item.Data)
 	if callID == "" {
 		callID = fmt.Sprintf("tool-%d", time.Now().UnixNano())
