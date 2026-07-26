@@ -83,7 +83,35 @@ func (s *agentSession) Details(ctx context.Context) (session.AgentSessionDto, er
 }
 
 func (s *agentSession) UpdateSelection(ctx context.Context, patch session.SelectionPatch, validate session.SelectionValidator) (session.AgentSessionDto, error) {
-	return s.store.UpdateSelection(ctx, patch, validate)
+	s.selectionMu.Lock()
+	defer s.selectionMu.Unlock()
+	updated, err := s.store.UpdateSelection(ctx, patch, validate)
+	if err != nil {
+		if reconciled, getErr := s.store.Get(ctx); getErr == nil {
+			s.applySelection(reconciled)
+		}
+		return session.AgentSessionDto{}, err
+	}
+	s.applySelection(updated)
+	return updated, nil
+}
+
+func (s *agentSession) applySelection(updated session.AgentSessionDto) {
+	s.mu.Lock()
+	s.dto.Agent = updated.Agent
+	s.dto.Provider = updated.Provider
+	s.dto.Model = updated.Model
+	s.dto.Variant = updated.Variant
+	if s.child != nil {
+		s.child.status.Agent = updated.Agent
+		s.child.status.Provider = updated.Provider
+		s.child.status.Model = updated.Model
+		s.child.status.Variant = updated.Variant
+	}
+	s.mu.Unlock()
+	if s.agentSessionRepository != nil {
+		s.agentSessionRepository.updateSelection(s, updated)
+	}
 }
 
 func (s *agentSession) ListMessages(ctx context.Context) ([]session.Message, error) {
@@ -122,9 +150,9 @@ func (s *agentSession) Status() Status {
 	if s.drain != nil {
 		state = s.drain.status
 	}
+	status := Status{SessionID: s.dto.ID, RootSession: s.dto.ID, Agent: s.dto.Agent, Provider: s.dto.Provider, Model: s.dto.Model, Variant: s.dto.Variant, Name: s.dto.Name, State: state}
 	s.mu.Unlock()
 
-	status := Status{SessionID: s.dto.ID, RootSession: s.dto.ID, Agent: s.dto.Agent, Model: s.dto.Model, Name: s.dto.Name, State: state}
 	if s.parent != nil {
 		parent := s.parent.Status()
 		status.ParentSession = parent.SessionID

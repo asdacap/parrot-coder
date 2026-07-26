@@ -223,6 +223,26 @@ func TestAgentSessionRepositoryRestoredChildPropagatesParentBindFailure(t *testi
 	}
 }
 
+func TestAgentSessionRepositorySelectionUpdateDoesNotResurrectOrReplaceCache(t *testing.T) {
+	bound := &agentSession{}
+	replacement := &agentSession{}
+	updated := session.AgentSessionDto{ID: "child", Agent: "plan", Provider: "provider", Model: "model", Variant: "high"}
+	repository := &agentSessionRepository{
+		sessions: map[string]*agentSession{"child": replacement},
+		dtos:     map[string]session.AgentSessionDto{"child": {ID: "child", Agent: "build"}},
+	}
+	repository.updateSelection(bound, updated)
+	if got := repository.dtos["child"].Agent; got != "build" {
+		t.Fatalf("replacement cache agent = %q, want build", got)
+	}
+	delete(repository.dtos, "child")
+	repository.sessions["child"] = bound
+	repository.updateSelection(bound, updated)
+	if _, ok := repository.dtos["child"]; ok {
+		t.Fatal("missing cache entry was resurrected")
+	}
+}
+
 func TestAgentSessionRepositoryChildHierarchy(t *testing.T) {
 	repository := &agentSessionRepository{children: map[string]ChildSession{
 		"child-b": {SessionID: "child-b", ParentSessionID: "parent"},
