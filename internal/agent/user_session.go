@@ -473,6 +473,7 @@ type agentToolSession struct{ session *agentSession }
 
 func (s agentToolSession) SessionID() string   { return s.session.ID() }
 func (s agentToolSession) SessionName() string { return s.session.Name() }
+func (s agentToolSession) IsSubagent() bool    { return s.session.Parent() != nil }
 func (s agentToolSession) CreateAgent(ctx context.Context, callerAgent, prompt, target, model, name string) (tool.ChildAgent, error) {
 	child, err := s.session.CreateChild(ctx, ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name})
 	if err != nil {

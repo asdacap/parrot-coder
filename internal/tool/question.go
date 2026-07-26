@@ -15,6 +15,9 @@ type QuestionTool struct {
 
 func NewQuestionTool(broker *question.Broker) *QuestionTool { return &QuestionTool{Broker: broker} }
 func (*QuestionTool) ID() string                            { return "question" }
+func (*QuestionTool) Available(session AgentSession) bool {
+	return session == nil || !session.IsSubagent()
+}
 func (*QuestionTool) Presentation() Presentation {
 	return Presentation{Label: LabelSpec{Fields: []LabelField{{
 		Names: []string{"questions"}, Array: true,

@@ -19,10 +19,11 @@ func (a *recordingErrorAdvisor) Advise(_ context.Context, err error, advice Erro
 	return err
 }
 
-type builtinTestAgentSession struct{}
+type builtinTestAgentSession struct{ subagent bool }
 
 func (builtinTestAgentSession) SessionID() string   { return "session" }
 func (builtinTestAgentSession) SessionName() string { return "test-session" }
+func (s builtinTestAgentSession) IsSubagent() bool  { return s.subagent }
 func (builtinTestAgentSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
 	return nil, errors.New("not implemented")
 }
@@ -57,6 +58,21 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 	second, err := providers.Materialize(state)
 	if err != nil {
 		t.Fatal(err)
+	}
+	child, err := providers.Materialize(builtinTestAgentSession{subagent: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := child.tools["question"]; ok {
+		t.Fatal("question tool was materialized for a subagent")
+	}
+	if _, ok := child.tools["read"]; !ok {
+		t.Fatal("unrestricted tool was not materialized for a subagent")
+	}
+	for _, definition := range child.Definitions() {
+		if definition.ID == "question" {
+			t.Fatal("question tool was advertised to a subagent")
+		}
 	}
 	for id, item := range first.tools {
 		if item == second.tools[id] {

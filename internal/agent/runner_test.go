@@ -663,6 +663,9 @@ func TestAgentToolSessionResolvesDirectParentAndDescendantsOnly(t *testing.T) {
 	sibling := createCompleted(parent, "sibling", "sibling", ExplorerID)
 	unrelated := createCompleted(root, "unrelated", "unrelated", ExplorerID)
 	session := agentToolSession{session: subject.(*agentSession)}
+	if !session.IsSubagent() || (agentToolSession{session: root.(*agentSession)}).IsSubagent() {
+		t.Fatal("agent tool sessions did not reflect their parent hierarchy")
+	}
 
 	for _, testCase := range []struct {
 		identifier   string

@@ -136,6 +136,7 @@ type agentSendTestSession struct {
 
 func (s *agentSendTestSession) SessionID() string   { return "caller-session" }
 func (s *agentSendTestSession) SessionName() string { return s.name }
+func (*agentSendTestSession) IsSubagent() bool      { return true }
 func (*agentSendTestSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
 	return nil, errors.New("not implemented")
 }

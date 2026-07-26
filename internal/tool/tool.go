@@ -118,8 +118,15 @@ type ResolvedAgent struct {
 type AgentSession interface {
 	SessionID() string
 	SessionName() string
+	IsSubagent() bool
 	CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error)
 	ResolveAgent(string) (ResolvedAgent, error)
+}
+
+// SessionAvailability lets a tool opt out of sessions where it cannot be used.
+// Tools without this capability are available to every session.
+type SessionAvailability interface {
+	Available(AgentSession) bool
 }
 
 type ToolProvider interface {
@@ -243,6 +250,9 @@ func (p Providers) Materialize(state AgentSession) (Snapshot, error) {
 		}
 		if created == nil {
 			return Snapshot{}, fmt.Errorf("tool: provider %s returned nil", descriptor.ID)
+		}
+		if availability, ok := unwrapTool(created).(SessionAvailability); ok && !availability.Available(state) {
+			continue
 		}
 		if created.ID() != descriptor.ID || created.Description() != descriptor.Description || !bytes.Equal(created.JSONSchema(), descriptor.Schema) || !reflect.DeepEqual(created.Presentation(), descriptor.Presentation) || created.SystemPromptGuidance() != descriptor.SystemPromptGuidance {
 			return Snapshot{}, fmt.Errorf("tool: provider %s returned inconsistent tool", descriptor.ID)
