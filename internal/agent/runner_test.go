@@ -138,6 +138,16 @@ func (failingGetUserSession) Get(context.Context) (session.AgentSessionDto, erro
 	return session.AgentSessionDto{}, session.ErrNotFound
 }
 
+func newUserSessionFromHarness(ctx context.Context, sessions SessionRuntime, h *runnerHarness, config UserSessionConfig) (UserSession, error) {
+	r := h.agentSessions.repository
+	s := h.agentSessions
+	return NewUserSession(ctx, sessions, s.systemContext, s.queueMonitor, config,
+		r.stateDirectories, r.profiles, r.providers, r.toolProviders, r.toolAuthorizer, r.toolErrorAdvisor,
+		r.workspace, r.outputs, r.processes, r.taskIDFor, r.live, r.compactor, r.goals, r.status, r.toolPanicLogger,
+		s.childTasks, s.identityFor, s.recursionLimitFor, s.childNameGenerator, s.observeTurnProgress,
+		s.onTurnProgress, s.onTurnComplete, s.onTurnLifecycle, s.onChildDiscard)
+}
+
 func TestUpdateSelectionReconcilesCommittedSelectionAfterError(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	publishErr := errors.New("publish failed")
@@ -179,7 +189,7 @@ func TestUpdateSelectionSynchronizesRuntimeAndRepositoryStatus(t *testing.T) {
 
 func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
-	created, err := NewUserSession(t.Context(), failingGetSessionRuntime{SessionRuntime: h.sessions, sessionID: "ses_deleted_parent"}, h.agentSessions.systemContext, nil, h.agentSessions.config)
+	created, err := newUserSessionFromHarness(t.Context(), failingGetSessionRuntime{SessionRuntime: h.sessions, sessionID: "ses_deleted_parent"}, h, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +238,7 @@ func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	nestedRunner := nested.(*agentSession)
-	nestedRunner.config.Status = registry
+	nestedRunner.statusObserver = registry
 	if _, err := nested.Prompt(context.Background(), "work"); err != nil {
 		t.Fatal(err)
 	}
@@ -262,9 +272,9 @@ func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.runner.config.Status = registry
+	h.runner.statusObserver = registry
 	live := &recordingPublisher{}
-	h.runner.config.Live = live
+	h.runner.live = live
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -369,7 +379,7 @@ func TestRunnerPublishesPricedUsage(t *testing.T) {
 	}}
 	live := &recordingPublisher{}
 	h := newRunnerHarness(t, fake, nil)
-	h.runner.config.Live = live
+	h.runner.live = live
 	h.admit(t, "user", "work", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -545,14 +555,11 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		t.Fatal(err)
 	}
 	createdAgentSessions, err := NewUserSession(ctx, sessions, contextRegistry, queues, UserSessionConfig{AgentSession: AgentSessionConfig{
-		StateDirectories:   stateDirectories,
-		Agents:             agents,
-		Providers:          providers,
-		ToolProviders:      toolProviders,
-		Goals:              goals,
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
-	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4})
+	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4},
+		stateDirectories, agents, providers, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, goals, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -808,10 +815,10 @@ func TestAgentSessionEmitsTurnEventsUniformly(t *testing.T) {
 				completed <- status
 			}
 			lifecycle := func(event TurnLifecycleEvent) { record("lifecycle:" + event.Kind) }
-			h.agentSessions.config.ObserveTurnProgress = observe
-			h.agentSessions.config.OnTurnProgress = progress
-			h.agentSessions.config.OnTurnComplete = complete
-			h.agentSessions.config.OnTurnLifecycle = lifecycle
+			h.agentSessions.observeTurnProgress = observe
+			h.agentSessions.onTurnProgress = progress
+			h.agentSessions.onTurnComplete = complete
+			h.agentSessions.onTurnLifecycle = lifecycle
 
 			root := mustGetAgentSession(t, h.agentSessions, h.sessionID).(*agentSession)
 			root.turnEvents = callbackTurnEvents{observe: observe, progress: progress, complete: complete, lifecycle: lifecycle}
@@ -998,7 +1005,7 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
-	other, err := NewUserSession(t.Context(), h.sessions, h.agentSessions.systemContext, nil, h.agentSessions.config)
+	other, err := newUserSessionFromHarness(t.Context(), h.sessions, h, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1290,7 +1297,7 @@ func (r deleteFailUserSession) Delete(context.Context) error { return r.err }
 func TestAgentSessionsResolvePersistenceOnceWhenBound(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	recording := &recordingSessionRuntime{SessionRuntime: h.sessions}
-	created, err := NewUserSession(t.Context(), recording, h.agentSessions.systemContext, nil, h.agentSessions.config)
+	created, err := newUserSessionFromHarness(t.Context(), recording, h, h.agentSessions.config)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1338,7 +1345,7 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h.agentSessions.repository.config.ToolProviders = providers
+	h.agentSessions.repository.toolProviders = providers
 	before, err := h.sessions.List(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -1372,8 +1379,10 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 
 	cleanupErr := errors.New("delete failed")
 	cleanupConfig := h.agentSessions.config
-	cleanupConfig.AgentSession.ToolProviders = providers
-	created, err := NewUserSession(t.Context(), deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}, h.agentSessions.systemContext, nil, cleanupConfig)
+	originalProviders := h.agentSessions.repository.toolProviders
+	h.agentSessions.repository.toolProviders = providers
+	created, err := newUserSessionFromHarness(t.Context(), deleteFailSessionRuntime{SessionRuntime: h.sessions, err: cleanupErr}, h, cleanupConfig)
+	h.agentSessions.repository.toolProviders = originalProviders
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1557,7 +1566,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 
 	restartedConfig := h.agentSessions.config
 	restartedConfig.MaxChildTasks = 1
-	createdRestarted, err := NewUserSession(ctx, h.sessions, h.agentSessions.systemContext, nil, restartedConfig)
+	createdRestarted, err := newUserSessionFromHarness(ctx, h.sessions, h, restartedConfig)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1856,7 +1865,7 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 	}}
 	h = newRunnerHarness(t, fake, nil, item)
 	observations := 0
-	h.runner.config.Status = statusObserverFunc(func() string {
+	h.runner.statusObserver = statusObserverFunc(func() string {
 		observations++
 		return "Active tasks: none"
 	})
@@ -2178,7 +2187,7 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	base := Profile{ID: "plan", Prompt: "plan", ReadOnly: true, MaxTurns: 10}
 	h := newRunnerHarness(t, fake, []Profile{base}, &fakeTool{id: "status"}, capture)
 	resolver := &preparedProfileResolver{base: base}
-	h.runner.config.Profiles = resolver
+	h.runner.profiles = resolver
 	h.admit(t, "user", "plan", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -2244,7 +2253,7 @@ func TestRunnerMaxTurnsOmitsToolsAndPublishesNotice(t *testing.T) {
 			profile := Profile{ID: "limited", Prompt: "finish", MaxTurns: maxTurns}
 			h := newRunnerHarness(t, fake, []Profile{profile}, item)
 			live := &recordingPublisher{}
-			h.runner.config.Live = live
+			h.runner.live = live
 			h.admit(t, "user", "finish", session.DeliverySteer)
 			if err := h.runner.drainOnce(context.Background()); err != nil {
 				t.Fatal(err)
@@ -2291,7 +2300,7 @@ func TestRunnerInvokesAutomaticCompactionWithCompleteRequestCost(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil, item)
 	compactor := &fakeCompactor{}
-	h.runner.config.Compactor = compactor
+	h.runner.compactor = compactor
 	h.admit(t, "user", "automatic", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -2309,16 +2318,16 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h := newRunnerHarness(t, fake, nil)
-	h.runner.config.Status = statusObserver("retry status")
+	h.runner.statusObserver = statusObserver("retry status")
 	live := &recordingPublisher{}
-	h.runner.config.Live = live
+	h.runner.live = live
 	compactor := &fakeCompactor{compact: func(request compaction.Request) (compaction.Result, error) {
 		if request.Force {
 			return compaction.Result{Status: "complete", RecordID: "cmpr_retry"}, nil
 		}
 		return compaction.Result{Status: "skipped"}, nil
 	}}
-	h.runner.config.Compactor = compactor
+	h.runner.compactor = compactor
 	h.admit(t, "user", "overflow", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -2372,7 +2381,7 @@ func TestRunnerRetriesMessageOnlyOverflowExactlyOnce(t *testing.T) {
 		}
 		return compaction.Result{Status: "skipped"}, nil
 	}}
-	h.runner.config.Compactor = compactor
+	h.runner.compactor = compactor
 	h.admit(t, "user", "overflow", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -2401,7 +2410,7 @@ func TestRunnerDoesNotRetryUnknownProviderError(t *testing.T) {
 	}}
 	h := newRunnerHarness(t, fake, nil)
 	compactor := &fakeCompactor{}
-	h.runner.config.Compactor = compactor
+	h.runner.compactor = compactor
 	h.admit(t, "user", "unknown", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err == nil {
 		t.Fatal("Drain succeeded")

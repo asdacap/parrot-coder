@@ -12,6 +12,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/queue"
@@ -19,6 +20,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type agentSession struct {
@@ -30,6 +32,18 @@ type agentSession struct {
 	systemContext          SystemContextPrompt
 	queueMonitor           QueueMonitor
 	config                 AgentSessionConfig
+	stateDirectories       UserSessionStateDirectories
+	profiles               ProfileResolver
+	providers              ProviderResolver
+	workspace              *workspace.Workspace
+	outputs                *tool.OutputStore
+	processes              *process.Runner
+	taskIDFor              func(string) string
+	live                   LivePublisher
+	compactor              Compactor
+	goals                  *session.GoalService
+	statusObserver         StatusObserver
+	toolPanicLogger        func(context.Context, string, string, any, []byte)
 	securityProfile        *agentSessionSecurityProfile
 	mu                     sync.Mutex
 	selectionMu            sync.Mutex
@@ -803,6 +817,10 @@ func newAgentSession(
 	systemContext SystemContextPrompt,
 	queueMonitor QueueMonitor,
 	config AgentSessionConfig,
+	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
+	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner, taskIDFor func(string) string,
+	live LivePublisher, compactor Compactor, goals *session.GoalService, statusObserver StatusObserver,
+	toolPanicLogger func(context.Context, string, string, any, []byte),
 	maxConcurrentChildTurns int,
 	observers []LifecycleObserver,
 	maxChildPromptBytes, maxChildResultBytes int,
@@ -818,6 +836,9 @@ func newAgentSession(
 	}
 	return &agentSession{
 		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, queueMonitor: queueMonitor, config: config,
+		stateDirectories: stateDirectories, profiles: profiles, providers: providers,
+		workspace: workspace, outputs: outputs, processes: processes, taskIDFor: taskIDFor,
+		live: live, compactor: compactor, goals: goals, statusObserver: statusObserver, toolPanicLogger: toolPanicLogger,
 		status: status, turnEvents: events, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
 		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
 	}
@@ -852,18 +873,18 @@ func (p *agentSessionSecurityProfile) AddCapability(rule security.Rule) {
 	p.capabilities = append(p.capabilities, rule)
 }
 func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
-	stateDirectory, err := r.config.StateDirectories.Prepare(r.dto.ID)
+	stateDirectory, err := r.stateDirectories.Prepare(r.dto.ID)
 	if err != nil {
 		return err
 	}
 	scratchPath := stateDirectory.ScratchPath()
 	defer func() {
-		if runErr == nil || ctx.Err() != nil || r.config.Goals == nil || !provider.IsUsageLimitError(runErr) {
+		if runErr == nil || ctx.Err() != nil || r.goals == nil || !provider.IsUsageLimitError(runErr) {
 			return
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), r.config.CleanupTimeout)
 		defer cancel()
-		if _, _, err := r.config.Goals.MarkUsageLimited(cleanupCtx, r.dto.ID); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+		if _, _, err := r.goals.MarkUsageLimited(cleanupCtx, r.dto.ID); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
 			runErr = errors.Join(runErr, err)
 		}
 	}()
@@ -895,12 +916,12 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		}
 		if turn == 0 {
 			var turnProfile TurnProfile
-			if preparer, ok := r.config.Profiles.(interface {
+			if preparer, ok := r.profiles.(interface {
 				PrepareTurn(string, string) (TurnProfile, error)
 			}); ok {
 				turnProfile, err = preparer.PrepareTurn(selected.Agent, r.dto.ID)
 			} else {
-				profile, err = r.config.Profiles.GetProfile(selected.Agent)
+				profile, err = r.profiles.GetProfile(selected.Agent)
 				turnProfile = NewTurnProfile(profile)
 			}
 			if err != nil {
@@ -911,7 +932,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
 			r.securityProfile.AddCapability(security.Rule{Path: stateDirectory.QueuesPath(), Action: security.ActionAllowRead})
 		}
-		providerClient, model, err := r.config.Providers.Resolve(selected.Provider, selected.Model)
+		providerClient, model, err := r.providers.Resolve(selected.Provider, selected.Model)
 		if err != nil {
 			return err
 		}
@@ -934,13 +955,13 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				return err
 			}
 		}
-		if turn == 0 && r.config.Status != nil {
+		if turn == 0 && r.statusObserver != nil {
 			pending, err := r.store.StatusPromptPending(ctx)
 			if err != nil {
 				return err
 			}
 			if pending {
-				statusPrompt, err := r.config.Status.Observe(ctx, r.statusQuery(selected, profile), newProfileStatus(profile))
+				statusPrompt, err := r.statusObserver.Observe(ctx, r.statusQuery(selected, profile), newProfileStatus(profile))
 				if err != nil {
 					return err
 				}
@@ -972,8 +993,8 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			definitions = nil
 			r.publishMaxTurnsReached(profile.MaxTurns)
 		}
-		if r.config.Compactor != nil {
-			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
+		if r.compactor != nil {
+			result, compactErr := r.compactor.Compact(ctx, compaction.Request{
 				SessionID: r.dto.ID, ProviderID: selected.Provider, Model: model,
 				Instructions: instructions, Tools: definitions,
 			})
@@ -1003,10 +1024,10 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		calls, finish, err := r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
 		if err != nil {
 			var failure *providerTurnFailure
-			if !errors.As(err, &failure) || !failure.overflow || !failure.retrySafe || r.config.Compactor == nil {
+			if !errors.As(err, &failure) || !failure.overflow || !failure.retrySafe || r.compactor == nil {
 				return err
 			}
-			result, compactErr := r.config.Compactor.Compact(ctx, compaction.Request{
+			result, compactErr := r.compactor.Compact(ctx, compaction.Request{
 				SessionID: r.dto.ID, ProviderID: selected.Provider, Model: model,
 				Instructions: instructions, Tools: definitions, Force: true,
 			})
@@ -1041,8 +1062,8 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err := r.executeTools(ctx, selected, profile, calls); err != nil {
 				return err
 			}
-			if r.config.Goals != nil {
-				goal, err := r.config.Goals.Get(ctx, r.dto.ID)
+			if r.goals != nil {
+				goal, err := r.goals.Get(ctx, r.dto.ID)
 				if errors.Is(err, session.ErrGoalNotFound) {
 					continue
 				}
@@ -1087,14 +1108,14 @@ func (r *agentSession) statusQuery(selected session.AgentSessionDto, profile Pro
 }
 
 func (r *agentSession) publishStatusPromptInjected() {
-	if r.config.Live != nil {
-		r.config.Live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
+	if r.live != nil {
+		r.live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
 	}
 }
 
 func (r *agentSession) publishMaxTurnsReached(maxTurns int) {
-	if r.config.Live != nil {
-		r.config.Live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventMaxTurnsReached, Text: fmt.Sprintf("Maximum turn limit reached (%d); producing final response", maxTurns)})
+	if r.live != nil {
+		r.live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventMaxTurnsReached, Text: fmt.Sprintf("Maximum turn limit reached (%d); producing final response", maxTurns)})
 	}
 }
 
@@ -1124,10 +1145,10 @@ func (r *agentSession) prepareQueueNotification(ctx context.Context) (bool, erro
 // remains after a successful drain. The coordinator invokes this only while
 // the session is otherwise idle, so each continuation is a normal new turn.
 func (r *agentSession) prepareContinuation(ctx context.Context) (bool, error) {
-	if r.config.Goals == nil {
+	if r.goals == nil {
 		return false, nil
 	}
-	goal, active, err := r.config.Goals.Active(ctx, r.dto.ID)
+	goal, active, err := r.goals.Active(ctx, r.dto.ID)
 	if err != nil || !active {
 		return false, err
 	}
@@ -1135,7 +1156,7 @@ func (r *agentSession) prepareContinuation(ctx context.Context) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	profile, err := r.config.Profiles.GetProfile(selected.Agent)
+	profile, err := r.profiles.GetProfile(selected.Agent)
 	if err != nil {
 		return false, err
 	}
@@ -1177,8 +1198,8 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		return nil, "", err
 	}
 	stream, err := provider.StreamWithRetry(ctx, client, request, func(notice provider.RetryNotice) {
-		if r.config.Live != nil {
-			r.config.Live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventProviderRetry, Text: notice.String()})
+		if r.live != nil {
+			r.live.Publish(r.dto.ID, protocol.Event{Type: protocol.EventProviderRetry, Text: notice.String()})
 		}
 	})
 	if err != nil {
@@ -1217,9 +1238,9 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 			item.Usage.InputCost = float64(item.Usage.InputTokens) * model.InputPrice
 			item.Usage.OutputCost = float64(item.Usage.OutputTokens) * model.OutputPrice
 		}
-		if r.config.Live != nil {
+		if r.live != nil {
 			item.MessageID = assistant.ID
-			r.config.Live.Publish(r.dto.ID, item)
+			r.live.Publish(r.dto.ID, item)
 		}
 		switch item.Type {
 		case protocol.EventTextDelta:
@@ -1274,8 +1295,8 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		}
 		return nil, finish, err
 	}
-	if r.config.Goals != nil {
-		if _, err := r.config.Goals.AccountUsage(ctx, r.dto.ID, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+	if r.goals != nil {
+		if _, err := r.goals.AccountUsage(ctx, r.dto.ID, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
 			return nil, finish, err
 		}
 	}
@@ -1316,16 +1337,16 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 				return
 			}
 			var onPanic func(recovered any, stack []byte)
-			if logger := r.config.ToolPanicLogger; logger != nil {
+			if logger := r.toolPanicLogger; logger != nil {
 				onPanic = func(recovered any, stack []byte) {
 					logger(ctx, r.dto.ID, call.call.Name, recovered, stack)
 				}
 			}
 			taskID := ""
-			if r.config.TaskIDFor != nil {
-				taskID = r.config.TaskIDFor(r.dto.ID)
+			if r.taskIDFor != nil {
+				taskID = r.taskIDFor(r.dto.ID)
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.config.Workspace, Outputs: r.config.Outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.config.Processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.config.Live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile)}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.workspace, Outputs: r.outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile)}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

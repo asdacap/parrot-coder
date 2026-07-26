@@ -34,7 +34,7 @@ func mustGetRepositorySession(t *testing.T, repository *agentSessionRepository, 
 }
 
 func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
-	repository := &agentSessionRepository{sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), config: AgentSessionConfig{ToolProviders: emptyToolProviders(t)}}
+	repository := &agentSessionRepository{sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), toolProviders: emptyToolProviders(t)}
 	first := mustGetRepositorySession(t, repository, "a")
 	if first != mustGetRepositorySession(t, repository, "a") || first == mustGetRepositorySession(t, repository, "b") {
 		t.Fatal("repository did not preserve one runtime object per session ID")
@@ -63,7 +63,7 @@ func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
 		session.mu.Unlock()
 	}
 	cleanup := &retrySessionStateDirectories{err: errors.New("cleanup failed")}
-	repository.config.StateDirectories = cleanup
+	repository.stateDirectories = cleanup
 	if err := repository.Remove("a"); !errors.Is(err, cleanup.err) {
 		t.Fatalf("first Remove error = %v, want %v", err, cleanup.err)
 	}
@@ -135,7 +135,7 @@ func TestAgentSessionRepositoryProviderBindingLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository := &agentSessionRepository{config: AgentSessionConfig{ToolProviders: providers}, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession)}
+	repository := &agentSessionRepository{toolProviders: providers, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession)}
 
 	const waiters = 16
 	results := make(chan AgentSession, waiters)
@@ -203,7 +203,7 @@ func TestAgentSessionRepositoryRestoredChildPropagatesParentBindFailure(t *testi
 		t.Fatal(err)
 	}
 	repository := &agentSessionRepository{
-		config: AgentSessionConfig{ToolProviders: providers}, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding),
+		toolProviders: providers, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding),
 		dtos:     map[string]session.AgentSessionDto{"parent": {ID: "parent"}, "child": {ID: "child", ParentSessionID: "parent"}},
 		children: map[string]ChildSession{"child": {SessionID: "child", ParentSessionID: "parent"}},
 	}

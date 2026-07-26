@@ -202,9 +202,9 @@ func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *age
 		t.Fatal(err)
 	}
 	userSession, err := agent.NewUserSession(context.Background(), sessions, contextRegistry, nil, agent.UserSessionConfig{
-		AgentSession:            agent.AgentSessionConfig{StateDirectories: stateDirectories, Agents: agents, Providers: selectionResolver{}, ToolProviders: toolProviders},
 		MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 1,
-	})
+	}, stateDirectories, agents, selectionResolver{}, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+		nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
