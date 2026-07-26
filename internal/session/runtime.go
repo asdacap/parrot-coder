@@ -16,19 +16,15 @@ import (
 )
 
 type Selection struct {
-	Agent    string `json:"agent"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Variant  string `json:"variant,omitempty"`
+	Agent string `json:"agent"`
+	Model string `json:"model"`
 }
 
 type SelectionPatch struct {
-	Agent            string
-	Provider         string
-	Model            string
-	Variant          *string
-	FallbackAgent    string
-	FallbackProvider string
+	Agent         string
+	Model         string
+	FallbackAgent string
+	FallbackModel string
 }
 
 type SelectionValidator func(Selection) error
@@ -62,10 +58,10 @@ type AgentSessionStore interface {
 }
 
 func (s *agentSessionStore) SetSelection(ctx context.Context, selection Selection) error {
-	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
+	if selection.Agent == "" || selection.Model == "" {
 		return ErrSelectionRequired
 	}
-	_, err := s.UpdateSelection(ctx, SelectionPatch{Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: &selection.Variant}, nil)
+	_, err := s.UpdateSelection(ctx, SelectionPatch{Agent: selection.Agent, Model: selection.Model}, nil)
 	return err
 }
 
@@ -76,31 +72,25 @@ func (s *agentSessionStore) UpdateSelection(ctx context.Context, patch Selection
 	var updated AgentSessionDto
 	_, err := s.events.AppendBuilt(ctx, s.sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		current, err := scanSession(tx.QueryRowContext(ctx, `
-			SELECT id, parent_session_id, name, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
+			SELECT id, parent_session_id, name, project_id, project_root, title, selected_agent, selected_model, created_at, updated_at
 			FROM session WHERE id = ?`, s.sessionID))
 		if err != nil {
 			return nil, nil, err
 		}
-		selection := Selection{Agent: current.Agent, Provider: current.Provider, Model: current.Model, Variant: current.Variant}
+		selection := Selection{Agent: current.Agent, Model: current.Model}
 		if patch.Agent != "" {
 			selection.Agent = patch.Agent
-		}
-		if patch.Provider != "" {
-			selection.Provider = patch.Provider
 		}
 		if patch.Model != "" {
 			selection.Model = patch.Model
 		}
-		if patch.Variant != nil {
-			selection.Variant = *patch.Variant
-		}
 		if selection.Agent == "" {
 			selection.Agent = patch.FallbackAgent
 		}
-		if selection.Provider == "" {
-			selection.Provider = patch.FallbackProvider
+		if selection.Model == "" {
+			selection.Model = patch.FallbackModel
 		}
-		if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
+		if selection.Agent == "" || selection.Model == "" {
 			return nil, nil, ErrSelectionRequired
 		}
 		if validate != nil {
@@ -116,7 +106,7 @@ func (s *agentSessionStore) UpdateSelection(ctx context.Context, patch Selection
 			return nil, nil, err
 		}
 		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-			result, err := tx.ExecContext(ctx, `UPDATE session SET selected_agent=?, selected_provider=?, selected_model=?, selected_variant=?, updated_at=? WHERE id=?`, selection.Agent, selection.Provider, selection.Model, selection.Variant, formatTime(events[0].CreatedAt), s.sessionID)
+			result, err := tx.ExecContext(ctx, `UPDATE session SET selected_agent=?, selected_model=?, updated_at=? WHERE id=?`, selection.Agent, selection.Model, formatTime(events[0].CreatedAt), s.sessionID)
 			if err != nil {
 				return err
 			}
@@ -128,7 +118,7 @@ func (s *agentSessionStore) UpdateSelection(ctx context.Context, patch Selection
 				return ErrNotFound
 			}
 			updated = current
-			updated.Agent, updated.Provider, updated.Model, updated.Variant = selection.Agent, selection.Provider, selection.Model, selection.Variant
+			updated.Agent, updated.Model = selection.Agent, selection.Model
 			updated.UpdatedAt = events[0].CreatedAt
 			return nil
 		}

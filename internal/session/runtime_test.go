@@ -16,7 +16,7 @@ import (
 
 func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 	ctx, _, repository, service, sessionID := newService(t)
-	if err := service.GetSession(sessionID).SetSelection(ctx, session.Selection{Agent: "build", Provider: "local", Model: "code"}); err != nil {
+	if err := service.GetSession(sessionID).SetSelection(ctx, session.Selection{Agent: "build", Model: "local/code"}); err != nil {
 		t.Fatal(err)
 	}
 	assertPending := func(want bool) {
@@ -43,8 +43,7 @@ func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertPending(false)
-	variant := "high"
-	if _, err := service.GetSession(sessionID).UpdateSelection(ctx, session.SelectionPatch{Model: "other", Variant: &variant}, nil); err != nil {
+	if _, err := service.GetSession(sessionID).UpdateSelection(ctx, session.SelectionPatch{Model: "local/other/high"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	assertPending(false)

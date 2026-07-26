@@ -218,7 +218,7 @@ func TestAgentSessionRepositoryRestoredChildPropagatesParentBindFailure(t *testi
 func TestAgentSessionRepositorySelectionUpdateDoesNotResurrectOrReplaceCache(t *testing.T) {
 	bound := &agentSession{}
 	replacement := &agentSession{}
-	updated := session.AgentSessionDto{ID: "child", Agent: "plan", Provider: "provider", Model: "model", Variant: "high"}
+	updated := session.AgentSessionDto{ID: "child", Agent: "plan", Model: "provider/model/high"}
 	repository := &agentSessionRepository{
 		sessions: map[string]*agentSession{"child": replacement},
 		dtos:     map[string]session.AgentSessionDto{"child": {ID: "child", Agent: "build"}},

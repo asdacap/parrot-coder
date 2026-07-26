@@ -163,7 +163,7 @@ func TestParentSessionPersistsAndRequiresSameProject(t *testing.T) {
 
 func TestCreateSelectedPersistsCompleteInitialSelection(t *testing.T) {
 	ctx, _, _, service, _ := newService(t)
-	created, err := service.CreateSelected(ctx, session.CreateParams{Title: "selected"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})
+	created, err := service.CreateSelected(ctx, session.CreateParams{Title: "selected"}, session.Selection{Agent: "build", Model: "local/code"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestCreateSelectedPersistsCompleteInitialSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Agent != "build" || loaded.Provider != "local" || loaded.Model != "code" {
+	if loaded.Agent != "build" || loaded.Model != "local/code" {
 		t.Fatalf("selection = %#v", loaded)
 	}
 }
@@ -181,10 +181,10 @@ func TestLatestSelectionUsesCurrentProject(t *testing.T) {
 	// repository identity, so a session records its project and every host
 	// recomputes the same value.
 	ctx, _, _, service, _ := newService(t)
-	if _, err := service.CreateSelected(ctx, session.CreateParams{ProjectID: "other", Title: "other"}, session.Selection{Agent: "build", Provider: "other", Model: "newer"}); err != nil {
+	if _, err := service.CreateSelected(ctx, session.CreateParams{ProjectID: "other", Title: "other"}, session.Selection{Agent: "build", Model: "other/newer"}); err != nil {
 		t.Fatal(err)
 	}
-	want := session.Selection{Agent: "plan", Provider: "local", Model: "code"}
+	want := session.Selection{Agent: "plan", Model: "local/code"}
 	if _, err := service.CreateSelected(ctx, session.CreateParams{ProjectID: "project", Title: "selected"}, want); err != nil {
 		t.Fatal(err)
 	}
@@ -202,7 +202,7 @@ func TestLatestSelectionUsesCurrentProject(t *testing.T) {
 
 func TestConcurrentPartialSelectionCarriesForwardCurrentValues(t *testing.T) {
 	ctx, _, _, service, _ := newService(t)
-	created, err := service.CreateSelected(ctx, session.CreateParams{Title: "selected"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})
+	created, err := service.CreateSelected(ctx, session.CreateParams{Title: "selected"}, session.Selection{Agent: "build", Model: "local/code"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestConcurrentPartialSelectionCarriesForwardCurrentValues(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Agent != "plan" || loaded.Provider != "local" || loaded.Model != "reasoning" {
+	if loaded.Agent != "plan" || loaded.Model != "reasoning" {
 		t.Fatalf("selection = %#v", loaded)
 	}
 }
@@ -490,7 +490,7 @@ func TestInteractiveClaimLifecycle(t *testing.T) {
 	db := store.NewRegistry(t.TempDir(), "host-test")
 	defer db.Close()
 	service := session.NewService(db, event.NewRepository(db))
-	selection := session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	selection := session.Selection{Agent: "build", Model: "local/code"}
 	owner := session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 101}
 
 	first, err := service.ClaimInteractive(ctx, owner, session.CreateParams{Title: "first"}, selection, false, func(int) bool { return false })
@@ -522,7 +522,7 @@ func TestInteractiveClaimDoesNotStealLiveOwner(t *testing.T) {
 	db := store.NewRegistry(t.TempDir(), "host-test")
 	defer db.Close()
 	service := session.NewService(db, event.NewRepository(db))
-	selection := session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	selection := session.Selection{Agent: "build", Model: "local/code"}
 	first, err := service.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 101}, session.CreateParams{}, selection, false, func(int) bool { return true })
 	if err != nil {
 		t.Fatal(err)

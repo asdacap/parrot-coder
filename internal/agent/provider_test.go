@@ -32,6 +32,14 @@ func models(ids ...string) []provider.Model {
 	return out
 }
 
+func modelWithVariants(id string, variants ...string) provider.Model {
+	model := provider.Model{ID: id}
+	for _, variant := range variants {
+		model.Capabilities.Variants = append(model.Capabilities.Variants, provider.Variant{Name: variant})
+	}
+	return model
+}
+
 func providerIDs(list []provider.Provider) []string {
 	ids := make([]string, len(list))
 	for i, item := range list {
@@ -74,8 +82,9 @@ func TestProviderRegistryReplaceAndList(t *testing.T) {
 				t.Fatalf("List = %v, want %v", got, testCase.wantIDs)
 			}
 			if testCase.wantModel != "" {
-				if _, model, err := registry.Resolve("", ""); err != nil || model.ID != testCase.wantModel {
-					t.Fatalf("Resolve err = %v, model = %q, want %q", err, model.ID, testCase.wantModel)
+				selector := registry.List()[0].ID() + "/" + testCase.wantModel
+				if _, model, variant, err := registry.Resolve(selector); err != nil || model.ID != testCase.wantModel || variant != nil {
+					t.Fatalf("Resolve err = %v, model = %q, variant = %v, want model %q without variant", err, model.ID, variant, testCase.wantModel)
 				}
 			}
 		})
@@ -94,6 +103,66 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+func TestProviderRegistryResolve(t *testing.T) {
+	registry, err := NewProviderRegistry(
+		idProvider{"catalog", []provider.Model{
+			modelWithVariants("plain", "high"),
+			modelWithVariants("vendor/slash-model", "low"),
+			modelWithVariants("ambiguous/model", "high"),
+			modelWithVariants("ambiguous/model/high"),
+		}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, testCase := range []struct {
+		name        string
+		selector    string
+		wantModel   string
+		wantVariant string
+		wantErr     bool
+	}{
+		{name: "base model", selector: "catalog/plain", wantModel: "plain"},
+		{name: "model variant", selector: "catalog/plain/high", wantModel: "plain", wantVariant: "high"},
+		{name: "slash model ID", selector: "catalog/vendor/slash-model", wantModel: "vendor/slash-model"},
+		{name: "slash model ID variant", selector: "catalog/vendor/slash-model/low", wantModel: "vendor/slash-model", wantVariant: "low"},
+		{name: "exact model wins over variant suffix", selector: "catalog/ambiguous/model/high", wantModel: "ambiguous/model/high"},
+		{name: "empty selector", selector: "", wantErr: true},
+		{name: "missing model", selector: "catalog", wantErr: true},
+		{name: "empty provider", selector: "/plain", wantErr: true},
+		{name: "empty model", selector: "catalog/", wantErr: true},
+		{name: "empty model segment", selector: "catalog/vendor//slash-model", wantErr: true},
+		{name: "trailing slash", selector: "catalog/plain/", wantErr: true},
+		{name: "unknown provider", selector: "missing/plain", wantErr: true},
+		{name: "unknown model", selector: "catalog/missing", wantErr: true},
+		{name: "unknown variant", selector: "catalog/plain/low", wantErr: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			client, model, variant, err := registry.Resolve(testCase.selector)
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("Resolve(%q) err = %v, want error = %t", testCase.selector, err, testCase.wantErr)
+			}
+			if testCase.wantErr {
+				if client != nil || model.ID != "" || variant != nil {
+					t.Fatalf("Resolve(%q) = (%v, %#v, %v), want zero values on error", testCase.selector, client, model, variant)
+				}
+				return
+			}
+			if client == nil || client.ID() != "catalog" || model.ID != testCase.wantModel {
+				t.Fatalf("Resolve(%q) = provider %v, model %q; want catalog/%s", testCase.selector, client, model.ID, testCase.wantModel)
+			}
+			if testCase.wantVariant == "" {
+				if variant != nil {
+					t.Fatalf("Resolve(%q) variant = %#v, want nil", testCase.selector, variant)
+				}
+			} else if variant == nil || variant.Name != testCase.wantVariant {
+				t.Fatalf("Resolve(%q) variant = %#v, want %q", testCase.selector, variant, testCase.wantVariant)
+			}
+		})
+	}
+}
+
 // TestProviderRegistryConcurrentReload exercises the read/write locking under
 // the race detector: many goroutines resolve while a writer swaps providers,
 // and neither panics nor deadlocks.
@@ -108,9 +177,9 @@ func TestProviderRegistryConcurrentReload(t *testing.T) {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			id := fmt.Sprintf("p%d", i%4)
+			selector := fmt.Sprintf("p%d/m%d", i%4, i%4)
 			for range 200 {
-				_, _, _ = registry.Resolve(id, "")
+				_, _, _, _ = registry.Resolve(selector)
 			}
 		}(i)
 	}

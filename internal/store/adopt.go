@@ -129,9 +129,9 @@ func adoptSession(ctx context.Context, legacy *DB, state, sessionID string) erro
 
 	var meta Meta
 	err = legacy.SQL().QueryRowContext(ctx, `
-		SELECT id, name, COALESCE(parent_session_id,''), COALESCE(project_id,''), title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
+		SELECT id, name, COALESCE(parent_session_id,''), COALESCE(project_id,''), title, selected_agent, selected_model, created_at, updated_at
 		FROM session WHERE id=?`, sessionID).Scan(&meta.ID, &meta.Name, &meta.ParentSessionID, &meta.ProjectID, &meta.Title,
-		&meta.Agent, &meta.Provider, &meta.Model, &meta.Variant, &meta.CreatedAt, &meta.UpdatedAt)
+		&meta.Agent, &meta.Model, &meta.CreatedAt, &meta.UpdatedAt)
 	if err != nil {
 		return err
 	}
@@ -141,9 +141,9 @@ func adoptSession(ctx context.Context, legacy *DB, state, sessionID string) erro
 
 	err = db.WithImmediate(ctx, func(tx *sql.Tx) error {
 		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO session(id,name,parent_session_id,project_id,project_root,title,selected_agent,selected_provider,selected_model,selected_variant,created_at,updated_at)
-			VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, meta.ID, meta.Name, meta.ParentSessionID, meta.ProjectID, meta.ProjectRoot, meta.Title,
-			meta.Agent, meta.Provider, meta.Model, meta.Variant, meta.CreatedAt, meta.UpdatedAt); err != nil {
+			INSERT INTO session(id,name,parent_session_id,project_id,project_root,title,selected_agent,selected_model,created_at,updated_at)
+			VALUES(?,?,?,?,?,?,?,?,?,?)`, meta.ID, meta.Name, meta.ParentSessionID, meta.ProjectID, meta.ProjectRoot, meta.Title,
+			meta.Agent, meta.Model, meta.CreatedAt, meta.UpdatedAt); err != nil {
 			return err
 		}
 		for _, table := range legacyTables {

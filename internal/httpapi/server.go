@@ -229,8 +229,8 @@ func (s *Server) selection(w http.ResponseWriter, r *http.Request) {
 	if !s.decode(w, r, &request) {
 		return
 	}
-	if request.Agent == "" && request.Model == "" && request.Variant == nil {
-		s.writeProblem(w, r, invalidProblem(requestID(r), "agent, model, or variant is required."))
+	if request.Agent == "" && request.Mode == "" && request.Model == "" {
+		s.writeProblem(w, r, invalidProblem(requestID(r), "agent, mode, or model is required."))
 		return
 	}
 	item, err := s.backend.UpdateSessionSelection(r.Context(), r.PathValue("id"), request)

@@ -21,7 +21,7 @@ var (
 	ErrNotFound              = errors.New("session: not found")
 	ErrInvalidDelivery       = errors.New("session: delivery must be steer or queue")
 	ErrIdempotencyConflict   = errors.New("session: message ID was already admitted with different content or delivery")
-	ErrSelectionRequired     = errors.New("session: agent, provider, and model are required")
+	ErrSelectionRequired     = errors.New("session: agent and model are required")
 	ErrParentProjectMismatch = errors.New("session: parent belongs to a different project")
 	errAlreadyAdmitted       = errors.New("session: input already admitted")
 )
@@ -41,9 +41,7 @@ type AgentSessionDto struct {
 	ProjectRoot     string
 	Title           string
 	Agent           string
-	Provider        string
 	Model           string
-	Variant         string
 	CreatedAt       time.Time
 	UpdatedAt       time.Time
 }
@@ -141,7 +139,7 @@ func (s *Service) Create(ctx context.Context, params CreateParams) (AgentSession
 // one SQLite statement, so concurrent readers cannot observe a half-configured
 // session.
 func (s *Service) CreateSelected(ctx context.Context, params CreateParams, selection Selection) (AgentSessionDto, error) {
-	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
+	if selection.Agent == "" || selection.Model == "" {
 		return AgentSessionDto{}, ErrSelectionRequired
 	}
 	return s.create(ctx, params, selection)
@@ -170,7 +168,7 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 	now := time.Now().UTC()
 	result := AgentSessionDto{
 		ID: sessionID, ParentSessionID: params.ParentSessionID, Name: params.Name, ProjectID: params.ProjectID, ProjectRoot: params.ProjectRoot, Title: params.Title,
-		Agent: selection.Agent, Provider: selection.Provider, Model: selection.Model, Variant: selection.Variant,
+		Agent: selection.Agent, Model: selection.Model,
 		CreatedAt: now, UpdatedAt: now,
 	}
 	err = db.WithImmediate(ctx, func(tx *sql.Tx) error {
@@ -216,10 +214,10 @@ func (s *Service) validateParent(params CreateParams) error {
 
 func insertSession(ctx context.Context, tx *sql.Tx, item AgentSessionDto) error {
 	_, err := tx.ExecContext(ctx, `
-		INSERT INTO session(id, parent_session_id, name, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		INSERT INTO session(id, parent_session_id, name, project_id, project_root, title, selected_agent, selected_model, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		item.ID, item.ParentSessionID, item.Name, item.ProjectID, item.ProjectRoot, item.Title,
-		item.Agent, item.Provider, item.Model, item.Variant,
+		item.Agent, item.Model,
 		formatTime(item.CreatedAt), formatTime(item.UpdatedAt))
 	if err != nil {
 		return fmt.Errorf("session: create: %w", err)
@@ -239,9 +237,7 @@ func (s *Service) publish(item AgentSessionDto) error {
 		ProjectRoot:     item.ProjectRoot,
 		Title:           item.Title,
 		Agent:           item.Agent,
-		Provider:        item.Provider,
 		Model:           item.Model,
-		Variant:         item.Variant,
 		CreatedAt:       formatTime(item.CreatedAt),
 		UpdatedAt:       formatTime(item.UpdatedAt),
 		HostKey:         s.sessions.HostKey(),
@@ -273,7 +269,7 @@ func (s *Service) ClaimInteractive(ctx context.Context, owner InteractiveOwner, 
 	if owner.WorkingDirectory == "" || owner.HostKey == "" || owner.PID <= 0 {
 		return InteractiveClaim{}, errors.New("session: working directory, host key, and PID are required")
 	}
-	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
+	if selection.Agent == "" || selection.Model == "" {
 		return InteractiveClaim{}, ErrSelectionRequired
 	}
 	// A conflict means another process on this host published a claim between
@@ -344,7 +340,7 @@ func (s *agentSessionStore) Get(ctx context.Context) (AgentSessionDto, error) {
 		return AgentSessionDto{}, err
 	}
 	return scanSession(db.SQL().QueryRowContext(ctx, `
-		SELECT id, parent_session_id, name, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
+		SELECT id, parent_session_id, name, project_id, project_root, title, selected_agent, selected_model, created_at, updated_at
         FROM session WHERE id = ?`, s.sessionID))
 }
 
@@ -378,7 +374,7 @@ func (s *Service) LatestSelection(ctx context.Context, projectID string) (Select
 	}
 	var best store.Meta
 	for _, meta := range metas {
-		if meta.ProjectID != projectID || meta.Agent == "" || meta.Provider == "" || meta.Model == "" {
+		if meta.ProjectID != projectID || meta.Agent == "" || meta.Model == "" {
 			continue
 		}
 		if best.ID == "" || meta.UpdatedAt > best.UpdatedAt || (meta.UpdatedAt == best.UpdatedAt && meta.ID > best.ID) {
@@ -388,7 +384,7 @@ func (s *Service) LatestSelection(ctx context.Context, projectID string) (Select
 	if best.ID == "" {
 		return Selection{}, ErrNotFound
 	}
-	return Selection{Agent: best.Agent, Provider: best.Provider, Model: best.Model, Variant: best.Variant}, nil
+	return Selection{Agent: best.Agent, Model: best.Model}, nil
 }
 
 // Delete removes a session directory. The old shared table relied on cascading
@@ -672,7 +668,7 @@ func sessionFromMeta(meta store.Meta) (AgentSessionDto, error) {
 	}
 	return AgentSessionDto{
 		ID: meta.ID, ParentSessionID: meta.ParentSessionID, Name: meta.Name, ProjectID: meta.ProjectID, ProjectRoot: meta.ProjectRoot, Title: meta.Title,
-		Agent: meta.Agent, Provider: meta.Provider, Model: meta.Model, Variant: meta.Variant,
+		Agent: meta.Agent, Model: meta.Model,
 		CreatedAt: createdAt, UpdatedAt: updatedAt,
 	}, nil
 }
@@ -680,7 +676,7 @@ func sessionFromMeta(meta store.Meta) (AgentSessionDto, error) {
 func scanSession(row rowScanner) (AgentSessionDto, error) {
 	var item AgentSessionDto
 	var createdAt, updatedAt string
-	if err := row.Scan(&item.ID, &item.ParentSessionID, &item.Name, &item.ProjectID, &item.ProjectRoot, &item.Title, &item.Agent, &item.Provider, &item.Model, &item.Variant, &createdAt, &updatedAt); err != nil {
+	if err := row.Scan(&item.ID, &item.ParentSessionID, &item.Name, &item.ProjectID, &item.ProjectRoot, &item.Title, &item.Agent, &item.Model, &createdAt, &updatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return AgentSessionDto{}, ErrNotFound
 		}

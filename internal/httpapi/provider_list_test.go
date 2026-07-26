@@ -22,8 +22,8 @@ func (p listProvider) Models() []provider.Model { return p.models }
 // ProviderLister, exercising the fallback to the Providers slice.
 type minimalResolver struct{}
 
-func (minimalResolver) Resolve(string, string) (provider.Provider, provider.Model, error) {
-	return nil, provider.Model{}, nil
+func (minimalResolver) Resolve(string) (provider.Provider, provider.Model, *provider.Variant, error) {
+	return nil, provider.Model{}, nil, nil
 }
 
 func modelNames(items []v1.Model) []string {

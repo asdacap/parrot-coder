@@ -12,8 +12,10 @@ import (
 
 type stubProvider struct{ id string }
 
-func (p stubProvider) ID() string               { return p.id }
-func (p stubProvider) Models() []provider.Model { return nil }
+func (p stubProvider) ID() string { return p.id }
+func (p stubProvider) Models() []provider.Model {
+	return []provider.Model{{ID: "model"}}
+}
 func (p stubProvider) Stream(context.Context, protocol.Request) (provider.Stream, error) {
 	return nil, errors.New("not implemented")
 }
@@ -41,19 +43,19 @@ func TestSubscriptionUsageSelectsProvider(t *testing.T) {
 	}{
 		{
 			name: "prefers the default selection's provider", providers: []provider.Provider{chatgpt, kimi},
-			selection: "kimi", wantID: "kimi", wantPlan: "coding",
+			selection: "kimi/model", wantID: "kimi", wantPlan: "coding",
 		},
 		{
 			name: "falls back to the first reporter", providers: []provider.Provider{plain, chatgpt, kimi},
-			selection: "local", wantID: "chatgpt", wantPlan: "plus",
+			selection: "local/model", wantID: "chatgpt", wantPlan: "plus",
 		},
 		{
 			name: "errors when no provider reports usage", providers: []provider.Provider{plain},
-			selection: "local", wantErr: true,
+			selection: "local/model", wantErr: true,
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
-			backend := &DomainBackend{Providers: testCase.providers, DefaultSelection: session.Selection{Provider: testCase.selection}}
+			backend := &DomainBackend{Providers: testCase.providers, DefaultSelection: session.Selection{Model: testCase.selection}}
 			usage, err := backend.SubscriptionUsage(context.Background())
 			if testCase.wantErr {
 				if err == nil {

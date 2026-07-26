@@ -27,8 +27,8 @@ func seedLegacy(t *testing.T, state string, sessionIDs ...string) string {
 	}
 	for i, id := range sessionIDs {
 		if _, err := legacy.SQL().ExecContext(ctx, `
-			INSERT INTO session(id,project_id,title,selected_agent,selected_provider,selected_model,selected_variant,created_at,updated_at)
-			VALUES(?,'prj_1',?,'build','p','m','',?,?)`, id, "title-"+id, now, now); err != nil {
+			INSERT INTO session(id,project_id,title,selected_agent,selected_model,created_at,updated_at)
+			VALUES(?,'prj_1',?,'build','p/m',?,?)`, id, "title-"+id, now, now); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := legacy.SQL().ExecContext(ctx,
@@ -81,7 +81,7 @@ func TestAdoptLegacySplitsSessionsAndSetsFileAside(t *testing.T) {
 		t.Fatalf("adopted %d sessions (skipped %v), want 2", len(metas), skipped)
 	}
 	for _, meta := range metas {
-		if meta.ProjectID != "prj_1" || meta.ProjectRoot != "/w" {
+		if meta.ProjectID != "prj_1" || meta.ProjectRoot != "/w" || meta.Agent != "build" || meta.Model != "p/m" {
 			t.Fatalf("session %s lost its project: %+v", meta.ID, meta)
 		}
 		// Adoption makes a session visible; it must not claim it for this host.

@@ -30,7 +30,7 @@ func (p providerFunc) Observe(_ context.Context, query Query) (Observation, erro
 }
 
 func TestRegistryComposesDynamicStatus(t *testing.T) {
-	query := Query{SessionID: "session", Agent: "plan", Provider: "openai", Model: "gpt", Variant: "high"}
+	query := Query{SessionID: "session", Agent: "plan", Model: "openai/gpt/high"}
 	registry, err := NewRegistry(
 		providerFunc{key: "runtime:unavailable", fn: func(Query) (Observation, error) { return Observation{}, nil }},
 		providerFunc{key: "runtime:selection", fn: func(got Query) (Observation, error) {
@@ -150,17 +150,17 @@ func TestSelectionStatus(t *testing.T) {
 	}{
 		{
 			name:  "root with variant",
-			query: Query{Agent: "worker", Provider: "openai", Model: "gpt", Variant: "high"},
-			want:  "Active profile: worker\nModel: openai/gpt\nVariant: high",
+			query: Query{Agent: "worker", Model: "openai/gpt/high"},
+			want:  "Active profile: worker\nModel: openai/gpt/high",
 		},
 		{
 			name:  "named parent",
-			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "main-task", Agent: "worker", Provider: "openai", Model: "gpt"},
+			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "main-task", Agent: "worker", Model: "openai/gpt"},
 			want:  "Active profile: worker\nModel: openai/gpt\nParent session: ses_parent (main-task)",
 		},
 		{
 			name:  "unnamed parent",
-			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "  ", Agent: "worker", Provider: "openai", Model: "gpt"},
+			query: Query{ParentSessionID: "ses_parent", ParentSessionName: "  ", Agent: "worker", Model: "openai/gpt"},
 			want:  "Active profile: worker\nModel: openai/gpt\nParent session: ses_parent",
 		},
 	}

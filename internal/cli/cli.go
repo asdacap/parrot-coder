@@ -418,7 +418,7 @@ func (a *App) sessionCommand(ctx context.Context, args []string, stdout, stderr 
 			return exitWithReason(ctx, exitError, "session_list_failed", err)
 		}
 		for _, item := range items.Items {
-			fmt.Fprintf(stdout, "%s\t%s\t%s/%s\t%s\n", item.ID, item.Agent, item.Provider, item.Model, item.Title)
+			fmt.Fprintf(stdout, "%s\t%s\t%s\t%s\n", item.ID, item.Agent, item.Model, item.Title)
 		}
 	case "show":
 		if len(args) != 2 {

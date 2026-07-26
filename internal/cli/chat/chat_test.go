@@ -205,7 +205,11 @@ func TestCreateChatSessionIncludesSelectionAtomically(t *testing.T) {
 			t.Fatal(err)
 		}
 		request := creator.request
-		if request.ProjectID != "project" || request.Title != "title" || request.Agent != "plan" || request.Model != "local/test" || request.Variant == nil || *request.Variant != variant {
+		wantModel := "local/test"
+		if variant != "" {
+			wantModel += "/" + variant
+		}
+		if request.ProjectID != "project" || request.Title != "title" || request.Agent != "plan" || request.Model != wantModel {
 			t.Fatalf("variant %q request = %#v", variant, request)
 		}
 	}
@@ -218,10 +222,10 @@ func TestCodingCommandsForwardVariantToAppOpen(t *testing.T) {
 		run  func(func(context.Context, app.Options) (*app.App, error)) Result
 	}{
 		{name: "chat", run: func(open func(context.Context, app.Options) (*app.App, error)) Result {
-			return Run(Config{Context: context.Background(), Args: []string{"--variant", "high"}, Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard, Open: open})
+			return Run(Config{Context: context.Background(), Args: []string{"--model", "local/test", "--variant", "high"}, Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard, Open: open})
 		}},
 		{name: "run", run: func(open func(context.Context, app.Options) (*app.App, error)) Result {
-			return RunPrompt(PromptConfig{Context: context.Background(), Args: []string{"--variant", "high", "prompt"}, Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard, Open: open})
+			return RunPrompt(PromptConfig{Context: context.Background(), Args: []string{"--model", "local/test", "--variant", "high", "prompt"}, Stdin: strings.NewReader(""), Stdout: io.Discard, Stderr: io.Discard, Open: open})
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -230,20 +234,39 @@ func TestCodingCommandsForwardVariantToAppOpen(t *testing.T) {
 				opened = options
 				return nil, openErr
 			})
-			if opened.Variant != "high" || !errors.Is(result.Err, openErr) {
+			if opened.Model != "local/test" || opened.Variant != "high" || !errors.Is(result.Err, openErr) {
 				t.Fatalf("options = %#v, result = %#v", opened, result)
 			}
 		})
 	}
 }
 
-func TestDefaultChatSelectionPreservesRestoredEffort(t *testing.T) {
-	defaults := v1.SessionSelection{Agent: "build", Provider: "chatgpt", Model: "gpt", Variant: "high"}
-	if got := defaultChatSelection(defaults, ""); got.variant != "high" {
-		t.Fatalf("restored selection = %#v, want high effort", got)
+func TestSelectionFromSessionKeepsUnknownCatalogModelRepairable(t *testing.T) {
+	selection, err := selectionFromSession(v1.Session{Agent: "build", Model: "retired/vendor/model"}, nil, "plan")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if got := defaultChatSelection(defaults, "low"); got.variant != "low" {
-		t.Fatalf("overridden selection = %#v, want low effort", got)
+	if selection.agent != "build" || selection.provider != "retired" || selection.model != "vendor/model" || selection.variant != "" {
+		t.Fatalf("selection = %#v", selection)
+	}
+}
+
+func TestSelectionModelPatchAppliesVariantToExistingSession(t *testing.T) {
+	api := &effortSwitchAPI{models: v1.ModelList{Items: []v1.Model{{Provider: "chatgpt", ID: "gpt", Variants: []v1.ModelVariant{{Name: "low"}, {Name: "high"}}}}}}
+	got, err := selectionModelPatch(t.Context(), api, v1.Session{Model: "chatgpt/gpt/low"}, codingFlags{variant: "high"})
+	if err != nil || got != "chatgpt/gpt/high" {
+		t.Fatalf("selectionModelPatch = %q, %v", got, err)
+	}
+}
+
+func TestDefaultChatSelectionPreservesRestoredEffort(t *testing.T) {
+	models := []v1.Model{{Provider: "chatgpt", ID: "gpt", Variants: []v1.ModelVariant{{Name: "low"}, {Name: "high"}}}}
+	defaults := v1.SessionSelection{Agent: "build", Model: "chatgpt/gpt/high"}
+	if got, err := defaultChatSelection(defaults, models, ""); err != nil || got.variant != "high" {
+		t.Fatalf("restored selection = %#v, %v; want high effort", got, err)
+	}
+	if got, err := defaultChatSelection(defaults, models, "low"); err != nil || got.variant != "low" {
+		t.Fatalf("overridden selection = %#v, %v; want low effort", got, err)
 	}
 }
 
@@ -255,17 +278,17 @@ func TestEffortSlashCommandUpdatesActiveSession(t *testing.T) {
 	}}}}
 	var stdout, stderr bytes.Buffer
 	shell := chatShell{
-		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Provider: "chatgpt", Model: "gpt"},
+		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Model: "chatgpt/gpt"},
 		selection: chatSelection{provider: "chatgpt", model: "gpt"}, stdout: &stdout, stderr: &stderr,
 	}
 	exit, code := shell.slash("/effort", "high")
 	if exit || code != exitOK {
 		t.Fatalf("slash exit=%t code=%d", exit, code)
 	}
-	if shell.selection.variant != "high" || shell.current.Variant != "high" {
-		t.Fatalf("selection = %#v, session variant = %q", shell.selection, shell.current.Variant)
+	if shell.selection.variant != "high" || shell.current.Model != "chatgpt/gpt/high" {
+		t.Fatalf("selection = %#v, session model = %q", shell.selection, shell.current.Model)
 	}
-	if len(api.updates) != 1 || api.updates[0].Variant == nil || *api.updates[0].Variant != "high" {
+	if len(api.updates) != 1 || api.updates[0].Model != "chatgpt/gpt/high" {
 		t.Fatalf("updates = %#v", api.updates)
 	}
 	if !strings.Contains(stderr.String(), "✓ Model effort selected: high") {
@@ -304,17 +327,15 @@ func TestSelectingModelDefaultsEffortUnlessAlreadySelected(t *testing.T) {
 			if err := shell.selectModel("chatgpt/gpt"); err != nil {
 				t.Fatal(err)
 			}
-			if shell.selection.variant != test.want || shell.current.Variant != test.want {
-				t.Fatalf("selection = %#v, session variant = %q; want %q", shell.selection, shell.current.Variant, test.want)
+			wantModel := "chatgpt/gpt"
+			if test.want != "" {
+				wantModel += "/" + test.want
 			}
-			if len(api.updates) != 1 || api.updates[0].Model != "chatgpt/gpt" {
+			if shell.selection.variant != test.want || shell.current.Model != wantModel {
+				t.Fatalf("selection = %#v, session model = %q; want %q", shell.selection, shell.current.Model, wantModel)
+			}
+			if len(api.updates) != 1 || api.updates[0].Model != wantModel {
 				t.Fatalf("updates = %#v", api.updates)
-			}
-			// A model switch always states the variant, including the empty
-			// one: omitting it left a stale variant on the session, which the
-			// server then rejected as an invalid selection.
-			if api.updates[0].Variant == nil || *api.updates[0].Variant != test.want {
-				t.Fatalf("update variant = %v; want explicit %q", api.updates[0].Variant, test.want)
 			}
 		})
 	}
@@ -481,11 +502,7 @@ func (a *effortSwitchAPI) ModelInfo(_ context.Context, _, _ string) (v1.Model, e
 
 func (a *effortSwitchAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
 	a.updates = append(a.updates, request)
-	selection := v1.SessionSelection{}
-	if request.Variant != nil {
-		selection.Variant = *request.Variant
-	}
-	return selection, nil
+	return v1.SessionSelection{Model: request.Model}, nil
 }
 
 func (a *agentModeAPI) Agents(context.Context) (v1.AgentList, error) { return a.agents, nil }
@@ -674,8 +691,9 @@ func TestRefreshModelInfoClearsStaleWindow(t *testing.T) {
 // shell started on.
 func TestEnhancedSetCurrentRefreshesModelineWindow(t *testing.T) {
 	api := &modelInfoAPI{info: v1.Model{ContextWindow: 200000}}
-	shell := &chatShell{ctx: context.Background(), api: api, selection: chatSelection{provider: "local", model: "test"}}
-	shell.enhancedConfig().SetCurrent(v1.Session{ID: "session", Provider: "remote", Model: "other"})
+	models := []v1.Model{{Provider: "remote", ID: "other"}}
+	shell := &chatShell{ctx: context.Background(), api: api, models: models, selection: chatSelection{provider: "local", model: "test"}}
+	shell.enhancedConfig().SetCurrent(v1.Session{ID: "session", Model: "remote/other"})
 	if got := shell.modelineModelLabel(1200); got != "remote/other (1.2k/200k)" {
 		t.Fatalf("modelineModelLabel() = %q", got)
 	}
@@ -1572,16 +1590,19 @@ func TestApplyModelClearsVariantForModelsWithoutVariants(t *testing.T) {
 			if len(api.updates) != 1 {
 				t.Fatalf("updates = %#v", api.updates)
 			}
-			// The variant must always be sent explicitly, so an empty value
-			// clears the stored one instead of leaving it in place.
-			if api.updates[0].Variant == nil || *api.updates[0].Variant != testCase.want {
-				t.Fatalf("patched variant = %v, want explicit %q", api.updates[0].Variant, testCase.want)
+			// The complete model selector clears or carries the variant atomically.
+			wantModel := testCase.target
+			if testCase.want != "" {
+				wantModel += "/" + testCase.want
+			}
+			if api.updates[0].Model != wantModel {
+				t.Fatalf("patched model = %q, want %q", api.updates[0].Model, wantModel)
 			}
 			persisted, err := os.ReadFile(filepath.Join(configDir, "parrot.yaml"))
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(string(persisted), "model: "+testCase.target) || (testCase.want == "" && strings.Contains(string(persisted), "variant:")) || (testCase.want != "" && !strings.Contains(string(persisted), "variant: "+testCase.want)) {
+			if !strings.Contains(string(persisted), "model: "+wantModel) || strings.Contains(string(persisted), "variant:") {
 				t.Fatalf("persisted selection = %q", persisted)
 			}
 		})
@@ -1593,7 +1614,7 @@ func TestSelectEffortPersistsCorrelatedSelection(t *testing.T) {
 	models := v1.ModelList{Items: []v1.Model{{Provider: "chatgpt", ID: "sol", Variants: []v1.ModelVariant{{Name: "low"}, {Name: "high"}}}}}
 	shell := &chatShell{
 		ctx: context.Background(), api: &effortSwitchAPI{models: models}, configDir: configDir,
-		current:   v1.Session{ID: "session", Provider: "chatgpt", Model: "sol", Variant: "low"},
+		current:   v1.Session{ID: "session", Model: "chatgpt/sol/low"},
 		selection: chatSelection{provider: "chatgpt", model: "sol", variant: "low"}, stdout: io.Discard, stderr: io.Discard,
 	}
 	if err := shell.selectEffort("high"); err != nil {
@@ -1603,7 +1624,7 @@ func TestSelectEffortPersistsCorrelatedSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(persisted) != "model: chatgpt/sol\nvariant: high\n" {
+	if string(persisted) != "model: chatgpt/sol/high\n" {
 		t.Fatalf("persisted selection = %q", persisted)
 	}
 }

@@ -27,7 +27,6 @@ const (
 type Config struct {
 	Prompt                     string              `json:"prompt,omitempty"`
 	DefaultModel               string              `json:"model,omitempty"`
-	DefaultVariant             string              `json:"variant,omitempty"`
 	InlineDiff                 bool                `json:"inline_diff,omitempty"`
 	PermissionRequestTimeoutMS int                 `json:"permission_request_timeout_ms,omitempty"`
 	Providers                  map[string]Provider `json:"providers,omitempty"`
@@ -135,6 +134,9 @@ type Result struct {
 	Config     Config
 	Sources    []Source
 	Provenance map[string]string
+	// LegacyVariant carries a former top-level variant until application startup
+	// can combine it with a model restored from session history.
+	LegacyVariant string
 }
 
 // Discover returns existing config files in deterministic low-to-high
@@ -251,6 +253,11 @@ func Load(options Options) (Result, error) {
 	// the corresponding features are removed.
 	delete(merged, "snapshot")
 	delete(merged, "lsp")
+	legacyVariant, err := combineLegacyVariant(merged)
+	if err != nil {
+		return Result{}, err
+	}
+	delete(provenance, "variant")
 
 	data, err := json.Marshal(merged)
 	if err != nil {
@@ -282,7 +289,64 @@ func Load(options Options) (Result, error) {
 			return Result{}, fmt.Errorf("write predefined config: %w", err)
 		}
 	}
-	return Result{Config: typed, Sources: sources, Provenance: provenance}, nil
+	return Result{Config: typed, Sources: sources, Provenance: provenance, LegacyVariant: legacyVariant}, nil
+}
+
+// combineLegacyVariant migrates the former top-level variant field into the
+// canonical provider/model[/variant] selector before strict typed decoding.
+// Keeping the compatibility handling in the untyped boundary prevents legacy
+// state from leaking into the active Config model.
+func combineLegacyVariant(merged map[string]any) (string, error) {
+	value, exists := merged["variant"]
+	if !exists {
+		return "", nil
+	}
+	delete(merged, "variant")
+	variant, ok := value.(string)
+	if !ok {
+		return "", errors.New("variant must be a string")
+	}
+	if variant == "" {
+		return "", nil
+	}
+	model, ok := merged["model"].(string)
+	if !ok || model == "" {
+		return variant, nil
+	}
+	if selectorHasConfiguredVariant(model, merged["providers"]) {
+		return "", fmt.Errorf("model selection %q already encodes a variant; remove the legacy variant field", model)
+	}
+	merged["model"] = model + "/" + variant
+	return "", nil
+}
+
+// selectorHasConfiguredVariant recognizes conflicts without assuming model IDs
+// cannot contain slashes. A final segment is a variant only when the preceding
+// model exposes that name; an exact model with the same selector remains an
+// ambiguity and is therefore also rejected.
+func selectorHasConfiguredVariant(selector string, providersValue any) bool {
+	providerID, remainder, found := strings.Cut(selector, "/")
+	if !found || providerID == "" || remainder == "" {
+		return false
+	}
+	providers, _ := providersValue.(map[string]any)
+	providerConfig, _ := providers[providerID].(map[string]any)
+	models, _ := providerConfig["models"].(map[string]any)
+	modelID, variant, found := strings.Cut(remainder, "/")
+	for found {
+		modelConfig, modelExists := models[modelID].(map[string]any)
+		variants, _ := modelConfig["variants"].(map[string]any)
+		_, variantExists := variants[variant]
+		if modelExists && variantExists {
+			return true
+		}
+		next, suffix, more := strings.Cut(variant, "/")
+		if !more {
+			break
+		}
+		modelID, variant, found = modelID+"/"+next, suffix, true
+	}
+	return false
 }
 
 func validateSubagents(value Subagents) error {
@@ -437,10 +501,8 @@ prompt: |-
 
   Do not duplicate work with agent_spawn. If an agent is already handling the work and is still running, wait for it to finish instead of spawning another agent for the same work.
 
-# Default model selected as provider/model.
+# Default model selected as provider/model, optionally followed by /variant.
 model: ""
-# Default model variant (the reasoning effort name exposed by the model).
-variant: ""
 
 # Render changed lines inline. Set to false for a side-by-side diff viewer.
 inline_diff: true
@@ -584,10 +646,8 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 # prompt: |-
 #   You are Parrot Coder, a local coding agent.
 
-# Default model selected as provider/model.
-# model: provider/model
-# Default model variant (the reasoning effort name exposed by the model).
-# variant: high
+# Default model selected as provider/model, optionally followed by /variant.
+# model: provider/model/high
 
 # Render changed lines inline. Set to false for a side-by-side diff viewer.
 # inline_diff: true
@@ -727,10 +787,10 @@ func writeDefaultConfig(path string) error {
 	return os.WriteFile(path, []byte(defaultConfigYAML), 0o600)
 }
 
-// UpdateDefaultSelection updates the correlated top-level "model" and
-// "variant" fields in one write, preserving comments and unrelated fields.
-// An empty variant removes the field. If path does not exist, it is created.
-func UpdateDefaultSelection(path, model, variant string) error {
+// UpdateDefaultSelection updates the canonical top-level "model" field,
+// preserving comments and unrelated fields. The obsolete top-level "variant"
+// field is removed. If path does not exist, it is created.
+func UpdateDefaultSelection(path, model string) error {
 	data, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("read config for selection update: %w", err)
@@ -750,12 +810,7 @@ func UpdateDefaultSelection(path, model, variant string) error {
 		return errors.New("config root must be a mapping")
 	}
 
-	changed := false
-	if variant == "" {
-		changed = removeTopLevelField(root, "variant")
-	} else {
-		changed = setTopLevelScalar(root, "variant", variant)
-	}
+	changed := removeTopLevelField(root, "variant")
 	changed = setTopLevelScalar(root, "model", model) || changed
 	if !changed {
 		return nil

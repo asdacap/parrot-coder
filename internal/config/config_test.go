@@ -83,8 +83,7 @@ func TestLoadMergesRecursivelyAndTracksProvenance(t *testing.T) {
 	global := filepath.Join(configDir, FileName)
 	projectFile := filepath.Join(project, FileName)
 	nestedFile := filepath.Join(nested, ".parrot", FileName)
-	writeFile(t, global, `model: openai/small
-variant: low
+	writeFile(t, global, `model: openai/small/low
 providers:
   openai:
     type: openai-compatible
@@ -103,8 +102,7 @@ providers:
         output:
           - text
 `)
-	writeFile(t, projectFile, `model: openai/large
-variant: high
+	writeFile(t, projectFile, `model: openai/large/high
 providers:
   openai:
     models:
@@ -126,8 +124,8 @@ tool_blacklist:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Config.DefaultModel != "openai/large" || result.Config.DefaultVariant != "high" {
-		t.Fatalf("default selection = %q/%q", result.Config.DefaultModel, result.Config.DefaultVariant)
+	if result.Config.DefaultModel != "openai/large/high" {
+		t.Fatalf("default selection = %q", result.Config.DefaultModel)
 	}
 	provider := result.Config.Providers["openai"]
 	if provider.BaseURL != "https://api.example/v1" || provider.APIKeyEnv != "OPENAI_API_KEY" {
@@ -145,9 +143,6 @@ tool_blacklist:
 	if got := result.Provenance["model"]; got != projectFile {
 		t.Fatalf("model provenance = %q", got)
 	}
-	if got := result.Provenance["variant"]; got != projectFile {
-		t.Fatalf("variant provenance = %q", got)
-	}
 	if got := result.Provenance["providers.openai.models.large.max_tokens"]; got != nestedFile {
 		t.Fatalf("max_tokens provenance = %q", got)
 	}
@@ -156,6 +151,87 @@ tool_blacklist:
 	}
 	if got := result.Config.ToolBlacklist; len(got) != 2 || got[0] != "monitor" || got[1] != "web_fetch" {
 		t.Fatalf("ToolBlacklist = %#v", got)
+	}
+}
+
+func TestLoadLegacyVariantCompatibility(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		config  string
+		want    string
+		wantErr string
+	}{
+		{
+			name: "combines legacy field",
+			config: `model: local/code
+variant: high
+`,
+			want: "local/code/high",
+		},
+		{
+			name: "empty legacy field",
+			config: `model: local/code
+variant: ""
+`,
+			want: "local/code",
+		},
+		{
+			name: "legacy field waits for restored model",
+			config: `variant: high
+`,
+		},
+		{
+			name: "rejects discoverable conflict",
+			config: `model: local/code/high
+variant: low
+providers:
+  local:
+    models:
+      code:
+        variants:
+          high:
+            reasoning_effort: high
+`,
+			wantErr: "already encodes a variant",
+		},
+		{
+			name: "model ID containing slash is not a conflict",
+			config: `model: local/team/code
+variant: high
+providers:
+  local:
+    models:
+      team/code:
+        variants:
+          high:
+            reasoning_effort: high
+`,
+			want: "local/team/code/high",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, FileName), test.config)
+			result, err := Load(Options{ProjectRoot: root, CWD: root})
+			if test.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+					t.Fatalf("Load error = %v, want %q", err, test.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result.Config.DefaultModel != test.want {
+				t.Fatalf("DefaultModel = %q, want %q", result.Config.DefaultModel, test.want)
+			}
+			if test.name == "legacy field waits for restored model" && result.LegacyVariant != "high" {
+				t.Fatalf("LegacyVariant = %q, want high", result.LegacyVariant)
+			}
+			if _, exists := result.Provenance["variant"]; exists {
+				t.Fatalf("legacy variant remained in provenance: %#v", result.Provenance)
+			}
+		})
 	}
 }
 
@@ -418,7 +494,7 @@ func TestLoadGeneratesDefaultConfigWhenMissing(t *testing.T) {
 	if _, err := Parse(data); err != nil {
 		t.Fatalf("generated YAML is not parseable: %v", err)
 	}
-	if !strings.Contains(string(data), "Default model selected as provider/model.") {
+	if !strings.Contains(string(data), "Default model selected as provider/model, optionally followed by /variant.") {
 		t.Fatal("generated YAML missing readable comment")
 	}
 	if result.Config.DefaultModel != "" {
@@ -454,7 +530,7 @@ func TestLoadDoesNotOverwriteExistingConfig(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "Default model selected as provider/model.") {
+	if strings.Contains(string(data), "Default model selected as provider/model, optionally followed by /variant.") {
 		t.Fatal("existing config was overwritten with default comments")
 	}
 }
@@ -484,7 +560,7 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 		"Parrot Coder configuration file.",
 		"Base agent prompt included in the system context.",
 		"prompt: |-",
-		"Default model selected as provider/model.",
+		"Default model selected as provider/model, optionally followed by /variant.",
 		"Positive number of milliseconds to wait for a permission request response.",
 		"Child-agent concurrency and nesting limits.",
 		"Maximum number of nested child-agent levels.",
@@ -502,22 +578,22 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 	}
 }
 
-func TestUpdateDefaultSelectionPreservesConfigAndClearsVariant(t *testing.T) {
+func TestUpdateDefaultSelectionPreservesConfigAndClearsLegacyVariant(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "missing", FileName)
-	if err := UpdateDefaultSelection(path, "local/code", "high"); err != nil {
+	if err := UpdateDefaultSelection(path, "local/code/high"); err != nil {
 		t.Fatal(err)
 	}
 	created, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(created) != "model: local/code\nvariant: high\n" {
+	if string(created) != "model: local/code/high\n" {
 		t.Fatalf("created config = %q", created)
 	}
 
 	writeFile(t, path, "# keep this comment\nmodel: old/model\nvariant: low\nweb_fetch:\n  allow_private: false\n")
-	if err := UpdateDefaultSelection(path, "new/model", ""); err != nil {
+	if err := UpdateDefaultSelection(path, "new/model"); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := os.ReadFile(path)

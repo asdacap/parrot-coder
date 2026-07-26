@@ -150,7 +150,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	if len(profiles) > 0 {
 		profile = profiles[0].ID
 	}
-	if err := sessions.GetSession(created.ID).SetSelection(ctx, session.Selection{Agent: profile, Provider: "fake", Model: "model"}); err != nil {
+	if err := sessions.GetSession(created.ID).SetSelection(ctx, session.Selection{Agent: profile, Model: "fake/model"}); err != nil {
 		t.Fatal(err)
 	}
 	providers, err := NewProviderRegistry(fake)

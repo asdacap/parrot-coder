@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
@@ -136,7 +135,7 @@ func (b *DomainBackend) ListSessions(ctx context.Context) (v1.SessionList, error
 }
 
 func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSessionRequest) (v1.Session, error) {
-	selection, err := b.requestSelection(request.Agent, request.Mode, request.Model, request.Variant)
+	selection, err := b.requestSelection(request.Agent, request.Mode, request.Model)
 	if err != nil {
 		return v1.Session{}, err
 	}
@@ -154,24 +153,16 @@ func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSess
 	return sessionDTO(item), err
 }
 
-func (b *DomainBackend) requestSelection(agentID, modeID, modelID string, variant *string) (session.Selection, error) {
+func (b *DomainBackend) requestSelection(agentID, modeID, modelID string) (session.Selection, error) {
 	selection := b.DefaultSelection
 	if modeID != "" {
 		agentID = modeID
-	}
-	if variant != nil {
-		selection.Variant = *variant
 	}
 	if agentID != "" {
 		selection.Agent = agentID
 	}
 	if modelID != "" {
-		providerID, selectedModel, qualified := strings.Cut(modelID, "/")
-		if qualified {
-			selection.Provider, selection.Model = providerID, selectedModel
-		} else {
-			selection.Model = modelID
-		}
+		selection.Model = modelID
 	}
 	if !completeSelection(selection) {
 		return session.Selection{}, ErrModelRequired
@@ -186,7 +177,7 @@ func (b *DomainBackend) ClaimSession(ctx context.Context, request v1.ClaimSessio
 	if request.WorkingDirectory == "" || request.HostKey == "" || request.PID <= 0 {
 		return v1.ClaimSessionResponse{}, ErrInvalid
 	}
-	selection, err := b.requestSelection(request.Agent, request.Mode, request.Model, request.Variant)
+	selection, err := b.requestSelection(request.Agent, request.Mode, request.Model)
 	if err != nil {
 		return v1.ClaimSessionResponse{}, err
 	}
@@ -216,24 +207,13 @@ func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, r
 	if request.Mode != "" {
 		request.Agent = request.Mode
 	}
-	if request.Agent == "" && request.Model == "" && request.Variant == nil {
+	if request.Agent == "" && request.Model == "" {
 		return v1.SessionSelection{}, ErrInvalid
 	}
 	if b.AgentSessions != nil && b.AgentSessions.Status(id) != agent.StatusIdle {
 		return v1.SessionSelection{}, ErrSessionActive
 	}
-	patch := session.SelectionPatch{
-		Agent: request.Agent, FallbackAgent: b.DefaultSelection.Agent,
-		FallbackProvider: b.DefaultSelection.Provider, Variant: request.Variant,
-	}
-	if request.Model != "" {
-		providerID, modelID, qualified := strings.Cut(request.Model, "/")
-		if qualified {
-			patch.Provider, patch.Model = providerID, modelID
-		} else {
-			patch.Model = request.Model
-		}
-	}
+	patch := session.SelectionPatch{Agent: request.Agent, Model: request.Model, FallbackAgent: b.DefaultSelection.Agent, FallbackModel: b.DefaultSelection.Model}
 	runtime, err := b.AgentSessions.Get(id)
 	if errors.Is(err, session.ErrNotFound) {
 		return v1.SessionSelection{}, ErrNotFound
@@ -333,7 +313,7 @@ func (b *DomainBackend) SubmitPrompt(ctx context.Context, id string, request v1.
 	if err != nil {
 		return v1.PromptAccepted{}, err
 	}
-	if selected.Agent == "" || selected.Provider == "" || selected.Model == "" {
+	if selected.Agent == "" || selected.Model == "" {
 		return v1.PromptAccepted{}, ErrModelRequired
 	}
 	runtime, err := b.AgentSessions.Get(id)
@@ -631,6 +611,7 @@ func (b *DomainBackend) SubscriptionUsage(ctx context.Context) (v1.SubscriptionU
 // reports its own subscription, falling back to the first provider that can
 // report usage at all.
 func (b *DomainBackend) usageReporter() (provider.Provider, provider.UsageReporter) {
+	selected := b.defaultProvider()
 	var fallbackProvider provider.Provider
 	var fallbackReporter provider.UsageReporter
 	for _, item := range b.providerList() {
@@ -641,7 +622,7 @@ func (b *DomainBackend) usageReporter() (provider.Provider, provider.UsageReport
 		if !ok {
 			continue
 		}
-		if item.ID() == b.DefaultSelection.Provider {
+		if selected != nil && selected.ID() == item.ID() {
 			return item, reporter
 		}
 		if fallbackReporter == nil {
@@ -649,6 +630,22 @@ func (b *DomainBackend) usageReporter() (provider.Provider, provider.UsageReport
 		}
 	}
 	return fallbackProvider, fallbackReporter
+}
+
+func (b *DomainBackend) defaultProvider() provider.Provider {
+	resolver := b.ProviderResolver
+	if resolver == nil {
+		registry, err := agent.NewProviderRegistry(b.Providers...)
+		if err != nil {
+			return nil
+		}
+		resolver = registry
+	}
+	selected, _, _, err := resolver.Resolve(b.DefaultSelection.Model)
+	if err != nil {
+		return nil
+	}
+	return selected
 }
 
 func mapSubscriptionWindow(window *provider.UsageWindow) *v1.UsageWindow {
@@ -771,15 +768,15 @@ func replyMatchesChoices(choices []v1.PermissionChoice, reply v1.PermissionReply
 }
 
 func sessionDTO(item session.AgentSessionDto) v1.Session {
-	return v1.Session{ID: item.ID, ParentSessionID: item.ParentSessionID, Name: item.Name, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
+	return v1.Session{ID: item.ID, ParentSessionID: item.ParentSessionID, Name: item.Name, ProjectID: item.ProjectID, Title: item.Title, Agent: item.Agent, Mode: item.Agent, Model: item.Model, CreatedAt: item.CreatedAt, UpdatedAt: item.UpdatedAt}
 }
 
 func selectionDTO(item session.AgentSessionDto) v1.SessionSelection {
-	return v1.SessionSelection{Agent: item.Agent, Mode: item.Agent, Provider: item.Provider, Model: item.Model, Variant: item.Variant}
+	return v1.SessionSelection{Agent: item.Agent, Mode: item.Agent, Model: item.Model}
 }
 
 func completeSelection(selection session.Selection) bool {
-	return selection.Agent != "" && selection.Provider != "" && selection.Model != ""
+	return selection.Agent != "" && selection.Model != ""
 }
 
 func (b *DomainBackend) validateSelection(selection session.Selection) error {
@@ -812,14 +809,8 @@ func (b *DomainBackend) validateSelection(selection session.Selection) error {
 		}
 		resolver = registry
 	}
-	_, model, err := resolver.Resolve(selection.Provider, selection.Model)
-	if err != nil {
+	if _, _, _, err := resolver.Resolve(selection.Model); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidSelection, err)
-	}
-	if selection.Variant != "" {
-		if _, ok := model.Capabilities.Variant(selection.Variant); !ok {
-			return fmt.Errorf("%w: unknown variant %q", ErrInvalidSelection, selection.Variant)
-		}
 	}
 	return nil
 }

@@ -22,7 +22,7 @@ const (
 )
 
 // MetaVersion is the schema version of a published session index entry.
-const MetaVersion = 1
+const MetaVersion = 2
 
 // ErrForeignHost reports that a session is bound to a different machine.
 var ErrForeignHost = errors.New("store: session belongs to another host")
@@ -43,9 +43,7 @@ type Meta struct {
 	ProjectRoot     string `json:"project_root"`
 	Title           string `json:"title"`
 	Agent           string `json:"agent"`
-	Provider        string `json:"provider"`
 	Model           string `json:"model"`
-	Variant         string `json:"variant"`
 	CreatedAt       string `json:"created_at"`
 	UpdatedAt       string `json:"updated_at"`
 	HostKey         string `json:"host_key"`
@@ -88,13 +86,29 @@ func WriteMeta(state string, meta Meta) error {
 	return atomicfile.WriteJSON(MetaPath(state, meta.ID), meta)
 }
 
-// ReadMeta reads one published session index entry.
+// ReadMeta reads one published session index entry. Version one stored a model
+// as separate provider, model, and variant fields; it remains readable so a
+// rolling upgrade can list and adopt entries published by the previous binary.
 func ReadMeta(state, sessionID string) (Meta, error) {
-	var meta Meta
-	if err := atomicfile.ReadJSON(MetaPath(state, sessionID), &meta); err != nil {
+	var dto struct {
+		Meta
+		Provider string `json:"provider"`
+		Variant  string `json:"variant"`
+	}
+	if err := atomicfile.ReadJSON(MetaPath(state, sessionID), &dto); err != nil {
 		return Meta{}, err
 	}
-	if meta.Version != MetaVersion {
+	meta := dto.Meta
+	switch meta.Version {
+	case 1:
+		if meta.Model != "" && dto.Provider != "" {
+			meta.Model = dto.Provider + "/" + meta.Model
+		}
+		if meta.Model != "" && dto.Variant != "" {
+			meta.Model += "/" + dto.Variant
+		}
+	case MetaVersion:
+	default:
 		return Meta{}, fmt.Errorf("store: session %s index version %d is unsupported", sessionID, meta.Version)
 	}
 	if meta.Name == "" {

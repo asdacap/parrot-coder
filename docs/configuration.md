@@ -39,8 +39,7 @@ selected model. Durations are integer milliseconds.
 ```yaml
 prompt: |-
   You are Parrot Coder, a local coding agent.
-model: provider/model
-variant: high # optional reasoning variant exposed by the selected model
+model: provider/model/effort-variant # optional final segment
 inline_diff: true # false selects side-by-side diff blocks
 permission_request_timeout_ms: 30000
 providers:
@@ -62,6 +61,9 @@ providers:
         reasoning: false
         output:
           - text
+        variants:
+          high:
+            reasoning_effort: high
 mcp:
   server-name:
     transport: stdio # stdio or http
@@ -122,18 +124,18 @@ may remain pending. It is a positive integer number of milliseconds and defaults
 to 30000 (30 seconds). Like other scalar configuration, the highest-precedence
 configured value replaces the default.
 
-The `model` and `variant` fields form the default model selection. `variant` is
-optional, but when present it must name a reasoning variant exposed by `model`.
-A command-line `--variant` takes precedence over this configured value; when no
-variant is configured, Parrot can restore one from the latest matching project
-session.
+The `model` field is the default model selector. Its canonical form is
+`provider/model[/effort-variant]`: the provider and model are required, and the
+final effort-variant segment is optional. When present, the suffix must name a
+variant exposed by that model. Provider model IDs may themselves contain
+slashes; Parrot resolves the provider first and recognizes the optional final
+segment from that model's declared variants.
 
-The interactive `/model` and `/effort` commands and the model picker update the
-`model`/`variant` pair together in the global config file, so the complete
-selection persists across restarts. Selecting a model without variants removes
-the global `variant` field. This makes the global config file a form of
-persistent state as well as configuration. Project-scope config files are not
-written to.
+The interactive `/model` command, `/effort` command, and model picker update the
+complete selector in the global `model` field, so the selection persists across
+restarts. `/effort high`, for example, rewrites `provider/model` to
+`provider/model/high`; selecting a model or effort does not create a top-level
+`variant` field. Project-scope config files are not written to.
 
 ### Subagents
 
@@ -204,6 +206,10 @@ does not list, and supply the metadata a model list cannot express — `context`
 preset's model metadata only describes models the endpoint actually serves, so a
 stale built-in entry disappears rather than advertising a model that is gone.
 A declared model's `variants` take precedence over any the catalog exposes.
+Each key under `variants` is the stable name used as the selector's final segment
+and shown by `/effort`; its `reasoning_effort` value is what Parrot sends to the
+provider. The two values may differ when a provider-specific effort needs a
+stable or clearer selector name.
 
 Without a `context`, a model has no input budget, so Parrot cannot compact
 proactively — the session compacts only after the provider reports an overflow.

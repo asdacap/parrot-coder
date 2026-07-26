@@ -203,6 +203,13 @@ type codingFlags struct {
 	thinking                       bool
 }
 
+func (o codingFlags) canonicalModel() string {
+	if o.model == "" || o.variant == "" {
+		return o.model
+	}
+	return o.model + "/" + o.variant
+}
+
 func addCodingFlags(fs *flag.FlagSet, options *codingFlags) {
 	fs.BoolVar(&options.continued, "continue", false, "continue the most recent session")
 	fs.StringVar(&options.session, "session", "", "continue a session ID")
@@ -281,7 +288,12 @@ func promptCommand(ctx context.Context, config PromptConfig) int {
 		fmt.Fprintln(config.Stderr, err)
 		return finish(ctx, exitError, "session_selection_failed", err)
 	}
-	if err := applySelection(ctx, runtime.Client, sessionItem.ID, options.agent, options.model, optionalVariant(options.variant)); err != nil {
+	modelPatch, err := selectionModelPatch(ctx, runtime.Client, sessionItem, options)
+	if err != nil {
+		fmt.Fprintln(config.Stderr, err)
+		return finish(ctx, exitError, "model_selection_decode_failed", err)
+	}
+	if err := applySelection(ctx, runtime.Client, sessionItem.ID, options.agent, modelPatch); err != nil {
 		fmt.Fprintln(config.Stderr, err)
 		return finish(ctx, exitError, "selection_update_failed", err)
 	}
@@ -354,7 +366,12 @@ func command(ctx context.Context, config Config) int {
 			fmt.Fprintln(stderr, err)
 			return finish(ctx, exitError, "session_selection_failed", err)
 		}
-		if err := applySelection(ctx, api, current.ID, options.agent, options.model, optionalVariant(options.variant)); err != nil {
+		modelPatch, patchErr := selectionModelPatch(ctx, api, current, options)
+		if patchErr != nil {
+			fmt.Fprintln(stderr, patchErr)
+			return finish(ctx, exitError, "model_selection_decode_failed", patchErr)
+		}
+		if err := applySelection(ctx, api, current.ID, options.agent, modelPatch); err != nil {
 			fmt.Fprintln(stderr, err)
 			return finish(ctx, exitError, "selection_update_failed", err)
 		}
@@ -366,7 +383,11 @@ func command(ctx context.Context, config Config) int {
 			}
 		}
 	}
-	selection := defaultChatSelection(runtime.DefaultSelection, options.variant)
+	selection, err := defaultChatSelection(runtime.DefaultSelection, models.Items, "")
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return finish(ctx, exitError, "model_selection_decode_failed", err)
+	}
 	identity, identityErr := processidentity.Load(runtime.Paths.State)
 	if identityErr != nil {
 		fmt.Fprintln(stderr, identityErr)
@@ -374,7 +395,7 @@ func command(ctx context.Context, config Config) int {
 	}
 	claimRequest := v1.ClaimSessionRequest{WorkingDirectory: runtime.WorkingDirectory, HostKey: identity.HostKey, PID: identity.PID, ProjectID: runtime.Project.ID}
 	if current.ID == "" && selection.modelName() != "" {
-		claimRequest.Agent, claimRequest.Model, claimRequest.Variant = selection.agent, selection.modelName(), &selection.variant
+		claimRequest.Agent, claimRequest.Model = selection.agent, selection.canonicalModel()
 		claimed, claimErr := runtime.Client.ClaimSession(ctx, claimRequest)
 		if claimErr != nil {
 			fmt.Fprintln(stderr, claimErr)
@@ -382,11 +403,11 @@ func command(ctx context.Context, config Config) int {
 		}
 		current = claimed.Session
 		claimDisposition = claimed.Disposition
-		if err := applySelection(ctx, api, current.ID, options.agent, options.model, optionalVariant(options.variant)); err != nil {
+		if err := applySelection(ctx, api, current.ID, options.agent, ""); err != nil {
 			fmt.Fprintln(stderr, err)
 			return finish(ctx, exitError, "selection_update_failed", err)
 		}
-		if options.agent != "" || options.model != "" || options.variant != "" {
+		if options.agent != "" {
 			current, err = api.Session(ctx, current.ID)
 			if err != nil {
 				fmt.Fprintln(stderr, err)
@@ -395,7 +416,11 @@ func command(ctx context.Context, config Config) int {
 		}
 	}
 	if current.ID != "" {
-		selection = selectionFromSession(current, selection.agent)
+		selection, err = selectionFromSession(current, models.Items, selection.agent)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return finish(ctx, exitError, "model_selection_decode_failed", err)
+		}
 	}
 	plainOut := terminal.Writer{W: stdout}
 	shell := &chatShell{
@@ -500,24 +525,42 @@ type resumableClient interface {
 	Resume(context.Context, string) error
 }
 
-// applySelection patches a session's selection. A nil variant leaves the
-// current one alone; a non-nil empty variant clears it, which is what switching
-// to a model without reasoning variants requires.
-func applySelection(ctx context.Context, api apiClient, sessionID, agentID, model string, variant *string) error {
-	if agentID == "" && model == "" && variant == nil {
+// applySelection patches a session's selection. Model is always the canonical
+// provider/model[/variant] value exposed by the API.
+func applySelection(ctx context.Context, api apiClient, sessionID, agentID, model string) error {
+	if agentID == "" && model == "" {
 		return nil
 	}
-	request := v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model, Variant: variant}
+	request := v1.UpdateSessionSelectionRequest{Agent: agentID, Model: model}
 	_, err := api.UpdateSessionSelection(ctx, sessionID, request)
 	return err
 }
 
-// optionalVariant treats an unset command-line variant as "leave unchanged".
-func optionalVariant(value string) *string {
-	if value == "" {
-		return nil
+func selectionModelPatch(ctx context.Context, api apiClient, current v1.Session, options codingFlags) (string, error) {
+	if options.model != "" || options.variant == "" {
+		return options.canonicalModel(), nil
 	}
-	return &value
+	models, err := api.Models(ctx)
+	if err != nil {
+		return "", err
+	}
+	selection, err := decodeCanonicalModel(current.Model, models.Items)
+	if err != nil {
+		return "", err
+	}
+	for _, model := range models.Items {
+		if model.Provider != selection.provider || model.ID != selection.model {
+			continue
+		}
+		for _, variant := range model.Variants {
+			if variant.Name == options.variant {
+				selection.variant = options.variant
+				return selection.canonicalModel(), nil
+			}
+		}
+		break
+	}
+	return "", fmt.Errorf("unknown effort %q for model %s", options.variant, selection.modelName())
 }
 
 func chooseSession(ctx context.Context, api apiClient, projectID string, continued bool, sessionID, title string) (v1.Session, error) {
@@ -1295,6 +1338,14 @@ func (s chatSelection) modelName() string {
 	return s.provider + "/" + s.model
 }
 
+func (s chatSelection) canonicalModel() string {
+	model := s.modelName()
+	if model != "" && s.variant != "" {
+		model += "/" + s.variant
+	}
+	return model
+}
+
 func (s chatSelection) modelLabel() string {
 	if value := s.modelName(); value != "" {
 		if s.variant != "" {
@@ -1429,7 +1480,12 @@ func (s *chatShell) enhancedConfig() enhancedchat.Config {
 		Current: func() v1.Session { return s.current },
 		SetCurrent: func(item v1.Session) {
 			s.current = item
-			s.selection = selectionFromSession(item, s.selection.agent)
+			selection, err := selectionFromSession(item, s.models, s.selection.agent)
+			if err != nil {
+				s.commitError(err.Error())
+				return
+			}
+			s.selection = selection
 			s.refreshModelInfo()
 		},
 		Agent: func() string { return s.selection.agent },
@@ -1702,8 +1758,7 @@ func (s *chatShell) createSession(title string, forceNew bool) (v1.Session, erro
 		if len(line) > 80 {
 			line = line[:80]
 		}
-		request.Title, request.Agent, request.Model, request.ForceNew = line, s.selection.agent, s.selection.modelName(), forceNew
-		request.Variant = &s.selection.variant
+		request.Title, request.Agent, request.Model, request.ForceNew = line, s.selection.agent, s.selection.canonicalModel(), forceNew
 		claimed, err := claimer.ClaimSession(s.ctx, request)
 		if err == nil {
 			s.announceExistingSession(claimed.Session, claimed.Disposition)
@@ -1783,20 +1838,33 @@ func (s *chatShell) announceExistingSession(session v1.Session, disposition stri
 	s.commitStatus(chatview.StatusNoticeIcon + " Existing session detected: " + session.ID)
 }
 
-func selectionFromSession(item v1.Session, fallbackAgent string) chatSelection {
+func selectionFromSession(item v1.Session, models []v1.Model, fallbackAgent string) (chatSelection, error) {
 	agent := item.Agent
 	if agent == "" {
 		agent = fallbackAgent
 	}
-	return chatSelection{agent: agent, provider: item.Provider, model: item.Model, variant: item.Variant}
+	selection, err := decodeCanonicalModel(item.Model, models)
+	if err != nil {
+		providerID, modelID, found := strings.Cut(item.Model, "/")
+		if !found || providerID == "" || modelID == "" {
+			return chatSelection{}, err
+		}
+		selection = chatSelection{provider: providerID, model: modelID}
+	}
+	selection.agent = agent
+	return selection, nil
 }
 
-func defaultChatSelection(item v1.SessionSelection, variantOverride string) chatSelection {
-	variant := item.Variant
-	if variantOverride != "" {
-		variant = variantOverride
+func defaultChatSelection(item v1.SessionSelection, models []v1.Model, variantOverride string) (chatSelection, error) {
+	selection, err := decodeCanonicalModel(item.Model, models)
+	if err != nil {
+		return chatSelection{}, err
 	}
-	return chatSelection{agent: item.Agent, provider: item.Provider, model: item.Model, variant: variant}
+	selection.agent = item.Agent
+	if variantOverride != "" && selection.modelName() != "" {
+		selection.variant = variantOverride
+	}
+	return selection, nil
 }
 
 type sessionCreator interface {
@@ -1808,7 +1876,7 @@ func createChatSession(ctx context.Context, api sessionCreator, projectID, title
 	if len(line) > 80 {
 		line = line[:80]
 	}
-	request := v1.CreateSessionRequest{ProjectID: projectID, Title: line, Agent: selection.agent, Model: selection.modelName(), Variant: &selection.variant}
+	request := v1.CreateSessionRequest{ProjectID: projectID, Title: line, Agent: selection.agent, Model: selection.canonicalModel()}
 	return api.CreateSession(ctx, request)
 }
 
@@ -1972,8 +2040,8 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 			s.commit("no sessions available")
 		}
 		for _, item := range items.Items {
-			model := item.Provider + "/" + item.Model
-			if item.Provider == "" || item.Model == "" {
+			model := item.Model
+			if model == "" {
 				model = "no model"
 			}
 			s.commit(fmt.Sprintf("%s\t%s\t%s\t%s", item.ID, item.Agent, model, item.Title))
@@ -1991,8 +2059,13 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 			}
 			break
 		}
+		selection, decodeErr := selectionFromSession(item, s.models, s.selection.agent)
+		if decodeErr != nil {
+			s.commitError(decodeErr.Error())
+			break
+		}
 		s.current = item
-		s.selection = selectionFromSession(item, s.selection.agent)
+		s.selection = selection
 		s.refreshModelInfo()
 		s.commitStatus("✓ Session selected: " + item.ID)
 		if command == "/resume" {
@@ -2622,29 +2695,30 @@ func (s *chatShell) pickModel() (string, error) {
 }
 
 func (s *chatShell) applyModel(value string) error {
-	provider, model, ok := strings.Cut(value, "/")
-	if !ok || provider == "" || model == "" {
-		return fmt.Errorf("invalid model %q", value)
+	selection, err := decodeCanonicalModel(value, s.models)
+	if err != nil {
+		return err
 	}
-	variant := s.selection.variant
-	for _, item := range s.models {
-		if item.Provider != provider || item.ID != model {
-			continue
+	if selection.variant == "" {
+		for _, item := range s.models {
+			if item.Provider == selection.provider && item.ID == selection.model {
+				selection.variant = resolveVariant(s.selection.variant, item)
+				break
+			}
 		}
-		variant = resolveVariant(variant, item)
-		break
 	}
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, "", value, &variant); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, "", selection.canonicalModel()); err != nil {
 			return err
 		}
 	}
-	s.selection.provider, s.selection.model, s.selection.variant = provider, model, variant
-	s.current.Provider, s.current.Model, s.current.Variant = provider, model, variant
+	selection.agent = s.selection.agent
+	s.selection = selection
+	s.current.Model = selection.canonicalModel()
 	if err := s.persistSelection(); err != nil {
 		return err
 	}
-	s.commitStatus("✓ Model selected: " + value)
+	s.commitStatus("✓ Model selected: " + selection.canonicalModel())
 	s.refreshModelInfo()
 	return nil
 }
@@ -2719,13 +2793,15 @@ func (s *chatShell) selectEffort(value string) error {
 	if !found {
 		return fmt.Errorf("unknown effort %q for model %s (available: %s)", value, s.selection.modelName(), strings.Join(efforts, ", "))
 	}
+	selection := s.selection
+	selection.variant = value
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, "", "", &value); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, "", selection.canonicalModel()); err != nil {
 			return err
 		}
 	}
-	s.selection.variant = value
-	s.current.Variant = value
+	s.selection = selection
+	s.current.Model = selection.canonicalModel()
 	if err := s.persistSelection(); err != nil {
 		return err
 	}
@@ -2737,7 +2813,7 @@ func (s *chatShell) persistSelection() error {
 	if s.configDir == "" {
 		return nil
 	}
-	return configpkg.UpdateDefaultSelection(filepath.Join(s.configDir, configpkg.FileName), s.selection.modelName(), s.selection.variant)
+	return configpkg.UpdateDefaultSelection(filepath.Join(s.configDir, configpkg.FileName), s.selection.canonicalModel())
 }
 
 func (s *chatShell) selectAgent(argument string) error {
@@ -2771,7 +2847,7 @@ func (s *chatShell) applyAgent(argument string, announce bool) error {
 		return fmt.Errorf("unknown mode %q", argument)
 	}
 	if s.current.ID != "" {
-		if err := applySelection(s.ctx, s.api, s.current.ID, argument, "", nil); err != nil {
+		if err := applySelection(s.ctx, s.api, s.current.ID, argument, ""); err != nil {
 			return err
 		}
 	}
@@ -2799,15 +2875,50 @@ func (s *chatShell) nextAgent(current string) (string, error) {
 	return items.Items[0].ID, nil
 }
 
+// decodeCanonicalModel resolves an API/config model string against the catalog.
+// A complete provider/model match wins before variant suffixes are considered,
+// since model IDs themselves may contain slashes. Suffix matches are accepted
+// only when exactly one catalog model declares that variant.
+func decodeCanonicalModel(value string, items []v1.Model) (chatSelection, error) {
+	if value == "" {
+		return chatSelection{}, nil
+	}
+	for _, item := range items {
+		if value == item.Provider+"/"+item.ID {
+			return chatSelection{provider: item.Provider, model: item.ID}, nil
+		}
+	}
+	var match *chatSelection
+	for _, item := range items {
+		base := item.Provider + "/" + item.ID
+		variant, ok := strings.CutPrefix(value, base+"/")
+		if !ok || variant == "" {
+			continue
+		}
+		for _, candidate := range item.Variants {
+			if candidate.Name != variant {
+				continue
+			}
+			selection := chatSelection{provider: item.Provider, model: item.ID, variant: variant}
+			if match != nil {
+				return chatSelection{}, fmt.Errorf("model %q is ambiguous", value)
+			}
+			match = &selection
+		}
+	}
+	if match == nil {
+		return chatSelection{}, fmt.Errorf("unknown model %q", value)
+	}
+	return *match, nil
+}
+
 func matchModel(argument string, items []v1.Model) (string, error) {
 	if strings.Contains(argument, "/") {
-		for _, item := range items {
-			value := item.Provider + "/" + item.ID
-			if value == argument {
-				return value, nil
-			}
+		selection, err := decodeCanonicalModel(argument, items)
+		if err != nil {
+			return "", err
 		}
-		return "", fmt.Errorf("unknown model %q", argument)
+		return selection.canonicalModel(), nil
 	}
 	match := ""
 	for _, item := range items {

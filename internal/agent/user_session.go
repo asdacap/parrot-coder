@@ -384,27 +384,18 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 		return nil, errors.New("agent: child parent belongs to another project")
 	}
 	selection := request.DefaultSelection
-	if selectedParent.Provider != "" && selectedParent.Model != "" {
-		selection.Provider, selection.Model, selection.Variant = selectedParent.Provider, selectedParent.Model, selectedParent.Variant
+	if selectedParent.Model != "" {
+		selection.Model = selectedParent.Model
 	}
 	selection.Agent = request.Agent
 	if request.Model != "" {
-		if providerID, modelID, found := strings.Cut(request.Model, "/"); found {
-			selection.Provider, selection.Model = providerID, modelID
-		} else {
-			selection.Model = request.Model
-		}
-		selection.Variant = ""
+		selection.Model = request.Model
 	}
-	if selection.Provider == "" || selection.Model == "" {
+	if selection.Model == "" {
 		return nil, errors.New("agent: child has no default model")
 	}
-	if _, model, err := r.providers.Resolve(selection.Provider, selection.Model); err != nil {
+	if _, _, _, err := r.providers.Resolve(selection.Model); err != nil {
 		return nil, fmt.Errorf("agent: child model: %w", err)
-	} else if selection.Variant != "" {
-		if _, ok := model.Capabilities.Variant(selection.Variant); !ok {
-			return nil, fmt.Errorf("agent: child model: unknown model variant %q", selection.Variant)
-		}
 	}
 	child, err := r.user.createSelected(ctx, session.CreateParams{
 		ParentSessionID: selectedParent.ID,
@@ -549,9 +540,7 @@ func (r *agentSessionRepository) updateSelection(expected *agentSession, updated
 		return
 	}
 	dto.Agent = updated.Agent
-	dto.Provider = updated.Provider
 	dto.Model = updated.Model
-	dto.Variant = updated.Variant
 	dto.UpdatedAt = updated.UpdatedAt
 	r.dtos[updated.ID] = dto
 }

@@ -158,20 +158,20 @@ func TestOpenSessionOwnedRejectsForeignHost(t *testing.T) {
 	owned.Close()
 }
 
-func TestMetaNameRemainsOptionalAtVersionOne(t *testing.T) {
+func TestLegacyMetaIsUpgradedInMemory(t *testing.T) {
 	t.Parallel()
 	state := t.TempDir()
 	if err := CreateSessionDir(state, "ses_old"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(MetaPath(state, "ses_old"), []byte(`{"version":1,"id":"ses_old","title":"Subtask inspect [build]","agent":"build"}`), 0o600); err != nil {
+	if err := os.WriteFile(MetaPath(state, "ses_old"), []byte(`{"version":1,"id":"ses_old","title":"Subtask inspect [build]","agent":"build","provider":"chatgpt","model":"gpt","variant":"high"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	old, err := ReadMeta(state, "ses_old")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if old.Version != MetaVersion || old.Name != "inspect" {
+	if old.Version != 1 || old.Name != "inspect" || old.Model != "chatgpt/gpt/high" {
 		t.Fatalf("legacy meta = %#v", old)
 	}
 
@@ -185,7 +185,7 @@ func TestMetaNameRemainsOptionalAtVersionOne(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if current.Version != 1 || current.Name != "review" {
+	if current.Version != MetaVersion || current.Name != "review" {
 		t.Fatalf("current meta = %#v", current)
 	}
 }

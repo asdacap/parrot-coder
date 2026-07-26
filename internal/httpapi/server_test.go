@@ -48,7 +48,7 @@ func (b *stubBackend) GetSession(context.Context, string) (v1.Session, error) {
 	return v1.Session{ID: "ses_test"}, b.backendErr
 }
 func (b *stubBackend) UpdateSessionSelection(context.Context, string, v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
-	return v1.SessionSelection{Agent: "plan", Provider: "local", Model: "code"}, b.backendErr
+	return v1.SessionSelection{Agent: "plan", Model: "local/code"}, b.backendErr
 }
 func (b *stubBackend) DeleteSession(context.Context, string) error { return b.backendErr }
 func (b *stubBackend) ListMessages(context.Context, string) (v1.MessageList, error) {
@@ -167,11 +167,14 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 
 type selectionResolver struct{}
 
-func (selectionResolver) Resolve(providerID, modelID string) (provider.Provider, provider.Model, error) {
-	if providerID != "local" || modelID != "code" && modelID != "reasoning" {
-		return nil, provider.Model{}, errors.New("unknown model")
+func (selectionResolver) Resolve(selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
+	if selector != "local/code" && selector != "local/code/high" && selector != "local/reasoning" {
+		return nil, provider.Model{}, nil, errors.New("unknown model")
 	}
-	return nil, provider.Model{ID: modelID}, nil
+	if selector == "local/code/high" {
+		return nil, provider.Model{ID: "code"}, &provider.Variant{Name: "high"}, nil
+	}
+	return nil, provider.Model{ID: strings.TrimPrefix(selector, "local/")}, nil, nil
 }
 
 func newSelectionBackend(t *testing.T) (*DomainBackend, agent.UserSession) {
@@ -218,7 +221,7 @@ func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *age
 
 func TestGoalCRUDThroughTypedClient(t *testing.T) {
 	backend, _ := newSelectionBackend(t)
-	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	backend.DefaultSelection = session.Selection{Agent: "build", Model: "local/code"}
 	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
 	ctx := context.Background()
 	created, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{Title: "goal"})
@@ -269,8 +272,12 @@ func TestSelectedCreationIsValidatedAndAtomic(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Agent != "plan" || created.Provider != "local" || created.Model != "code" {
+	if created.Agent != "plan" || created.Model != "local/code" {
 		t.Fatalf("created selection = %#v", created)
+	}
+	encodedVariant, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{Agent: "build", Model: "local/code/high"})
+	if err != nil || encodedVariant.Model != "local/code/high" {
+		t.Fatalf("encoded variant selection = %#v, %v", encodedVariant, err)
 	}
 
 	_, err = apiClient.CreateSession(ctx, v1.CreateSessionRequest{Agent: "missing", Model: "local/code"})
@@ -278,7 +285,7 @@ func TestSelectedCreationIsValidatedAndAtomic(t *testing.T) {
 	_, err = apiClient.CreateSession(ctx, v1.CreateSessionRequest{Agent: "build", Model: "local/missing"})
 	assertAPIProblem(t, err, http.StatusBadRequest, "invalid_selection")
 	items, err = sessions.List(ctx)
-	if err != nil || len(items) != 1 {
+	if err != nil || len(items) != 2 {
 		t.Fatalf("sessions after invalid selections = %#v, %v", items, err)
 	}
 }
@@ -292,7 +299,7 @@ func TestSessionDTOIncludesName(t *testing.T) {
 
 func TestChildCreationMapsAndValidatesParent(t *testing.T) {
 	backend, _ := newSelectionBackend(t)
-	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	backend.DefaultSelection = session.Selection{Agent: "build", Model: "local/code"}
 	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
 	ctx := context.Background()
 	parent, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{ProjectID: "project", Title: "parent"})
@@ -319,19 +326,19 @@ func TestChildCreationMapsAndValidatesParent(t *testing.T) {
 
 func TestDefaultCreationAndTypedPartialSelectionUpdate(t *testing.T) {
 	backend, _ := newSelectionBackend(t)
-	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	backend.DefaultSelection = session.Selection{Agent: "build", Model: "local/code"}
 	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
 	ctx := context.Background()
 	created, err := apiClient.CreateSession(ctx, v1.CreateSessionRequest{Title: "default"})
-	if err != nil || created.Name == "" || created.Agent != "build" || created.Provider != "local" || created.Model != "code" {
+	if err != nil || created.Name == "" || created.Agent != "build" || created.Model != "local/code" {
 		t.Fatalf("default CreateSession = %#v, %v", created, err)
 	}
 	selected, err := apiClient.UpdateSessionSelection(ctx, created.ID, v1.UpdateSessionSelectionRequest{Agent: "plan"})
-	if err != nil || selected.Agent != "plan" || selected.Provider != "local" || selected.Model != "code" {
+	if err != nil || selected.Agent != "plan" || selected.Model != "local/code" {
 		t.Fatalf("agent selection = %#v, %v", selected, err)
 	}
-	selected, err = apiClient.UpdateSessionSelection(ctx, created.ID, v1.UpdateSessionSelectionRequest{Model: "reasoning"})
-	if err != nil || selected.Agent != "plan" || selected.Provider != "local" || selected.Model != "reasoning" {
+	selected, err = apiClient.UpdateSessionSelection(ctx, created.ID, v1.UpdateSessionSelectionRequest{Model: "local/reasoning"})
+	if err != nil || selected.Agent != "plan" || selected.Model != "local/reasoning" {
 		t.Fatalf("model selection = %#v, %v", selected, err)
 	}
 	_, err = apiClient.UpdateSessionSelection(ctx, "ses_missing", v1.UpdateSessionSelectionRequest{Agent: "plan"})
@@ -481,7 +488,7 @@ func (d blockingDrainer) Drain(ctx context.Context, _ string) error {
 
 func TestSubmitPromptAdmitsAndWakes(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
-	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	backend.DefaultSelection = session.Selection{Agent: "build", Model: "local/code"}
 	started := make(chan struct{}, 1)
 	backend.AgentSessions = newTestSessionController(blockingDrainer{started: started}, sessions)
 	created, err := backend.CreateSession(context.Background(), v1.CreateSessionRequest{})
@@ -507,7 +514,7 @@ func TestSubmitPromptAdmitsAndWakes(t *testing.T) {
 
 func TestSelectionRejectsActiveSession(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
-	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	backend.DefaultSelection = session.Selection{Agent: "build", Model: "local/code"}
 	started := make(chan struct{}, 1)
 	backend.AgentSessions = newTestSessionController(blockingDrainer{started: started}, sessions)
 	created, err := backend.CreateSession(context.Background(), v1.CreateSessionRequest{})
@@ -581,7 +588,7 @@ func (d *restartOnceDrainer) Drain(ctx context.Context, _ string) error {
 
 func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
-	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	backend.DefaultSelection = session.Selection{Agent: "build", Model: "local/code"}
 	drainer := &restartOnceDrainer{started: make(chan struct{}, 2), restarted: make(chan struct{}, 1)}
 	backend.AgentSessions = newTestSessionController(drainer, sessions)
 
@@ -620,7 +627,7 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 
 func TestInterruptDoesNotAutoResumeWithoutPendingInputs(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
-	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
+	backend.DefaultSelection = session.Selection{Agent: "build", Model: "local/code"}
 	drainer := &restartOnceDrainer{started: make(chan struct{}, 2), restarted: make(chan struct{}, 1)}
 	backend.AgentSessions = newTestSessionController(drainer, sessions)
 
@@ -661,6 +668,9 @@ func TestStrictJSONContentTypeAndLimit(t *testing.T) {
 		{"content type", http.MethodPost, "/api/v1/sessions", "text/plain", `{}`, "unsupported_media_type", 415},
 		{"unknown create field", http.MethodPost, "/api/v1/sessions", v1.MediaTypeJSON, `{"unknown":true}`, "invalid_request", 400},
 		{"unknown selection field", http.MethodPut, "/api/v1/sessions/ses_test/selection", v1.MediaTypeJSON, `{"unknown":true}`, "invalid_request", 400},
+		{"obsolete create variant", http.MethodPost, "/api/v1/sessions", v1.MediaTypeJSON, `{"variant":"high"}`, "invalid_request", 400},
+		{"obsolete claim variant", http.MethodPost, "/api/v1/interactive-sessions/claim", v1.MediaTypeJSON, `{"variant":"high"}`, "invalid_request", 400},
+		{"obsolete selection variant", http.MethodPut, "/api/v1/sessions/ses_test/selection", v1.MediaTypeJSON, `{"variant":"high"}`, "invalid_request", 400},
 		{"trailing", http.MethodPost, "/api/v1/sessions", v1.MediaTypeJSON, `{} {}`, "invalid_request", 400},
 		{"too large", http.MethodPost, "/api/v1/sessions", v1.MediaTypeJSON, `{"title":"` + strings.Repeat("x", 64) + `"}`, "body_too_large", 413},
 	}
@@ -689,7 +699,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 		t.Fatal(err)
 	}
 	userSession := newTestUserSession(t, sessions, agents)
-	created, err := userSession.CreateSelected(ctx, session.CreateParams{Title: "test"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})
+	created, err := userSession.CreateSelected(ctx, session.CreateParams{Title: "test"}, session.Selection{Agent: "build", Model: "local/code"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1022,7 +1032,7 @@ func TestClientParityNetworkAndInProcess(t *testing.T) {
 				t.Fatalf("CreateSession = %#v, %v", created, err)
 			}
 			selected, err := apiClient.UpdateSessionSelection(ctx, "ses_test", v1.UpdateSessionSelectionRequest{Agent: "plan"})
-			if err != nil || selected.Agent != "plan" || selected.Model != "code" {
+			if err != nil || selected.Agent != "plan" || selected.Model != "local/code" {
 				t.Fatalf("UpdateSessionSelection = %#v, %v", selected, err)
 			}
 			accepted, err := apiClient.Prompt(ctx, "ses_test", v1.PromptRequest{MessageID: "msg_test", Content: "hello"})
