@@ -214,12 +214,12 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	}
 }
 
-func (s *agentSession) sendManagedTurn(ctx context.Context, content, measuredContent string) (string, error) {
+func (s *agentSession) sendManagedTurn(ctx context.Context, content, measuredContent string) (string, string, error) {
 	if strings.TrimSpace(measuredContent) == "" {
-		return "", ErrInvalidChildRequest
+		return "", "", ErrInvalidChildRequest
 	}
 	if len(measuredContent) > s.maxChildPromptBytes {
-		return "", ErrChildRequestLimit
+		return "", "", ErrChildRequestLimit
 	}
 retry:
 	s.childOp.Lock()
@@ -228,7 +228,7 @@ retry:
 	if state == nil {
 		s.mu.Unlock()
 		s.childOp.Unlock()
-		return "", ErrChildNotFound
+		return "", "", ErrChildNotFound
 	}
 	if state.status.State == StatusRunning || state.status.State == StatusPending {
 		if s.drain == nil {
@@ -239,33 +239,33 @@ retry:
 			case <-turn.done:
 				goto retry
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return "", "", ctx.Err()
 			}
 		}
-		messageID, err := s.admitLocked(ctx, content)
+		admission, err := s.admitLocked(ctx, content)
 		if err == nil {
 			s.drain.wake = true
 		}
 		s.mu.Unlock()
 		s.childOp.Unlock()
-		return messageID, err
+		return admission.Input.MessageID, admission.Input.ID, err
 	}
 	s.mu.Unlock()
 	defer s.childOp.Unlock()
 	releaseQuota, err := s.tryAcquireWorkerQuota()
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	s.mu.Lock()
 	if s.removed {
 		s.mu.Unlock()
 		releaseQuota()
-		return "", ErrAgentSessionRemoved
+		return "", "", ErrAgentSessionRemoved
 	}
 	if s.shuttingDown {
 		s.mu.Unlock()
 		releaseQuota()
-		return "", ErrUserSessionClosed
+		return "", "", ErrUserSessionClosed
 	}
 	state.status.Turn++
 	state.status.State, state.status.StartedAt, state.status.FinishedAt = StatusRunning, time.Now().UTC(), time.Time{}
@@ -277,7 +277,7 @@ retry:
 	state.turn, state.cancel = turn, cancel
 	s.mu.Unlock()
 	go s.runChild(turn)
-	return "", nil
+	return "", "", nil
 }
 
 type childObserver struct{ turn *childTurnState }

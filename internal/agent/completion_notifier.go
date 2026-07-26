@@ -12,7 +12,7 @@ import (
 
 // NotificationSession receives a completed child-agent turn.
 type NotificationSession interface {
-	Send(context.Context, string) (string, error)
+	Send(context.Context, string) (messageID, inputID string, err error)
 }
 
 type activeNotification struct {
@@ -89,7 +89,7 @@ func (n *CompletionNotifier) Notify(task Status) {
 		}
 		sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer sendCancel()
-		if _, err := session.Send(sendCtx, completionNotification(task)); err != nil && !errors.Is(err, context.Canceled) {
+		if _, _, err := session.Send(sendCtx, completionNotification(task)); err != nil && !errors.Is(err, context.Canceled) {
 			diagnostics.Error("agent_task_notification_failed", "session_id", task.ParentSession, "task_id", task.SessionID, "error_type", diagnostics.ErrorType(err))
 		}
 	}()

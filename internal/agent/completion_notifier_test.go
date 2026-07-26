@@ -14,7 +14,7 @@ type notificationAgentSession struct {
 	sent     chan struct{}
 }
 
-func (s *notificationAgentSession) Send(_ context.Context, message string) (string, error) {
+func (s *notificationAgentSession) Send(_ context.Context, message string) (string, string, error) {
 	s.mu.Lock()
 	s.messages = append(s.messages, message)
 	s.mu.Unlock()
@@ -22,7 +22,7 @@ func (s *notificationAgentSession) Send(_ context.Context, message string) (stri
 	case s.sent <- struct{}{}:
 	default:
 	}
-	return "message", nil
+	return "message", "input", nil
 }
 
 func TestCompletionNotifierDeliversTerminalTurnToDirectParent(t *testing.T) {

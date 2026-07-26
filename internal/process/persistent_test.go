@@ -11,9 +11,9 @@ import (
 
 type notificationSession struct{ messages chan string }
 
-func (s *notificationSession) Send(_ context.Context, content string) (string, error) {
+func (s *notificationSession) Send(_ context.Context, content string) (string, string, error) {
 	s.messages <- content
-	return "", nil
+	return "", "", nil
 }
 
 type notificationSessions struct{ session AgentSession }

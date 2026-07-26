@@ -553,7 +553,7 @@ func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	}
 	sent := make(chan sendResult, 1)
 	go func() {
-		messageID, sendErr := child.Send(context.Background(), "follow-up")
+		messageID, _, sendErr := child.Send(context.Background(), "follow-up")
 		sent <- sendResult{status: child.Status(), messageID: messageID, err: sendErr}
 	}()
 	select {
@@ -627,10 +627,10 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		t.Fatal("child turn did not start")
 	}
 
-	messageID, err := child.Send(context.Background(), "steer")
+	messageID, inputID, err := child.Send(context.Background(), "steer")
 	status := child.Status()
-	if err != nil || messageID == "" || status.Turn != 1 || status.State != StatusRunning {
-		t.Fatalf("running Send = %#v, %q, %v", status, messageID, err)
+	if err != nil || messageID == "" || inputID == "" || status.Turn != 1 || status.State != StatusRunning {
+		t.Fatalf("running Send = %#v, %q, %q, %v", status, messageID, inputID, err)
 	}
 	close(release)
 	completed, err := observation.Wait(context.Background())
@@ -639,10 +639,10 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 		t.Fatalf("first turn = %#v, status = %#v, %v", completed, status, err)
 	}
 
-	messageID, err = child.Send(context.Background(), "follow-up")
+	messageID, inputID, err = child.Send(context.Background(), "follow-up")
 	status = child.Status()
-	if err != nil || messageID != "" || status.Turn != 2 || status.State != StatusRunning {
-		t.Fatalf("follow-up Send = %#v, %q, %v", status, messageID, err)
+	if err != nil || messageID != "" || inputID != "" || status.Turn != 2 || status.State != StatusRunning {
+		t.Fatalf("follow-up Send = %#v, %q, %q, %v", status, messageID, inputID, err)
 	}
 	observation, err = child.Observe()
 	if err != nil {
@@ -801,16 +801,16 @@ func TestAgentSessionPromptAndSendOwnAdmissionAndResultHandling(t *testing.T) {
 	if err != nil || result != "answer-initial" {
 		t.Fatalf("Prompt = %q, %v; want answer-initial", result, err)
 	}
-	messageID, err := h.runner.Send(context.Background(), "steer")
-	if err != nil || !strings.HasPrefix(messageID, "msg_") {
-		t.Fatalf("Send = %q, %v; want message ID", messageID, err)
+	messageID, inputID, err := h.runner.Send(context.Background(), "steer")
+	if err != nil || !strings.HasPrefix(messageID, "msg_") || inputID == "" {
+		t.Fatalf("Send = %q, %q, %v; want message and input IDs", messageID, inputID, err)
 	}
 	if err := h.runner.Resume(context.Background()); err != nil {
 		t.Fatal(err)
 	}
 	messages, err := h.sessions.GetSession(h.sessionID).ListMessages(context.Background())
-	if err != nil || messages[len(messages)-1].Content != "answer-steer" {
-		t.Fatalf("last message = %#v, %v; want answer-steer", messages[len(messages)-1], err)
+	if err != nil || messages[len(messages)-1].Content != "answer-steer" || messages[len(messages)-2].ID != messageID || messages[len(messages)-2].InputID != inputID {
+		t.Fatalf("messages = %#v, %v; want returned IDs and answer-steer", messages, err)
 	}
 }
 
@@ -1099,7 +1099,7 @@ func TestRemoveIsAtomicWithIdleSessionAdmission(t *testing.T) {
 	sendResult := make(chan error, 1)
 	removeResult := make(chan error, 1)
 	go func() {
-		_, err := runtime.Send(context.Background(), "race")
+		_, _, err := runtime.Send(context.Background(), "race")
 		sendResult <- err
 	}()
 	go func() { removeResult <- h.agentSessions.Remove(h.sessionID) }()

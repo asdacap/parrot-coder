@@ -527,9 +527,9 @@ func (s *recordingProcessAgentSessions) Get(sessionID string) AgentSession {
 
 type recordingProcessAgentSession struct{ sent chan string }
 
-func (s recordingProcessAgentSession) Send(_ context.Context, content string) (string, error) {
+func (s recordingProcessAgentSession) Send(_ context.Context, content string) (string, string, error) {
 	s.sent <- content
-	return "message", nil
+	return "message", "input", nil
 }
 
 func TestRunPersistentNotifiesOwningAgentSessionOnlyAfterYieldedProcessFinishes(t *testing.T) {

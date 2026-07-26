@@ -56,7 +56,7 @@ type AgentSession interface {
 	Observe() (ChildTurnObserver, error)
 	ResolveChild(string) (AgentSession, error)
 	Prompt(context.Context, string) (string, error)
-	Send(context.Context, string) (string, error)
+	Send(context.Context, string) (messageID, inputID string, err error)
 	SendAgentMessage(context.Context, tool.AgentMessage) (string, error)
 	Wake()
 	Resume(context.Context) error
@@ -226,56 +226,55 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 }
 
 // Send admits steer input and wakes the session without waiting for it to idle.
-func (s *agentSession) Send(ctx context.Context, content string) (string, error) {
+func (s *agentSession) Send(ctx context.Context, content string) (string, string, error) {
 	if s.user != nil && s.parent != nil {
 		return s.sendManagedTurn(ctx, content, content)
 	}
-	messageID, _, err := s.admitAndStart(ctx, content)
-	return messageID, err
+	admission, _, err := s.admitAndStart(ctx, content)
+	return admission.Input.MessageID, admission.Input.ID, err
 }
 
 func (s *agentSession) SendAgentMessage(ctx context.Context, message tool.AgentMessage) (string, error) {
 	content := message.String()
 	if s.user != nil && s.parent != nil {
-		return s.sendManagedTurn(ctx, content, message.Content)
+		messageID, _, err := s.sendManagedTurn(ctx, content, message.Content)
+		return messageID, err
 	}
-	messageID, _, err := s.admitAndStart(ctx, content)
-	return messageID, err
+	admission, _, err := s.admitAndStart(ctx, content)
+	return admission.Input.MessageID, err
 }
 
 func (s *agentSession) admit(ctx context.Context, content string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.admitLocked(ctx, content)
+	admission, err := s.admitLocked(ctx, content)
+	return admission.Input.MessageID, err
 }
 
-func (s *agentSession) admitAndStart(ctx context.Context, content string) (string, *drainState, error) {
+func (s *agentSession) admitAndStart(ctx context.Context, content string) (session.Admission, *drainState, error) {
 	s.mu.Lock()
-	messageID, err := s.admitLocked(ctx, content)
+	admission, err := s.admitLocked(ctx, content)
 	if err != nil {
 		s.mu.Unlock()
-		return "", nil, err
+		return session.Admission{}, nil, err
 	}
 	state := s.startOrJoinLocked(true)
 	s.mu.Unlock()
-	return messageID, state, nil
+	return admission, state, nil
 }
 
-func (s *agentSession) admitLocked(ctx context.Context, content string) (string, error) {
+func (s *agentSession) admitLocked(ctx context.Context, content string) (session.Admission, error) {
 	if s.removed {
-		return "", ErrAgentSessionRemoved
+		return session.Admission{}, ErrAgentSessionRemoved
 	}
 	if s.shuttingDown {
-		return "", ErrUserSessionClosed
+		return session.Admission{}, ErrUserSessionClosed
 	}
 	messageID, err := id.New("msg")
 	if err != nil {
-		return "", err
+		return session.Admission{}, err
 	}
-	if _, err := s.store.Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
-		return "", err
-	}
-	return messageID, nil
+	return s.store.Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer})
 }
 
 // Wake coalesces with an active drain and returns immediately.

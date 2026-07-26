@@ -42,7 +42,7 @@ type Config struct {
 // AgentSession is the capability used to deliver a yielded process's eventual
 // completion to its owning session.
 type AgentSession interface {
-	Send(context.Context, string) (string, error)
+	Send(context.Context, string) (messageID, inputID string, err error)
 }
 
 // AgentSessionResolver resolves the owner of a yielded process.

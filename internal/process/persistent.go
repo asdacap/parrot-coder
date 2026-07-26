@@ -350,7 +350,7 @@ func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
 			diagnostics.Warn("shell_process_notification_unavailable", "session_id", item.sessionID, "process_name", item.name)
 			return
 		}
-		if _, err := session.Send(sendCtx, content); err != nil {
+		if _, _, err := session.Send(sendCtx, content); err != nil {
 			if !errors.Is(err, context.Canceled) {
 				diagnostics.Error("shell_process_notification_failed", "session_id", item.sessionID, "process_name", item.name, "error_type", diagnostics.ErrorType(err))
 			}
