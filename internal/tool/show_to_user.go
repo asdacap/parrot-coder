@@ -12,44 +12,44 @@ import (
 	"strings"
 )
 
-// ShowTool presents a bounded text-file range to the user as source code.
-type ShowTool struct {
+// ShowToUserTool presents a bounded text-file range to the user as source code.
+type ShowToUserTool struct {
 	BasePresentation
 	Config ReadConfig
 }
 
-func NewShowTool(config ReadConfig) *ShowTool {
+func NewShowToUserTool(config ReadConfig) *ShowToUserTool {
 	read := NewReadTool(config)
-	return &ShowTool{Config: read.Config}
+	return &ShowToUserTool{Config: read.Config}
 }
 
-func (*ShowTool) ID() string { return "show" }
-func (*ShowTool) Presentation() Presentation {
+func (*ShowToUserTool) ID() string { return "show_to_user" }
+func (*ShowToUserTool) Presentation() Presentation {
 	return Presentation{Muted: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"path"}}}}}
 }
-func (t *ShowTool) Descriptor() Descriptor {
+func (t *ShowToUserTool) Descriptor() Descriptor {
 	return Descriptor{
 		ID:           t.ID(),
-		Description:  "Display a bounded line range from a text file as source code. Relative paths resolve within the workspace.",
+		Description:  "Display a bounded line range from a text file to the user as source code without returning its content to the model. Relative paths resolve within the workspace.",
 		Schema:       t.JSONSchema(),
 		Presentation: t.Presentation(),
 	}
 }
-func (*ShowTool) DescribeRequest(raw json.RawMessage) (string, error) {
+func (*ShowToUserTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	var input readInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", err
 	}
-	description := fmt.Sprintf("Show %q", input.Path)
+	description := fmt.Sprintf("Show %q to user", input.Path)
 	if input.Offset > 0 || input.Limit > 0 {
 		description += fmt.Sprintf(" (offset %d, limit %d)", input.Offset, input.Limit)
 	}
 	return description, nil
 }
-func (*ShowTool) JSONSchema() json.RawMessage {
+func (*ShowToUserTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"offset":{"type":"integer"},"limit":{"type":"integer"}},"required":["path"],"additionalProperties":false}`)
 }
-func (*ShowTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
+func (*ShowToUserTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
 	var input readInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return ErrorAdvice{}, err
@@ -57,7 +57,7 @@ func (*ShowTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
 	return ErrorAdvice{Paths: []ErrorAdvicePath{{Path: input.Path}}}, nil
 }
 
-func (t *ShowTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
+func (t *ShowToUserTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
 	if call.Workspace == nil {
 		return Plan{}, errors.New("workspace is required")
 	}
@@ -78,7 +78,7 @@ func (t *ShowTool) Plan(_ context.Context, raw json.RawMessage, call CallContext
 	return NewPlan(t.ID(), raw, nil, nil, readPlan{Input: input, Path: path})
 }
 
-func (t *ShowTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+func (t *ShowToUserTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	p := plan.Data.(readPlan)
 	path, err := call.Workspace.ResolveReadOnly(p.Input.Path)
 	if err != nil {
@@ -92,7 +92,7 @@ func (t *ShowTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		return Result{}, err
 	}
 	if info.IsDir() {
-		return Result{}, errors.New("cannot show a directory")
+		return Result{}, errors.New("cannot show a directory to the user")
 	}
 	file, err := os.Open(path)
 	if err != nil {
@@ -132,13 +132,13 @@ func (t *ShowTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		}
 		scanned += int64(len(line))
 		if scanned > t.Config.MaxBytes {
-			return Result{}, errors.New("show scan byte limit exceeded")
+			return Result{}, errors.New("show_to_user scan byte limit exceeded")
 		}
 		if len(line) > 0 {
 			lineNo++
 			if lineNo >= offset && returned < limit {
 				if int64(source.Len()+len(line)) > t.Config.MaxBytes {
-					return Result{}, errors.New("show byte limit exceeded")
+					return Result{}, errors.New("show_to_user byte limit exceeded")
 				}
 				source.WriteString(line)
 				returned++
@@ -153,6 +153,6 @@ func (t *ShowTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	if call.Displays != nil {
 		call.Displays.DisplayCode(CodeDisplay{Source: source.String(), Path: p.Input.Path, Language: language, StartLine: offset})
 	}
-	text := fmt.Sprintf("Displayed %d lines from %s (starting at line %d).", returned, p.Input.Path, offset)
+	text := fmt.Sprintf("%d lines shown to user", returned)
 	return Result{Text: text, ModelText: text, Metadata: map[string]any{"lines": returned, "path": p.Input.Path, "start_line": offset}}, nil
 }

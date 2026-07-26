@@ -44,7 +44,7 @@ func BuiltinProviders(services BuiltinServices) (Providers, error) {
 	}
 	constructors := []func() Tool{
 		func() Tool { return NewReadTool(ReadConfig{}) },
-		func() Tool { return NewShowTool(ReadConfig{}) },
+		func() Tool { return NewShowToUserTool(ReadConfig{}) },
 		func() Tool { return NewGlobTool(GlobConfig{}) },
 		func() Tool { return NewRgTool(RgConfig{}) },
 		func() Tool { return NewApplyPatchTool(services.Changes) },

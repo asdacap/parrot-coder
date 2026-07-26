@@ -101,7 +101,7 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 			t.Fatalf("%s permission choices = %#v, want %#v", id, got, want)
 		}
 	}
-	for _, id := range []string{"read", "show", "rg", "apply_patch"} {
+	for _, id := range []string{"read", "show_to_user", "rg", "apply_patch"} {
 		raw := json.RawMessage(`{"path":"missing"}`)
 		if id == "apply_patch" {
 			raw = json.RawMessage(`{"patchText":"missing\n<<<<<<< SEARCH\na\n=======\nb\n>>>>>>> REPLACE"}`)
@@ -118,7 +118,7 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 	definitions := providers.Definitions()
 	want := []string{
 		"agent_send", "agent_spawn", "apply_patch", "create_goal", "exec_command", "get_goal", "git_diff", "glob", "question",
-		"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take", "read", "request_write_permission", "rg", "set_config", "show", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "update_goal", "wait_agent", "wait_process", "web_fetch", "write_stdin",
+		"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take", "read", "request_write_permission", "rg", "set_config", "show_to_user", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "update_goal", "wait_agent", "wait_process", "web_fetch", "write_stdin",
 	}
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions = %#v", definitions)
