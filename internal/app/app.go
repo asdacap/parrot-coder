@@ -555,7 +555,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 				return v1.Compaction{}, httpapi.ErrConflict
 			}
 		}
-		selected, err := sessions.Get(ctx, sessionID)
+		selected, err := sessions.GetSession(sessionID).Get(ctx)
 		if err != nil {
 			if errors.Is(err, session.ErrNotFound) {
 				return v1.Compaction{}, httpapi.ErrNotFound
@@ -891,7 +891,7 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, prefix) && strings.HasSuffix(r.URL.Path, "/events") && r.URL.Query().Get("after") == "" {
 		id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, prefix), "/events")
 		if id != "" && !strings.Contains(id, "/") {
-			latest, err := h.sessions.LatestSequence(r.Context(), id)
+			latest, err := h.sessions.GetSession(id).LatestSequence(r.Context())
 			if err == nil && latest >= 1000 {
 				clone := r.Clone(r.Context())
 				query := clone.URL.Query()
@@ -907,7 +907,7 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := h.sessions.Get(r.Context(), id); err != nil {
+		if _, err := h.sessions.GetSession(id).Get(r.Context()); err != nil {
 			http.NotFound(w, r)
 			return
 		}

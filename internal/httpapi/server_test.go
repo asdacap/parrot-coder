@@ -277,7 +277,7 @@ func TestChildCreationMapsAndValidatesParent(t *testing.T) {
 	if err != nil || child.ParentSessionID != parent.ID {
 		t.Fatalf("CreateSession child = %#v, %v", child, err)
 	}
-	loaded, err := sessions.Get(ctx, child.ID)
+	loaded, err := sessions.GetSession(child.ID).Get(ctx)
 	if err != nil || loaded.ParentSessionID != parent.ID {
 		t.Fatalf("stored child = %#v, %v", loaded, err)
 	}
@@ -478,7 +478,7 @@ func TestSelectionRejectsActiveSession(t *testing.T) {
 	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
 	_, err = apiClient.UpdateSessionSelection(context.Background(), created.ID, v1.UpdateSessionSelectionRequest{Agent: "plan"})
 	assertAPIProblem(t, err, http.StatusConflict, "session_active")
-	loaded, err := sessions.Get(context.Background(), created.ID)
+	loaded, err := sessions.GetSession(created.ID).Get(context.Background())
 	if err != nil || loaded.Agent != "build" {
 		t.Fatalf("selection changed while active = %#v, %v", loaded, err)
 	}
@@ -534,7 +534,7 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessions.Admit(ctx, created.ID, session.AdmitParams{MessageID: "msg_steer", Content: "queued", Delivery: session.DeliverySteer}); err != nil {
+	if _, err := sessions.GetSession(created.ID).Admit(ctx, session.AdmitParams{MessageID: "msg_steer", Content: "queued", Delivery: session.DeliverySteer}); err != nil {
 		t.Fatal(err)
 	}
 

@@ -120,6 +120,15 @@ type Service struct {
 	pid      int
 }
 
+type userSession struct {
+	*Service
+	sessionID string
+}
+
+func (s *Service) GetSession(sessionID string) UserSession {
+	return &userSession{Service: s, sessionID: sessionID}
+}
+
 func NewService(sessions *store.Registry, events *event.Repository) *Service {
 	return &Service{sessions: sessions, events: events, pid: os.Getpid()}
 }
@@ -231,8 +240,8 @@ func (s *Service) publish(item AgentSessionDto) error {
 
 // republish refreshes the index entry from the session database. Callers use it
 // after a commit that changed indexed fields.
-func (s *Service) republish(ctx context.Context, sessionID string) error {
-	item, err := s.Get(ctx, sessionID)
+func (s *userSession) republish(ctx context.Context) error {
+	item, err := s.Get(ctx)
 	if err != nil {
 		return err
 	}
@@ -277,7 +286,7 @@ func (s *Service) claimInteractiveOnce(ctx context.Context, owner InteractiveOwn
 	current, bound := chain.Current()
 
 	if bound && !forceNew {
-		item, err := s.Get(ctx, current.SessionID)
+		item, err := s.GetSession(current.SessionID).Get(ctx)
 		switch {
 		case err == nil && current.PID == owner.PID:
 			return InteractiveClaim{Session: item, Disposition: ClaimExisting}, nil
@@ -315,8 +324,8 @@ func (s *Service) claimInteractiveOnce(ctx context.Context, owner InteractiveOwn
 	return InteractiveClaim{Session: item, Disposition: ClaimCreated}, nil
 }
 
-func (s *Service) Get(ctx context.Context, sessionID string) (AgentSessionDto, error) {
-	db, err := s.sessions.Session(ctx, sessionID)
+func (s *userSession) Get(ctx context.Context) (AgentSessionDto, error) {
+	db, err := s.sessions.Session(ctx, s.sessionID)
 	if errors.Is(err, store.ErrNoSession) {
 		return AgentSessionDto{}, ErrNotFound
 	}
@@ -325,7 +334,7 @@ func (s *Service) Get(ctx context.Context, sessionID string) (AgentSessionDto, e
 	}
 	return scanSession(db.SQL().QueryRowContext(ctx, `
 		SELECT id, parent_session_id, name, project_id, project_root, title, selected_agent, selected_provider, selected_model, selected_variant, created_at, updated_at
-        FROM session WHERE id = ?`, sessionID))
+        FROM session WHERE id = ?`, s.sessionID))
 }
 
 // List reports every session on every machine sharing this state directory, by
@@ -374,15 +383,15 @@ func (s *Service) LatestSelection(ctx context.Context, projectID string) (Select
 // Delete removes a session directory. The old shared table relied on cascading
 // deletes that its own RESTRICT constraints could block; a session now owns its
 // file, so deleting it is removing that file.
-func (s *Service) Delete(ctx context.Context, sessionID string) error {
-	err := s.sessions.Remove(sessionID)
+func (s *userSession) Delete(ctx context.Context) error {
+	err := s.sessions.Remove(s.sessionID)
 	if errors.Is(err, store.ErrNoSession) {
 		return ErrNotFound
 	}
 	return err
 }
 
-func (s *Service) Admit(ctx context.Context, sessionID string, params AdmitParams) (Admission, error) {
+func (s *userSession) Admit(ctx context.Context, params AdmitParams) (Admission, error) {
 	if params.MessageID == "" {
 		return Admission{}, errors.New("session: message ID is required")
 	}
@@ -404,10 +413,10 @@ func (s *Service) Admit(ctx context.Context, sessionID string, params AdmitParam
 	}
 
 	var admitted Input
-	appended, err := s.events.Append(ctx, sessionID,
+	appended, err := s.events.Append(ctx, s.sessionID,
 		[]event.NewEvent{{Type: v1.EventSessionInputAdmitted, Data: payload}},
 		func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-			existing, err := getInput(ctx, tx, sessionID, params.MessageID)
+			existing, err := getInput(ctx, tx, s.sessionID, params.MessageID)
 			if err == nil {
 				if existing.Content != params.Content || existing.Delivery != params.Delivery {
 					return ErrIdempotencyConflict
@@ -423,17 +432,17 @@ func (s *Service) Admit(ctx context.Context, sessionID string, params AdmitParam
                     id, session_id, message_id, content, delivery, status,
                     admitted_sequence, created_at
                 ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)`,
-				inputID, sessionID, params.MessageID, params.Content, params.Delivery,
+				inputID, s.sessionID, params.MessageID, params.Content, params.Delivery,
 				events[0].Sequence, formatTime(now))
 			if err != nil {
 				return fmt.Errorf("insert input: %w", err)
 			}
 			if _, err := tx.ExecContext(ctx,
-				`UPDATE session SET updated_at = ? WHERE id = ?`, formatTime(now), sessionID); err != nil {
+				`UPDATE session SET updated_at = ? WHERE id = ?`, formatTime(now), s.sessionID); err != nil {
 				return fmt.Errorf("touch session: %w", err)
 			}
 			admitted = Input{
-				ID: inputID, SessionID: sessionID, MessageID: params.MessageID,
+				ID: inputID, SessionID: s.sessionID, MessageID: params.MessageID,
 				Content: params.Content, Delivery: params.Delivery, Status: "pending",
 				AdmittedSequence: events[0].Sequence, CreatedAt: now,
 			}
@@ -443,13 +452,13 @@ func (s *Service) Admit(ctx context.Context, sessionID string, params AdmitParam
 		if len(appended) != 1 {
 			return Admission{}, errors.New("session: admission did not append one event")
 		}
-		if err := s.republish(ctx, sessionID); err != nil {
+		if err := s.republish(ctx); err != nil {
 			return Admission{}, err
 		}
 		return Admission{Input: admitted, Created: true}, nil
 	}
 	if errors.Is(err, errAlreadyAdmitted) {
-		existing, loadErr := s.inputByMessageID(ctx, sessionID, params.MessageID)
+		existing, loadErr := s.inputByMessageID(ctx, params.MessageID)
 		if loadErr != nil {
 			return Admission{}, loadErr
 		}
@@ -459,42 +468,42 @@ func (s *Service) Admit(ctx context.Context, sessionID string, params AdmitParam
 }
 
 // PromoteSteers promotes all pending steer inputs admitted through cutoff.
-func (s *Service) PromoteSteers(ctx context.Context, sessionID string, cutoff int64) ([]Message, error) {
-	return s.promote(ctx, sessionID, DeliverySteer, cutoff)
+func (s *userSession) PromoteSteers(ctx context.Context, cutoff int64) ([]Message, error) {
+	return s.promote(ctx, DeliverySteer, cutoff)
 }
 
 // PromoteNextQueue promotes at most one pending queue input.
-func (s *Service) PromoteNextQueue(ctx context.Context, sessionID string) ([]Message, error) {
-	return s.promote(ctx, sessionID, DeliveryQueue, -1)
+func (s *userSession) PromoteNextQueue(ctx context.Context) ([]Message, error) {
+	return s.promote(ctx, DeliveryQueue, -1)
 }
 
 // HasPendingInputs reports whether the session has any inputs that have been
 // admitted but not yet promoted. The interrupt path uses this to decide
 // whether to automatically resume the drain so queued steers are processed
 // without the user re-prompting.
-func (s *Service) HasPendingInputs(ctx context.Context, sessionID string) (bool, error) {
-	db, err := s.sessions.Session(ctx, sessionID)
+func (s *userSession) HasPendingInputs(ctx context.Context) (bool, error) {
+	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return false, err
 	}
 	var count int
 	if err := db.SQL().QueryRowContext(ctx, `
-        SELECT COUNT(*) FROM session_input WHERE session_id = ? AND status = 'pending'`, sessionID).Scan(&count); err != nil {
+        SELECT COUNT(*) FROM session_input WHERE session_id = ? AND status = 'pending'`, s.sessionID).Scan(&count); err != nil {
 		return false, fmt.Errorf("session: count pending inputs: %w", err)
 	}
 	return count > 0, nil
 }
 
-func (s *Service) promote(ctx context.Context, sessionID string, delivery Delivery, cutoff int64) ([]Message, error) {
+func (s *userSession) promote(ctx context.Context, delivery Delivery, cutoff int64) ([]Message, error) {
 	var promoted []Input
 	var messages []Message
-	_, err := s.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, next int64) ([]event.NewEvent, event.Projector, error) {
+	_, err := s.events.AppendBuilt(ctx, s.sessionID, func(ctx context.Context, tx *sql.Tx, next int64) ([]event.NewEvent, event.Projector, error) {
 		query := `
             SELECT id, session_id, message_id, content, delivery, status,
                    admitted_sequence, promoted_sequence, created_at, promoted_at
             FROM session_input
             WHERE session_id = ? AND delivery = ? AND status = 'pending'`
-		args := []any{sessionID, delivery}
+		args := []any{s.sessionID, delivery}
 		if delivery == DeliverySteer {
 			query += ` AND admitted_sequence <= ?`
 			args = append(args, cutoff)
@@ -553,18 +562,18 @@ func (s *Service) promote(ctx context.Context, sessionID string, delivery Delive
 				_, err = tx.ExecContext(ctx, `
                     INSERT INTO session_message(id, session_id, role, content, input_id, sequence, created_at)
                     VALUES (?, ?, 'user', ?, ?, ?, ?)`,
-					input.MessageID, sessionID, input.Content, input.ID,
+					input.MessageID, s.sessionID, input.Content, input.ID,
 					eventItem.Sequence, formatTime(eventItem.CreatedAt))
 				if err != nil {
 					return fmt.Errorf("project user message: %w", err)
 				}
 				messages[i] = Message{
-					ID: input.MessageID, SessionID: sessionID, Role: "user", Content: input.Content,
+					ID: input.MessageID, SessionID: s.sessionID, Role: "user", Content: input.Content,
 					InputID: input.ID, Sequence: eventItem.Sequence, CreatedAt: eventItem.CreatedAt,
 				}
 			}
 			_, err := tx.ExecContext(ctx, `UPDATE session SET updated_at = ? WHERE id = ?`,
-				formatTime(events[len(events)-1].CreatedAt), sessionID)
+				formatTime(events[len(events)-1].CreatedAt), s.sessionID)
 			return err
 		}
 		return pending, project, nil
@@ -573,22 +582,22 @@ func (s *Service) promote(ctx context.Context, sessionID string, delivery Delive
 		return nil, err
 	}
 	if len(messages) > 0 {
-		if err := s.republish(ctx, sessionID); err != nil {
+		if err := s.republish(ctx); err != nil {
 			return nil, err
 		}
 	}
 	return messages, nil
 }
 
-func (s *Service) ListMessages(ctx context.Context, sessionID string) ([]Message, error) {
-	db, err := s.sessions.Session(ctx, sessionID)
+func (s *userSession) ListMessages(ctx context.Context) ([]Message, error) {
+	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return nil, err
 	}
 	rows, err := db.SQL().QueryContext(ctx, `
 		SELECT id, session_id, role, content, parts_json, status, finish_reason, error_text,
 		       usage_json, COALESCE(input_id, ''), sequence, created_at
-        FROM session_message WHERE session_id = ? ORDER BY sequence`, sessionID)
+        FROM session_message WHERE session_id = ? ORDER BY sequence`, s.sessionID)
 	if err != nil {
 		return nil, fmt.Errorf("session: list messages: %w", err)
 	}
@@ -617,12 +626,12 @@ func (s *Service) ListMessages(ctx context.Context, sessionID string) ([]Message
 	return result, nil
 }
 
-func (s *Service) inputByMessageID(ctx context.Context, sessionID, messageID string) (Input, error) {
-	db, err := s.sessions.Session(ctx, sessionID)
+func (s *userSession) inputByMessageID(ctx context.Context, messageID string) (Input, error) {
+	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return Input{}, err
 	}
-	return getInput(ctx, db.SQL(), sessionID, messageID)
+	return getInput(ctx, db.SQL(), s.sessionID, messageID)
 }
 
 type queryRower interface {

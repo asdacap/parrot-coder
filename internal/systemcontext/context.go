@@ -112,10 +112,7 @@ func (r *Registry) Observe(ctx context.Context) (Snapshot, error) {
 }
 
 type EpochStore interface {
-	CurrentContextEpoch(context.Context, string) (session.ContextEpoch, error)
-	InitializeContext(context.Context, string, string, json.RawMessage, int64) (session.ContextEpoch, error)
-	ReconcileContext(context.Context, string, string, json.RawMessage) error
-	ReplaceContext(context.Context, string, string, json.RawMessage, int64) (session.ContextEpoch, error)
+	GetSession(string) session.UserSession
 }
 
 type Manager struct {
@@ -151,11 +148,12 @@ func (m Manager) Initialize(ctx context.Context, sessionID string, cutoff int64)
 	if err != nil {
 		return session.ContextEpoch{}, err
 	}
-	return m.Store.InitializeContext(ctx, sessionID, full.Baseline, full.Sources, cutoff)
+	return m.Store.GetSession(sessionID).InitializeContext(ctx, full.Baseline, full.Sources, cutoff)
 }
 
 func (m Manager) Reconcile(ctx context.Context, sessionID string) (session.ContextEpoch, error) {
-	epoch, err := m.Store.CurrentContextEpoch(ctx, sessionID)
+	userSession := m.Store.GetSession(sessionID)
+	epoch, err := userSession.CurrentContextEpoch(ctx)
 	if err != nil {
 		return session.ContextEpoch{}, err
 	}
@@ -210,7 +208,7 @@ func (m Manager) Reconcile(ctx context.Context, sessionID string) (session.Conte
 	if bytes.Equal(raw, epoch.Sources) {
 		return epoch, observeErr
 	}
-	if err := m.Store.ReconcileContext(ctx, sessionID, strings.Join(changes, "\n\n"), raw); err != nil {
+	if err := userSession.ReconcileContext(ctx, strings.Join(changes, "\n\n"), raw); err != nil {
 		return session.ContextEpoch{}, err
 	}
 	epoch.Sources = raw
@@ -222,7 +220,7 @@ func (m Manager) Replace(ctx context.Context, sessionID, baseline string, cutoff
 	if err != nil {
 		return session.ContextEpoch{}, err
 	}
-	return m.Store.ReplaceContext(ctx, sessionID, baseline, full.Sources, cutoff)
+	return m.Store.GetSession(sessionID).ReplaceContext(ctx, baseline, full.Sources, cutoff)
 }
 
 func completeSnapshot(snapshot Snapshot, observeErr error) error {

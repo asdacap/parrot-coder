@@ -206,7 +206,7 @@ func (b *DomainBackend) ClaimSession(ctx context.Context, request v1.ClaimSessio
 }
 
 func (b *DomainBackend) GetSession(ctx context.Context, id string) (v1.Session, error) {
-	item, err := b.Sessions.Get(ctx, id)
+	item, err := b.Sessions.GetSession(id).Get(ctx)
 	if errors.Is(err, session.ErrNotFound) {
 		return v1.Session{}, ErrNotFound
 	}
@@ -235,7 +235,7 @@ func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, r
 			patch.Model = request.Model
 		}
 	}
-	item, err := b.Sessions.UpdateSelection(ctx, id, patch, b.validateSelection)
+	item, err := b.Sessions.GetSession(id).UpdateSelection(ctx, patch, b.validateSelection)
 	if errors.Is(err, session.ErrNotFound) {
 		return v1.SessionSelection{}, ErrNotFound
 	}
@@ -271,7 +271,7 @@ func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
 	if cleanupErr != nil {
 		return cleanupErr
 	}
-	err := b.Sessions.Delete(ctx, id)
+	err := b.Sessions.GetSession(id).Delete(ctx)
 	if errors.Is(err, session.ErrNotFound) {
 		return ErrNotFound
 	}
@@ -288,7 +288,7 @@ func (b *DomainBackend) ListMessages(ctx context.Context, id string) (v1.Message
 	if _, err := b.GetSession(ctx, id); err != nil {
 		return v1.MessageList{}, err
 	}
-	items, err := b.Sessions.ListMessages(ctx, id)
+	items, err := b.Sessions.GetSession(id).ListMessages(ctx)
 	if err != nil {
 		return v1.MessageList{}, err
 	}
@@ -332,7 +332,7 @@ func (b *DomainBackend) AdmitPrompt(ctx context.Context, id string, request v1.P
 	if selected.Agent == "" || selected.Provider == "" || selected.Model == "" {
 		return v1.PromptAccepted{}, ErrModelRequired
 	}
-	admission, err := b.Sessions.Admit(ctx, id, session.AdmitParams{MessageID: request.MessageID, Content: request.Content, Delivery: session.Delivery(request.Delivery)})
+	admission, err := b.Sessions.GetSession(id).Admit(ctx, session.AdmitParams{MessageID: request.MessageID, Content: request.Content, Delivery: session.Delivery(request.Delivery)})
 	if errors.Is(err, session.ErrInvalidDelivery) {
 		return v1.PromptAccepted{}, ErrInvalid
 	}
@@ -384,7 +384,7 @@ func (b *DomainBackend) Interrupt(ctx context.Context, id string) error {
 	if b.AgentSessions != nil && b.Sessions != nil {
 		wakeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if pending, pendingErr := b.Sessions.HasPendingInputs(wakeCtx, id); pendingErr == nil && pending {
+		if pending, pendingErr := b.Sessions.GetSession(id).HasPendingInputs(wakeCtx); pendingErr == nil && pending {
 			b.Wake(id)
 		}
 	}
@@ -671,7 +671,7 @@ func (b *DomainBackend) ListAgents(context.Context) (v1.AgentList, error) {
 }
 
 func (b *DomainBackend) CompleteTurn(ctx context.Context, sessionID, messageID string) (v1.TurnCompletion, error) {
-	selected, err := b.Sessions.Get(ctx, sessionID)
+	selected, err := b.Sessions.GetSession(sessionID).Get(ctx)
 	if err != nil {
 		return v1.TurnCompletion{}, err
 	}

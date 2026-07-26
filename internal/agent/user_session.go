@@ -178,7 +178,7 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	if parent == nil || parent.ID() == "" {
 		return nil, errors.New("agent: child parent session is required")
 	}
-	selectedParent, err := r.config.Sessions.Get(ctx, parent.ID())
+	selectedParent, err := r.config.Sessions.GetSession(parent.ID()).Get(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent: child parent session: %w", err)
 	}
@@ -231,7 +231,7 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	r.dtos[child.ID] = child
 	observers := append([]ChildCreatedObserver(nil), r.childObservers...)
 	r.mu.Unlock()
-	runtime, err := r.bind(child, parent, func() error { return r.config.Sessions.Delete(ctx, child.ID) })
+	runtime, err := r.bind(child, parent, func() error { return r.config.Sessions.GetSession(child.ID).Delete(ctx) })
 	if err != nil {
 		if _, retained := r.ChildRelation(child.ID); retained {
 			for _, observer := range observers {
@@ -344,7 +344,7 @@ func (r *agentSessionRepository) ForgetChild(sessionID string) error {
 // retained if durable deletion fails, so a persisted child never becomes
 // unreachable from its parent.
 func (r *agentSessionRepository) DiscardChild(ctx context.Context, sessionID string) error {
-	if err := r.config.Sessions.Delete(ctx, sessionID); err != nil {
+	if err := r.config.Sessions.GetSession(sessionID).Delete(ctx); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -371,7 +371,7 @@ func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 	r.mu.Unlock()
 
 	if !known && r.config.Sessions != nil {
-		loaded, err := r.config.Sessions.Get(context.Background(), sessionID)
+		loaded, err := r.config.Sessions.GetSession(sessionID).Get(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("agent: get session %s: %w", sessionID, err)
 		}

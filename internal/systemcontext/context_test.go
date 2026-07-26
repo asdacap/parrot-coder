@@ -35,29 +35,39 @@ type memoryEpochStore struct {
 	lastText        string
 }
 
-func (s *memoryEpochStore) CurrentContextEpoch(context.Context, string) (session.ContextEpoch, error) {
-	if s.epoch.ID == "" {
+type memoryUserSession struct {
+	session.UserSession
+	store     *memoryEpochStore
+	sessionID string
+}
+
+func (s *memoryEpochStore) GetSession(sessionID string) session.UserSession {
+	return &memoryUserSession{store: s, sessionID: sessionID}
+}
+
+func (s *memoryUserSession) CurrentContextEpoch(context.Context) (session.ContextEpoch, error) {
+	if s.store.epoch.ID == "" {
 		return session.ContextEpoch{}, session.ErrNotFound
 	}
-	return s.epoch, nil
+	return s.store.epoch, nil
 }
 
-func (s *memoryEpochStore) InitializeContext(_ context.Context, sessionID, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
-	s.initializations++
-	s.epoch = session.ContextEpoch{ID: "ctx", SessionID: sessionID, Baseline: baseline, Sources: append(json.RawMessage(nil), sources...), HistoryCutoff: cutoff}
-	return s.epoch, nil
+func (s *memoryUserSession) InitializeContext(_ context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
+	s.store.initializations++
+	s.store.epoch = session.ContextEpoch{ID: "ctx", SessionID: s.sessionID, Baseline: baseline, Sources: append(json.RawMessage(nil), sources...), HistoryCutoff: cutoff}
+	return s.store.epoch, nil
 }
 
-func (s *memoryEpochStore) ReconcileContext(_ context.Context, _ string, text string, sources json.RawMessage) error {
-	s.reconciliations++
-	s.lastText = text
-	s.epoch.Sources = append(json.RawMessage(nil), sources...)
+func (s *memoryUserSession) ReconcileContext(_ context.Context, text string, sources json.RawMessage) error {
+	s.store.reconciliations++
+	s.store.lastText = text
+	s.store.epoch.Sources = append(json.RawMessage(nil), sources...)
 	return nil
 }
 
-func (s *memoryEpochStore) ReplaceContext(_ context.Context, sessionID, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
-	s.epoch = session.ContextEpoch{ID: "replacement", SessionID: sessionID, Baseline: baseline, Sources: append(json.RawMessage(nil), sources...), HistoryCutoff: cutoff}
-	return s.epoch, nil
+func (s *memoryUserSession) ReplaceContext(_ context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
+	s.store.epoch = session.ContextEpoch{ID: "replacement", SessionID: s.sessionID, Baseline: baseline, Sources: append(json.RawMessage(nil), sources...), HistoryCutoff: cutoff}
+	return s.store.epoch, nil
 }
 
 func TestRegistryRejectsDuplicatesAndRendersStableKeyOrder(t *testing.T) {
@@ -231,14 +241,14 @@ func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
 	if _, err := manager.Reconcile(ctx, created.ID); err == nil {
 		t.Fatal("Reconcile succeeded despite projection failure")
 	}
-	current, err := sessions.CurrentContextEpoch(ctx, created.ID)
+	current, err := sessions.GetSession(created.ID).CurrentContextEpoch(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !jsonEqual(current.Sources, initial.Sources) {
 		t.Fatalf("snapshot advanced without message: %s", current.Sources)
 	}
-	messages, _ := sessions.ListMessages(ctx, created.ID)
+	messages, _ := sessions.GetSession(created.ID).ListMessages(ctx)
 	eventsAfter, _ := repository.List(ctx, created.ID, -1, 100)
 	if len(messages) != 0 || len(eventsAfter) != len(eventsBefore) {
 		t.Fatalf("failed transaction leaked message/event: messages=%d events=%d/%d", len(messages), len(eventsAfter), len(eventsBefore))
@@ -249,8 +259,8 @@ func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
 	if _, err := manager.Reconcile(ctx, created.ID); err != nil {
 		t.Fatal(err)
 	}
-	current, _ = sessions.CurrentContextEpoch(ctx, created.ID)
-	messages, _ = sessions.ListMessages(ctx, created.ID)
+	current, _ = sessions.GetSession(created.ID).CurrentContextEpoch(ctx)
+	messages, _ = sessions.GetSession(created.ID).ListMessages(ctx)
 	eventsAfter, _ = repository.List(ctx, created.ID, -1, 100)
 	if jsonEqual(current.Sources, initial.Sources) || len(messages) != 1 || messages[0].Content != "two update" || len(eventsAfter) != len(eventsBefore)+1 {
 		t.Fatalf("atomic reconciliation missing: snapshot=%s messages=%#v events=%d", current.Sources, messages, len(eventsAfter))

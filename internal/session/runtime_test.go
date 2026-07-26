@@ -14,18 +14,18 @@ import (
 
 func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 	ctx, _, repository, service, sessionID := newService(t)
-	if err := service.SetSelection(ctx, sessionID, session.Selection{Agent: "build", Provider: "local", Model: "code"}); err != nil {
+	if err := service.GetSession(sessionID).SetSelection(ctx, session.Selection{Agent: "build", Provider: "local", Model: "code"}); err != nil {
 		t.Fatal(err)
 	}
 	assertPending := func(want bool) {
 		t.Helper()
-		got, err := service.StatusPromptPending(ctx, sessionID)
+		got, err := service.GetSession(sessionID).StatusPromptPending(ctx)
 		if err != nil || got != want {
 			t.Fatalf("StatusPromptPending() = %v, %v; want %v", got, err, want)
 		}
 	}
 	assertPending(true)
-	statusMessage, err := service.AppendStatusPrompt(ctx, sessionID, "build status")
+	statusMessage, err := service.GetSession(sessionID).AppendStatusPrompt(ctx, "build status")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -33,37 +33,37 @@ func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 		t.Fatalf("status message = %#v", statusMessage)
 	}
 	assertPending(false)
-	interrupted, err := service.StartAssistant(ctx, sessionID)
+	interrupted, err := service.GetSession(sessionID).StartAssistant(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.FinishAssistant(ctx, sessionID, interrupted.ID, session.AssistantFinal{Status: "interrupted", Error: "cancelled"}); err != nil {
+	if err := service.GetSession(sessionID).FinishAssistant(ctx, interrupted.ID, session.AssistantFinal{Status: "interrupted", Error: "cancelled"}); err != nil {
 		t.Fatal(err)
 	}
 	assertPending(false)
 	variant := "high"
-	if _, err := service.UpdateSelection(ctx, sessionID, session.SelectionPatch{Model: "other", Variant: &variant}, nil); err != nil {
+	if _, err := service.GetSession(sessionID).UpdateSelection(ctx, session.SelectionPatch{Model: "other", Variant: &variant}, nil); err != nil {
 		t.Fatal(err)
 	}
 	assertPending(false)
-	if _, err := service.UpdateSelection(ctx, sessionID, session.SelectionPatch{Agent: "plan"}, nil); err != nil {
+	if _, err := service.GetSession(sessionID).UpdateSelection(ctx, session.SelectionPatch{Agent: "plan"}, nil); err != nil {
 		t.Fatal(err)
 	}
 	assertPending(true)
-	if _, err := service.AppendStatusPrompt(ctx, sessionID, "plan status"); err != nil {
+	if _, err := service.GetSession(sessionID).AppendStatusPrompt(ctx, "plan status"); err != nil {
 		t.Fatal(err)
 	}
 	assertPending(false)
-	interrupted, err = service.StartAssistant(ctx, sessionID)
+	interrupted, err = service.GetSession(sessionID).StartAssistant(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.FinishAssistant(ctx, sessionID, interrupted.ID, session.AssistantFinal{Status: "interrupted", Error: "cancelled"}); err != nil {
+	if err := service.GetSession(sessionID).FinishAssistant(ctx, interrupted.ID, session.AssistantFinal{Status: "interrupted", Error: "cancelled"}); err != nil {
 		t.Fatal(err)
 	}
 	assertPending(false)
 
-	messages, err := service.ListModelHistory(ctx, sessionID, 0)
+	messages, err := service.GetSession(sessionID).ListModelHistory(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,18 +102,18 @@ func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 func TestModelHistoryCutoffIsInclusive(t *testing.T) {
 	ctx, _, _, service, sessionID := newService(t)
 	for _, text := range []string{"zero", "one", "two"} {
-		if _, err := service.AppendMessage(ctx, sessionID, protocol.Message{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: text}}}); err != nil {
+		if _, err := service.GetSession(sessionID).AppendMessage(ctx, protocol.Message{Role: protocol.RoleUser, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: text}}}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	history, err := service.ListModelHistory(ctx, sessionID, 1)
+	history, err := service.GetSession(sessionID).ListModelHistory(ctx, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(history) != 2 || history[0].Content[0].Text != "one" || history[1].Content[0].Text != "two" {
 		t.Fatalf("history at cutoff 1 = %#v", history)
 	}
-	history, err = service.ListModelHistory(ctx, sessionID, 3)
+	history, err = service.GetSession(sessionID).ListModelHistory(ctx, 3)
 	if err != nil || len(history) != 0 {
 		t.Fatalf("history after end = %#v, %v", history, err)
 	}
@@ -126,7 +126,7 @@ func TestContextEventsReportLoadedAgentsFiles(t *testing.T) {
 		"agents:project-0000":{"available":true,"value":"root","path":"/work/AGENTS.md"},
 		"runtime:date":{"available":true,"value":"2026-07-16"}
 	}`)
-	if _, err := service.InitializeContext(ctx, sessionID, "baseline", sources, 0); err != nil {
+	if _, err := service.GetSession(sessionID).InitializeContext(ctx, "baseline", sources, 0); err != nil {
 		t.Fatal(err)
 	}
 	events, err := repository.List(ctx, sessionID, -1, 100)
@@ -149,7 +149,7 @@ func TestContextEventsReportLoadedAgentsFiles(t *testing.T) {
 		"agents:project-0000":{"available":true,"value":"changed","path":"/work/AGENTS.md"},
 		"runtime:date":{"available":true,"value":"2026-07-16"}
 	}`)
-	if err := service.ReconcileContext(ctx, sessionID, "changed", changed); err != nil {
+	if err := service.GetSession(sessionID).ReconcileContext(ctx, "changed", changed); err != nil {
 		t.Fatal(err)
 	}
 	events, err = repository.List(ctx, sessionID, -1, 100)
@@ -169,14 +169,14 @@ func TestContextEventsReportLoadedAgentsFiles(t *testing.T) {
 
 func TestModelHistoryOmitsContentlessTerminalAssistant(t *testing.T) {
 	ctx, _, _, service, sessionID := newService(t)
-	assistant, err := service.StartAssistant(ctx, sessionID)
+	assistant, err := service.GetSession(sessionID).StartAssistant(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := service.FinishAssistant(ctx, sessionID, assistant.ID, session.AssistantFinal{Status: "error", FinishReason: protocol.FinishError, Error: "context overflow"}); err != nil {
+	if err := service.GetSession(sessionID).FinishAssistant(ctx, assistant.ID, session.AssistantFinal{Status: "error", FinishReason: protocol.FinishError, Error: "context overflow"}); err != nil {
 		t.Fatal(err)
 	}
-	history, err := service.ListModelHistory(ctx, sessionID, 0)
+	history, err := service.GetSession(sessionID).ListModelHistory(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,22 +187,22 @@ func TestModelHistoryOmitsContentlessTerminalAssistant(t *testing.T) {
 
 func TestModelHistoryRepairsInterruptedToolWithoutOutput(t *testing.T) {
 	ctx, _, _, service, sessionID := newService(t)
-	assistant, err := service.StartAssistant(ctx, sessionID)
+	assistant, err := service.GetSession(sessionID).StartAssistant(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	call := protocol.ToolCall{ID: "call", Name: "shell", Input: json.RawMessage(`{}`)}
-	if err := service.FinishAssistant(ctx, sessionID, assistant.ID, session.AssistantFinal{Status: "complete", FinishReason: protocol.FinishToolCalls, Parts: []protocol.ContentPart{{Type: protocol.ContentToolCall, ToolCall: &call}}}); err != nil {
+	if err := service.GetSession(sessionID).FinishAssistant(ctx, assistant.ID, session.AssistantFinal{Status: "complete", FinishReason: protocol.FinishToolCalls, Parts: []protocol.ContentPart{{Type: protocol.ContentToolCall, ToolCall: &call}}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.AddToolCall(ctx, sessionID, assistant.ID, call); err != nil {
+	if _, err := service.GetSession(sessionID).AddToolCall(ctx, assistant.ID, call); err != nil {
 		t.Fatal(err)
 	}
-	if err := service.SettleTool(ctx, sessionID, call.ID, "interrupted", "", "context canceled"); err != nil {
+	if err := service.GetSession(sessionID).SettleTool(ctx, call.ID, "interrupted", "", "context canceled"); err != nil {
 		t.Fatal(err)
 	}
 
-	history, err := service.ListModelHistory(ctx, sessionID, 0)
+	history, err := service.GetSession(sessionID).ListModelHistory(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,16 +217,16 @@ func TestModelHistoryRepairsInterruptedToolWithoutOutput(t *testing.T) {
 
 func TestModelHistoryDropsUnregisteredToolCall(t *testing.T) {
 	ctx, _, _, service, sessionID := newService(t)
-	assistant, err := service.StartAssistant(ctx, sessionID)
+	assistant, err := service.GetSession(sessionID).StartAssistant(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	call := protocol.ToolCall{ID: "orphan", Name: "shell", Input: json.RawMessage(`{}`)}
-	if err := service.FinishAssistant(ctx, sessionID, assistant.ID, session.AssistantFinal{Status: "interrupted", FinishReason: protocol.FinishError, Parts: []protocol.ContentPart{{Type: protocol.ContentText, Text: "partial"}, {Type: protocol.ContentToolCall, ToolCall: &call}}}); err != nil {
+	if err := service.GetSession(sessionID).FinishAssistant(ctx, assistant.ID, session.AssistantFinal{Status: "interrupted", FinishReason: protocol.FinishError, Parts: []protocol.ContentPart{{Type: protocol.ContentText, Text: "partial"}, {Type: protocol.ContentToolCall, ToolCall: &call}}}); err != nil {
 		t.Fatal(err)
 	}
 
-	history, err := service.ListModelHistory(ctx, sessionID, 0)
+	history, err := service.GetSession(sessionID).ListModelHistory(ctx, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -245,7 +245,7 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	assistant, err := service.StartAssistant(ctx, created.ID)
+	assistant, err := service.GetSession(created.ID).StartAssistant(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -254,11 +254,11 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 		{ID: "running-call", Name: "running-tool", Input: json.RawMessage(`{}`)},
 	}
 	for _, call := range calls {
-		if _, err := service.AddToolCall(ctx, created.ID, assistant.ID, call); err != nil {
+		if _, err := service.GetSession(created.ID).AddToolCall(ctx, assistant.ID, call); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := service.StartTool(ctx, created.ID, calls[1].ID); err != nil {
+	if err := service.GetSession(created.ID).StartTool(ctx, calls[1].ID); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Close(); err != nil {
@@ -270,10 +270,10 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	repository = event.NewRepository(db)
 	service = session.NewService(db, repository)
-	if err := service.RepairActive(ctx, created.ID); err != nil {
+	if err := service.GetSession(created.ID).RepairActive(ctx); err != nil {
 		t.Fatal(err)
 	}
-	messages, err := service.ListMessages(ctx, created.ID)
+	messages, err := service.GetSession(created.ID).ListMessages(ctx)
 	if err != nil || len(messages) != 1 || messages[0].Status != "interrupted" {
 		t.Fatalf("repaired messages = %#v, %v", messages, err)
 	}
@@ -308,7 +308,7 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 			t.Fatalf("interrupted event for %s = %#v", call.ID, payload)
 		}
 	}
-	if err := service.RepairActive(ctx, created.ID); err != nil {
+	if err := service.GetSession(created.ID).RepairActive(ctx); err != nil {
 		t.Fatal(err)
 	}
 	eventsAfter, _ := repository.List(ctx, created.ID, -1, 100)
