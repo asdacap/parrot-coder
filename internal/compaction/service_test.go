@@ -60,7 +60,7 @@ func newHarness(t *testing.T, baseline string, messages int) *harness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessions.InitializeContext(ctx, created.ID, baseline, json.RawMessage(`{"test":{"available":true,"value":{"v":1}}}`), 0); err != nil {
+	if _, err := sessions.GetSession(created.ID).InitializeContext(ctx, baseline, json.RawMessage(`{"test":{"available":true,"value":{"v":1}}}`), 0); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < messages; i++ {
@@ -69,7 +69,7 @@ func newHarness(t *testing.T, baseline string, messages int) *harness {
 			role = protocol.RoleAssistant
 		}
 		text := "message-" + string(rune('a'+i%26))
-		if _, err := sessions.AppendMessage(ctx, created.ID, protocol.Message{Role: role, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: text}}}); err != nil {
+		if _, err := sessions.GetSession(created.ID).AppendMessage(ctx, protocol.Message{Role: role, Content: []protocol.ContentPart{{Type: protocol.ContentText, Text: text}}}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -184,11 +184,11 @@ func TestAtomicSuccessPreservesHistoryAndIncludesPriorBaseline(t *testing.T) {
 	if len(summary.request.Messages) != 6 || !strings.Contains(summary.request.Prompt, "PRIOR EPOCH SUMMARY") || strings.Contains(strings.ToLower(summary.request.Prompt), "include secrets") {
 		t.Fatalf("summary request = %#v", summary.request)
 	}
-	epoch, err := h.sessions.CurrentContextEpoch(context.Background(), h.id)
+	epoch, err := h.sessions.GetSession(h.id).CurrentContextEpoch(context.Background())
 	if err != nil || epoch.Ordinal != 1 || !strings.Contains(epoch.Baseline, "FRESH TYPED CONTEXT") || !strings.Contains(epoch.Baseline, "intent and decisions") {
 		t.Fatalf("epoch = %#v, %v", epoch, err)
 	}
-	messages, _ := h.sessions.ListMessages(context.Background(), h.id)
+	messages, _ := h.sessions.GetSession(h.id).ListMessages(context.Background())
 	if len(messages) != 8 {
 		t.Fatalf("immutable messages changed: %d", len(messages))
 	}
@@ -206,7 +206,7 @@ func TestAtomicSuccessPreservesHistoryAndIncludesPriorBaseline(t *testing.T) {
 	if err != nil || second.Status != "skipped" || summary.calls != 1 {
 		t.Fatalf("idempotent repeat = %#v calls=%d err=%v", second, summary.calls, err)
 	}
-	if err := h.sessions.Delete(context.Background(), h.id); err != nil {
+	if err := h.sessions.GetSession(h.id).Delete(context.Background()); err != nil {
 		t.Fatalf("delete compacted session: %v", err)
 	}
 }
@@ -228,7 +228,7 @@ func TestFailuresLeaveOldEpochActive(t *testing.T) {
 			if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err == nil {
 				t.Fatal("compaction succeeded")
 			}
-			epoch, _ := h.sessions.CurrentContextEpoch(context.Background(), h.id)
+			epoch, _ := h.sessions.GetSession(h.id).CurrentContextEpoch(context.Background())
 			if epoch.Ordinal != 0 || epoch.Baseline != "old" {
 				t.Fatalf("epoch advanced: %#v", epoch)
 			}
@@ -262,7 +262,7 @@ func TestDatabaseCompletionFailureDoesNotAdvanceEpoch(t *testing.T) {
 	if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err == nil {
 		t.Fatal("compaction succeeded")
 	}
-	epoch, _ := h.sessions.CurrentContextEpoch(context.Background(), h.id)
+	epoch, _ := h.sessions.GetSession(h.id).CurrentContextEpoch(context.Background())
 	if epoch.Ordinal != 0 {
 		t.Fatalf("epoch advanced: %#v", epoch)
 	}
@@ -322,12 +322,12 @@ func TestLongHistoryCompactsRequestButKeepsFullHistory(t *testing.T) {
 	if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err != nil {
 		t.Fatal(err)
 	}
-	epoch, _ := h.sessions.CurrentContextEpoch(context.Background(), h.id)
-	history, err := h.sessions.ListModelHistory(context.Background(), h.id, epoch.HistoryCutoff)
+	epoch, _ := h.sessions.GetSession(h.id).CurrentContextEpoch(context.Background())
+	history, err := h.sessions.GetSession(h.id).ListModelHistory(context.Background(), epoch.HistoryCutoff)
 	if err != nil || len(history) != 10 {
 		t.Fatalf("model history = %d, %v", len(history), err)
 	}
-	all, err := h.sessions.ListMessages(context.Background(), h.id)
+	all, err := h.sessions.GetSession(h.id).ListMessages(context.Background())
 	if err != nil || len(all) != 1020 {
 		t.Fatalf("full history = %d, %v", len(all), err)
 	}

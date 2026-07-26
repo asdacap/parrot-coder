@@ -26,8 +26,7 @@ import (
 type DomainBackend struct {
 	Version            string
 	ProjectRoot        string
-	Sessions           *session.Service
-	AgentSessions      AgentSessionController
+	AgentSessions      agent.UserSession
 	Agents             *agent.Registry
 	Modes              *mode.Registry
 	Providers          []provider.Provider
@@ -97,14 +96,6 @@ func goalDTO(goal session.Goal) v1.Goal {
 	return v1.Goal{ID: goal.ID, SessionID: goal.SessionID, Objective: goal.Objective, Status: string(goal.Status), TokenBudget: goal.TokenBudget, TokensUsed: goal.TokensUsed, RemainingTokens: goal.RemainingTokens(), ElapsedSeconds: goal.ElapsedSeconds, CreatedAt: goal.CreatedAt, UpdatedAt: goal.UpdatedAt}
 }
 
-type AgentSessionController interface {
-	Get(string) (agent.AgentSession, error)
-	Active() []agent.Active
-	Status(string) agent.AgentStatus
-	Interrupt(context.Context, string) error
-	Remove(string) error
-}
-
 type ProcessLifecycle interface {
 	SuspendSession(context.Context, string) error
 	ResumeSession(string)
@@ -133,7 +124,7 @@ func (b *DomainBackend) Runtime(context.Context) (v1.Runtime, error) {
 }
 
 func (b *DomainBackend) ListSessions(ctx context.Context) (v1.SessionList, error) {
-	items, err := b.Sessions.List(ctx)
+	items, err := b.AgentSessions.List(ctx)
 	if err != nil {
 		return v1.SessionList{}, err
 	}
@@ -149,7 +140,7 @@ func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSess
 	if err != nil {
 		return v1.Session{}, err
 	}
-	item, err := b.Sessions.CreateSelected(ctx, session.CreateParams{ParentSessionID: request.ParentSessionID, ProjectID: request.ProjectID, ProjectRoot: b.ProjectRoot, Title: request.Title}, selection)
+	runtime, err := b.AgentSessions.CreateSelected(ctx, session.CreateParams{ParentSessionID: request.ParentSessionID, ProjectID: request.ProjectID, ProjectRoot: b.ProjectRoot, Title: request.Title}, selection)
 	if errors.Is(err, session.ErrNotFound) {
 		return v1.Session{}, ErrNotFound
 	}
@@ -159,7 +150,8 @@ func (b *DomainBackend) CreateSession(ctx context.Context, request v1.CreateSess
 	if err != nil {
 		return v1.Session{}, err
 	}
-	return sessionDTO(item), nil
+	item, err := runtime.Details(ctx)
+	return sessionDTO(item), err
 }
 
 func (b *DomainBackend) requestSelection(agentID, modeID, modelID string, variant *string) (session.Selection, error) {
@@ -198,7 +190,7 @@ func (b *DomainBackend) ClaimSession(ctx context.Context, request v1.ClaimSessio
 	if err != nil {
 		return v1.ClaimSessionResponse{}, err
 	}
-	claim, err := b.Sessions.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: request.WorkingDirectory, HostKey: request.HostKey, PID: request.PID}, session.CreateParams{ProjectID: request.ProjectID, ProjectRoot: b.ProjectRoot, Title: request.Title}, selection, request.ForceNew, processidentity.Alive)
+	claim, err := b.AgentSessions.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: request.WorkingDirectory, HostKey: request.HostKey, PID: request.PID}, session.CreateParams{ProjectID: request.ProjectID, ProjectRoot: b.ProjectRoot, Title: request.Title}, selection, request.ForceNew, processidentity.Alive)
 	if err != nil {
 		return v1.ClaimSessionResponse{}, err
 	}
@@ -206,7 +198,14 @@ func (b *DomainBackend) ClaimSession(ctx context.Context, request v1.ClaimSessio
 }
 
 func (b *DomainBackend) GetSession(ctx context.Context, id string) (v1.Session, error) {
-	item, err := b.Sessions.Get(ctx, id)
+	runtime, err := b.AgentSessions.Get(id)
+	if err != nil {
+		if errors.Is(err, session.ErrNotFound) {
+			return v1.Session{}, ErrNotFound
+		}
+		return v1.Session{}, err
+	}
+	item, err := runtime.Details(ctx)
 	if errors.Is(err, session.ErrNotFound) {
 		return v1.Session{}, ErrNotFound
 	}
@@ -235,7 +234,14 @@ func (b *DomainBackend) UpdateSessionSelection(ctx context.Context, id string, r
 			patch.Model = request.Model
 		}
 	}
-	item, err := b.Sessions.UpdateSelection(ctx, id, patch, b.validateSelection)
+	runtime, err := b.AgentSessions.Get(id)
+	if errors.Is(err, session.ErrNotFound) {
+		return v1.SessionSelection{}, ErrNotFound
+	}
+	if err != nil {
+		return v1.SessionSelection{}, err
+	}
+	item, err := runtime.UpdateSelection(ctx, patch, b.validateSelection)
 	if errors.Is(err, session.ErrNotFound) {
 		return v1.SessionSelection{}, ErrNotFound
 	}
@@ -271,24 +277,22 @@ func (b *DomainBackend) DeleteSession(ctx context.Context, id string) error {
 	if cleanupErr != nil {
 		return cleanupErr
 	}
-	err := b.Sessions.Delete(ctx, id)
+	err := b.AgentSessions.Delete(ctx, id)
 	if errors.Is(err, session.ErrNotFound) {
 		return ErrNotFound
 	}
-	if err != nil {
-		return err
-	}
-	if b.AgentSessions != nil {
-		return b.AgentSessions.Remove(id)
-	}
-	return nil
+	return err
 }
 
 func (b *DomainBackend) ListMessages(ctx context.Context, id string) (v1.MessageList, error) {
 	if _, err := b.GetSession(ctx, id); err != nil {
 		return v1.MessageList{}, err
 	}
-	items, err := b.Sessions.ListMessages(ctx, id)
+	runtime, err := b.AgentSessions.Get(id)
+	if err != nil {
+		return v1.MessageList{}, err
+	}
+	items, err := runtime.ListMessages(ctx)
 	if err != nil {
 		return v1.MessageList{}, err
 	}
@@ -332,7 +336,11 @@ func (b *DomainBackend) AdmitPrompt(ctx context.Context, id string, request v1.P
 	if selected.Agent == "" || selected.Provider == "" || selected.Model == "" {
 		return v1.PromptAccepted{}, ErrModelRequired
 	}
-	admission, err := b.Sessions.Admit(ctx, id, session.AdmitParams{MessageID: request.MessageID, Content: request.Content, Delivery: session.Delivery(request.Delivery)})
+	runtime, err := b.AgentSessions.Get(id)
+	if err != nil {
+		return v1.PromptAccepted{}, err
+	}
+	admission, err := runtime.Admit(ctx, session.AdmitParams{MessageID: request.MessageID, Content: request.Content, Delivery: session.Delivery(request.Delivery)})
 	if errors.Is(err, session.ErrInvalidDelivery) {
 		return v1.PromptAccepted{}, ErrInvalid
 	}
@@ -381,11 +389,13 @@ func (b *DomainBackend) Interrupt(ctx context.Context, id string) error {
 	// they are processed without the user re-prompting. A fresh context is used
 	// because the request context may have elapsed while waiting for the drain
 	// to unwind; Wake itself starts the new drain on a detached context.
-	if b.AgentSessions != nil && b.Sessions != nil {
+	if b.AgentSessions != nil {
 		wakeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		if pending, pendingErr := b.Sessions.HasPendingInputs(wakeCtx, id); pendingErr == nil && pending {
-			b.Wake(id)
+		if runtime, getErr := b.AgentSessions.Get(id); getErr == nil {
+			if pending, pendingErr := runtime.HasPendingInputs(wakeCtx); pendingErr == nil && pending {
+				b.Wake(id)
+			}
 		}
 	}
 	return err
@@ -671,7 +681,11 @@ func (b *DomainBackend) ListAgents(context.Context) (v1.AgentList, error) {
 }
 
 func (b *DomainBackend) CompleteTurn(ctx context.Context, sessionID, messageID string) (v1.TurnCompletion, error) {
-	selected, err := b.Sessions.Get(ctx, sessionID)
+	runtime, err := b.AgentSessions.Get(sessionID)
+	if err != nil {
+		return v1.TurnCompletion{}, err
+	}
+	selected, err := runtime.Details(ctx)
 	if err != nil {
 		return v1.TurnCompletion{}, err
 	}

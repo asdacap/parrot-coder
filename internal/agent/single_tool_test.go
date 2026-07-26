@@ -150,7 +150,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	if len(profiles) > 0 {
 		profile = profiles[0].ID
 	}
-	if err := sessions.SetSelection(ctx, created.ID, session.Selection{Agent: profile, Provider: "fake", Model: "model"}); err != nil {
+	if err := sessions.GetSession(created.ID).SetSelection(ctx, session.Selection{Agent: profile, Provider: "fake", Model: "model"}); err != nil {
 		t.Fatal(err)
 	}
 	providers, err := NewProviderRegistry(fake)
@@ -167,9 +167,8 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 		t.Fatal(err)
 	}
 	contextRegistry, _ := systemcontext.NewRegistry(source)
-	agentSessions, err := NewUserSession(ctx, UserSessionConfig{AgentSession: AgentSessionConfig{
-		Sessions:           sessions,
-		Contexts:           systemcontext.Manager{Registry: contextRegistry, Store: sessions},
+	agentSessions, err := NewUserSession(ctx, sessions, UserSessionConfig{AgentSession: AgentSessionConfig{
+		Contexts:           systemcontext.Manager{Registry: contextRegistry},
 		StateDirectories:   testSessionStateDirectories(t),
 		Agents:             agents,
 		Providers:          providers,

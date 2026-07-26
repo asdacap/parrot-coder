@@ -111,16 +111,13 @@ func (r *Registry) Observe(ctx context.Context) (Snapshot, error) {
 	return snapshot, errors.Join(failures...)
 }
 
-type EpochStore interface {
-	CurrentContextEpoch(context.Context, string) (session.ContextEpoch, error)
-	InitializeContext(context.Context, string, string, json.RawMessage, int64) (session.ContextEpoch, error)
-	ReconcileContext(context.Context, string, string, json.RawMessage) error
-	ReplaceContext(context.Context, string, string, json.RawMessage, int64) (session.ContextEpoch, error)
+type EpochSession interface {
+	session.ContextSession
+	ReplaceContext(context.Context, string, json.RawMessage, int64) (session.ContextEpoch, error)
 }
 
 type Manager struct {
 	Registry *Registry
-	Store    EpochStore
 }
 
 // FullContext is a freshly observed, complete typed context snapshot. It is
@@ -146,16 +143,16 @@ func (m Manager) ObserveFull(ctx context.Context) (FullContext, error) {
 	return FullContext{Baseline: renderBaseline(snapshot), Sources: raw}, nil
 }
 
-func (m Manager) Initialize(ctx context.Context, sessionID string, cutoff int64) (session.ContextEpoch, error) {
+func (m Manager) Initialize(ctx context.Context, target session.ContextSession, cutoff int64) (session.ContextEpoch, error) {
 	full, err := m.ObserveFull(ctx)
 	if err != nil {
 		return session.ContextEpoch{}, err
 	}
-	return m.Store.InitializeContext(ctx, sessionID, full.Baseline, full.Sources, cutoff)
+	return target.InitializeContext(ctx, full.Baseline, full.Sources, cutoff)
 }
 
-func (m Manager) Reconcile(ctx context.Context, sessionID string) (session.ContextEpoch, error) {
-	epoch, err := m.Store.CurrentContextEpoch(ctx, sessionID)
+func (m Manager) Reconcile(ctx context.Context, target session.ContextSession) (session.ContextEpoch, error) {
+	epoch, err := target.CurrentContextEpoch(ctx)
 	if err != nil {
 		return session.ContextEpoch{}, err
 	}
@@ -210,19 +207,19 @@ func (m Manager) Reconcile(ctx context.Context, sessionID string) (session.Conte
 	if bytes.Equal(raw, epoch.Sources) {
 		return epoch, observeErr
 	}
-	if err := m.Store.ReconcileContext(ctx, sessionID, strings.Join(changes, "\n\n"), raw); err != nil {
+	if err := target.ReconcileContext(ctx, strings.Join(changes, "\n\n"), raw); err != nil {
 		return session.ContextEpoch{}, err
 	}
 	epoch.Sources = raw
 	return epoch, observeErr
 }
 
-func (m Manager) Replace(ctx context.Context, sessionID, baseline string, cutoff int64) (session.ContextEpoch, error) {
+func (m Manager) Replace(ctx context.Context, target EpochSession, baseline string, cutoff int64) (session.ContextEpoch, error) {
 	full, err := m.ObserveFull(ctx)
 	if err != nil {
 		return session.ContextEpoch{}, err
 	}
-	return m.Store.ReplaceContext(ctx, sessionID, baseline, full.Sources, cutoff)
+	return target.ReplaceContext(ctx, baseline, full.Sources, cutoff)
 }
 
 func completeSnapshot(snapshot Snapshot, observeErr error) error {

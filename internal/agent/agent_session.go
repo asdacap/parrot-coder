@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"time"
 
@@ -60,11 +61,55 @@ type AgentSession interface {
 	Wake()
 	Resume(context.Context) error
 	Interrupt(context.Context) error
+	Shutdown(context.Context) error
+	Details(context.Context) (session.AgentSessionDto, error)
+	UpdateSelection(context.Context, session.SelectionPatch, session.SelectionValidator) (session.AgentSessionDto, error)
+	ListMessages(context.Context) ([]session.Message, error)
+	Admit(context.Context, session.AdmitParams) (session.Admission, error)
+	HasPendingInputs(context.Context) (bool, error)
+	LatestSequence(context.Context) (int64, error)
+	CurrentContextEpoch(context.Context) (session.ContextEpoch, error)
+	InitializeContext(context.Context, string, json.RawMessage, int64) (session.ContextEpoch, error)
+	ReconcileContext(context.Context, string, json.RawMessage) error
+	ReplaceContext(context.Context, string, json.RawMessage, int64) (session.ContextEpoch, error)
 }
 
 func (s *agentSession) ID() string           { return s.dto.ID }
 func (s *agentSession) Name() string         { return s.dto.Name }
 func (s *agentSession) Parent() AgentSession { return s.parent }
+
+func (s *agentSession) Details(ctx context.Context) (session.AgentSessionDto, error) {
+	return s.store.Get(ctx)
+}
+
+func (s *agentSession) UpdateSelection(ctx context.Context, patch session.SelectionPatch, validate session.SelectionValidator) (session.AgentSessionDto, error) {
+	return s.store.UpdateSelection(ctx, patch, validate)
+}
+
+func (s *agentSession) ListMessages(ctx context.Context) ([]session.Message, error) {
+	return s.store.ListMessages(ctx)
+}
+func (s *agentSession) Admit(ctx context.Context, params session.AdmitParams) (session.Admission, error) {
+	return s.store.Admit(ctx, params)
+}
+func (s *agentSession) HasPendingInputs(ctx context.Context) (bool, error) {
+	return s.store.HasPendingInputs(ctx)
+}
+func (s *agentSession) LatestSequence(ctx context.Context) (int64, error) {
+	return s.store.LatestSequence(ctx)
+}
+func (s *agentSession) CurrentContextEpoch(ctx context.Context) (session.ContextEpoch, error) {
+	return s.store.CurrentContextEpoch(ctx)
+}
+func (s *agentSession) InitializeContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
+	return s.store.InitializeContext(ctx, baseline, sources, cutoff)
+}
+func (s *agentSession) ReconcileContext(ctx context.Context, text string, sources json.RawMessage) error {
+	return s.store.ReconcileContext(ctx, text, sources)
+}
+func (s *agentSession) ReplaceContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
+	return s.store.ReplaceContext(ctx, baseline, sources, cutoff)
+}
 
 func (s *agentSession) Status() Status {
 	s.mu.Lock()
@@ -100,23 +145,38 @@ func (s *agentSession) executionStatus() AgentStatus {
 }
 
 func (s *agentSession) Observe() (ChildTurnObserver, error) {
-	if s.user == nil || s.parent == nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.child == nil {
 		return nil, ErrChildNotFound
 	}
-	return s.user.observeChild(s.parent.ID(), s.dto.ID)
+	return childObserver{turn: s.child.turn}, nil
 }
 
 func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
-	if s.user == nil {
+	if identifier == "" || s.agentSessionRepository == nil {
 		return nil, ErrChildNotFound
 	}
-	return s.user.resolveChild(s.ID(), identifier)
+	pending := s.agentSessionRepository.ChildSessions(s.ID())
+	for len(pending) > 0 {
+		relation := pending[0]
+		pending = pending[1:]
+		child, ok := s.agentSessionRepository.Lookup(relation.SessionID)
+		if !ok {
+			continue
+		}
+		if relation.SessionID == identifier || child.Name() == identifier {
+			return child, nil
+		}
+		pending = append(pending, s.agentSessionRepository.ChildSessions(relation.SessionID)...)
+	}
+	return nil, ErrChildNotFound
 }
 
 // Prompt admits input, runs the session to idle, and returns the assistant
 // message produced by that execution lifecycle.
 func (s *agentSession) Prompt(ctx context.Context, content string) (string, error) {
-	messages, err := s.config.Sessions.ListMessages(ctx, s.dto.ID)
+	messages, err := s.store.ListMessages(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +196,7 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 		}
 		return "", err
 	}
-	messages, err = s.config.Sessions.ListMessages(ctx, s.dto.ID)
+	messages, err = s.store.ListMessages(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -192,11 +252,14 @@ func (s *agentSession) admitLocked(ctx context.Context, content string) (string,
 	if s.removed {
 		return "", ErrAgentSessionRemoved
 	}
+	if s.shuttingDown {
+		return "", ErrUserSessionClosed
+	}
 	messageID, err := id.New("msg")
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.config.Sessions.Admit(ctx, s.dto.ID, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
+	if _, err := s.store.Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
 		return "", err
 	}
 	return messageID, nil
@@ -205,7 +268,7 @@ func (s *agentSession) admitLocked(ctx context.Context, content string) (string,
 // Wake coalesces with an active drain and returns immediately.
 func (s *agentSession) Wake() {
 	s.mu.Lock()
-	if !s.removed {
+	if !s.removed && !s.shuttingDown {
 		s.startOrJoinLocked(true)
 	}
 	s.mu.Unlock()
@@ -217,6 +280,10 @@ func (s *agentSession) Resume(ctx context.Context) error {
 	if s.removed {
 		s.mu.Unlock()
 		return ErrAgentSessionRemoved
+	}
+	if s.shuttingDown {
+		s.mu.Unlock()
+		return ErrUserSessionClosed
 	}
 	state := s.startOrJoinLocked(false)
 	s.mu.Unlock()
@@ -250,6 +317,38 @@ func (s *agentSession) Interrupt(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	return s.interruptExecution(ctx)
+}
+
+func (s *agentSession) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	s.shuttingDown = true
+	var childDone <-chan struct{}
+	if s.child != nil && s.child.turn != nil {
+		childDone = s.child.turn.done
+		if s.child.status.State == StatusRunning || s.child.status.State == StatusPending {
+			s.child.cancel()
+		}
+	}
+	var drainDone <-chan struct{}
+	if s.drain != nil {
+		s.drain.status = StatusInterrupting
+		s.drain.wake = false
+		s.drain.cancel()
+		drainDone = s.drain.done
+	}
+	s.mu.Unlock()
+
+	for _, done := range []<-chan struct{}{childDone, drainDone} {
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (s *agentSession) interruptExecution(ctx context.Context) error {
@@ -294,6 +393,9 @@ func (s *agentSession) reserveChildCreation() error {
 	defer s.mu.Unlock()
 	if s.removed {
 		return ErrAgentSessionRemoved
+	}
+	if s.shuttingDown {
+		return ErrUserSessionClosed
 	}
 	s.childCreations++
 	return nil

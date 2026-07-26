@@ -29,7 +29,7 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	db = store.NewRegistry(state, "host-test")
 	defer db.Close()
 	service = session.NewService(db, event.NewRepository(db))
-	got, err := service.Get(ctx, created.ID)
+	got, err := service.GetSession(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -40,11 +40,55 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	if err != nil || len(listed) != 1 || listed[0].Name != "inspect" {
 		t.Fatalf("List = %#v, %v", listed, err)
 	}
-	if err := service.Delete(ctx, created.ID); err != nil {
+	if err := service.GetSession(created.ID).Delete(ctx); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.Get(ctx, created.ID); !errors.Is(err, session.ErrNotFound) {
+	if _, err := service.GetSession(created.ID).Get(ctx); !errors.Is(err, session.ErrNotFound) {
 		t.Fatalf("Get after delete error = %v", err)
+	}
+}
+
+func TestBoundSessionsKeepOperationsIsolated(t *testing.T) {
+	ctx := context.Background()
+	registry := store.NewRegistry(t.TempDir(), "host-test")
+	defer registry.Close()
+	service := session.NewService(registry, event.NewRepository(registry))
+	first, err := service.Create(ctx, session.CreateParams{Name: "first"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.Create(ctx, session.CreateParams{Name: "second"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		bound session.AgentSessionStore
+		id    string
+		name  string
+		text  string
+		msgID string
+	}{
+		{service.GetSession(first.ID), first.ID, "first", "first prompt", "msg_first"},
+		{service.GetSession(second.ID), second.ID, "second", "second prompt", "msg_second"},
+	} {
+		admission, err := test.bound.Admit(ctx, session.AdmitParams{MessageID: test.msgID, Content: test.text, Delivery: session.DeliverySteer})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := test.bound.PromoteSteers(ctx, admission.Input.AdmittedSequence); err != nil {
+			t.Fatal(err)
+		}
+		got, err := test.bound.Get(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		messages, err := test.bound.ListMessages(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.ID != test.id || got.Name != test.name || len(messages) != 1 || messages[0].SessionID != test.id || messages[0].Content != test.text {
+			t.Fatalf("bound session = %#v, messages = %#v", got, messages)
+		}
 	}
 }
 
@@ -67,7 +111,7 @@ func TestRootSessionNamesAreGeneratedWithoutOverridingExplicitOrChildNames(t *te
 		t.Fatal(err)
 	}
 
-	loaded, err := service.Get(ctx, generated.ID)
+	loaded, err := service.GetSession(generated.ID).Get(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,7 +146,7 @@ func TestParentSessionPersistsAndRequiresSameProject(t *testing.T) {
 	registry = store.NewRegistry(state, "host-test")
 	defer registry.Close()
 	service = session.NewService(registry, event.NewRepository(registry))
-	loaded, err := service.Get(ctx, child.ID)
+	loaded, err := service.GetSession(child.ID).Get(ctx)
 	if err != nil || loaded.ParentSessionID != parent.ID {
 		t.Fatalf("reopened child = %#v, %v", loaded, err)
 	}
@@ -123,7 +167,7 @@ func TestCreateSelectedPersistsCompleteInitialSelection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	loaded, err := service.Get(ctx, created.ID)
+	loaded, err := service.GetSession(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +214,7 @@ func TestConcurrentPartialSelectionCarriesForwardCurrentValues(t *testing.T) {
 		go func(patch session.SelectionPatch) {
 			defer wg.Done()
 			<-start
-			_, err := service.UpdateSelection(ctx, created.ID, patch, nil)
+			_, err := service.GetSession(created.ID).UpdateSelection(ctx, patch, nil)
 			errs <- err
 		}(patch)
 	}
@@ -182,7 +226,7 @@ func TestConcurrentPartialSelectionCarriesForwardCurrentValues(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	loaded, err := service.Get(ctx, created.ID)
+	loaded, err := service.GetSession(created.ID).Get(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,11 +238,11 @@ func TestConcurrentPartialSelectionCarriesForwardCurrentValues(t *testing.T) {
 func TestAdmitIsExactlyIdempotent(t *testing.T) {
 	ctx, _, repository, service, sessionID := newService(t)
 	params := session.AdmitParams{MessageID: "msg_1", Content: "first", Delivery: session.DeliverySteer}
-	first, err := service.Admit(ctx, sessionID, params)
+	first, err := service.GetSession(sessionID).Admit(ctx, params)
 	if err != nil || !first.Created {
 		t.Fatalf("first Admit = %#v, %v", first, err)
 	}
-	second, err := service.Admit(ctx, sessionID, params)
+	second, err := service.GetSession(sessionID).Admit(ctx, params)
 	if err != nil || second.Created {
 		t.Fatalf("second Admit = %#v, %v", second, err)
 	}
@@ -211,7 +255,7 @@ func TestAdmitIsExactlyIdempotent(t *testing.T) {
 		{MessageID: "msg_1", Content: "first", Delivery: session.DeliveryQueue},
 	}
 	for _, conflict := range conflicts {
-		if _, err := service.Admit(ctx, sessionID, conflict); !errors.Is(err, session.ErrIdempotencyConflict) {
+		if _, err := service.GetSession(sessionID).Admit(ctx, conflict); !errors.Is(err, session.ErrIdempotencyConflict) {
 			t.Fatalf("conflicting Admit error = %v", err)
 		}
 	}
@@ -226,7 +270,7 @@ func TestAdmitIsExactlyIdempotent(t *testing.T) {
 
 func TestSessionInputEventPayloads(t *testing.T) {
 	ctx, _, repository, service, sessionID := newService(t)
-	admission, err := service.Admit(ctx, sessionID, session.AdmitParams{
+	admission, err := service.GetSession(sessionID).Admit(ctx, session.AdmitParams{
 		MessageID: "msg_payload",
 		Content:   "payload content",
 		Delivery:  session.DeliveryQueue,
@@ -234,7 +278,7 @@ func TestSessionInputEventPayloads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := service.PromoteNextQueue(ctx, sessionID); err != nil {
+	if _, err := service.GetSession(sessionID).PromoteNextQueue(ctx); err != nil {
 		t.Fatal(err)
 	}
 
@@ -281,7 +325,7 @@ func TestConcurrentAdmissionCreatesOneInput(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			result, err := service.Admit(ctx, sessionID, params)
+			result, err := service.GetSession(sessionID).Admit(ctx, params)
 			results <- result
 			errs <- err
 		}()
@@ -318,31 +362,31 @@ func TestPromotionCutoffQueueAndMessageProjection(t *testing.T) {
 		{MessageID: "msg_q2", Content: "queue two", Delivery: session.DeliveryQueue},
 	}
 	for _, input := range inputs {
-		if _, err := service.Admit(ctx, sessionID, input); err != nil {
+		if _, err := service.GetSession(sessionID).Admit(ctx, input); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	messages, err := service.PromoteSteers(ctx, sessionID, 0)
+	messages, err := service.GetSession(sessionID).PromoteSteers(ctx, 0)
 	if err != nil || len(messages) != 1 || messages[0].ID != "msg_s1" {
 		t.Fatalf("first steer promotion = %#v, %v", messages, err)
 	}
-	messages, err = service.PromoteSteers(ctx, sessionID, 3)
+	messages, err = service.GetSession(sessionID).PromoteSteers(ctx, 3)
 	if err != nil || len(messages) != 1 || messages[0].ID != "msg_s2" {
 		t.Fatalf("second steer promotion = %#v, %v", messages, err)
 	}
 	for _, want := range []string{"msg_q1", "msg_q2"} {
-		messages, err = service.PromoteNextQueue(ctx, sessionID)
+		messages, err = service.GetSession(sessionID).PromoteNextQueue(ctx)
 		if err != nil || len(messages) != 1 || messages[0].ID != want {
 			t.Fatalf("queue promotion = %#v, %v; want %s", messages, err, want)
 		}
 	}
-	messages, err = service.PromoteNextQueue(ctx, sessionID)
+	messages, err = service.GetSession(sessionID).PromoteNextQueue(ctx)
 	if err != nil || len(messages) != 0 {
 		t.Fatalf("empty queue promotion = %#v, %v", messages, err)
 	}
 
-	listed, err := service.ListMessages(ctx, sessionID)
+	listed, err := service.GetSession(sessionID).ListMessages(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}

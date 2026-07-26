@@ -7,9 +7,12 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/amirulashraf/parrot-coder/internal/agent"
 	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/store"
+	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
 type testSource struct {
@@ -35,29 +38,34 @@ type memoryEpochStore struct {
 	lastText        string
 }
 
-func (s *memoryEpochStore) CurrentContextEpoch(context.Context, string) (session.ContextEpoch, error) {
-	if s.epoch.ID == "" {
+type memoryUserSession struct {
+	store     *memoryEpochStore
+	sessionID string
+}
+
+func (s *memoryUserSession) CurrentContextEpoch(context.Context) (session.ContextEpoch, error) {
+	if s.store.epoch.ID == "" {
 		return session.ContextEpoch{}, session.ErrNotFound
 	}
-	return s.epoch, nil
+	return s.store.epoch, nil
 }
 
-func (s *memoryEpochStore) InitializeContext(_ context.Context, sessionID, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
-	s.initializations++
-	s.epoch = session.ContextEpoch{ID: "ctx", SessionID: sessionID, Baseline: baseline, Sources: append(json.RawMessage(nil), sources...), HistoryCutoff: cutoff}
-	return s.epoch, nil
+func (s *memoryUserSession) InitializeContext(_ context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
+	s.store.initializations++
+	s.store.epoch = session.ContextEpoch{ID: "ctx", SessionID: s.sessionID, Baseline: baseline, Sources: append(json.RawMessage(nil), sources...), HistoryCutoff: cutoff}
+	return s.store.epoch, nil
 }
 
-func (s *memoryEpochStore) ReconcileContext(_ context.Context, _ string, text string, sources json.RawMessage) error {
-	s.reconciliations++
-	s.lastText = text
-	s.epoch.Sources = append(json.RawMessage(nil), sources...)
+func (s *memoryUserSession) ReconcileContext(_ context.Context, text string, sources json.RawMessage) error {
+	s.store.reconciliations++
+	s.store.lastText = text
+	s.store.epoch.Sources = append(json.RawMessage(nil), sources...)
 	return nil
 }
 
-func (s *memoryEpochStore) ReplaceContext(_ context.Context, sessionID, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
-	s.epoch = session.ContextEpoch{ID: "replacement", SessionID: sessionID, Baseline: baseline, Sources: append(json.RawMessage(nil), sources...), HistoryCutoff: cutoff}
-	return s.epoch, nil
+func (s *memoryUserSession) ReplaceContext(_ context.Context, baseline string, sources json.RawMessage, cutoff int64) (session.ContextEpoch, error) {
+	s.store.epoch = session.ContextEpoch{ID: "replacement", SessionID: s.sessionID, Baseline: baseline, Sources: append(json.RawMessage(nil), sources...), HistoryCutoff: cutoff}
+	return s.store.epoch, nil
 }
 
 func TestRegistryRejectsDuplicatesAndRendersStableKeyOrder(t *testing.T) {
@@ -71,7 +79,7 @@ func TestRegistryRejectsDuplicatesAndRendersStableKeyOrder(t *testing.T) {
 		t.Fatal("duplicate source was accepted")
 	}
 	store := &memoryEpochStore{}
-	epoch, err := (Manager{Registry: registry, Store: store}).Initialize(context.Background(), "session", 7)
+	epoch, err := (Manager{Registry: registry}).Initialize(context.Background(), &memoryUserSession{store: store, sessionID: "session"}, 7)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -104,7 +112,7 @@ func TestInitializeRequiresEveryRegisteredSource(t *testing.T) {
 				t.Fatal(err)
 			}
 			store := &memoryEpochStore{}
-			if _, err := (Manager{Registry: registry, Store: store}).Initialize(context.Background(), "session", 0); err == nil {
+			if _, err := (Manager{Registry: registry}).Initialize(context.Background(), &memoryUserSession{store: store, sessionID: "session"}, 0); err == nil {
 				t.Fatal("Initialize succeeded")
 			}
 			if store.initializations != 0 || store.epoch.ID != "" {
@@ -119,12 +127,12 @@ func TestReconcileChangeNewUnavailableRemovalAndNoop(t *testing.T) {
 	a := &testSource{key: "test:a", observation: observed("one", "A baseline", "A update", "A old removal")}
 	registry, _ := NewRegistry(a)
 	store := &memoryEpochStore{}
-	manager := Manager{Registry: registry, Store: store}
-	if _, err := manager.Initialize(ctx, "session", 0); err != nil {
+	manager := Manager{Registry: registry}
+	if _, err := manager.Initialize(ctx, &memoryUserSession{store: store, sessionID: "session"}, 0); err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err := manager.Reconcile(ctx, "session"); err != nil {
+	if _, err := manager.Reconcile(ctx, &memoryUserSession{store: store, sessionID: "session"}); err != nil {
 		t.Fatal(err)
 	}
 	if store.reconciliations != 0 {
@@ -135,7 +143,7 @@ func TestReconcileChangeNewUnavailableRemovalAndNoop(t *testing.T) {
 	b := &testSource{key: "test:b", observation: observed("new", "B baseline", "B update", "B removed")}
 	registry, _ = NewRegistry(b, a)
 	manager.Registry = registry
-	if _, err := manager.Reconcile(ctx, "session"); err != nil {
+	if _, err := manager.Reconcile(ctx, &memoryUserSession{store: store, sessionID: "session"}); err != nil {
 		t.Fatal(err)
 	}
 	if store.lastText != "A update\n\nB baseline" {
@@ -146,7 +154,7 @@ func TestReconcileChangeNewUnavailableRemovalAndNoop(t *testing.T) {
 	a.observation = Observation{Available: false}
 	a.err = errors.New("temporarily unavailable")
 	b.observation = observed("newer", "ignored", "B second update", "B removed")
-	if epoch, err := manager.Reconcile(ctx, "session"); err == nil || epoch.ID == "" {
+	if epoch, err := manager.Reconcile(ctx, &memoryUserSession{store: store, sessionID: "session"}); err == nil || epoch.ID == "" {
 		t.Fatalf("unavailable reconcile = %#v, %v", epoch, err)
 	}
 	var oldSnapshot, nextSnapshot Snapshot
@@ -165,7 +173,7 @@ func TestReconcileChangeNewUnavailableRemovalAndNoop(t *testing.T) {
 
 	registry, _ = NewRegistry(b)
 	manager.Registry = registry
-	if _, err := manager.Reconcile(ctx, "session"); err != nil {
+	if _, err := manager.Reconcile(ctx, &memoryUserSession{store: store, sessionID: "session"}); err != nil {
 		t.Fatal(err)
 	}
 	if store.lastText != "A new removal" {
@@ -181,17 +189,23 @@ func TestExplicitRemovalUsesPreviouslyStoredRenderer(t *testing.T) {
 	source := &testSource{key: "test:file", observation: observed("present", "present", "changed", "previous removal")}
 	registry, _ := NewRegistry(source)
 	store := &memoryEpochStore{}
-	manager := Manager{Registry: registry, Store: store}
-	if _, err := manager.Initialize(ctx, "session", 0); err != nil {
+	manager := Manager{Registry: registry}
+	if _, err := manager.Initialize(ctx, &memoryUserSession{store: store, sessionID: "session"}, 0); err != nil {
 		t.Fatal(err)
 	}
 	source.observation = Observation{Available: true, Removal: "current removal"}
-	if _, err := manager.Reconcile(ctx, "session"); err != nil {
+	if _, err := manager.Reconcile(ctx, &memoryUserSession{store: store, sessionID: "session"}); err != nil {
 		t.Fatal(err)
 	}
 	if store.lastText != "previous removal" {
 		t.Fatalf("removal text = %q", store.lastText)
 	}
+}
+
+type testProviderResolver struct{}
+
+func (testProviderResolver) Resolve(string, string) (provider.Provider, provider.Model, error) {
+	return nil, provider.Model{ID: "model"}, nil
 }
 
 func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
@@ -200,19 +214,42 @@ func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
 	t.Cleanup(func() { db.Close() })
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
-	created, err := sessions.Create(ctx, session.CreateParams{Title: "atomic"})
+	created, err := sessions.CreateSelected(ctx, session.CreateParams{Title: "atomic"}, session.Selection{Agent: "agent", Provider: "provider", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := agent.NewRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	toolProviders, err := tool.NewProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDirectories, err := agent.NewUserSessionStateDirectories(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSession, err := agent.NewUserSession(ctx, sessions, agent.UserSessionConfig{
+		AgentSession:            agent.AgentSessionConfig{StateDirectories: stateDirectories, Agents: agents, Providers: testProviderResolver{}, ToolProviders: toolProviders},
+		MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 1,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	source := &testSource{key: "test:value", observation: observed("one", "one", "two update", "removed")}
 	registry, _ := NewRegistry(source)
-	manager := Manager{Registry: registry, Store: sessions}
-	initial, err := manager.Initialize(ctx, created.ID, 0)
+	manager := Manager{Registry: registry}
+	target, err := userSession.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial, err := manager.Initialize(ctx, target, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
 	eventsBefore, _ := repository.List(ctx, created.ID, -1, 100)
-	if _, err := manager.Reconcile(ctx, created.ID); err != nil {
+	if _, err := manager.Reconcile(ctx, target); err != nil {
 		t.Fatal(err)
 	}
 	eventsAfterNoop, _ := repository.List(ctx, created.ID, -1, 100)
@@ -228,17 +265,17 @@ func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	source.observation = observed("two", "two", "two update", "removed")
-	if _, err := manager.Reconcile(ctx, created.ID); err == nil {
+	if _, err := manager.Reconcile(ctx, target); err == nil {
 		t.Fatal("Reconcile succeeded despite projection failure")
 	}
-	current, err := sessions.CurrentContextEpoch(ctx, created.ID)
+	current, err := target.CurrentContextEpoch(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !jsonEqual(current.Sources, initial.Sources) {
 		t.Fatalf("snapshot advanced without message: %s", current.Sources)
 	}
-	messages, _ := sessions.ListMessages(ctx, created.ID)
+	messages, _ := target.ListMessages(ctx)
 	eventsAfter, _ := repository.List(ctx, created.ID, -1, 100)
 	if len(messages) != 0 || len(eventsAfter) != len(eventsBefore) {
 		t.Fatalf("failed transaction leaked message/event: messages=%d events=%d/%d", len(messages), len(eventsAfter), len(eventsBefore))
@@ -246,11 +283,11 @@ func TestReconcileCommitsMessageAndSnapshotAtomically(t *testing.T) {
 	if _, err := sessionDB.SQL().ExecContext(ctx, `DROP TRIGGER reject_context_update`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.Reconcile(ctx, created.ID); err != nil {
+	if _, err := manager.Reconcile(ctx, target); err != nil {
 		t.Fatal(err)
 	}
-	current, _ = sessions.CurrentContextEpoch(ctx, created.ID)
-	messages, _ = sessions.ListMessages(ctx, created.ID)
+	current, _ = target.CurrentContextEpoch(ctx)
+	messages, _ = target.ListMessages(ctx)
 	eventsAfter, _ = repository.List(ctx, created.ID, -1, 100)
 	if jsonEqual(current.Sources, initial.Sources) || len(messages) != 1 || messages[0].Content != "two update" || len(eventsAfter) != len(eventsBefore)+1 {
 		t.Fatalf("atomic reconciliation missing: snapshot=%s messages=%#v events=%d", current.Sources, messages, len(eventsAfter))

@@ -19,6 +19,13 @@ var (
 	ErrAgentSessionRemoved = errors.New("agent: session was removed")
 )
 
+type SessionRuntime interface {
+	GetSession(string) session.AgentSessionStore
+	List(context.Context) ([]session.AgentSessionDto, error)
+	CreateSelected(context.Context, session.CreateParams, session.Selection) (session.AgentSessionDto, error)
+	ClaimInteractive(context.Context, session.InteractiveOwner, session.CreateParams, session.Selection, bool, func(int) bool) (session.InteractiveClaim, error)
+}
+
 // ChildSession is the canonical relationship between a child agent session and
 // its direct parent session.
 type ChildSession struct {
@@ -45,7 +52,14 @@ type UserSession interface {
 	Interrupt(context.Context, string) error
 	Status(sessionID string) AgentStatus
 	Remove(sessionID string) error
+	Delete(context.Context, string) error
+	List(context.Context) ([]session.AgentSessionDto, error)
+	CreateSelected(context.Context, session.CreateParams, session.Selection) (AgentSession, error)
+	ClaimInteractive(context.Context, session.InteractiveOwner, session.CreateParams, session.Selection, bool, func(int) bool) (session.InteractiveClaim, error)
 	Shutdown(context.Context) error
+	CreateChild(context.Context, AgentSession, ChildRequest) (AgentSession, error)
+	TryAcquireWorkerQuota() (func(), error)
+	forgetChild(*agentSession) error
 }
 
 type UserSessionConfig struct {
@@ -71,28 +85,51 @@ type UserSessionConfig struct {
 
 type userSession struct {
 	config     UserSessionConfig
+	sessions   SessionRuntime
 	repository *agentSessionRepository
 	childTurns childTurnSemaphore
+	quotaMu    sync.Mutex
 	childMu    sync.Mutex
 	closed     bool
-	workers    sync.WaitGroup
 }
 
 var _ UserSession = (*userSession)(nil)
 
 // NewUserSession creates a user runtime with its own agent-session repository.
-func NewUserSession(ctx context.Context, config UserSessionConfig, observers ...LifecycleObserver) (UserSession, error) {
+func NewUserSession(ctx context.Context, sessions SessionRuntime, config UserSessionConfig, observers ...LifecycleObserver) (UserSession, error) {
 	if config.MaxConcurrentChildTurns <= 0 || config.MaxConcurrentChildTurnsPerParent <= 0 || config.MaxConcurrentChildTurnsPerParent > config.MaxConcurrentChildTurns {
 		return nil, errors.New("agent: child turn concurrency limits are invalid")
 	}
-	repository, err := newAgentSessionRepository(ctx, config.AgentSession, config.MaxConcurrentChildTurnsPerParent, observers...)
+	if sessions == nil {
+		return nil, errors.New("agent: session persistence is required")
+	}
+	if err := validateAgentSessionConfig(&config.AgentSession); err != nil {
+		return nil, err
+	}
+	created := &userSession{config: config, sessions: sessions, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
+	applyChildDefaults(&created.config)
+	repository, err := newAgentSessionRepository(ctx, created, config.MaxConcurrentChildTurnsPerParent, observers...)
 	if err != nil {
 		return nil, err
 	}
-	created := &userSession{config: config, repository: repository, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
-	repository.user = created
-	applyChildDefaults(&created.config)
+	created.repository = repository
 	return created, nil
+}
+
+func (s *userSession) resolveAgentSessionStore(sessionID string) session.AgentSessionStore {
+	return s.sessions.GetSession(sessionID)
+}
+
+func (s *userSession) list(ctx context.Context) ([]session.AgentSessionDto, error) {
+	return s.sessions.List(ctx)
+}
+
+func (s *userSession) createSelected(ctx context.Context, params session.CreateParams, selection session.Selection) (session.AgentSessionDto, error) {
+	return s.sessions.CreateSelected(ctx, params, selection)
+}
+
+func (s *userSession) delete(ctx context.Context, sessionID string) error {
+	return s.resolveAgentSessionStore(sessionID).Delete(ctx)
 }
 
 func (s *userSession) AddChildCreatedObserver(observer ChildCreatedObserver) {
@@ -127,10 +164,81 @@ func (s *userSession) Status(sessionID string) AgentStatus { return s.repository
 
 func (s *userSession) Remove(sessionID string) error { return s.repository.Remove(sessionID) }
 
-func (s *userSession) Shutdown(ctx context.Context) error { return s.shutdownChildren(ctx) }
+func (s *userSession) Delete(ctx context.Context, sessionID string) error {
+	if err := s.repository.Interrupt(ctx, sessionID); err != nil {
+		return err
+	}
+	if err := s.delete(ctx, sessionID); err != nil {
+		return err
+	}
+	return s.repository.Remove(sessionID)
+}
+
+func (s *userSession) List(ctx context.Context) ([]session.AgentSessionDto, error) {
+	return s.list(ctx)
+}
+
+func (s *userSession) CreateSelected(ctx context.Context, params session.CreateParams, selection session.Selection) (AgentSession, error) {
+	created, err := s.createSelected(ctx, params, selection)
+	if err != nil {
+		return nil, err
+	}
+	var parent AgentSession
+	if created.ParentSessionID != "" {
+		parent, err = s.repository.Get(created.ParentSessionID)
+		if err != nil {
+			return nil, errors.Join(err, s.delete(ctx, created.ID))
+		}
+	}
+	return s.repository.bind(created, parent, s.resolveAgentSessionStore(created.ID), func() error { return s.delete(ctx, created.ID) })
+}
+
+func (s *userSession) ClaimInteractive(ctx context.Context, owner session.InteractiveOwner, params session.CreateParams, selection session.Selection, forceNew bool, alive func(int) bool) (session.InteractiveClaim, error) {
+	claim, err := s.sessions.ClaimInteractive(ctx, owner, params, selection, forceNew, alive)
+	if err != nil {
+		return session.InteractiveClaim{}, err
+	}
+	if _, err := s.repository.Get(claim.Session.ID); err != nil {
+		return session.InteractiveClaim{}, err
+	}
+	return claim, nil
+}
+
+func (s *userSession) TryAcquireWorkerQuota() (func(), error) {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	if s.closed {
+		return nil, ErrUserSessionClosed
+	}
+	permit, ok := s.childTurns.tryAcquire()
+	if !ok {
+		return nil, ErrChildConcurrency
+	}
+	return permit.Release, nil
+}
+
+func (s *userSession) Shutdown(ctx context.Context) error {
+	s.quotaMu.Lock()
+	s.closed = true
+	s.quotaMu.Unlock()
+
+	sessions, err := s.repository.closeAndSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+
+	errs := make(chan error, len(sessions))
+	for _, item := range sessions {
+		go func() { errs <- item.Shutdown(ctx) }()
+	}
+	for range sessions {
+		err = errors.Join(err, <-errs)
+	}
+	return err
+}
 
 // agentSessionRepository owns the one runtime AgentSession object associated
-// with each persisted session ID. Persistent state remains in SessionRuntime.
+// with each persisted session ID. Persistent state remains owned by userSession.
 type agentSessionRepository struct {
 	mu                      sync.Mutex
 	user                    *userSession
@@ -142,18 +250,16 @@ type agentSessionRepository struct {
 	dtos                    map[string]session.AgentSessionDto
 	children                map[string]ChildSession
 	maxConcurrentChildTurns int
+	closed                  bool
 }
 
-func newAgentSessionRepository(ctx context.Context, config AgentSessionConfig, maxConcurrentChildTurns int, observers ...LifecycleObserver) (*agentSessionRepository, error) {
-	if err := validateAgentSessionConfig(&config); err != nil {
-		return nil, err
-	}
-	items, err := config.Sessions.List(ctx)
+func newAgentSessionRepository(ctx context.Context, user *userSession, maxConcurrentChildTurns int, observers ...LifecycleObserver) (*agentSessionRepository, error) {
+	items, err := user.list(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent: list sessions: %w", err)
 	}
 	repository := &agentSessionRepository{
-		config: config, observers: observers, maxConcurrentChildTurns: maxConcurrentChildTurns,
+		user: user, config: user.config.AgentSession, observers: observers, maxConcurrentChildTurns: maxConcurrentChildTurns,
 		sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession),
 	}
 	for _, item := range items {
@@ -178,13 +284,13 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	if parent == nil || parent.ID() == "" {
 		return nil, errors.New("agent: child parent session is required")
 	}
-	selectedParent, err := r.config.Sessions.Get(ctx, parent.ID())
-	if err != nil {
-		return nil, fmt.Errorf("agent: child parent session: %w", err)
-	}
 	boundParent, ok := r.Lookup(parent.ID())
 	if !ok || boundParent != parent {
 		return nil, errors.New("agent: child parent runtime is not owned by this user session")
+	}
+	selectedParent, err := boundParent.(*agentSession).store.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("agent: child parent session: %w", err)
 	}
 	if selectedParent.ProjectID != request.ProjectID {
 		return nil, errors.New("agent: child parent belongs to another project")
@@ -212,7 +318,7 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 			return nil, fmt.Errorf("agent: child model: unknown model variant %q", selection.Variant)
 		}
 	}
-	child, err := r.config.Sessions.CreateSelected(ctx, session.CreateParams{
+	child, err := r.user.createSelected(ctx, session.CreateParams{
 		ParentSessionID: selectedParent.ID,
 		Name:            request.Name,
 		ProjectID:       selectedParent.ProjectID,
@@ -231,7 +337,7 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	r.dtos[child.ID] = child
 	observers := append([]ChildCreatedObserver(nil), r.childObservers...)
 	r.mu.Unlock()
-	runtime, err := r.bind(child, parent, func() error { return r.config.Sessions.Delete(ctx, child.ID) })
+	runtime, err := r.bind(child, parent, r.user.resolveAgentSessionStore(child.ID), func() error { return r.user.delete(ctx, child.ID) })
 	if err != nil {
 		if _, retained := r.ChildRelation(child.ID); retained {
 			for _, observer := range observers {
@@ -344,7 +450,7 @@ func (r *agentSessionRepository) ForgetChild(sessionID string) error {
 // retained if durable deletion fails, so a persisted child never becomes
 // unreachable from its parent.
 func (r *agentSessionRepository) DiscardChild(ctx context.Context, sessionID string) error {
-	if err := r.config.Sessions.Delete(ctx, sessionID); err != nil {
+	if err := r.user.delete(ctx, sessionID); err != nil {
 		return err
 	}
 	r.mu.Lock()
@@ -370,8 +476,12 @@ func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 	dto, known := r.dtos[sessionID]
 	r.mu.Unlock()
 
-	if !known && r.config.Sessions != nil {
-		loaded, err := r.config.Sessions.Get(context.Background(), sessionID)
+	var store session.AgentSessionStore
+	if r.user != nil {
+		store = r.user.resolveAgentSessionStore(sessionID)
+	}
+	if !known && store != nil {
+		loaded, err := store.Get(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("agent: get session %s: %w", sessionID, err)
 		}
@@ -403,11 +513,26 @@ func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 			return nil, fmt.Errorf("agent: bind parent %s: %w", relation.ParentSessionID, err)
 		}
 	}
-	return r.bind(dto, parent, nil)
+	return r.bind(dto, parent, store, nil)
 }
 
-func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentSession, rollback func() error) (created AgentSession, err error) {
+func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentSession, store session.AgentSessionStore, rollback func() error) (created AgentSession, err error) {
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		err = ErrUserSessionClosed
+		if rollback != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				err = errors.Join(err, rollbackErr)
+			} else {
+				r.mu.Lock()
+				delete(r.children, dto.ID)
+				delete(r.dtos, dto.ID)
+				r.mu.Unlock()
+			}
+		}
+		return nil, err
+	}
 	if existing := r.sessions[dto.ID]; existing != nil {
 		r.mu.Unlock()
 		return existing, nil
@@ -428,7 +553,24 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	r.bindings[dto.ID] = binding
 	r.mu.Unlock()
 
-	candidate := &agentSession{dto: dto, parent: parent, user: r.user, config: r.config, childTurns: newChildTurnSemaphore(r.maxConcurrentChildTurns), observers: r.observers}
+	var (
+		user                                     UserSession
+		maxChildPromptBytes, maxChildResultBytes int
+		observeChildProgress                     func(string, func(ChildProgress)) func()
+		onChildProgress, onChildComplete         func(Status)
+		onChildLifecycle                         func(ChildLifecycleEvent)
+	)
+	if r.user != nil {
+		user = r.user
+		maxChildPromptBytes, maxChildResultBytes = r.user.config.MaxChildPromptBytes, r.user.config.MaxChildResultBytes
+		observeChildProgress = r.user.config.ObserveChildProgress
+		onChildProgress, onChildComplete = r.user.config.OnChildProgress, r.user.config.OnChildComplete
+		onChildLifecycle = r.user.config.OnChildLifecycle
+	}
+	candidate := newAgentSession(
+		dto, parent, user, r, store, r.config, r.maxConcurrentChildTurns, r.observers,
+		maxChildPromptBytes, maxChildResultBytes, observeChildProgress, onChildProgress, onChildComplete, onChildLifecycle,
+	)
 	rolledBack := false
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -502,6 +644,33 @@ func (c agentToolChild) Send(ctx context.Context, message tool.AgentMessage) (to
 
 func toolAgentTask(status Status) tool.AgentTask {
 	return tool.AgentTask{SessionID: status.SessionID, Agent: status.Agent, Name: status.Name, Status: string(status.State), Turn: status.Turn, Depth: status.Depth, Output: status.Output, Error: status.Error}
+}
+
+func (r *agentSessionRepository) closeAndSnapshot(ctx context.Context) ([]*agentSession, error) {
+	for {
+		r.mu.Lock()
+		r.closed = true
+		pending := make([]<-chan struct{}, 0, len(r.bindings))
+		for _, binding := range r.bindings {
+			pending = append(pending, binding.done)
+		}
+		if len(pending) == 0 {
+			items := make([]*agentSession, 0, len(r.sessions))
+			for _, item := range r.sessions {
+				items = append(items, item)
+			}
+			r.mu.Unlock()
+			return items, nil
+		}
+		r.mu.Unlock()
+		for _, done := range pending {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
 }
 
 func (r *agentSessionRepository) Lookup(sessionID string) (AgentSession, bool) {

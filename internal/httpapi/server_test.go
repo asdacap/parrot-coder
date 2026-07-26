@@ -177,7 +177,7 @@ func (selectionResolver) Resolve(providerID, modelID string) (provider.Provider,
 	return nil, provider.Model{ID: modelID}, nil
 }
 
-func newSelectionBackend(t *testing.T) (*DomainBackend, *session.Service) {
+func newSelectionBackend(t *testing.T) (*DomainBackend, agent.UserSession) {
 	t.Helper()
 	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { _ = db.Close() })
@@ -187,7 +187,28 @@ func newSelectionBackend(t *testing.T) (*DomainBackend, *session.Service) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &DomainBackend{Sessions: sessions, Goals: session.NewGoalService(db, repository), Agents: agents, ProviderResolver: selectionResolver{}}, sessions
+	userSession := newTestUserSession(t, sessions, agents)
+	return &DomainBackend{AgentSessions: newTestSessionController(nil, userSession), Goals: session.NewGoalService(db, repository), Agents: agents, ProviderResolver: selectionResolver{}}, userSession
+}
+
+func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *agent.Registry) agent.UserSession {
+	t.Helper()
+	toolProviders, err := tool.NewProviders()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDirectories, err := agent.NewUserSessionStateDirectories(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	userSession, err := agent.NewUserSession(context.Background(), sessions, agent.UserSessionConfig{
+		AgentSession:            agent.AgentSessionConfig{StateDirectories: stateDirectories, Agents: agents, Providers: selectionResolver{}, ToolProviders: toolProviders},
+		MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 1,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return userSession
 }
 
 func TestGoalCRUDThroughTypedClient(t *testing.T) {
@@ -265,7 +286,7 @@ func TestSessionDTOIncludesName(t *testing.T) {
 }
 
 func TestChildCreationMapsAndValidatesParent(t *testing.T) {
-	backend, sessions := newSelectionBackend(t)
+	backend, _ := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
 	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
 	ctx := context.Background()
@@ -277,7 +298,11 @@ func TestChildCreationMapsAndValidatesParent(t *testing.T) {
 	if err != nil || child.ParentSessionID != parent.ID {
 		t.Fatalf("CreateSession child = %#v, %v", child, err)
 	}
-	loaded, err := sessions.Get(ctx, child.ID)
+	runtime, err := backend.AgentSessions.Get(child.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := runtime.Details(ctx)
 	if err != nil || loaded.ParentSessionID != parent.ID {
 		t.Fatalf("stored child = %#v, %v", loaded, err)
 	}
@@ -304,6 +329,8 @@ func TestDefaultCreationAndTypedPartialSelectionUpdate(t *testing.T) {
 	if err != nil || selected.Agent != "plan" || selected.Provider != "local" || selected.Model != "reasoning" {
 		t.Fatalf("model selection = %#v, %v", selected, err)
 	}
+	_, err = apiClient.UpdateSessionSelection(ctx, "ses_missing", v1.UpdateSessionSelectionRequest{Agent: "plan"})
+	assertAPIProblem(t, err, http.StatusNotFound, "session_not_found")
 }
 
 type testDrainer interface {
@@ -311,6 +338,7 @@ type testDrainer interface {
 }
 
 type testSessionController struct {
+	agent.UserSession
 	mu      sync.Mutex
 	drainer testDrainer
 	active  map[string]*testDrainState
@@ -323,40 +351,24 @@ type testDrainState struct {
 	status agent.AgentStatus
 }
 
-func newTestSessionController(drainer testDrainer) *testSessionController {
-	return &testSessionController{drainer: drainer, active: make(map[string]*testDrainState)}
+func newTestSessionController(drainer testDrainer, sessions agent.UserSession) *testSessionController {
+	return &testSessionController{UserSession: sessions, drainer: drainer, active: make(map[string]*testDrainState)}
 }
 
 func (c *testSessionController) Get(id string) (agent.AgentSession, error) {
-	return testAgentSession{controller: c, id: id}, nil
+	runtime, err := c.UserSession.Get(id)
+	if err != nil {
+		return nil, err
+	}
+	return testAgentSession{AgentSession: runtime, controller: c, id: id}, nil
 }
 
 type testAgentSession struct {
+	agent.AgentSession
 	controller *testSessionController
 	id         string
 }
 
-func (s testAgentSession) ID() string                 { return s.id }
-func (s testAgentSession) Name() string               { return "" }
-func (s testAgentSession) Parent() agent.AgentSession { return nil }
-func (s testAgentSession) CreateChild(context.Context, agent.ChildRequest) (agent.AgentSession, error) {
-	return nil, errors.New("not implemented")
-}
-func (s testAgentSession) Observe() (agent.ChildTurnObserver, error) {
-	return nil, errors.New("not implemented")
-}
-func (s testAgentSession) ResolveChild(string) (agent.AgentSession, error) {
-	return nil, errors.New("not implemented")
-}
-func (s testAgentSession) Prompt(context.Context, string) (string, error) {
-	return "", errors.New("not implemented")
-}
-func (s testAgentSession) Send(context.Context, string) (string, error) {
-	return "", errors.New("not implemented")
-}
-func (s testAgentSession) SendAgentMessage(context.Context, tool.AgentMessage) (string, error) {
-	return "", errors.New("not implemented")
-}
 func (s testAgentSession) Wake() { s.controller.wake(s.id) }
 func (s testAgentSession) Resume(context.Context) error {
 	return errors.New("not implemented")
@@ -383,7 +395,9 @@ func (c *testSessionController) wake(id string) {
 }
 
 func (c *testSessionController) run(ctx context.Context, id string, state *testDrainState) {
-	_ = c.drainer.Drain(ctx, id)
+	if c.drainer != nil {
+		_ = c.drainer.Drain(ctx, id)
+	}
 	c.mu.Lock()
 	if state.wake {
 		nextCtx, cancel := context.WithCancel(context.Background())
@@ -457,7 +471,7 @@ func TestSelectionRejectsActiveSession(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
 	started := make(chan struct{}, 1)
-	backend.AgentSessions = newTestSessionController(blockingDrainer{started: started})
+	backend.AgentSessions = newTestSessionController(blockingDrainer{started: started}, sessions)
 	created, err := backend.CreateSession(context.Background(), v1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatal(err)
@@ -478,7 +492,11 @@ func TestSelectionRejectsActiveSession(t *testing.T) {
 	apiClient, _ := client.New("http://inproc", inproc.New(New(backend, Config{})))
 	_, err = apiClient.UpdateSessionSelection(context.Background(), created.ID, v1.UpdateSessionSelectionRequest{Agent: "plan"})
 	assertAPIProblem(t, err, http.StatusConflict, "session_active")
-	loaded, err := sessions.Get(context.Background(), created.ID)
+	runtime, err = backend.AgentSessions.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := runtime.Details(context.Background())
 	if err != nil || loaded.Agent != "build" {
 		t.Fatalf("selection changed while active = %#v, %v", loaded, err)
 	}
@@ -527,18 +545,22 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 	backend, sessions := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
 	drainer := &restartOnceDrainer{started: make(chan struct{}, 2), restarted: make(chan struct{}, 1)}
-	backend.AgentSessions = newTestSessionController(drainer)
+	backend.AgentSessions = newTestSessionController(drainer, sessions)
 
 	ctx := context.Background()
 	created, err := backend.CreateSession(ctx, v1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := sessions.Admit(ctx, created.ID, session.AdmitParams{MessageID: "msg_steer", Content: "queued", Delivery: session.DeliverySteer}); err != nil {
+	runtime, err := sessions.Get(created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := runtime.Admit(ctx, session.AdmitParams{MessageID: "msg_steer", Content: "queued", Delivery: session.DeliverySteer}); err != nil {
 		t.Fatal(err)
 	}
 
-	runtime, _ := backend.AgentSessions.Get(created.ID)
+	runtime, _ = backend.AgentSessions.Get(created.ID)
 	runtime.Wake()
 	select {
 	case <-drainer.started:
@@ -561,10 +583,10 @@ func TestInterruptAutoResumesWhenPendingInputsRemain(t *testing.T) {
 }
 
 func TestInterruptDoesNotAutoResumeWithoutPendingInputs(t *testing.T) {
-	backend, _ := newSelectionBackend(t)
+	backend, sessions := newSelectionBackend(t)
 	backend.DefaultSelection = session.Selection{Agent: "build", Provider: "local", Model: "code"}
 	drainer := &restartOnceDrainer{started: make(chan struct{}, 2), restarted: make(chan struct{}, 1)}
-	backend.AgentSessions = newTestSessionController(drainer)
+	backend.AgentSessions = newTestSessionController(drainer, sessions)
 
 	ctx := context.Background()
 	created, err := backend.CreateSession(ctx, v1.CreateSessionRequest{})
@@ -643,14 +665,19 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	defer db.Close()
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
-	created, err := sessions.CreateSelected(ctx, session.CreateParams{Title: "test"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})
+	agents, err := agent.NewRegistry()
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := New(&DomainBackend{Sessions: sessions, Events: event.NewBroker(repository, event.NewTransientRepository())}, Config{})
+	userSession := newTestUserSession(t, sessions, agents)
+	created, err := userSession.CreateSelected(ctx, session.CreateParams{Title: "test"}, session.Selection{Agent: "build", Provider: "local", Model: "code"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(&DomainBackend{AgentSessions: newTestSessionController(nil, userSession), Events: event.NewBroker(repository, event.NewTransientRepository())}, Config{})
 	body := `{"message_id":"msg_retry","content":"hello","delivery":"steer"}`
 	for attempt := 0; attempt < 2; attempt++ {
-		request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID+"/prompts", strings.NewReader(body))
+		request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(body))
 		request.Header.Set("Content-Type", v1.MediaTypeJSON)
 		response := httptest.NewRecorder()
 		server.ServeHTTP(response, request)
@@ -665,7 +692,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 			t.Fatalf("attempt %d created = %v", attempt, accepted.Created)
 		}
 	}
-	items, err := repository.List(ctx, created.ID, -1, 10)
+	items, err := repository.List(ctx, created.ID(), -1, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -673,7 +700,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 		t.Fatalf("events = %#v", items)
 	}
 
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID+"/prompts", strings.NewReader(`{"message_id":"msg_retry","content":"different","delivery":"steer"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(`{"message_id":"msg_retry","content":"different","delivery":"steer"}`))
 	request.Header.Set("Content-Type", v1.MediaTypeJSON)
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)

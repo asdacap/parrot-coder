@@ -345,7 +345,8 @@ func TestOpenModelLessCatalogsAndExplicitSessionSelection(t *testing.T) {
 		t.Fatalf("sessions after invalid selection = %#v, %v", listed, err)
 	}
 
-	legacy, err := runtime.Backend.Sessions.Create(context.Background(), session.CreateParams{Title: "legacy"})
+	legacySessions := session.NewService(runtime.sessionStore, event.NewRepository(runtime.sessionStore))
+	legacy, err := legacySessions.Create(context.Background(), session.CreateParams{Title: "legacy"})
 	if err != nil {
 		t.Fatal(err)
 	}
