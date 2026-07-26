@@ -144,17 +144,32 @@ func (s *agentSession) executionStatus() AgentStatus {
 }
 
 func (s *agentSession) Observe() (ChildTurnObserver, error) {
-	if s.user == nil || s.parent == nil {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.child == nil {
 		return nil, ErrChildNotFound
 	}
-	return s.user.observeChild(s.parent.ID(), s.dto.ID)
+	return childObserver{turn: s.child.turn}, nil
 }
 
 func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
-	if s.user == nil {
+	if identifier == "" || s.agentSessionRepository == nil {
 		return nil, ErrChildNotFound
 	}
-	return s.user.resolveChild(s.ID(), identifier)
+	pending := s.agentSessionRepository.ChildSessions(s.ID())
+	for len(pending) > 0 {
+		relation := pending[0]
+		pending = pending[1:]
+		child, ok := s.agentSessionRepository.Lookup(relation.SessionID)
+		if !ok {
+			continue
+		}
+		if relation.SessionID == identifier || child.Name() == identifier {
+			return child, nil
+		}
+		pending = append(pending, s.agentSessionRepository.ChildSessions(relation.SessionID)...)
+	}
+	return nil, ErrChildNotFound
 }
 
 // Prompt admits input, runs the session to idle, and returns the assistant
@@ -199,7 +214,7 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 // Send admits steer input and wakes the session without waiting for it to idle.
 func (s *agentSession) Send(ctx context.Context, content string) (string, error) {
 	if s.user != nil && s.parent != nil {
-		return s.user.sendManagedTurn(ctx, s, content, content)
+		return s.sendManagedTurn(ctx, content, content)
 	}
 	messageID, _, err := s.admitAndStart(ctx, content)
 	return messageID, err
@@ -208,7 +223,7 @@ func (s *agentSession) Send(ctx context.Context, content string) (string, error)
 func (s *agentSession) SendAgentMessage(ctx context.Context, message tool.AgentMessage) (string, error) {
 	content := message.String()
 	if s.user != nil && s.parent != nil {
-		return s.user.sendManagedTurn(ctx, s, content, message.Content)
+		return s.sendManagedTurn(ctx, content, message.Content)
 	}
 	messageID, _, err := s.admitAndStart(ctx, content)
 	return messageID, err

@@ -118,29 +118,52 @@ type AgentSessionConfig struct {
 }
 
 type agentSession struct {
-	dto             session.AgentSessionDto
-	parent          AgentSession
-	user            UserSession
-	store           session.AgentSessionStore
-	config          AgentSessionConfig
-	securityProfile *agentSessionSecurityProfile
-	mu              sync.Mutex
-	childOp         sync.Mutex
-	child           *childState
-	drain           *drainState
-	childCreations  int
-	removed         bool
-	childTurns      childTurnSemaphore
-	observers       []LifecycleObserver
-	toolSnapshot    tool.Snapshot
-	toolExecutor    tool.Executor
-	execute         func(context.Context) error
+	dto                    session.AgentSessionDto
+	parent                 AgentSession
+	user                   UserSession
+	agentSessionRepository *agentSessionRepository
+	store                  session.AgentSessionStore
+	config                 AgentSessionConfig
+	securityProfile        *agentSessionSecurityProfile
+	mu                     sync.Mutex
+	childOp                sync.Mutex
+	child                  *childState
+	drain                  *drainState
+	childCreations         int
+	removed                bool
+	childTurns             childTurnSemaphore
+	observers              []LifecycleObserver
+	toolSnapshot           tool.Snapshot
+	toolExecutor           tool.Executor
+	execute                func(context.Context) error
+	maxChildPromptBytes    int
+	maxChildResultBytes    int
+	observeChildProgress   func(string, func(ChildProgress)) func()
+	onChildProgress        func(Status)
+	onChildComplete        func(Status)
+	onChildLifecycle       func(ChildLifecycleEvent)
 }
 
-func newAgentSession(dto session.AgentSessionDto, parent AgentSession, user UserSession, store session.AgentSessionStore, config AgentSessionConfig, maxConcurrentChildTurns int, observers []LifecycleObserver) *agentSession {
+func newAgentSession(
+	dto session.AgentSessionDto,
+	parent AgentSession,
+	user UserSession,
+	repository *agentSessionRepository,
+	store session.AgentSessionStore,
+	config AgentSessionConfig,
+	maxConcurrentChildTurns int,
+	observers []LifecycleObserver,
+	maxChildPromptBytes, maxChildResultBytes int,
+	observeChildProgress func(string, func(ChildProgress)) func(),
+	onChildProgress, onChildComplete func(Status),
+	onChildLifecycle func(ChildLifecycleEvent),
+) *agentSession {
 	return &agentSession{
-		dto: dto, parent: parent, user: user, store: store, config: config,
+		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, config: config,
 		childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
+		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
+		observeChildProgress: observeChildProgress, onChildProgress: onChildProgress,
+		onChildComplete: onChildComplete, onChildLifecycle: onChildLifecycle,
 	}
 }
 

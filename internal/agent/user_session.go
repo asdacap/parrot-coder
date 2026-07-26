@@ -58,12 +58,8 @@ type UserSession interface {
 	ClaimInteractive(context.Context, session.InteractiveOwner, session.CreateParams, session.Selection, bool, func(int) bool) (session.InteractiveClaim, error)
 	Shutdown(context.Context) error
 	CreateChild(context.Context, AgentSession, ChildRequest) (AgentSession, error)
-	observeChild(string, string) (ChildTurnObserver, error)
-	resolveChild(string, string) (AgentSession, error)
-	runChild(*agentSession, *childTurnState)
-	sendManagedTurn(context.Context, *agentSession, string, string) (string, error)
+	startChildTurn(AgentSession, func(childPermit, func()) error) error
 	forgetChild(*agentSession) error
-	reportChildProgress(*agentSession, ChildProgress)
 }
 
 type UserSessionConfig struct {
@@ -510,11 +506,24 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	r.bindings[dto.ID] = binding
 	r.mu.Unlock()
 
-	var user UserSession
+	var (
+		user                                     UserSession
+		maxChildPromptBytes, maxChildResultBytes int
+		observeChildProgress                     func(string, func(ChildProgress)) func()
+		onChildProgress, onChildComplete         func(Status)
+		onChildLifecycle                         func(ChildLifecycleEvent)
+	)
 	if r.user != nil {
 		user = r.user
+		maxChildPromptBytes, maxChildResultBytes = r.user.config.MaxChildPromptBytes, r.user.config.MaxChildResultBytes
+		observeChildProgress = r.user.config.ObserveChildProgress
+		onChildProgress, onChildComplete = r.user.config.OnChildProgress, r.user.config.OnChildComplete
+		onChildLifecycle = r.user.config.OnChildLifecycle
 	}
-	candidate := newAgentSession(dto, parent, user, store, r.config, r.maxConcurrentChildTurns, r.observers)
+	candidate := newAgentSession(
+		dto, parent, user, r, store, r.config, r.maxConcurrentChildTurns, r.observers,
+		maxChildPromptBytes, maxChildResultBytes, observeChildProgress, onChildProgress, onChildComplete, onChildLifecycle,
+	)
 	rolledBack := false
 	defer func() {
 		if recovered := recover(); recovered != nil {
