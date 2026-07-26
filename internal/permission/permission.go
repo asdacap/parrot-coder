@@ -9,6 +9,7 @@ import (
 	"errors"
 	"sort"
 	"sync"
+	"time"
 )
 
 type Decision string
@@ -17,6 +18,10 @@ const (
 	Allow Decision = "allow"
 	Deny  Decision = "deny"
 )
+
+// ErrRequestTimeout reports that a permission request received no reply before
+// the broker's configured deadline.
+var ErrRequestTimeout = errors.New("permission request timed out")
 
 // Choice is one answer a requesting tool offers for its own authorization. A
 // tool which grants a lasting capability can thereby narrow how it may be
@@ -76,11 +81,12 @@ type Broker struct {
 	mu             sync.Mutex
 	noninteractive bool
 	prompter       Prompter
+	requestTimeout time.Duration
 	pending        map[string]*pendingState
 }
 
-func NewBroker(noninteractive bool, prompter Prompter) *Broker {
-	return &Broker{noninteractive: noninteractive, prompter: prompter, pending: make(map[string]*pendingState)}
+func NewBroker(noninteractive bool, prompter Prompter, requestTimeout time.Duration) *Broker {
+	return &Broker{noninteractive: noninteractive, prompter: prompter, requestTimeout: requestTimeout, pending: make(map[string]*pendingState)}
 }
 
 // Authorize returns the effective decision, which is deny when no one can be
@@ -93,9 +99,11 @@ func (b *Broker) Authorize(ctx context.Context, request Request) (Decision, erro
 	if err != nil {
 		return Deny, err
 	}
+	promptCtx, cancelPrompt := context.WithCancel(ctx)
+	defer cancelPrompt()
 	if b.prompter != nil {
 		go func() {
-			reply, promptErr := b.prompter.Prompt(ctx, state.pending)
+			reply, promptErr := b.prompter.Prompt(promptCtx, state.pending)
 			if promptErr != nil {
 				_ = b.Reject(state.pending.ID)
 				return
@@ -103,18 +111,29 @@ func (b *Broker) Authorize(ctx context.Context, request Request) (Decision, erro
 			_ = b.reply(state.pending.ID, reply)
 		}()
 	}
+	timer := time.NewTimer(b.requestTimeout)
+	defer timer.Stop()
 	select {
 	case reply := <-state.result:
-		if reply.Decision == Deny && reply.Reason != "" {
-			return Deny, errors.New(reply.Reason)
-		}
-		return reply.Decision, nil
+		return decision(reply)
 	case <-ctx.Done():
-		b.mu.Lock()
-		delete(b.pending, state.pending.ID)
-		b.mu.Unlock()
-		return Deny, ctx.Err()
+		if b.removePending(state.pending.ID) {
+			return Deny, ctx.Err()
+		}
+		return decision(<-state.result)
+	case <-timer.C:
+		if b.removePending(state.pending.ID) {
+			return Deny, ErrRequestTimeout
+		}
+		return decision(<-state.result)
 	}
+}
+
+func decision(reply Reply) (Decision, error) {
+	if reply.Decision == Deny && reply.Reason != "" {
+		return Deny, errors.New(reply.Reason)
+	}
+	return reply.Decision, nil
 }
 
 func (b *Broker) Pending() []Pending {
@@ -152,12 +171,23 @@ func (b *Broker) reply(id string, reply Reply) error {
 	}
 	b.mu.Lock()
 	state, ok := b.pending[id]
+	if ok {
+		delete(b.pending, id)
+	}
+	b.mu.Unlock()
 	if !ok {
-		b.mu.Unlock()
 		return errors.New("permission request is unknown or already settled")
 	}
-	delete(b.pending, id)
-	b.mu.Unlock()
 	state.result <- reply
 	return nil
+}
+
+func (b *Broker) removePending(id string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if _, ok := b.pending[id]; !ok {
+		return false
+	}
+	delete(b.pending, id)
+	return true
 }

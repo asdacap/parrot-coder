@@ -222,6 +222,50 @@ func TestLoadSubagentDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadPermissionRequestTimeoutDefaultOverrideAndValidation(t *testing.T) {
+	root := t.TempDir()
+	result, err := Load(Options{ProjectRoot: root, CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.PermissionRequestTimeoutMS != 30000 || result.Provenance["permission_request_timeout_ms"] != PredefinedFileName {
+		t.Fatalf("timeout = %d, provenance = %q", result.Config.PermissionRequestTimeoutMS, result.Provenance["permission_request_timeout_ms"])
+	}
+
+	path := filepath.Join(root, FileName)
+	writeFile(t, path, "permission_request_timeout_ms: 1250\n")
+	result, err = Load(Options{ProjectRoot: root, CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.PermissionRequestTimeoutMS != 1250 || result.Provenance["permission_request_timeout_ms"] != path {
+		t.Fatalf("timeout = %d, provenance = %q", result.Config.PermissionRequestTimeoutMS, result.Provenance["permission_request_timeout_ms"])
+	}
+
+	writeFile(t, path, fmt.Sprintf("permission_request_timeout_ms: %d\n", maxPermissionRequestTimeoutMS))
+	result, err = Load(Options{ProjectRoot: root, CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.PermissionRequestTimeoutMS != int(maxPermissionRequestTimeoutMS) {
+		t.Fatalf("maximum timeout = %d", result.Config.PermissionRequestTimeoutMS)
+	}
+
+	for _, test := range []struct {
+		value string
+		want  string
+	}{
+		{value: "0", want: "permission_request_timeout_ms must be greater than zero"},
+		{value: "-1", want: "permission_request_timeout_ms must be greater than zero"},
+		{value: fmt.Sprint(maxPermissionRequestTimeoutMS + 1), want: "permission_request_timeout_ms must not exceed"},
+	} {
+		writeFile(t, path, "permission_request_timeout_ms: "+test.value+"\n")
+		if _, err := Load(Options{ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("Load timeout %s error = %v", test.value, err)
+		}
+	}
+}
+
 func TestLoadPromptDefaultsAndOverrides(t *testing.T) {
 	for _, test := range []struct {
 		name           string
@@ -380,6 +424,9 @@ func TestLoadGeneratesDefaultConfigWhenMissing(t *testing.T) {
 	if result.Config.DefaultModel != "" {
 		t.Fatalf("DefaultModel = %q, want empty", result.Config.DefaultModel)
 	}
+	if result.Config.PermissionRequestTimeoutMS != 30000 {
+		t.Fatalf("PermissionRequestTimeoutMS = %d, want 30000", result.Config.PermissionRequestTimeoutMS)
+	}
 	if len(result.Config.Providers) != 0 || len(result.Config.MCP) != 0 {
 		t.Fatalf("generated starter should be empty, got %#v", result.Config)
 	}
@@ -438,6 +485,7 @@ func TestGeneratedYAMLHasAllReadableComments(t *testing.T) {
 		"Base agent prompt included in the system context.",
 		"prompt: |-",
 		"Default model selected as provider/model.",
+		"Positive number of milliseconds to wait for a permission request response.",
 		"Child-agent concurrency and nesting limits.",
 		"Maximum number of nested child-agent levels.",
 		"OpenAI-compatible providers and their model catalogs.",

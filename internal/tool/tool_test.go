@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
@@ -463,7 +464,7 @@ func toolHarness(t *testing.T) (*workspace.Workspace, Executor, CallContext) {
 			t.Fatal(err)
 		}
 	}
-	broker := permission.NewBroker(true, nil)
+	broker := permission.NewBroker(true, nil, time.Second)
 	call := CallContext{Workspace: w}
 	return w, Executor{Snapshot: r.Materialize(), Permissions: broker, MaxOutputBytes: 4096}, call
 }

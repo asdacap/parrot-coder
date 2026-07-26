@@ -3,7 +3,6 @@ package enhancedchat
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
@@ -56,27 +55,41 @@ func (r *enhancedChatRuntime) commitError(message string) {
 }
 
 func (r *enhancedChatRuntime) detectModal() {
-	if r.modal != nil || r.shell.current.ID == "" {
+	if r.shell.current.ID == "" || (r.modal != nil && (r.modal.kind != "permission" || r.modal.permission == nil)) {
 		return
 	}
 	permissions, permissionErr := r.shell.api.Permissions(r.shell.ctx, r.shell.current.ID)
 	if permissionErr != nil {
 		r.status = "permission check failed"
-	} else if len(permissions.Items) > 0 {
-		item := permissions.Items[0]
-		state, err := r.shell.editor.Start("")
-		if err != nil {
-			r.status = "permission editor unavailable"
+		if r.modal != nil {
 			return
 		}
-		r.modal = &enhancedModal{
-			kind: "permission", state: state, permission: &item,
-			prompt: "permission decision: ", choices: permissionChoicesFor(item),
-			createdAt: time.Now(),
+	} else {
+		if r.modal != nil {
+			for _, item := range permissions.Items {
+				if item.ID == r.modal.permission.ID {
+					return
+				}
+			}
+			r.status = "permission request is no longer pending"
+			r.finishModal()
+			return
 		}
-		r.inputMode.advance()
-		r.showPermissionContext(item)
-		return
+		if len(permissions.Items) > 0 {
+			item := permissions.Items[0]
+			state, err := r.shell.editor.Start("")
+			if err != nil {
+				r.status = "permission editor unavailable"
+				return
+			}
+			r.modal = &enhancedModal{
+				kind: "permission", state: state, permission: &item,
+				prompt: "permission decision: ", choices: permissionChoicesFor(item),
+			}
+			r.inputMode.advance()
+			r.showPermissionContext(item)
+			return
+		}
 	}
 	questions, questionErr := r.shell.api.Questions(r.shell.ctx, r.shell.current.ID)
 	if questionErr != nil {
@@ -88,7 +101,7 @@ func (r *enhancedChatRuntime) detectModal() {
 			r.status = "question editor unavailable"
 			return
 		}
-		r.modal = &enhancedModal{kind: "question", state: state, question: &request, createdAt: time.Now()}
+		r.modal = &enhancedModal{kind: "question", state: state, question: &request}
 		r.inputMode.advance()
 		r.updateQuestionPrompt()
 		r.showQuestionContext(request.Questions[0])
@@ -458,16 +471,4 @@ func (r *enhancedChatRuntime) finishModal() {
 	}
 	r.modal = nil
 	r.inputMode.advance()
-}
-
-func (r *enhancedChatRuntime) timeoutModal() {
-	if r.modal == nil {
-		return
-	}
-	modal := r.modal
-	if modal.kind == "permission" && modal.permission != nil {
-		_ = r.shell.api.ReplyPermission(r.shell.ctx, r.shell.current.ID, modal.permission.ID, v1.PermissionReply{Decision: "deny", Reason: "user is away"})
-	}
-	r.status = "permission denied: user is away"
-	r.finishModal()
 }

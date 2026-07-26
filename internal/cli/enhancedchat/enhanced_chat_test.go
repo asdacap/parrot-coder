@@ -1969,6 +1969,35 @@ func TestEnhancedPermissionModalPreservesDraft(t *testing.T) {
 	}
 }
 
+func TestEnhancedPermissionModalClosesWhenRequestSettles(t *testing.T) {
+	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{ID: "permission", ToolID: "exec_command"}}}}
+	editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
+	state, err := editor.Start("keep draft")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{
+			ctx: context.Background(), api: api, current: v1.Session{ID: "session"}, editor: editor,
+			renderer: terminal.NewLiveRenderer(io.Discard, terminal.RendererConfig{}),
+		},
+		state: state, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1),
+	}
+	runtime.detectModal()
+	if runtime.modal == nil {
+		t.Fatal("permission modal was not shown")
+	}
+
+	api.permissions.Items = nil
+	runtime.detectModal()
+	if runtime.modal != nil || state.Value() != "keep draft" || len(api.permissionReplies) != 0 {
+		t.Fatalf("modal=%#v draft=%q replies=%#v", runtime.modal, state.Value(), api.permissionReplies)
+	}
+	if runtime.status != "permission request is no longer pending" {
+		t.Fatalf("status = %q", runtime.status)
+	}
+}
+
 func TestEnhancedPermissionModalSelectionStopsSpinnerAndReplies(t *testing.T) {
 	api := &enhancedQueueAPI{permissions: v1.PermissionList{Items: []v1.Permission{{
 		ID: "permission", ToolID: "exec_command",

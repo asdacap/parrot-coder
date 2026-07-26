@@ -42,6 +42,7 @@ prompt: |-
 model: provider/model
 variant: high # optional reasoning variant exposed by the selected model
 inline_diff: true # false selects side-by-side diff blocks
+permission_request_timeout_ms: 30000
 providers:
   provider:
     type: compatible # compatible or openai-compatible
@@ -115,6 +116,11 @@ to `true`, which renders each context, deletion, and addition on its own
 full-width row. Set it to `false` to use the side-by-side before/after viewer.
 Malformed and binary diffs use the bounded unified fallback in either mode, and
 the side-by-side viewer also falls back when the terminal is too narrow.
+
+`permission_request_timeout_ms` limits how long an unanswered permission request
+may remain pending. It is a positive integer number of milliseconds and defaults
+to 30000 (30 seconds). Like other scalar configuration, the highest-precedence
+configured value replaces the default.
 
 The `model` and `variant` fields form the default model selection. `variant` is
 optional, but when present it must name a reasoning variant exposed by `model`.
