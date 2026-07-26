@@ -57,8 +57,11 @@ A prompt is raised only for operations the sandbox cannot contain:
 
 Permissions are `allow` or `deny` decisions. Nothing is remembered: each reply
 settles exactly the request which raised it, so an identical later call prompts
-again. There are no scoped grants and no YOLO mode. In non-interactive mode a
-request that would prompt is denied.
+again. Unanswered requests expire after `permission_request_timeout_ms`, which
+defaults to 30000 milliseconds (30 seconds); expiration denies the operation,
+and a late reply is rejected because the request has already settled. There are
+no scoped grants and no YOLO mode. In non-interactive mode a request that would
+prompt is denied.
 
 Permission dialogs show only the tool's human-readable description, flattened
 to one line. They do not show resource records, canonical input, or structured

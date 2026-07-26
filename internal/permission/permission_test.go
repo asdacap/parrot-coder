@@ -39,7 +39,7 @@ func waitForPending(t *testing.T, b *Broker, want int) []Pending {
 }
 
 func TestBrokerCancellationAndSingleUse(t *testing.T) {
-	b := NewBroker(false, nil)
+	b := NewBroker(false, nil, time.Second)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() { _, err := b.Authorize(ctx, request(t)); done <- err }()
@@ -54,7 +54,7 @@ func TestBrokerCancellationAndSingleUse(t *testing.T) {
 }
 
 func TestNoninteractiveDenies(t *testing.T) {
-	b := NewBroker(true, nil)
+	b := NewBroker(true, nil, time.Second)
 	if d, err := b.Authorize(context.Background(), request(t)); err != nil || d != Deny {
 		t.Fatalf("%v %v", d, err)
 	}
@@ -75,7 +75,7 @@ func TestRepliesAreNotRemembered(t *testing.T) {
 		{name: "deny", reply: (*Broker).Reject, want: Deny},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			b := NewBroker(false, nil)
+			b := NewBroker(false, nil, time.Second)
 			for round := range 2 {
 				done := make(chan Decision, 1)
 				go func() { d, _ := b.Authorize(context.Background(), request(t)); done <- d }()
@@ -92,7 +92,7 @@ func TestRepliesAreNotRemembered(t *testing.T) {
 }
 
 func TestRejectWithReasonReturnsToolError(t *testing.T) {
-	b := NewBroker(false, nil)
+	b := NewBroker(false, nil, time.Second)
 	done := make(chan error, 1)
 	go func() { _, err := b.Authorize(context.Background(), request(t)); done <- err }()
 	items := waitForPending(t, b, 1)
@@ -105,7 +105,7 @@ func TestRejectWithReasonReturnsToolError(t *testing.T) {
 }
 
 func TestReplyRejectsUnknownIDAndInvalidDecision(t *testing.T) {
-	b := NewBroker(false, nil)
+	b := NewBroker(false, nil, time.Second)
 	if err := b.ReplyOnce("missing"); err == nil {
 		t.Fatal("unknown request ID accepted")
 	}
@@ -119,4 +119,30 @@ func TestReplyRejectsUnknownIDAndInvalidDecision(t *testing.T) {
 		t.Fatal(err)
 	}
 	<-done
+}
+
+func TestBrokerTimeoutDeniesCleansUpAndRejectsLateReply(t *testing.T) {
+	b := NewBroker(false, nil, 100*time.Millisecond)
+	done := make(chan struct {
+		decision Decision
+		err      error
+	}, 1)
+	go func() {
+		decision, err := b.Authorize(context.Background(), request(t))
+		done <- struct {
+			decision Decision
+			err      error
+		}{decision, err}
+	}()
+	pending := waitForPending(t, b, 1)[0]
+	result := <-done
+	if result.decision != Deny || !errors.Is(result.err, ErrRequestTimeout) {
+		t.Fatalf("Authorize = (%q, %v), want deny request timeout", result.decision, result.err)
+	}
+	if len(b.Pending()) != 0 {
+		t.Fatalf("pending = %#v, want empty", b.Pending())
+	}
+	if err := b.ReplyOnce(pending.ID); err == nil {
+		t.Fatal("timed-out request accepted a late reply")
+	}
 }

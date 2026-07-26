@@ -391,7 +391,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		questionHandler = questionPrompter{}
 	}
 	questions := question.NewBroker(questionHandler)
-	permissions := permission.NewBroker(options.NonInteractive, nil)
+	permissions := permission.NewBroker(options.NonInteractive, nil, time.Duration(loaded.Config.PermissionRequestTimeoutMS)*time.Millisecond)
 	mcpConfigs, err := buildMCPConfigs(loaded.Config.MCP)
 	if err != nil {
 		return nil, err

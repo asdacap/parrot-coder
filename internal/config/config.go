@@ -10,29 +10,32 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/atomicfile"
 	"go.yaml.in/yaml/v3"
 )
 
 const (
-	FileName           = "parrot.yaml"
-	PredefinedFileName = "predefined_config.yaml"
-	maxConfigBytes     = 4 << 20
+	FileName                      = "parrot.yaml"
+	PredefinedFileName            = "predefined_config.yaml"
+	maxConfigBytes                = 4 << 20
+	maxPermissionRequestTimeoutMS = int64((1<<63 - 1) / time.Millisecond)
 )
 
 // Config is the typed configuration consumed by later application phases.
 type Config struct {
-	Prompt         string              `json:"prompt,omitempty"`
-	DefaultModel   string              `json:"model,omitempty"`
-	DefaultVariant string              `json:"variant,omitempty"`
-	InlineDiff     bool                `json:"inline_diff,omitempty"`
-	Providers      map[string]Provider `json:"providers,omitempty"`
-	MCP            map[string]MCP      `json:"mcp,omitempty"`
-	WebFetch       WebFetch            `json:"web_fetch,omitempty"`
-	Subagents      Subagents           `json:"subagents,omitempty"`
-	ToolBlacklist  []string            `json:"tool_blacklist,omitempty"`
-	SandboxRules   []SandboxRule       `json:"sandbox_rules,omitempty"`
+	Prompt                     string              `json:"prompt,omitempty"`
+	DefaultModel               string              `json:"model,omitempty"`
+	DefaultVariant             string              `json:"variant,omitempty"`
+	InlineDiff                 bool                `json:"inline_diff,omitempty"`
+	PermissionRequestTimeoutMS int                 `json:"permission_request_timeout_ms,omitempty"`
+	Providers                  map[string]Provider `json:"providers,omitempty"`
+	MCP                        map[string]MCP      `json:"mcp,omitempty"`
+	WebFetch                   WebFetch            `json:"web_fetch,omitempty"`
+	Subagents                  Subagents           `json:"subagents,omitempty"`
+	ToolBlacklist              []string            `json:"tool_blacklist,omitempty"`
+	SandboxRules               []SandboxRule       `json:"sandbox_rules,omitempty"`
 }
 
 // Subagents controls child-agent concurrency and nesting.
@@ -268,6 +271,12 @@ func Load(options Options) (Result, error) {
 	if err := validateSubagents(typed.Subagents); err != nil {
 		return Result{}, err
 	}
+	if typed.PermissionRequestTimeoutMS <= 0 {
+		return Result{}, errors.New("permission_request_timeout_ms must be greater than zero")
+	}
+	if int64(typed.PermissionRequestTimeoutMS) > maxPermissionRequestTimeoutMS {
+		return Result{}, fmt.Errorf("permission_request_timeout_ms must not exceed %d", maxPermissionRequestTimeoutMS)
+	}
 	if options.ConfigDir != "" {
 		if err := WritePredefinedConfig(filepath.Join(options.ConfigDir, PredefinedFileName)); err != nil {
 			return Result{}, fmt.Errorf("write predefined config: %w", err)
@@ -436,6 +445,9 @@ variant: ""
 # Render changed lines inline. Set to false for a side-by-side diff viewer.
 inline_diff: true
 
+# Positive number of milliseconds to wait for a permission request response.
+permission_request_timeout_ms: 30000
+
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
 #   - web_fetch
@@ -579,6 +591,9 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 
 # Render changed lines inline. Set to false for a side-by-side diff viewer.
 # inline_diff: true
+
+# Positive number of milliseconds to wait for a permission request response.
+# permission_request_timeout_ms: 30000
 
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:
