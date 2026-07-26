@@ -149,7 +149,7 @@ func renderMarkdownLineWithSuffix(prefix, line, suffix string, columns int, stat
 	}
 	runs := markdownLineRuns(line, columns-displayWidth(prefix))
 	appendTextRun(&runs, suffix, ansiStyle{})
-	return layoutRichRuns(withMarkdownPrefix(prefix, runs), hangingIndent(prefix), columns)
+	return layoutRichProse(withMarkdownPrefix(prefix, runs), hangingIndent(prefix), columns)
 }
 
 func renderMarkdownLine(prefix, line string, columns int, state *markdownState, color bool) richRows {
@@ -227,7 +227,7 @@ func renderMarkdownLine(prefix, line string, columns int, state *markdownState, 
 	}
 
 	runs := markdownLineRuns(line, columns-displayWidth(prefix))
-	output.append(layoutRichRuns(withMarkdownPrefix(prefix, runs), hangingIndent(prefix), columns))
+	output.append(layoutRichProse(withMarkdownPrefix(prefix, runs), hangingIndent(prefix), columns))
 	return output
 }
 
@@ -728,6 +728,118 @@ func appendRuns(target *[]textRun, values []textRun) {
 	for _, value := range values {
 		appendTextRun(target, value.text, value.style)
 	}
+}
+
+// layoutRichProse wraps at whitespace when the next word fits on a fresh row.
+// Words wider than a row still use the ordinary hard wrapping behavior.
+func layoutRichProse(runs []textRun, indent string, columns int) richRows {
+	if columns <= 0 {
+		columns = defaultColumns
+	}
+	indentWidth := displayWidth(indent)
+	if indentWidth >= columns {
+		indent, indentWidth = "", 0
+	}
+
+	type styledRune struct {
+		value rune
+		style ansiStyle
+		width int
+	}
+	var values []styledRune
+	for _, run := range runs {
+		for _, raw := range run.text {
+			if raw == '\n' {
+				values = append(values, styledRune{value: raw, style: run.style})
+				continue
+			}
+			for _, value := range expandRune(raw) {
+				values = append(values, styledRune{value: value, style: run.style, width: runeWidth(value)})
+			}
+		}
+	}
+
+	output := richRows{rows: []string{""}, spans: [][]textSpan{nil}}
+	row, column := 0, 0
+	appendValue := func(value styledRune) {
+		start := len(output.rows[row])
+		output.rows[row] += string(value.value)
+		end := len(output.rows[row])
+		if value.style == (ansiStyle{}) {
+			return
+		}
+		spans := output.spans[row]
+		if len(spans) > 0 && spans[len(spans)-1].end == start && spans[len(spans)-1].style == value.style {
+			spans[len(spans)-1].end = end
+			output.spans[row] = spans
+			return
+		}
+		output.spans[row] = append(spans, textSpan{start: start, end: end, style: value.style})
+	}
+	newRow := func() {
+		output.rows = append(output.rows, indent)
+		output.spans = append(output.spans, nil)
+		row++
+		column = indentWidth
+	}
+	appendHard := func(chunk []styledRune) {
+		for _, value := range chunk {
+			if column > 0 && column+value.width > columns {
+				newRow()
+			}
+			appendValue(value)
+			column += value.width
+		}
+	}
+	chunkWidth := func(chunk []styledRune) int {
+		width := 0
+		for _, value := range chunk {
+			width += value.width
+		}
+		return width
+	}
+
+	isWrapSpace := func(value rune) bool {
+		switch value {
+		case '\u00a0', '\u2007', '\u202f':
+			return false
+		default:
+			return unicode.IsSpace(value)
+		}
+	}
+	var whitespace []styledRune
+	for position := 0; position < len(values); {
+		if values[position].value == '\n' {
+			appendHard(whitespace)
+			whitespace = nil
+			newRow()
+			position++
+			continue
+		}
+		if isWrapSpace(values[position].value) {
+			whitespace = append(whitespace, values[position])
+			position++
+			continue
+		}
+		end := position
+		for end < len(values) && values[end].value != '\n' && !isWrapSpace(values[end].value) {
+			end++
+		}
+		word := values[position:end]
+		spaceWidth, wordWidth := chunkWidth(whitespace), chunkWidth(word)
+		rowCapacity := columns - indentWidth
+		if wordWidth <= rowCapacity && column > indentWidth && column+spaceWidth+wordWidth > columns {
+			newRow()
+			whitespace = nil
+		} else {
+			appendHard(whitespace)
+			whitespace = nil
+		}
+		appendHard(word)
+		position = end
+	}
+	appendHard(whitespace)
+	return output
 }
 
 func layoutRichRuns(runs []textRun, indent string, columns int) richRows {

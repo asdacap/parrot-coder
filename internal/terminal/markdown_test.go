@@ -47,6 +47,69 @@ func TestRenderAssistantMarkdownFormatsBlockAndInlineSyntax(t *testing.T) {
 	}
 }
 
+func TestAssistantMarkdownWrapsProseAtWords(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		source  string
+		columns int
+		want    []string
+	}{
+		{
+			name:    "ordinary prose",
+			source:  "alpha beta gamma",
+			columns: 12,
+			want:    []string{"- alpha beta", "  gamma"},
+		},
+		{
+			name:    "overlong token",
+			source:  "abcdefghijk tail",
+			columns: 8,
+			want:    []string{"- abcdef", "  ghijk", "  tail"},
+		},
+		{
+			name:    "non-breaking space remains attached",
+			source:  "one\u00a0two tail",
+			columns: 10,
+			want:    []string{"- one\u00a0two", "  tail"},
+		},
+		{
+			name:    "fenced code retains hard wrapping",
+			source:  "```text\nalpha beta\n```",
+			columns: 8,
+			want:    []string{"- alpha ", "  beta"},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rendered := renderAssistantMarkdown("- ", test.source, test.columns, true)
+			if !equalMarkdownRows(rendered.rows, test.want) {
+				t.Fatalf("wrapped rows = %#v; want %#v", rendered.rows, test.want)
+			}
+			for _, row := range rendered.rows {
+				if displayWidth(row) > test.columns {
+					t.Fatalf("wrapped row exceeded terminal width: %q", row)
+				}
+			}
+		})
+	}
+
+	styled := renderAssistantMarkdown("- ", "one **styled 東京** tail", 12, true)
+	if want := []string{"- one styled", "  東京 tail"}; !equalMarkdownRows(styled.rows, want) {
+		t.Fatalf("styled Unicode rows = %#v; want %#v", styled.rows, want)
+	}
+	for row, want := range []string{"styled", "東京"} {
+		found := false
+		for _, span := range styled.spans[row] {
+			if span.style.bold && styled.rows[row][span.start:span.end] == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("bold style for %q was not retained across wrap: rows=%#v spans=%#v", want, styled.rows, styled.spans)
+		}
+	}
+}
+
 func TestRenderAssistantMarkdownFormatsTables(t *testing.T) {
 	rendered := renderAssistantMarkdown("- ", strings.Join([]string{
 		"| Name | Count | State |",

@@ -622,7 +622,7 @@ func TestWriteStreamStatusFlushesMaxTurnNotice(t *testing.T) {
 			var output bytes.Buffer
 			options := streamOptions{stderr: &output}
 			if test.renderer {
-				options.renderer = terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+				options.renderer = terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Color: true})
 				if err := options.renderer.Update([]string{"temporary"}); err != nil {
 					t.Fatal(err)
 				}
@@ -630,8 +630,14 @@ func TestWriteStreamStatusFlushesMaxTurnNotice(t *testing.T) {
 			if err := writeStreamStatus(options, notice, true); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(output.String(), notice+"\n") {
+			if !strings.Contains(output.String(), notice) {
 				t.Fatalf("notice was not flushed: %q", output.String())
+			}
+			if test.renderer && !strings.Contains(output.String(), "\x1b[90m"+notice+"\x1b[0m\n") {
+				t.Fatalf("rendered notice was not grey: %q", output.String())
+			}
+			if !test.renderer && strings.ContainsRune(output.String(), '\x1b') {
+				t.Fatalf("plain notice contained ANSI styling: %q", output.String())
 			}
 		})
 	}

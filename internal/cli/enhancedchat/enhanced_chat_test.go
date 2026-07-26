@@ -151,15 +151,16 @@ func TestEnhancedNoticesFlushImmediately(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var output bytes.Buffer
-			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 50})
+			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Color: true, Columns: 120})
 			shell := &chatShell{ctx: context.Background(), renderer: renderer}
 			runtime := &enhancedChatRuntime{shell: shell, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
 			status, _ := json.Marshal(v1.SessionStatus{Kind: test.kind, Message: test.message})
 			if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionStatus, Data: status}); err != nil {
 				t.Fatal(err)
 			}
-			if !strings.Contains(output.String(), "↻ "+test.message) {
-				t.Fatalf("notice was not flushed with its event icon: %q", output.String())
+			want := "\x1b[90m↻ " + test.message + "\x1b[0m\n"
+			if !strings.Contains(output.String(), want) {
+				t.Fatalf("notice was not flushed in grey with its event icon: %q", output.String())
 			}
 		})
 	}
