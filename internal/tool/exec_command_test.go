@@ -43,6 +43,17 @@ func TestFormatPersistentResult(t *testing.T) {
 	}
 }
 
+func TestExecCommandOutputTailIsBounded(t *testing.T) {
+	lines := make([]string, 12)
+	for i := range lines {
+		lines[i] = strings.Repeat(string(rune('a'+i)), 2000)
+	}
+	got := execCommandOutputTail("10%\r20%\r100%\r\n" + strings.Join(lines, "\r\n") + "\r\n")
+	if len(got) > 16<<10 || strings.Contains(got, "10%") || strings.Contains(got, "20%") || strings.Contains(got, strings.Repeat("a", 20)) || strings.Contains(got, strings.Repeat("b", 20)) || !strings.HasSuffix(got, strings.Repeat("l", 2000)) {
+		t.Fatalf("bounded output tail has %d bytes and unexpected content", len(got))
+	}
+}
+
 func TestYieldTimeDescriptionsMentionAutomaticResultDelivery(t *testing.T) {
 	tests := []struct {
 		name       string

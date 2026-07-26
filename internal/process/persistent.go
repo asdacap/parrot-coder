@@ -140,17 +140,19 @@ type persistentProcess struct {
 	announced    bool
 	finishedSent bool
 
-	mu           sync.Mutex
-	output       headTailBuffer
-	stream       io.Writer
-	waitErr      error
-	exitCode     *int
-	largeOutput  Output
-	storedOutput *StoredOutput
-	storeErr     error
-	notify       chan struct{}
-	finished     chan struct{}
-	readerDone   chan struct{}
+	mu                  sync.Mutex
+	output              headTailBuffer
+	stream              io.Writer
+	waitErr             error
+	exitCode            *int
+	largeOutput         Output
+	storedOutput        *StoredOutput
+	storeErr            error
+	maxOutputTokens     *int
+	completionDelivered bool
+	notify              chan struct{}
+	finished            chan struct{}
+	readerDone          chan struct{}
 }
 
 func (r *Runner) emitPersistent(event PersistentEvent) {
@@ -242,8 +244,8 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 	item := &persistentProcess{
 		id: processID, name: processName, sessionID: request.SessionID, command: command, tty: request.TTY,
 		started: time.Now(), lastUsed: time.Now(), output: newHeadTailBuffer(persistentOutputBytes),
-		largeOutput: largeOutput,
-		notify:      make(chan struct{}, 1), finished: make(chan struct{}), readerDone: make(chan struct{}),
+		largeOutput: largeOutput, maxOutputTokens: cloneInt(request.MaxOutputTokens),
+		notify: make(chan struct{}, 1), finished: make(chan struct{}), readerDone: make(chan struct{}),
 	}
 	if err := r.startPersistent(ctx, item); err != nil {
 		largeOutput.Discard()
@@ -323,8 +325,18 @@ func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
 		case <-ctx.Done():
 			return
 		}
+		// A poll which was already waiting when the process finished owns delivery.
+		// Serialize behind it so the automatic notification cannot send the same
+		// terminal output concurrently.
+		item.interaction.Lock()
+		defer item.interaction.Unlock()
 		item.mu.Lock()
+		if item.completionDelivered {
+			item.mu.Unlock()
+			return
+		}
 		exitCode, waitErr := item.exitCode, item.waitErr
+		storedOutput, storeErr, maxOutputTokens := item.storedOutput, item.storeErr, item.maxOutputTokens
 		item.mu.Unlock()
 
 		content := fmt.Sprintf("Shell task notification: task %s finished.", item.id)
@@ -333,6 +345,19 @@ func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
 		}
 		if waitErr != nil {
 			content += "\n\nError: " + waitErr.Error()
+		}
+		if storeErr != nil {
+			content += "\n\nError reading command output: " + storeErr.Error()
+		} else if storedOutput != nil && storedOutput.Size > 0 && normalizeOutputTokens(maxOutputTokens) > 0 {
+			output, truncated, err := r.readStoredOutputWithBudget(*storedOutput, int64(normalizeOutputTokens(maxOutputTokens)*4))
+			if err != nil {
+				content += "\n\nError reading command output: " + err.Error()
+			} else {
+				content += "\n\nOutput:\n" + output
+				if truncated {
+					content += "\n\nFull output saved to " + storedOutput.Path
+				}
+			}
 		}
 		sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer sendCancel()
@@ -344,9 +369,15 @@ func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
 			diagnostics.Warn("shell_task_notification_unavailable", "session_id", item.sessionID, "task_id", item.id)
 			return
 		}
-		if _, err := session.Send(sendCtx, content); err != nil && !errors.Is(err, context.Canceled) {
-			diagnostics.Error("shell_task_notification_failed", "session_id", item.sessionID, "task_id", item.id, "error_type", diagnostics.ErrorType(err))
+		if _, err := session.Send(sendCtx, content); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				diagnostics.Error("shell_task_notification_failed", "session_id", item.sessionID, "task_id", item.id, "error_type", diagnostics.ErrorType(err))
+			}
+			return
 		}
+		item.mu.Lock()
+		item.completionDelivered = true
+		item.mu.Unlock()
 	}()
 }
 
@@ -427,6 +458,14 @@ func (r *Runner) WritePersistent(ctx context.Context, request PersistentWriteReq
 		return PersistentResult{}, err
 	}
 	if result.ProcessID == nil {
+		item.mu.Lock()
+		alreadyDelivered := item.completionDelivered
+		item.completionDelivered = true
+		item.mu.Unlock()
+		if alreadyDelivered {
+			result.Output, result.OriginalTokenCount, result.OmittedBytes = "", 0, 0
+			result.Truncated = false
+		}
 		r.removePersistent(item)
 	}
 	return result, nil
@@ -628,6 +667,14 @@ func clampExecYield(value time.Duration) time.Duration {
 		return MaxYieldTime
 	}
 	return value
+}
+
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func normalizeOutputTokens(value *int) int {

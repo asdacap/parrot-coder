@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
@@ -184,7 +185,48 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 		return Result{}, err
 	}
 	text := formatPersistentResult(result)
-	return Result{Text: text, ModelText: modelText(text)}, nil
+	return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"output_tail": execCommandOutputTail(result.Output)}}, nil
+}
+
+func execCommandOutputTail(output string) string {
+	var normalized strings.Builder
+	line := make([]rune, 0, 256)
+	carriage := false
+	for _, char := range output {
+		if carriage {
+			carriage = false
+			if char != '\n' {
+				line = line[:0]
+			}
+		}
+		switch char {
+		case '\n':
+			normalized.WriteString(string(line))
+			normalized.WriteByte('\n')
+			line = line[:0]
+		case '\r':
+			carriage = true
+		default:
+			line = append(line, char)
+		}
+	}
+	normalized.WriteString(string(line))
+	output = strings.TrimRight(normalized.String(), "\n")
+	lines := strings.Split(output, "\n")
+	if len(lines) > 10 {
+		lines = lines[len(lines)-10:]
+	}
+	output = strings.Join(lines, "\n")
+	if len(output) > 16<<10 {
+		output = output[len(output)-(16<<10):]
+		if index := strings.IndexByte(output, '\n'); index >= 0 {
+			output = output[index+1:]
+		}
+		for !utf8.ValidString(output) {
+			output = output[1:]
+		}
+	}
+	return output
 }
 
 func formatPersistentResult(result process.PersistentResult) string {
