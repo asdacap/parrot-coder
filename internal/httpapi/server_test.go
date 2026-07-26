@@ -76,6 +76,9 @@ func (b *stubBackend) Wake(string) {
 	b.mu.Unlock()
 }
 func (b *stubBackend) Interrupt(context.Context, string) error { return b.backendErr }
+func (b *stubBackend) CompactSession(context.Context, string) (v1.Compaction, error) {
+	return v1.Compaction{Status: "skipped", Reason: "no safe history cutoff"}, b.backendErr
+}
 func (b *stubBackend) OpenEvents(context.Context, string, int64) (*EventStream, error) {
 	if b.backendErr != nil {
 		return nil, b.backendErr
@@ -129,6 +132,7 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 		{"DELETE", "/api/v1/sessions/ses_test/goal", "", 204},
 		{"POST", "/api/v1/sessions/ses_test/prompts", `{"message_id":"msg_test","content":"hello","delivery":"steer"}`, 202},
 		{"POST", "/api/v1/sessions/ses_test/interrupt", "", 204},
+		{"POST", "/api/v1/sessions/ses_test/compact", "", 202},
 		{"GET", "/api/v1/sessions/ses_test/permissions", "", 200},
 		{"POST", "/api/v1/sessions/ses_test/permissions/per_test/reply", `{"decision":"allow"}`, 204},
 		{"POST", "/api/v1/sessions/ses_test/permissions/per_test/reply", `{"decision":"deny","reason":"not now"}`, 204},
@@ -706,6 +710,19 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	server.ServeHTTP(response, request)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("conflict status = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestCompactReturnsIncompleteReason(t *testing.T) {
+	server := New(&stubBackend{}, Config{})
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/v1/sessions/ses_test/compact", nil))
+	var result v1.Compaction
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status = %d: %s", response.Code, response.Body.String())
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil || result.Status != "skipped" || result.Reason != "no safe history cutoff" {
+		t.Fatalf("compaction = %#v, %v", result, err)
 	}
 }
 

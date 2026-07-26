@@ -451,6 +451,13 @@ func (a *App) sessionCommand(ctx context.Context, args []string, stdout, stderr 
 			return usageError(ctx, stderr, "invalid_session_arguments", "session compact requires one ID")
 		}
 		result, err := runtime.Client.Compact(ctx, args[1])
+		if err == nil && result.Status != "complete" {
+			reason := result.Reason
+			if reason == "" {
+				reason = "compaction did not complete"
+			}
+			err = errors.New(reason)
+		}
 		if err != nil {
 			fmt.Fprintln(stderr, err)
 			return exitWithReason(ctx, exitError, "session_compaction_failed", err)

@@ -30,8 +30,8 @@ func TestAPIErrorPreservesProblem(t *testing.T) {
 	if !errors.As(err, &apiError) {
 		t.Fatalf("error = %T %v", err, err)
 	}
-	if apiError.Problem.Code != "session_not_found" || apiError.Problem.RequestID != "req_test" {
-		t.Fatalf("problem = %#v", apiError.Problem)
+	if apiError.Problem.Code != "session_not_found" || apiError.Problem.RequestID != "req_test" || err.Error() != "parrot API: Session not found (session_not_found): missing" {
+		t.Fatalf("problem = %#v, error = %q", apiError.Problem, err)
 	}
 }
 
@@ -257,7 +257,14 @@ func TestSSEDecoderBound(t *testing.T) {
 }
 
 func ExampleAPIError() {
-	err := &APIError{Problem: v1.Problem{Title: "Conflict", Code: "conflict"}}
-	fmt.Println(err)
-	// Output: parrot API: Conflict (conflict)
+	errors := []*APIError{
+		{Problem: v1.Problem{Title: "Conflict", Code: "conflict"}},
+		{Problem: v1.Problem{Title: "Internal error", Code: "internal_error", Detail: "The request could not be completed.", ErrorRef: "err_test"}},
+	}
+	for _, err := range errors {
+		fmt.Println(err)
+	}
+	// Output:
+	// parrot API: Conflict (conflict)
+	// parrot API: Internal error (internal_error): The request could not be completed. [error ref: err_test]
 }

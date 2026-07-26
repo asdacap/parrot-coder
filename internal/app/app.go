@@ -583,15 +583,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			instructions += "\n\nHard rules:\n- " + strings.Join(profile.HardRules, "\n- ")
 		}
 		item, err := compactionService.Compact(ctx, compaction.Request{SessionID: sessionID, ProviderID: selected.Provider, Model: model, Instructions: instructions, Tools: definitions, Force: true})
-		result := v1.Compaction{Status: item.Status, AttemptID: item.AttemptID, RecordID: item.RecordID, SourceEpochID: item.SourceEpochID, TargetEpochID: item.TargetEpochID, HistoryCutoff: item.HistoryCutoff, Reason: item.Reason}
-		if err == nil && item.Status != "complete" {
-			reason := item.Reason
-			if reason == "" {
-				reason = "compaction did not complete"
-			}
-			err = errors.New(reason)
-		}
-		return result, err
+		return v1.Compaction{Status: item.Status, AttemptID: item.AttemptID, RecordID: item.RecordID, SourceEpochID: item.SourceEpochID, TargetEpochID: item.TargetEpochID, HistoryCutoff: item.HistoryCutoff, Reason: item.Reason}, err
 	}
 	result.Backend = backend
 	result.providers = providerRegistry
