@@ -140,17 +140,19 @@ type persistentProcess struct {
 	announced    bool
 	finishedSent bool
 
-	mu           sync.Mutex
-	output       headTailBuffer
-	stream       io.Writer
-	waitErr      error
-	exitCode     *int
-	largeOutput  Output
-	storedOutput *StoredOutput
-	storeErr     error
-	notify       chan struct{}
-	finished     chan struct{}
-	readerDone   chan struct{}
+	mu                  sync.Mutex
+	output              headTailBuffer
+	stream              io.Writer
+	waitErr             error
+	exitCode            *int
+	largeOutput         Output
+	storedOutput        *StoredOutput
+	storeErr            error
+	maxOutputTokens     *int
+	completionDelivered bool
+	notify              chan struct{}
+	finished            chan struct{}
+	readerDone          chan struct{}
 }
 
 func (r *Runner) emitPersistent(event PersistentEvent) {
@@ -242,8 +244,8 @@ func (r *Runner) RunPersistent(ctx context.Context, request PersistentRequest) (
 	item := &persistentProcess{
 		id: processID, name: processName, sessionID: request.SessionID, command: command, tty: request.TTY,
 		started: time.Now(), lastUsed: time.Now(), output: newHeadTailBuffer(persistentOutputBytes),
-		largeOutput: largeOutput,
-		notify:      make(chan struct{}, 1), finished: make(chan struct{}), readerDone: make(chan struct{}),
+		largeOutput: largeOutput, maxOutputTokens: cloneInt(request.MaxOutputTokens),
+		notify: make(chan struct{}, 1), finished: make(chan struct{}), readerDone: make(chan struct{}),
 	}
 	if err := r.startPersistent(ctx, item); err != nil {
 		largeOutput.Discard()
@@ -288,7 +290,7 @@ type activeNotification struct {
 func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
 	sessions := r.agentSessions()
 	if sessions == nil {
-		diagnostics.Warn("shell_task_notification_unavailable", "session_id", item.sessionID, "task_id", item.id)
+		diagnostics.Warn("shell_process_notification_unavailable", "session_id", item.sessionID, "process_name", item.name)
 		return
 	}
 	r.mu.Lock()
@@ -323,17 +325,21 @@ func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
 		case <-ctx.Done():
 			return
 		}
+		// A poll which was already waiting when the process finished owns delivery.
+		// Serialize behind it so the automatic notification cannot send the same
+		// terminal output concurrently.
+		item.interaction.Lock()
+		defer item.interaction.Unlock()
 		item.mu.Lock()
-		exitCode, waitErr := item.exitCode, item.waitErr
+		if item.completionDelivered {
+			item.mu.Unlock()
+			return
+		}
+		waitErr, maxOutputTokens := item.waitErr, item.maxOutputTokens
 		item.mu.Unlock()
 
-		content := fmt.Sprintf("Shell task notification: task %s finished.", item.id)
-		if exitCode != nil {
-			content = fmt.Sprintf("Shell task notification: task %s exited with code %d.", item.id, *exitCode)
-		}
-		if waitErr != nil {
-			content += "\n\nError: " + waitErr.Error()
-		}
+		result := r.persistentResult(item, 0, false, maxOutputTokens)
+		content := result.completionNotification(waitErr)
 		sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
 		defer sendCancel()
 		if sendCtx.Err() != nil {
@@ -341,12 +347,18 @@ func (r *Runner) notifyPersistentCompletion(item *persistentProcess) {
 		}
 		session := sessions.Get(item.sessionID)
 		if session == nil {
-			diagnostics.Warn("shell_task_notification_unavailable", "session_id", item.sessionID, "task_id", item.id)
+			diagnostics.Warn("shell_process_notification_unavailable", "session_id", item.sessionID, "process_name", item.name)
 			return
 		}
-		if _, err := session.Send(sendCtx, content); err != nil && !errors.Is(err, context.Canceled) {
-			diagnostics.Error("shell_task_notification_failed", "session_id", item.sessionID, "task_id", item.id, "error_type", diagnostics.ErrorType(err))
+		if _, err := session.Send(sendCtx, content); err != nil {
+			if !errors.Is(err, context.Canceled) {
+				diagnostics.Error("shell_process_notification_failed", "session_id", item.sessionID, "process_name", item.name, "error_type", diagnostics.ErrorType(err))
+			}
+			return
 		}
+		item.mu.Lock()
+		item.completionDelivered = true
+		item.mu.Unlock()
 	}()
 }
 
@@ -427,6 +439,14 @@ func (r *Runner) WritePersistent(ctx context.Context, request PersistentWriteReq
 		return PersistentResult{}, err
 	}
 	if result.ProcessID == nil {
+		item.mu.Lock()
+		alreadyDelivered := item.completionDelivered
+		item.completionDelivered = true
+		item.mu.Unlock()
+		if alreadyDelivered {
+			result.Output, result.OriginalTokenCount, result.OmittedBytes = "", 0, 0
+			result.Truncated = false
+		}
 		r.removePersistent(item)
 	}
 	return result, nil
@@ -571,6 +591,27 @@ func (r *Runner) collectPersistent(ctx context.Context, item *persistentProcess,
 	}
 }
 
+func (result PersistentResult) completionNotification(waitErr error) string {
+	content := fmt.Sprintf("Shell process notification: process %s finished.", result.Name)
+	if result.ExitCode != nil {
+		content = fmt.Sprintf("Shell process notification: process %s exited with code %d.", result.Name, *result.ExitCode)
+	}
+	if waitErr != nil {
+		content += "\n\nError: " + waitErr.Error()
+	}
+	if result.Output != "" {
+		if result.Truncated {
+			content += "\n\nOutput (tail only; full output is too large):\n" + result.Output
+		} else {
+			content += "\n\nOutput:\n" + result.Output
+		}
+	}
+	if result.Truncated && result.OutputPath != "" {
+		content += "\n\nFull output is available at " + result.OutputPath + ". Read that file separately for the complete output."
+	}
+	return content
+}
+
 func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duration, running bool, maxTokens *int) PersistentResult {
 	item.mu.Lock()
 	output := item.output.drain()
@@ -586,6 +627,8 @@ func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duratio
 	outputPath := ""
 	if largeOutput != nil {
 		outputPath = largeOutput.Path()
+	} else if storedOutput != nil {
+		outputPath = storedOutput.Path
 	}
 	result := PersistentResult{
 		ChunkID: generateChunkID(), Name: item.name, WallTime: wallTime,
@@ -605,16 +648,19 @@ func (r *Runner) persistentResult(item *persistentProcess, wallTime time.Duratio
 	if storeErr != nil {
 		result.Output = fmt.Sprintf("Error storing output: %v", storeErr)
 	} else if storedOutput != nil {
+		result.OutputSize = storedOutput.Size
+		result.OriginalTokenCount = tokensForBytes(int(storedOutput.Size))
 		budget := int64(normalizeOutputTokens(maxTokens) * 4)
-		text, truncated, err := r.readStoredOutputWithBudget(*storedOutput, budget)
-		if err != nil {
-			result.Output = fmt.Sprintf("Error reading output: %v", err)
+		if budget == 0 {
+			result.Truncated = storedOutput.Size > 0
 		} else {
-			result.Output = text
-			result.Truncated = truncated
-			result.OutputSize = storedOutput.Size
-			result.OriginalTokenCount = tokensForBytes(int(storedOutput.Size))
-			result.OmittedBytes = 0
+			text, truncated, err := r.readStoredOutputTailWithBudget(*storedOutput, budget)
+			if err != nil {
+				result.Output = fmt.Sprintf("Error reading output: %v", err)
+			} else {
+				result.Output = text
+				result.Truncated = truncated
+			}
 		}
 	}
 	return result
@@ -628,6 +674,14 @@ func clampExecYield(value time.Duration) time.Duration {
 		return MaxYieldTime
 	}
 	return value
+}
+
+func cloneInt(value *int) *int {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func normalizeOutputTokens(value *int) int {

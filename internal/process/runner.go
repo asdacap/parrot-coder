@@ -509,6 +509,24 @@ func (r *Runner) readStoredOutputWithBudget(stored StoredOutput, budget int64) (
 	return string(bytesToValidUTF8(head)) + fmt.Sprintf("\n... %d bytes omitted ...\n", stored.Size-budget) + string(bytesToValidUTF8(tail)), true, nil
 }
 
+func (r *Runner) readStoredOutputTailWithBudget(stored StoredOutput, budget int64) (string, bool, error) {
+	if budget <= 0 {
+		budget = r.config.MaxOutputBytes
+	}
+	f, err := os.Open(stored.Path)
+	if err != nil {
+		return "", false, err
+	}
+	defer f.Close()
+	if stored.Size > budget {
+		if _, err := f.Seek(stored.Size-budget, io.SeekStart); err != nil {
+			return "", false, err
+		}
+	}
+	data, err := io.ReadAll(io.LimitReader(f, min(stored.Size, budget)))
+	return string(bytesToValidUTF8(data)), stored.Size > budget, err
+}
+
 func setEnvironment(environment []string, name, value string) {
 	prefix := name + "="
 	for i := range environment {

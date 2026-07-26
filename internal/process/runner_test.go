@@ -558,7 +558,7 @@ func TestRunPersistentNotifiesOwningAgentSessionOnlyAfterYieldedProcessFinishes(
 	}
 	select {
 	case notification := <-notifications.sent:
-		if notifications.sessionID != "owner" || !strings.Contains(notification, *yielded.ProcessID) || !strings.Contains(notification, "exited with code 7") {
+		if notifications.sessionID != "owner" || !strings.Contains(notification, yielded.Name) || strings.Contains(notification, *yielded.ProcessID) || !strings.Contains(notification, "exited with code 7") {
 			t.Fatalf("notification owner=%q content=%q", notifications.sessionID, notification)
 		}
 	case <-time.After(2 * time.Second):
@@ -597,7 +597,7 @@ func TestPersistentNotificationSuspensionCancelsDeliveryUntilResumed(t *testing.
 	}
 	select {
 	case notification := <-notifications.sent:
-		if !strings.Contains(notification, *yielded.ProcessID) {
+		if !strings.Contains(notification, yielded.Name) || strings.Contains(notification, *yielded.ProcessID) {
 			t.Fatalf("resumed notification = %q", notification)
 		}
 	case <-time.After(time.Second):
