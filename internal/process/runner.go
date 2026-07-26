@@ -70,9 +70,19 @@ type PersistentEvent struct {
 }
 
 type StoredOutput struct {
-	Path    string
-	Size    int64
-	Preview string
+	Path       string
+	Size       int64
+	Preview    string
+	TokenCount int
+}
+
+// Tokenizer is the narrow text-token capability needed to bound persistent
+// process output. Truncation methods return the retained text, original token
+// count, and omitted token count.
+type Tokenizer interface {
+	Count(string) (int, error)
+	TruncateMiddle(string, int) (string, int, int, error)
+	TruncateTail(string, int) (string, int, int, error)
 }
 
 type OutputStore interface {
@@ -110,6 +120,7 @@ type Result struct {
 
 type Runner struct {
 	config          Config
+	tokenizer       Tokenizer
 	sandbox         sandbox
 	mu              sync.RWMutex
 	cleanup         sync.Mutex
@@ -172,9 +183,12 @@ func ResolveWorkingDirectory(path, workspaceRoot string) (string, error) {
 	return filepath.Clean(resolved), nil
 }
 
-func NewRunner(config Config) (*Runner, error) {
+func NewRunner(config Config, tokenizer Tokenizer) (*Runner, error) {
 	if config.Workspace == nil {
 		return nil, errors.New("process: workspace is required")
+	}
+	if tokenizer == nil {
+		return nil, errors.New("process: tokenizer is required")
 	}
 	if config.MaxOutputBytes <= 0 {
 		config.MaxOutputBytes = 64 << 10
@@ -208,7 +222,7 @@ func NewRunner(config Config) (*Runner, error) {
 	}
 	notifyCtx, notifyCancel := context.WithCancel(context.Background())
 	return &Runner{
-		config: config, sandbox: implementation, notifyCtx: notifyCtx, notifyCancel: notifyCancel,
+		config: config, tokenizer: tokenizer, sandbox: implementation, notifyCtx: notifyCtx, notifyCancel: notifyCancel,
 		writablePaths: make(map[string]map[string]struct{}),
 		temporaryDirs: make(map[string]*sessionTemporaryDirectory), deletedSessions: make(map[string]struct{}),
 		processes: make(map[string]*persistentProcess), reservedIDs: make(map[string]string), reservedNames: make(map[string]string),
@@ -510,22 +524,29 @@ func (r *Runner) readStoredOutputWithBudget(stored StoredOutput, budget int64) (
 	return string(bytesToValidUTF8(head)) + fmt.Sprintf("\n... %d bytes omitted ...\n", stored.Size-budget) + string(bytesToValidUTF8(tail)), true, nil
 }
 
-func (r *Runner) readStoredOutputTailWithBudget(stored StoredOutput, budget int64) (string, bool, error) {
-	if budget <= 0 {
-		budget = r.config.MaxOutputBytes
+func (r *Runner) readStoredOutputTail(stored StoredOutput, maxTokens int) (string, int, bool, error) {
+	if maxTokens == 0 {
+		return "", 0, stored.Size > 0, nil
 	}
 	f, err := os.Open(stored.Path)
 	if err != nil {
-		return "", false, err
+		return "", 0, false, err
 	}
 	defer f.Close()
-	if stored.Size > budget {
-		if _, err := f.Seek(stored.Size-budget, io.SeekStart); err != nil {
-			return "", false, err
-		}
+
+	readBytes := min(stored.Size, int64(persistentOutputBytes))
+	if _, err := f.Seek(stored.Size-readBytes, io.SeekStart); err != nil {
+		return "", 0, false, err
 	}
-	data, err := io.ReadAll(io.LimitReader(f, min(stored.Size, budget)))
-	return string(bytesToValidUTF8(data)), stored.Size > budget, err
+	data, err := io.ReadAll(io.LimitReader(f, readBytes))
+	if err != nil {
+		return "", 0, false, err
+	}
+	text, totalTokens, omittedTokens, err := r.tokenizer.TruncateTail(string(bytesToValidUTF8(data)), maxTokens)
+	if err != nil {
+		return "", 0, false, fmt.Errorf("process: truncate stored output tail: %w", err)
+	}
+	return text, totalTokens, stored.Size > readBytes || omittedTokens > 0, nil
 }
 
 func setEnvironment(environment []string, name, value string) {

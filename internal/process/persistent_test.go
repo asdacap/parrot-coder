@@ -35,7 +35,7 @@ func TestYieldedProcessCompletionSendsRequestedOutputToAgent(t *testing.T) {
 		wantTruncated   bool
 	}{
 		{name: "default budget", wantOutput: "Output:\nbuild output\n"},
-		{name: "limited budget", maxOutputTokens: &one, wantOutput: "Output (tail only; full output is too large):\nput\n", wantTruncated: true},
+		{name: "limited budget", maxOutputTokens: &one, wantOutput: "Output (tail only; full output is too large):\n\n", wantTruncated: true},
 		{name: "zero budget", maxOutputTokens: &zero, wantTruncated: true},
 	}
 	for _, test := range tests {
@@ -44,7 +44,7 @@ func TestYieldedProcessCompletionSendsRequestedOutputToAgent(t *testing.T) {
 			ctx, cancel := context.WithCancel(context.Background())
 			defer cancel()
 			runner := &Runner{
-				notifyCtx: ctx, notifications: make(map[string]map[string]*activeNotification),
+				tokenizer: runeTokenizer{}, notifyCtx: ctx, notifications: make(map[string]map[string]*activeNotification),
 				notifyPaused: make(map[string]int), config: Config{AgentSessions: notificationSessions{session: session}, MaxOutputBytes: 64 << 10},
 			}
 			exitCode := 0
@@ -52,7 +52,7 @@ func TestYieldedProcessCompletionSendsRequestedOutputToAgent(t *testing.T) {
 			close(finished)
 			item := &persistentProcess{
 				id: "proc_test", name: "project-tests", sessionID: "ses_test", finished: finished, exitCode: &exitCode,
-				storedOutput: &StoredOutput{Path: path, Size: int64(len("build output\n"))}, maxOutputTokens: test.maxOutputTokens,
+				storedOutput: &StoredOutput{Path: path, Size: int64(len("build output\n")), TokenCount: len("build output\n")}, maxOutputTokens: test.maxOutputTokens,
 			}
 			runner.notifyPersistentCompletion(item)
 

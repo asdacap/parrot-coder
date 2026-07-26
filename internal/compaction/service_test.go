@@ -23,6 +23,24 @@ type fakeSummarizer struct {
 	calls   int
 }
 
+type constantTokenCounter int
+
+func (c constantTokenCounter) Count(string) (int, error) { return int(c), nil }
+
+type failingTokenCounter struct {
+	failAt int
+	calls  int
+	err    error
+}
+
+func (c *failingTokenCounter) Count(string) (int, error) {
+	c.calls++
+	if c.calls == c.failAt {
+		return 0, c.err
+	}
+	return 2, nil
+}
+
 func (s *fakeSummarizer) Summarize(_ context.Context, request SummaryRequest) (SummaryResult, error) {
 	s.calls++
 	s.request = request
@@ -73,28 +91,32 @@ func newHarness(t *testing.T, baseline string, messages int) *harness {
 	return &harness{db: sessionDB, sessions: sessions, repo: NewRepository(db, events), id: created.ID}
 }
 
-func TestBudgetTriggerAndDeterministicHeuristic(t *testing.T) {
-	if first, second := HeuristicTextTokens("hello, 世界"), HeuristicTextTokens("hello, 世界"); first != second || first <= 0 {
-		t.Fatalf("heuristic = %d, %d", first, second)
-	}
-	estimate := EstimateRequest("system", []Message{
+func TestBudgetTriggerAndTokenEstimate(t *testing.T) {
+	counter := constantTokenCounter(2)
+	estimate, err := EstimateRequest(counter, "system", []Message{
 		{Role: protocol.RoleAssistant, Usage: protocol.Usage{OutputTokens: 7}, Content: "measured"},
-		{Role: protocol.RoleUser, Content: "heuristic", Parts: []protocol.ContentPart{{Type: protocol.ContentText, Text: "heuristic"}}},
-	}, nil)
-	if estimate.MeasuredTokens != 7 || estimate.HeuristicTokens == 0 {
-		t.Fatalf("mixed estimate = %#v", estimate)
+		{Role: protocol.RoleUser, Content: "estimated", Parts: []protocol.ContentPart{{Type: protocol.ContentText, Text: "estimated"}}},
+	}, []protocol.ToolDefinition{{Name: "tool", Description: "description", InputSchema: json.RawMessage(`{"type":"object"}`)}})
+	if err != nil || estimate.MeasuredTokens != 7 || estimate.EstimatedTokens != 28 {
+		t.Fatalf("mixed estimate = %#v, %v", estimate, err)
 	}
-	providerEstimate := EstimateRequest("system", []Message{
+	providerEstimate, err := EstimateRequest(counter, "system", []Message{
 		{Role: protocol.RoleAssistant, Usage: protocol.Usage{InputTokens: 100_000, OutputTokens: 10, TotalTokens: 100_010}},
 		{Role: protocol.RoleAssistant, Usage: protocol.Usage{InputTokens: 369_000, OutputTokens: 700, TotalTokens: 369_700}},
 		{Role: protocol.RoleUser, Content: "suffix"},
 	}, nil)
-	if providerEstimate.Total() <= 369_000 || providerEstimate.Total() >= 469_000 {
-		t.Fatalf("provider context estimate = %#v", providerEstimate)
+	if err != nil || providerEstimate.Total() != 369_016 {
+		t.Fatalf("provider context estimate = %#v, %v", providerEstimate, err)
+	}
+	fallbackEstimate, err := EstimateRequest(counter, "system", []Message{
+		{Role: protocol.RoleAssistant, Usage: protocol.Usage{TotalTokens: 42}},
+	}, nil)
+	if err != nil || fallbackEstimate.MeasuredTokens != 42 || fallbackEstimate.ProviderContextTokens != 50 {
+		t.Fatalf("total token fallback estimate = %#v, %v", fallbackEstimate, err)
 	}
 	h := newHarness(t, "baseline", 6)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-	service, err := NewService(h.repo, summary, Config{RecentMessages: 2, TriggerFraction: .8})
+	service, err := NewService(h.repo, summary, counter, Config{RecentMessages: 2, TriggerFraction: .8})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -108,12 +130,46 @@ func TestBudgetTriggerAndDeterministicHeuristic(t *testing.T) {
 	}
 }
 
+func TestEstimateRequestPropagatesTokenCountErrors(t *testing.T) {
+	countErr := errors.New("tokenization failed")
+	for _, test := range []struct {
+		name   string
+		failAt int
+		field  string
+	}{
+		{"instructions", 1, "instruction"},
+		{"message_content", 2, "message content"},
+		{"message_parts", 3, "message part"},
+		{"tool_name", 4, "tool name"},
+		{"tool_description", 5, "tool description"},
+		{"tool_schema", 6, "tool schema"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			counter := &failingTokenCounter{failAt: test.failAt, err: countErr}
+			_, err := EstimateRequest(counter, "system", []Message{{Content: "message"}}, []protocol.ToolDefinition{{Name: "tool", Description: "description", InputSchema: json.RawMessage(`{}`)}})
+			if !errors.Is(err, countErr) || !strings.Contains(err.Error(), test.field) {
+				t.Fatalf("error = %v", err)
+			}
+		})
+	}
+
+	h := newHarness(t, "baseline", 6)
+	service, err := NewService(h.repo, &fakeSummarizer{}, &failingTokenCounter{failAt: 1, err: countErr}, Config{RecentMessages: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}})
+	if !errors.Is(err, countErr) {
+		t.Fatalf("service error = %v", err)
+	}
+}
+
 func TestForcedCompactionRelaxesRecentMessageRetention(t *testing.T) {
 	for _, contextWindow := range []int{24, 1_000_000} {
 		t.Run(fmt.Sprintf("context_window_%d", contextWindow), func(t *testing.T) {
 			h := newHarness(t, "baseline", 6)
 			summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-			service, err := NewService(h.repo, summary, Config{RecentMessages: 6})
+			service, err := NewService(h.repo, summary, constantTokenCounter(2), Config{RecentMessages: 6})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -133,7 +189,7 @@ func TestForcedCompactionRelaxesRecentMessageRetention(t *testing.T) {
 func TestForcedCompactionDoesNotRequireModelBudgetMetadata(t *testing.T) {
 	h := newHarness(t, "baseline", 6)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-	service, err := NewService(h.repo, summary, Config{RecentMessages: 2})
+	service, err := NewService(h.repo, summary, constantTokenCounter(2), Config{RecentMessages: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -169,7 +225,7 @@ func TestSafeCutKeepsToolCallWithAllResults(t *testing.T) {
 func TestAtomicSuccessPreservesHistoryAndIncludesPriorSummary(t *testing.T) {
 	h := newHarness(t, "PRIOR EPOCH SUMMARY", 8)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "intent and decisions", Usage: protocol.Usage{TotalTokens: 12}}}
-	service, _ := NewService(h.repo, summary, Config{RecentMessages: 2})
+	service, _ := NewService(h.repo, summary, constantTokenCounter(2), Config{RecentMessages: 2})
 	result, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true})
 	if err != nil || result.Status != "complete" {
 		t.Fatalf("compact = %#v, %v", result, err)
@@ -206,7 +262,7 @@ func TestAtomicSuccessPreservesHistoryAndIncludesPriorSummary(t *testing.T) {
 
 func TestSummarizerFailureLeavesOldEpochActive(t *testing.T) {
 	h := newHarness(t, "old", 6)
-	service, _ := NewService(h.repo, &fakeSummarizer{err: errors.New("provider failed")}, Config{RecentMessages: 2})
+	service, _ := NewService(h.repo, &fakeSummarizer{err: errors.New("provider failed")}, constantTokenCounter(2), Config{RecentMessages: 2})
 	if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err == nil {
 		t.Fatal("compaction succeeded")
 	}
@@ -224,7 +280,7 @@ func TestSummarizerFailureLeavesOldEpochActive(t *testing.T) {
 func TestCancellationMarksAttemptInterrupted(t *testing.T) {
 	h := newHarness(t, "old", 6)
 	summary := &fakeSummarizer{err: context.Canceled}
-	service, _ := NewService(h.repo, summary, Config{RecentMessages: 2})
+	service, _ := NewService(h.repo, summary, constantTokenCounter(2), Config{RecentMessages: 2})
 	_, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true})
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("error = %v", err)
@@ -238,7 +294,7 @@ func TestCancellationMarksAttemptInterrupted(t *testing.T) {
 func TestDatabaseCompletionFailureDoesNotAdvanceEpoch(t *testing.T) {
 	h := newHarness(t, "old", 6)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "summary"}}
-	service, _ := NewService(failingCompleteStore{h.repo}, summary, Config{RecentMessages: 2})
+	service, _ := NewService(failingCompleteStore{h.repo}, summary, constantTokenCounter(2), Config{RecentMessages: 2})
 	if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err == nil {
 		t.Fatal("compaction succeeded")
 	}
@@ -298,7 +354,7 @@ func TestLongHistoryCompactsRequestButKeepsFullHistory(t *testing.T) {
 	// Alternating user/assistant messages model 510 complete turns.
 	h := newHarness(t, "baseline", 1020)
 	summary := &fakeSummarizer{result: SummaryResult{Summary: "bounded"}}
-	service, _ := NewService(h.repo, summary, Config{RecentMessages: 10})
+	service, _ := NewService(h.repo, summary, constantTokenCounter(2), Config{RecentMessages: 10})
 	if _, err := service.Compact(context.Background(), Request{SessionID: h.id, ProviderID: "fake", Model: provider.Model{ID: "model", ContextWindow: 100}, Force: true}); err != nil {
 		t.Fatal(err)
 	}
