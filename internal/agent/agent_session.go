@@ -90,6 +90,9 @@ type Active struct {
 
 var noSteerSignal <-chan struct{} = make(chan struct{})
 
+// ErrNoFinalAssistantMessage means a completed turn did not persist a terminal assistant response.
+var ErrNoFinalAssistantMessage = errors.New("agent: session produced no assistant output")
+
 type turnState struct {
 	ctx           context.Context
 	cancel        context.CancelFunc
@@ -302,7 +305,7 @@ func (s *agentSession) messageResponse(ctx context.Context, messageID string) (s
 		}
 		return message.Content, nil
 	}
-	return "", errors.New("agent: session produced no assistant output")
+	return "", ErrNoFinalAssistantMessage
 }
 
 func (s *agentSession) admitAndStart(ctx context.Context, messageID, content string, waitForPermit, start bool) (session.Admission, *turnState, error) {
@@ -376,7 +379,7 @@ func (s *agentSession) startTurn(state *turnState) {
 	task := cloneStatus(s.status)
 	s.mu.Unlock()
 	if status == StatusInterrupting {
-		go s.finishTurn(state, "", context.Canceled)
+		go s.finishTurn(state, "", context.Canceled, false)
 		return
 	}
 	s.events.Publish(event.BrokerEvent{Name: event.TurnStarted, Payload: task})
@@ -560,7 +563,7 @@ func (s *agentSession) newTurnLocked(messageID string, release func(), blocked b
 	} else {
 		s.status.StartedAt = time.Time{}
 	}
-	s.status.Output, s.status.Error, s.status.Truncated = "", "", false
+	s.status.Output, s.status.Error, s.status.NoFinalMessage, s.status.Truncated = "", "", false, false
 	s.status.Usage, s.status.ToolUses = ChildUsage{}, 0
 	return state
 }
@@ -603,7 +606,7 @@ func (s *agentSession) removeIfIdle(remove func() error) error {
 func (s *agentSession) waitForTurnPermit(state *turnState) {
 	release, err := s.acquireTurnQuota(state.ctx)
 	if err != nil {
-		s.finishTurn(state, "", err)
+		s.finishTurn(state, "", err, false)
 		return
 	}
 	s.mu.Lock()
@@ -612,7 +615,7 @@ func (s *agentSession) waitForTurnPermit(state *turnState) {
 		if release != nil {
 			release()
 		}
-		s.finishTurn(state, "", context.Canceled)
+		s.finishTurn(state, "", context.Canceled, false)
 		return
 	}
 	state.releaseQuota = release
@@ -627,7 +630,7 @@ func (s *agentSession) runTurn(state *turnState) {
 	canceled := state.ctx.Err() != nil || state.status == StatusInterrupting
 	s.mu.Unlock()
 	if canceled {
-		s.finishTurn(state, "", context.Canceled)
+		s.finishTurn(state, "", context.Canceled, false)
 		return
 	}
 	s.started()
@@ -660,13 +663,17 @@ func (s *agentSession) runTurn(state *turnState) {
 	}
 	stop()
 	output := ""
+	noFinalMessage := false
 	if s.parent != nil && state.messageID != "" && err == nil {
 		output, err = s.messageResponse(context.Background(), state.messageID)
+		if errors.Is(err, ErrNoFinalAssistantMessage) {
+			noFinalMessage, err = true, nil
+		}
 	}
-	s.finishTurn(state, output, err)
+	s.finishTurn(state, output, err, noFinalMessage)
 }
 
-func (s *agentSession) finishTurn(state *turnState, output string, runErr error) {
+func (s *agentSession) finishTurn(state *turnState, output string, runErr error, noFinalMessage bool) {
 	canceled := state.ctx.Err() != nil
 	state.cancel()
 	truncated := false
@@ -687,6 +694,7 @@ func (s *agentSession) finishTurn(state *turnState, output string, runErr error)
 	}
 	s.mu.Lock()
 	s.status.Truncated = truncated
+	s.status.NoFinalMessage = noFinalMessage
 	state.err = runErr
 	status, errText := StatusSucceeded, ""
 	if runErr != nil {

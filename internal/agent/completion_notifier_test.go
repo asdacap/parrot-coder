@@ -28,27 +28,51 @@ func (s *notificationAgentSession) Send(_ context.Context, _, message string) (s
 }
 
 func TestCompletionNotifierDeliversTerminalTurnToDirectParent(t *testing.T) {
-	parent := &notificationAgentSession{sent: make(chan struct{}, 1)}
-	notifier := NewCompletionNotifier()
-	notifier.SetLookup(func(id string) (NotificationSession, bool) {
-		return parent, id == "parent"
-	})
-	notifier.Notify(Status{SessionID: "child", ParentSession: "parent", Name: "worker", Turn: 2, State: StatusSucceeded, Output: "done"})
-	select {
-	case <-parent.sent:
-	case <-time.After(time.Second):
-		t.Fatal("notification was not delivered")
-	}
-	parent.mu.Lock()
-	message := strings.Join(parent.messages, "\n")
-	parent.mu.Unlock()
-	for _, expected := range []string{"child", "worker", "succeeded", "done"} {
-		if !strings.Contains(message, expected) {
-			t.Fatalf("notification %q does not contain %q", message, expected)
-		}
-	}
-	if err := notifier.Close(context.Background()); err != nil {
-		t.Fatal(err)
+	for _, test := range []struct {
+		name       string
+		status     Status
+		expected   []string
+		unexpected string
+	}{
+		{
+			name:     "final output",
+			status:   Status{SessionID: "child", ParentSession: "parent", Name: "worker", Turn: 2, State: StatusSucceeded, Output: "done"},
+			expected: []string{"child", "worker", "succeeded", "done"},
+		},
+		{
+			name:       "no final message",
+			status:     Status{SessionID: "child", ParentSession: "parent", Name: "worker", Turn: 2, State: StatusSucceeded, NoFinalMessage: true},
+			expected:   []string{"child", "worker", "succeeded", "ended without a final assistant message"},
+			unexpected: "Error:",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			parent := &notificationAgentSession{sent: make(chan struct{}, 1)}
+			notifier := NewCompletionNotifier()
+			notifier.SetLookup(func(id string) (NotificationSession, bool) {
+				return parent, id == "parent"
+			})
+			notifier.Notify(test.status)
+			select {
+			case <-parent.sent:
+			case <-time.After(time.Second):
+				t.Fatal("notification was not delivered")
+			}
+			parent.mu.Lock()
+			message := strings.Join(parent.messages, "\n")
+			parent.mu.Unlock()
+			for _, expected := range test.expected {
+				if !strings.Contains(message, expected) {
+					t.Fatalf("notification %q does not contain %q", message, expected)
+				}
+			}
+			if test.unexpected != "" && strings.Contains(message, test.unexpected) {
+				t.Fatalf("notification %q contains %q", message, test.unexpected)
+			}
+			if err := notifier.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 

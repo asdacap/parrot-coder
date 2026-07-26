@@ -110,6 +110,9 @@ func completionNotification(task Status) string {
 	if task.Output != "" {
 		content += "\n\n" + task.Output
 	}
+	if task.NoFinalMessage {
+		content += "\n\nThe agent turn ended without a final assistant message."
+	}
 	if task.Error != "" {
 		content += "\n\nError: " + task.Error
 	}

@@ -1235,6 +1235,98 @@ func TestManagedAgentSessionInterruptsItself(t *testing.T) {
 	}
 }
 
+func TestChildTurnWithoutFinalAssistantMessageSucceedsAndResets(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var h *runnerHarness
+	var childID string
+	item := &fakeTool{id: "finish", execute: func(context.Context) (tool.Result, error) {
+		_, err := h.goals.UpdateAgentStatus(context.Background(), childID, session.GoalComplete)
+		return tool.Result{Text: "reported", ModelText: "reported"}, err
+	}}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		switch index {
+		case 0:
+			close(started)
+			<-release
+			call := protocol.ToolCall{ID: "call-finish", Name: "finish", Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		case 1:
+			return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+		default:
+			return nil, errors.New("unexpected provider turn")
+		}
+	}}
+	h = newRunnerHarness(t, fake, nil, item)
+	root := mustGetAgentSession(t, h.agentSessions, h.sessionID)
+	child, err := root.CreateChild(t.Context(), ChildRequest{Prompt: "report upward", Agent: BuildID, Name: "no-final"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	<-started
+	childID = child.ID()
+	if _, err := h.goals.Create(t.Context(), childID, "report result", nil); err != nil {
+		t.Fatal(err)
+	}
+	observation, err := child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	completed, err := observation.Wait(t.Context())
+	if err != nil || completed.State != StatusSucceeded || completed.Output != "" || completed.Error != "" || !completed.NoFinalMessage {
+		t.Fatalf("completion = %#v, %v", completed, err)
+	}
+
+	admission, err := child.Send(t.Context(), "msg_follow_up", "follow up")
+	if err != nil || !admission.Created {
+		t.Fatalf("follow-up admission = %#v, %v", admission, err)
+	}
+	followUp, err := child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err = followUp.Wait(t.Context())
+	if err != nil || completed.State != StatusSucceeded || completed.Output != "" || completed.Error != "" || completed.NoFinalMessage {
+		t.Fatalf("follow-up completion = %#v, %v", completed, err)
+	}
+
+	admission, err = child.Send(t.Context(), "msg_failure", "fail")
+	if err != nil || !admission.Created {
+		t.Fatalf("failure admission = %#v, %v", admission, err)
+	}
+	failedTurn, err := child.Observe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed, err = failedTurn.Wait(t.Context())
+	if err != nil || completed.State != StatusFailed || !strings.Contains(completed.Error, "unexpected provider turn") || completed.NoFinalMessage {
+		t.Fatalf("failed completion = %#v, %v", completed, err)
+	}
+}
+
+func TestPromptStillRequiresFinalAssistantMessage(t *testing.T) {
+	var h *runnerHarness
+	item := &fakeTool{id: "finish", execute: func(context.Context) (tool.Result, error) {
+		_, err := h.goals.UpdateAgentStatus(context.Background(), h.sessionID, session.GoalComplete)
+		return tool.Result{Text: "done", ModelText: "done"}, err
+	}}
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		call := protocol.ToolCall{ID: "call-finish", Name: "finish", Input: json.RawMessage(`{}`)}
+		return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+	}}
+	h = newRunnerHarness(t, fake, nil, item)
+	if _, err := h.goals.Create(t.Context(), h.sessionID, "finish without response", nil); err != nil {
+		t.Fatal(err)
+	}
+	if answer, err := h.runner.Prompt(t.Context(), "work"); !errors.Is(err, ErrNoFinalAssistantMessage) || answer != "" {
+		t.Fatalf("Prompt() = %q, %v", answer, err)
+	}
+	if status := h.runner.Status(); status.State != StatusSucceeded || status.NoFinalMessage {
+		t.Fatalf("root status = %#v", status)
+	}
+}
+
 func TestAgentSessionPromptAndSendOwnAdmissionAndResultHandling(t *testing.T) {
 	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
 		want := []string{"initial", "steer"}[index]
