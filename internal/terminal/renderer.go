@@ -365,6 +365,7 @@ func (r *LiveRenderer) Frames(frames []LiveFrame) error {
 
 func orderLiveFrames(frames []LiveFrame) ([]LiveFrame, error) {
 	type taskFrames struct {
+		session  string
 		parent   string
 		ordinary []LiveFrame
 		status   *LiveFrame
@@ -376,17 +377,19 @@ func orderLiveFrames(frames []LiveFrame) ([]LiveFrame, error) {
 		if frame.TaskID == "" {
 			return nil, errFrameTaskIDEmpty
 		}
-		key := frame.SessionID
-		if key == "" {
-			key = frame.TaskID
-		}
+		key := frame.TaskID
 		task := tasks[key]
 		if task == nil {
-			task = &taskFrames{parent: frame.ParentSessionID}
+			task = &taskFrames{session: frame.SessionID, parent: frame.ParentSessionID}
 			tasks[key] = task
 			order = append(order, key)
-		} else if task.parent == "" {
-			task.parent = frame.ParentSessionID
+		} else {
+			if task.session == "" {
+				task.session = frame.SessionID
+			}
+			if task.parent == "" {
+				task.parent = frame.ParentSessionID
+			}
 		}
 		if frame.MainStatus {
 			if task.status != nil {
@@ -397,10 +400,24 @@ func orderLiveFrames(frames []LiveFrame) ([]LiveFrame, error) {
 			task.ordinary = append(task.ordinary, frame)
 		}
 	}
+	// A shell task runs within its owning agent's session and therefore has the
+	// same SessionID and ParentSessionID. Prefer the non-self-parented task as
+	// that session's ancestry node, regardless of frame arrival order.
+	sessionOwners := make(map[string]string)
+	for _, id := range order {
+		task := tasks[id]
+		if task.session == "" {
+			continue
+		}
+		owner := sessionOwners[task.session]
+		if owner == "" || tasks[owner].parent == task.session && task.parent != task.session {
+			sessionOwners[task.session] = id
+		}
+	}
 	children := make(map[string][]string)
 	for _, id := range order {
-		parent := tasks[id].parent
-		if parent != "" && tasks[parent] != nil {
+		parent := sessionOwners[tasks[id].parent]
+		if parent != "" && parent != id {
 			children[parent] = append(children[parent], id)
 		}
 	}
@@ -429,8 +446,8 @@ func orderLiveFrames(frames []LiveFrame) ([]LiveFrame, error) {
 		return nil
 	}
 	for _, id := range order {
-		parent := tasks[id].parent
-		if parent == "" || tasks[parent] == nil {
+		parent := sessionOwners[tasks[id].parent]
+		if parent == "" || parent == id {
 			if err := visit(id); err != nil {
 				return nil, err
 			}

@@ -94,6 +94,14 @@ func TestLiveRendererOrdersTaskFramesPostOrder(t *testing.T) {
 			want: "orphan work\n$ \n",
 		},
 		{
+			name: "tasks sharing a session remain distinct",
+			frames: []LiveFrame{
+				{TaskID: "shell", SessionID: "session-agent", ParentSessionID: "session-agent", StyledActivity: []StyledText{{Text: "shell work"}}},
+				{TaskID: "agent", SessionID: "session-agent", ParentSessionID: "session-main", MainStatus: true, StyledActivity: []StyledText{{Text: "agent status"}}, Prompt: PromptState{Prefix: "$ "}},
+			},
+			want: "shell work\nagent status\n$ \n",
+		},
+		{
 			name: "cycle rejected",
 			frames: []LiveFrame{
 				{TaskID: "one", SessionID: "session-one", ParentSessionID: "session-two"},
