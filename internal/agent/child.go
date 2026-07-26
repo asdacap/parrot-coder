@@ -65,6 +65,10 @@ type Status struct {
 	ToolUses      int
 }
 
+func childTurnActive(status AgentStatus) bool {
+	return status == StatusBlocked || status == StatusPending || status == StatusRunning
+}
+
 const (
 	ChildLifecycleStart    = "start"
 	ChildLifecycleWorking  = "working"

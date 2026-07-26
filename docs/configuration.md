@@ -339,7 +339,12 @@ accepts either that ID or the friendly name assigned by `agent_spawn` as its
 name, falling back to its canonical session ID when no name is available. A
 child may also use `agent_send` with its direct parent's canonical ID or
 non-empty friendly name; siblings and other ancestors are not accessible.
-Completion notifications to the direct parent remain automatic.
+Completion notifications to the direct parent remain automatic. If either the
+user-wide or direct-parent child concurrency limit is full, `agent_spawn` still
+returns the admitted child session immediately with `status: "blocked"`. The
+child starts when both limits have capacity. A blocked child is a normal active
+task: use `wait_agent` to wait for it or `task_interrupt` to cancel it before it
+starts.
 Shell tasks use process IDs with `wait_process`, `write_stdin`, and
 `task_interrupt`, and automatically notify their owning session on completion.
 `task_list_active` discovers both kinds using those same identities. Use

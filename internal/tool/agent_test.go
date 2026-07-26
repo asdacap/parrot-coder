@@ -109,7 +109,7 @@ func TestAgentSendTrustRelationshipMatrix(t *testing.T) {
 
 func TestAgentToolsContract(t *testing.T) {
 	child := &agentTestChild{
-		task:      AgentTask{SessionID: "session-child", Agent: "explorer", Name: "code-review", Status: "running", Turn: 1, Depth: 1},
+		task:      AgentTask{SessionID: "session-child", Agent: "explorer", Name: "code-review", Status: "blocked", Turn: 1, Depth: 1},
 		messageID: "message-1",
 	}
 	session := &agentTestSession{
@@ -126,7 +126,7 @@ func TestAgentToolsContract(t *testing.T) {
 	}
 	call := CallContext{SessionID: "root", Agent: "build", ToolCallID: "call-1"}
 	spawn := tools[agentSpawnID]
-	if description := spawn.Descriptor().Description; !strings.Contains(description, "final result will automatically be sent to the caller") {
+	if description := spawn.Descriptor().Description; !strings.Contains(description, "final result will automatically be sent to the caller") || !strings.Contains(description, "blocked") || !strings.Contains(description, "interrupt") {
 		t.Fatalf("agent_spawn description = %q", description)
 	}
 	if schema := string(spawn.JSONSchema()); !strings.Contains(schema, "friendly name for easy identification") || strings.Contains(schema, "UI name") {
@@ -150,7 +150,7 @@ func TestAgentToolsContract(t *testing.T) {
 	}
 
 	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer","model":"fast","name":"code-review"}`)
-	if spawned.Metadata["session_id"] != "session-child" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != "running" || spawned.Metadata["turn"] != 1 {
+	if spawned.Metadata["session_id"] != "session-child" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != "blocked" || spawned.Metadata["turn"] != 1 {
 		t.Fatalf("spawned = %#v", spawned)
 	}
 	if session.created.callerAgent != "build" || session.created.prompt != "inspect" || session.created.agent != "explorer" || session.created.model != "fast" || session.created.name != "code-review" {

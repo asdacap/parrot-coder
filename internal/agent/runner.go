@@ -139,7 +139,7 @@ type agentSession struct {
 	childCreations         int
 	removed                bool
 	shuttingDown           bool
-	childTurns             childTurnSemaphore
+	childTurns             *childTurnSemaphore
 	observers              []LifecycleObserver
 	toolSnapshot           tool.Snapshot
 	toolExecutor           tool.Executor
