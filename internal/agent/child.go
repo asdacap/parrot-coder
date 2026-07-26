@@ -44,25 +44,26 @@ type ChildProgress struct {
 }
 
 type Status struct {
-	SessionID     string
-	ParentSession string
-	RootSession   string
-	Agent         string
-	Provider      string
-	Model         string
-	Variant       string
-	Name          string
-	Lineage       []string
-	Depth         int
-	Turn          int
-	State         AgentStatus
-	StartedAt     time.Time
-	FinishedAt    time.Time
-	Output        string
-	Error         string
-	Truncated     bool
-	Usage         ChildUsage
-	ToolUses      int
+	SessionID      string
+	ParentSession  string
+	RootSession    string
+	Agent          string
+	Provider       string
+	Model          string
+	Variant        string
+	Name           string
+	Lineage        []string
+	Depth          int
+	Turn           int
+	State          AgentStatus
+	StartedAt      time.Time
+	FinishedAt     time.Time
+	Output         string
+	Error          string
+	NoFinalMessage bool
+	Truncated      bool
+	Usage          ChildUsage
+	ToolUses       int
 }
 
 func turnActive(status AgentStatus) bool {
