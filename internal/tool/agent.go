@@ -68,7 +68,7 @@ func AgentDescriptor(kind string) Descriptor {
 	descriptor := Descriptor{ID: kind}
 	switch kind {
 	case agentSpawnID:
-		descriptor.Description = "Start a reusable child agent in an isolated session and return its session ID immediately. The final result will automatically be sent to the caller when the child agent finishes."
+		descriptor.Description = "Start a reusable child agent in an isolated session and return its session ID immediately. If concurrency is full, the returned agent is blocked until capacity is available; wait for it or interrupt it to cancel. The final result will automatically be sent to the caller when the child agent finishes."
 		descriptor.Schema = json.RawMessage(`{"type":"object","properties":{"prompt":{"type":"string"},"agent":{"type":"string"},"model":{"type":"string"},"name":{"type":"string","description":"Optional friendly name for easy identification. It is lowercased and sanitized to letters, digits, and hyphens; omitted or empty names are generated."}},"required":["prompt","agent"],"additionalProperties":false}`)
 		descriptor.Presentation = Presentation{Subagent: true, Label: LabelSpec{Fields: []LabelField{{Names: []string{"name", "agent"}}}}, CompletedInput: CompletedInputSpec{Fields: []string{"name", "agent", "model", "prompt"}, TerminalOnly: true}}
 	case agentSendID:

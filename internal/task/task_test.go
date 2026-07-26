@@ -13,6 +13,21 @@ func (testTask) Wait(context.Context) (Completion, error) { return Completion{},
 
 func (t testTask) Interrupt(context.Context) (Snapshot, error) { return t.snapshot, nil }
 
+func TestManagerListsBlockedRunningAndPendingTasksAsActive(t *testing.T) {
+	t.Parallel()
+	manager := NewManager()
+	for _, status := range []string{"blocked", "running", "pending", "succeeded"} {
+		err := manager.Register(testTask{snapshot: Snapshot{ID: "task-" + status, SessionID: "session", Kind: KindAgent, Status: status}}, func(string) bool { return true })
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	active := manager.ListActive("session")
+	if len(active) != 3 || active[0].Status != "blocked" || active[1].Status != "pending" || active[2].Status != "running" {
+		t.Fatalf("active tasks = %#v", active)
+	}
+}
+
 func TestManagerRegisterRequiresTaskAndSessionIDs(t *testing.T) {
 	t.Parallel()
 

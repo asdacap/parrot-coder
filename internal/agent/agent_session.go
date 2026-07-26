@@ -22,6 +22,7 @@ type AgentStatus string
 const (
 	StatusIdle         AgentStatus = "idle"
 	StatusPending      AgentStatus = "pending"
+	StatusBlocked      AgentStatus = "blocked"
 	StatusRunning      AgentStatus = "running"
 	StatusInterrupting AgentStatus = "interrupting"
 	StatusSucceeded    AgentStatus = "succeeded"
@@ -308,7 +309,7 @@ func (s *agentSession) wait(ctx context.Context, state *drainState) error {
 
 func (s *agentSession) Interrupt(ctx context.Context) error {
 	s.mu.Lock()
-	if s.child != nil && (s.child.status.State == StatusRunning || s.child.status.State == StatusPending) {
+	if s.child != nil && childTurnActive(s.child.status.State) {
 		s.child.cancel()
 		done := s.child.turn.done
 		s.mu.Unlock()
@@ -329,7 +330,7 @@ func (s *agentSession) Shutdown(ctx context.Context) error {
 	var childDone <-chan struct{}
 	if s.child != nil && s.child.turn != nil {
 		childDone = s.child.turn.done
-		if s.child.status.State == StatusRunning || s.child.status.State == StatusPending {
+		if childTurnActive(s.child.status.State) {
 			s.child.cancel()
 		}
 	}
@@ -417,7 +418,7 @@ func (s *agentSession) removeIfIdle(remove func() error) error {
 	if s.removed {
 		return nil
 	}
-	if s.drain != nil || s.childCreations != 0 || s.child != nil && (s.child.status.State == StatusRunning || s.child.status.State == StatusPending) {
+	if s.drain != nil || s.childCreations != 0 || s.child != nil && childTurnActive(s.child.status.State) {
 		return ErrAgentSessionActive
 	}
 	if err := remove(); err != nil {

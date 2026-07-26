@@ -215,7 +215,7 @@ func (m *Manager) ListActive(callerSession string) []Snapshot {
 	result := make([]Snapshot, 0, len(items))
 	for _, item := range items {
 		snapshot := item.task.Snapshot()
-		if item.visible(callerSession) && (snapshot.Status == "running" || snapshot.Status == "pending") {
+		if item.visible(callerSession) && (snapshot.Status == "blocked" || snapshot.Status == "running" || snapshot.Status == "pending") {
 			result = append(result, snapshot)
 		}
 	}

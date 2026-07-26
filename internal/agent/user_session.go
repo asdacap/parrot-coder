@@ -60,6 +60,7 @@ type UserSession interface {
 	Shutdown(context.Context) error
 	CreateChild(context.Context, AgentSession, ChildRequest) (AgentSession, error)
 	TryAcquireWorkerQuota() (func(), error)
+	AcquireWorkerQuota(context.Context) (ChildTurnPermit, error)
 }
 
 type UserSessionConfig struct {
@@ -88,7 +89,7 @@ type userSession struct {
 	sessions      SessionRuntime
 	systemContext SystemContextPrompt
 	repository    *agentSessionRepository
-	childTurns    childTurnSemaphore
+	childTurns    *childTurnSemaphore
 	quotaMu       sync.Mutex
 	childMu       sync.Mutex
 	closed        bool
@@ -216,6 +217,21 @@ func (s *userSession) TryAcquireWorkerQuota() (func(), error) {
 		return nil, ErrChildConcurrency
 	}
 	return permit.Release, nil
+}
+
+func (s *userSession) AcquireWorkerQuota(ctx context.Context) (ChildTurnPermit, error) {
+	permit, err := s.childTurns.acquire(ctx)
+	if err != nil {
+		return nil, err
+	}
+	s.quotaMu.Lock()
+	closed := s.closed
+	s.quotaMu.Unlock()
+	if closed {
+		permit.Release()
+		return nil, ErrUserSessionClosed
+	}
+	return permit, nil
 }
 
 func (s *userSession) Shutdown(ctx context.Context) error {

@@ -558,6 +558,100 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	return &runnerHarness{db: sessionDB, sessions: sessions, goals: goals, repository: repository, agentSessions: agentSessions, sessionID: created.ID, runner: runner}
 }
 
+func TestChildSpawnBlocksAtConcurrencyLimitAndCanBeCanceled(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		globalLimit int
+		parentLimit int
+	}{
+		{name: "global limit", globalLimit: 1, parentLimit: 2},
+		{name: "parent limit", globalLimit: 2, parentLimit: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			started := make(chan string, 4)
+			releases := map[string]chan struct{}{
+				"first":  make(chan struct{}),
+				"second": make(chan struct{}),
+				"fourth": make(chan struct{}),
+			}
+			fake := &fakeProvider{stream: func(_ int, ctx context.Context, request protocol.Request) (provider.Stream, error) {
+				prompt := request.Messages[len(request.Messages)-1].Content[0].Text
+				started <- prompt
+				select {
+				case <-releases[prompt]:
+					return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + prompt}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}}
+			h := newRunnerHarness(t, fake, nil)
+			parent := mustGetAgentSession(t, h.agentSessions, h.sessionID).(*agentSession)
+			h.agentSessions.childTurns = newChildTurnSemaphore(test.globalLimit)
+			parent.childTurns = newChildTurnSemaphore(test.parentLimit)
+
+			first, err := parent.CreateChild(t.Context(), ChildRequest{Prompt: "first", Agent: BuildID, Name: "first"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prompt := <-started; prompt != "first" {
+				t.Fatalf("first started prompt = %q", prompt)
+			}
+			second, err := parent.CreateChild(t.Context(), ChildRequest{Prompt: "second", Agent: BuildID, Name: "second"})
+			if err != nil || second.Status().State != StatusBlocked {
+				t.Fatalf("blocked spawn = %#v, %v", second.Status(), err)
+			}
+			select {
+			case prompt := <-started:
+				t.Fatalf("blocked child reached provider with prompt %q", prompt)
+			case <-time.After(20 * time.Millisecond):
+			}
+
+			close(releases["first"])
+			firstObserver, _ := first.Observe()
+			if completed, err := firstObserver.Wait(t.Context()); err != nil || completed.Output != "answer-first" {
+				t.Fatalf("first completion = %#v, %v", completed, err)
+			}
+			if prompt := <-started; prompt != "second" || second.Status().State != StatusRunning {
+				t.Fatalf("unblocked child = %q, %#v", prompt, second.Status())
+			}
+
+			third, err := parent.CreateChild(t.Context(), ChildRequest{Prompt: "third", Agent: BuildID, Name: "third"})
+			if err != nil || third.Status().State != StatusBlocked {
+				t.Fatalf("cancelable spawn = %#v, %v", third.Status(), err)
+			}
+			if err := third.Interrupt(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			thirdObserver, _ := third.Observe()
+			canceled, err := thirdObserver.Wait(t.Context())
+			if err != nil || canceled.State != StatusCanceled || canceled.Error != ErrChildCanceled.Error() {
+				t.Fatalf("canceled blocked child = %#v, %v", canceled, err)
+			}
+
+			close(releases["second"])
+			secondObserver, _ := second.Observe()
+			if _, err := secondObserver.Wait(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			fourth, err := parent.CreateChild(t.Context(), ChildRequest{Prompt: "fourth", Agent: BuildID, Name: "fourth"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if prompt := <-started; prompt != "fourth" {
+				t.Fatalf("replacement started prompt = %q", prompt)
+			}
+			close(releases["fourth"])
+			fourthObserver, _ := fourth.Observe()
+			if _, err := fourthObserver.Wait(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if len(fake.Requests()) != 3 {
+				t.Fatalf("provider requests = %d, want 3", len(fake.Requests()))
+			}
+		})
+	}
+}
+
 func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})

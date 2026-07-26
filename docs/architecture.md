@@ -120,8 +120,13 @@ tasks directly steer completion messages into their owning sessions. A task may
 have a parent task, so tasks form a tree rooted at the session's main task. The
 main task of a subagent child session is the subagent task itself.
 
+Child-agent tasks admitted while a child concurrency limit is full have a
+`blocked` status until both their user-wide and direct-parent quotas are
+available. They can be waited on or interrupted like running tasks.
+
 Tasks emit a flat lifecycle on their session's event stream: `task.start`,
-`task.working`, `task.idle`, and `task.finished`. Task events are never
+`task.working`, `task.idle`, and `task.finished`. A blocked child emits
+`task.start`, followed by `task.working` when it acquires quota. Task events are never
 nested inside a parent task's event. Every event instead carries the
 `task_id` of the task which produced it and the `session_id` of its stream,
 and `task.start` carries the `parent_task_id`. A child session's events are
