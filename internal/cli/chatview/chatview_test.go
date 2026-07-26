@@ -386,12 +386,33 @@ func TestTaskTrackerCumulativeUsageHandlesCyclicAncestry(t *testing.T) {
 		}
 	}
 
-	tracker.AddUsage("task-a", v1.Usage{InputTokens: 10, OutputTokens: 2, InputCost: 0.1})
-	tracker.AddUsage("task-b", v1.Usage{InputTokens: 20, OutputTokens: 3, OutputCost: 0.2})
+	tracker.AddUsage("task-a", v1.Usage{InputTokens: 10, OutputTokens: 2, InputCost: 0.125})
+	tracker.AddUsage("task-b", v1.Usage{InputTokens: 20, OutputTokens: 3, OutputCost: 0.25})
 
-	want := TaskUsage{InputTokens: 30, OutputTokens: 5, Cost: 0.3}
+	want := TaskUsage{InputTokens: 30, OutputTokens: 5, Cost: 0.375}
 	if got := tracker.CumulativeUsage("task-a"); got != want {
 		t.Fatalf("CumulativeUsage() = %#v, want %#v", got, want)
+	}
+}
+
+func TestTaskTrackerStatusHandlesCyclicAncestry(t *testing.T) {
+	tracker := NewTaskTracker()
+	for _, start := range []v1.TaskEvent{
+		{TaskID: "task-a", SessionID: "session-a", ParentSessionID: "session-b", Kind: "agent"},
+		{TaskID: "task-b", SessionID: "session-b", ParentSessionID: "session-a", Kind: "agent"},
+	} {
+		if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskStart, start), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	for _, taskID := range []string{"task-a", "task-b"} {
+		if _, err := tracker.Apply(taskLifecycleEvent(v1.EventTaskIdle, v1.TaskEvent{TaskID: taskID}), false); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if tracker.taskActive(tracker.tasks["task-a"]) {
+		t.Fatal("idle cyclic task ancestry reported as active")
 	}
 }
 

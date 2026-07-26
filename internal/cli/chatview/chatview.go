@@ -988,9 +988,17 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 }
 
 func (t *TaskTracker) taskActive(node *taskNode) bool {
+	return t.taskActiveSeen(node, make(map[*taskNode]bool, len(t.tasks)))
+}
+
+func (t *TaskTracker) taskActiveSeen(node *taskNode, seen map[*taskNode]bool) bool {
 	if node == nil {
 		return false
 	}
+	if seen[node] {
+		return false
+	}
+	seen[node] = true
 	selfActive := node.status == "working"
 	if node.progress != nil {
 		selfActive = !node.progressDone
@@ -999,7 +1007,7 @@ func (t *TaskTracker) taskActive(node *taskNode) bool {
 		return true
 	}
 	for _, child := range t.tasks {
-		if child.parentSessionID == node.sessionID && t.taskActive(child) {
+		if child.parentSessionID == node.sessionID && t.taskActiveSeen(child, seen) {
 			return true
 		}
 	}
@@ -1018,7 +1026,9 @@ func (t *TaskTracker) activeChildCount(node *taskNode) int {
 
 func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 	var reports []TaskReport
-	for node := t.tasks[taskID]; node != nil && node.id != managedtask.MainTaskID; node = t.sessions[node.parentSessionID] {
+	seen := make(map[*taskNode]bool, len(t.tasks))
+	for node := t.tasks[taskID]; node != nil && node.id != managedtask.MainTaskID && !seen[node]; node = t.sessions[node.parentSessionID] {
+		seen[node] = true
 		// Shell lifecycle has its own stable live row. Unlike agent progress it
 		// settles directly on task.finished and has no later progress event.
 		if node.kind == string(managedtask.KindShell) {
