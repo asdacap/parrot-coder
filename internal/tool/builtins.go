@@ -74,7 +74,7 @@ func BuiltinProviders(services BuiltinServices) (Providers, error) {
 		constructor := constructor
 		items = append(items, providerFor(constructor))
 	}
-	for _, kind := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
+	for _, kind := range []string{"queue_create", "queue_info", "queue_listen", "queue_push", "queue_take"} {
 		kind := kind
 		prototype := &QueueTool{Kind: kind}
 		items = append(items, &ProviderFunc{ToolDescriptor: DescriptorOf(prototype), CreateTool: func(state AgentSession) (Tool, error) {

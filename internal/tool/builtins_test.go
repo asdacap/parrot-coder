@@ -47,7 +47,7 @@ func (builtinTestAgentSession) ResolveAgent(string) (ResolvedAgent, error) {
 func TestQueueToolsHonorCancellation(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	for _, kind := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
+	for _, kind := range []string{"queue_create", "queue_info", "queue_listen", "queue_push", "queue_take"} {
 		t.Run(kind, func(t *testing.T) {
 			store, err := queue.New(t.TempDir())
 			if err != nil {
@@ -118,7 +118,7 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 			t.Fatalf("tool %q was reused across sessions", id)
 		}
 	}
-	for _, id := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
+	for _, id := range []string{"queue_create", "queue_info", "queue_listen", "queue_push", "queue_take"} {
 		firstQueue := first.tools[id].(*QueueTool)
 		secondQueue := second.tools[id].(*QueueTool)
 		childQueue := child.tools[id].(*QueueTool)
@@ -176,7 +176,7 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 	definitions := providers.Definitions()
 	want := []string{
 		"agent_send", "agent_spawn", "apply_patch", "create_goal", "exec_command", "get_goal", "git_diff", "glob", "question",
-		"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take", "read", "request_write_permission", "rg", "set_config", "show_to_user", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "update_goal", "wait_agent", "wait_process", "web_fetch", "write_stdin",
+		"queue_create", "queue_info", "queue_listen", "queue_push", "queue_take", "read", "request_write_permission", "rg", "set_config", "show_to_user", "skill", "status", "task_interrupt", "task_list_active", "todoread", "todowrite", "update_goal", "wait_agent", "wait_process", "web_fetch", "write_stdin",
 	}
 	if len(definitions) != len(want) {
 		t.Fatalf("definitions = %#v", definitions)

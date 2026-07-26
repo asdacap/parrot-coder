@@ -46,8 +46,8 @@ func (t *QueueTool) Description() string {
 		return "Push a string onto an existing shared user-session queue. Direction defaults to back."
 	case "queue_take":
 		return "Remove and return a string from an existing shared user-session queue. Direction defaults to front."
-	case "queue_monitor":
-		return "Enable or disable idle notification delivery from an existing shared user-session queue. Monitoring remains enabled after each FIFO delivery."
+	case "queue_listen":
+		return "Enable or disable idle notification delivery from an existing shared user-session queue. Listening remains enabled after each FIFO delivery."
 	default:
 		return "Get metadata and the current size of an existing shared user-session queue."
 	}
@@ -72,8 +72,8 @@ func (t *QueueTool) JSONSchema() json.RawMessage {
 		required += `,"item"`
 	case "queue_take":
 		properties += `,"direction":{"type":"string","enum":["front","back"],"description":"Queue end; defaults to front."}`
-	case "queue_monitor":
-		properties += `,"enabled":{"type":"boolean","description":"Whether to monitor this queue; defaults to true."}`
+	case "queue_listen":
+		properties += `,"enabled":{"type":"boolean","description":"Whether to listen to this queue; defaults to true."}`
 	}
 	return json.RawMessage(`{"type":"object","properties":{` + properties + `},"required":[` + required + `],"additionalProperties":false}`)
 }
@@ -109,7 +109,7 @@ func (t *QueueTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Resu
 		item, info, err = t.Store.Take(input.Name, input.Direction)
 	case "queue_info":
 		info, err = t.Store.Get(input.Name)
-	case "queue_monitor":
+	case "queue_listen":
 		enabled := true
 		if input.Enabled != nil {
 			enabled = *input.Enabled
