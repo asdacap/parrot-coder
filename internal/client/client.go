@@ -39,7 +39,14 @@ func (e *APIError) Error() string {
 	if e == nil {
 		return ""
 	}
-	return fmt.Sprintf("parrot API: %s (%s)", e.Problem.Title, e.Problem.Code)
+	message := fmt.Sprintf("parrot API: %s (%s)", e.Problem.Title, e.Problem.Code)
+	if e.Problem.Detail != "" {
+		message += ": " + e.Problem.Detail
+	}
+	if e.Problem.ErrorRef != "" {
+		message += " [error ref: " + e.Problem.ErrorRef + "]"
+	}
+	return message
 }
 
 func New(baseURL string, transport http.RoundTripper) (*Client, error) {
