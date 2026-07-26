@@ -1,0 +1,136 @@
+# Predefined configuration reference.
+# This file is regenerated at every startup and documents all configurable
+# fields with their default values. The agent reads this file to determine
+# default configuration values.
+
+# Base agent prompt included in the system context.
+prompt: |-
+  You are Parrot Coder, a local coding agent.
+
+  Do not duplicate work with agent_spawn. If an agent is already handling the work and is still running, wait for it to finish instead of spawning another agent for the same work.
+
+# Default model selected as provider/model, optionally followed by /variant.
+model: ""
+
+# Render changed lines inline. Set to false for a side-by-side diff viewer.
+inline_diff: true
+
+# Positive number of milliseconds to wait for a permission request response.
+permission_request_timeout_ms: 30000
+
+# Tool blacklist: tools listed here are disabled and not available to the model.
+# tool_blacklist:
+#   - web_fetch
+
+# Child-agent concurrency and nesting limits.
+subagents:
+  # Maximum child-agent turns running across the process.
+  max_concurrent: 8
+  # Maximum child-agent turns running for one parent session.
+  max_concurrent_per_parent: 4
+  # Maximum number of nested child-agent levels.
+  max_depth: 4
+
+# OpenAI-compatible providers and their model catalogs.
+# providers:
+#   provider:
+#     # Provider adapter type: 'compatible' or 'openai-compatible'.
+#     type: openai-compatible
+#     # API protocol: 'responses' or 'chat-completions'.
+#     protocol: responses
+#     # Provider base URL, e.g. https://api.example.test/v1.
+#     base_url: https://api.example.test/v1
+#     # Environment variable holding the API key.
+#     api_key_env: PROVIDER_API_KEY
+#     # Extra headers to send. Do not store secrets here.
+#     headers:
+#       X-Tenant: non-secret-value
+#     # Allow plain HTTP for localhost endpoints.
+#     allow_insecure_localhost: false
+#     # Milliseconds to wait for response headers; zero disables.
+#     header_timeout_ms: 10000
+#     # OpenRouter-style provider routing preferences.
+#     provider_preferences:
+#       order:
+#         - anthropic
+#       allow_fallbacks: false
+#       sort: price
+#     # Model metadata not available from the endpoint catalog.
+#     models:
+#       model:
+#         # Display name for the model.
+#         name: Display Name
+#         # Context window in tokens.
+#         context: 128000
+#         # Maximum output tokens.
+#         max_tokens: 16384
+#         # Whether the model supports tool calls.
+#         tools: true
+#         # Whether the model supports reasoning tokens.
+#         reasoning: false
+#         # Supported output modalities, e.g. text.
+#         output:
+#           - text
+#         # Named provider request options.
+#         variants:
+#           high:
+#             # Reasoning effort passed to the provider, e.g. low/medium/high.
+#             reasoning_effort: high
+
+# Model Context Protocol servers to start.
+# mcp:
+#   server-name:
+#     # Transport: 'stdio' or 'http'.
+#     transport: stdio
+#     # Absolute path to the server executable for stdio.
+#     command: /absolute/path/to/server
+#     # Arguments for the server command.
+#     args:
+#       - --stdio
+#     # Environment variables for the server process.
+#     env:
+#       NAME: value
+#     # Working directory for the server process.
+#     cwd: /absolute/working/directory
+#     # Endpoint URL for http transport.
+#     url: https://mcp.example.test/rpc
+#     # Extra headers for http requests. Do not store secrets here.
+#     headers:
+#       X-Tenant: non-secret-value
+#     # Whether the server is started.
+#     enabled: false
+#     # Allow plain HTTP for localhost endpoints.
+#     allow_insecure_localhost: false
+#     # Milliseconds to wait for the server to start; zero uses default.
+#     startup_timeout_ms: 15000
+#     # Milliseconds to wait for a call; zero uses default.
+#     call_timeout_ms: 30000
+
+# Ordered sandbox rules applied after the built-in mounts below.
+# Each rule has a path and an action: allow_write, deny_read,
+# allow_read, or deny_write. Later rules override earlier ones.
+# Requires global configuration.
+#
+# Built-in rules (applied first, in order):
+#   /                             allow_read    (entire host filesystem)
+#   /dev                          sandbox tmpfs (empty /dev)
+#   /dev/null                     allow_write   (writable null)
+#   /dev/zero,random,urandom,...  allow_read    (host devices)
+#   /proc                         sandbox procfs
+#   {session temp dir} -> /tmp    allow_write   (private writable)
+#   {workspace root}              allow_write   (always writable)
+#   {session grants}              allow_write   (from request_write_permission)
+#   {linked git common dir}       allow_write   (worktree support)
+#   {workspace}/.parrot           deny_write    (protected metadata)
+#   {workspace}/parrot.yaml       deny_write    (protected metadata)
+#
+# sandbox_rules:
+#   - path: /absolute/path/to/dir
+#     rule: allow_write
+#   - path: /another/path
+#     rule: deny_read
+
+# Web fetch restrictions.
+web_fetch:
+  # Allow fetching from private addresses; increases SSRF risk.
+  allow_private: false

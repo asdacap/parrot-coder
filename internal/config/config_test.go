@@ -2,6 +2,7 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -278,6 +279,25 @@ func TestLoadSubagentDefaultsMergeAndValidation(t *testing.T) {
 				t.Fatalf("Load error = %v, want %q", err, test.want)
 			}
 		})
+	}
+}
+
+func TestPredefinedConfigResource(t *testing.T) {
+	root := t.TempDir()
+	if _, err := Load(Options{ProjectRoot: root, CWD: root}); err != nil {
+		t.Fatalf("embedded predefined config is invalid: %v", err)
+	}
+
+	path := filepath.Join(root, "generated", PredefinedFileName)
+	if err := WritePredefinedConfig(path); err != nil {
+		t.Fatal(err)
+	}
+	written, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(written, predefinedConfigYAML) {
+		t.Fatal("written predefined config differs from embedded resource")
 	}
 }
 
