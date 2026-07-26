@@ -132,7 +132,7 @@ func (s *agentSessionStore) UpdateSelection(ctx context.Context, patch Selection
 			updated.UpdatedAt = events[0].CreatedAt
 			return nil
 		}
-		return []event.NewEvent{{Type: "session.selection.changed", Data: data}}, project, nil
+		return []event.NewEvent{{Type: v1.EventSessionSelectionChanged, Data: data}}, project, nil
 	})
 	if err != nil {
 		return AgentSessionDto{}, err
@@ -157,12 +157,14 @@ func (s *agentSessionStore) StatusPromptPending(ctx context.Context) (bool, erro
 	var statusCount, changedAfterStatus int
 	err = db.SQL().QueryRowContext(ctx, `
 		SELECT
-			(SELECT COUNT(*) FROM event WHERE session_id=? AND type='session.status_prompt.appended'),
+			(SELECT COUNT(*) FROM event WHERE session_id=? AND type=?),
 			(SELECT COUNT(*) FROM event
-			 WHERE session_id=? AND type='session.selection.changed'
+			 WHERE session_id=? AND type=?
 			   AND json_extract(data_json, '$.mode_changed') = 1
-			   AND sequence > COALESCE((SELECT MAX(sequence) FROM event WHERE session_id=? AND type='session.status_prompt.appended'), -1))`,
-		s.sessionID, s.sessionID, s.sessionID).Scan(&statusCount, &changedAfterStatus)
+			   AND sequence > COALESCE((SELECT MAX(sequence) FROM event WHERE session_id=? AND type=?), -1))`,
+		s.sessionID, v1.EventSessionStatusPromptAppended,
+		s.sessionID, v1.EventSessionSelectionChanged,
+		s.sessionID, v1.EventSessionStatusPromptAppended).Scan(&statusCount, &changedAfterStatus)
 	if err != nil {
 		return false, err
 	}
@@ -234,7 +236,7 @@ func (s *agentSessionStore) AppendMessage(ctx context.Context, message protocol.
 	content := textContent(message.Content)
 	payload, _ := json.Marshal(map[string]any{"message_id": messageID, "role": message.Role})
 	var out Message
-	_, err = s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.message.appended", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+	_, err = s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: v1.EventSessionMessageAppended, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO session_message(id,session_id,role,content,parts_json,status,sequence,created_at) VALUES(?,?,?,?,?,'complete',?,?)`, messageID, s.sessionID, message.Role, content, parts, events[0].Sequence, formatTime(events[0].CreatedAt))
 		if err == nil {
 			out = Message{ID: messageID, SessionID: s.sessionID, Role: string(message.Role), Content: content, Parts: parts, Status: "complete", Sequence: events[0].Sequence, CreatedAt: events[0].CreatedAt}
@@ -297,7 +299,7 @@ func (s *agentSessionStore) AppendMessageIfNoPendingInputs(ctx context.Context, 
 			}
 			return err
 		}
-		return []event.NewEvent{{Type: "session.message.appended", Data: payload}}, project, nil
+		return []event.NewEvent{{Type: v1.EventSessionMessageAppended, Data: payload}}, project, nil
 	})
 	if err != nil {
 		return Message{}, false, err
@@ -318,7 +320,7 @@ func (s *agentSessionStore) AppendStatusPrompt(ctx context.Context, text string)
 	}
 	payload, _ := json.Marshal(map[string]string{"message_id": messageID})
 	var out Message
-	_, err = s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.status_prompt.appended", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+	_, err = s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: v1.EventSessionStatusPromptAppended, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO session_message(id,session_id,role,content,parts_json,status,sequence,created_at) VALUES(?,?,'system',?,?,'complete',?,?)`, messageID, s.sessionID, text, parts, events[0].Sequence, formatTime(events[0].CreatedAt))
 		if err == nil {
 			out = Message{ID: messageID, SessionID: s.sessionID, Role: string(protocol.RoleSystem), Content: text, Parts: parts, Status: "complete", Sequence: events[0].Sequence, CreatedAt: events[0].CreatedAt}
@@ -332,7 +334,7 @@ func (s *agentSessionStore) StartAssistant(ctx context.Context) (Message, error)
 	messageID, _ := id.New("msg")
 	payload, _ := json.Marshal(map[string]string{"message_id": messageID})
 	var out Message
-	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.assistant.started", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: v1.EventSessionAssistantStarted, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO session_message(id,session_id,role,content,parts_json,status,sequence,created_at) VALUES(?,?,'assistant','','[]','active',?,?)`, messageID, s.sessionID, events[0].Sequence, formatTime(events[0].CreatedAt))
 		out = Message{ID: messageID, SessionID: s.sessionID, Role: "assistant", Status: "active", Sequence: events[0].Sequence, CreatedAt: events[0].CreatedAt}
 		return err
@@ -352,10 +354,21 @@ func (s *agentSessionStore) FinishAssistant(ctx context.Context, messageID strin
 	if final.Status == "" {
 		final.Status = "complete"
 	}
+	eventType := ""
+	switch final.Status {
+	case "complete":
+		eventType = v1.EventSessionAssistantComplete
+	case "error":
+		eventType = v1.EventSessionAssistantError
+	case "interrupted":
+		eventType = v1.EventSessionAssistantInterrupted
+	default:
+		return errors.New("session: invalid assistant status")
+	}
 	parts, _ := json.Marshal(final.Parts)
 	usage, _ := json.Marshal(final.Usage)
 	payload, _ := json.Marshal(map[string]any{"message_id": messageID, "status": final.Status, "finish_reason": final.FinishReason, "error": final.Error})
-	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.assistant." + final.Status, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: eventType, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		result, err := tx.ExecContext(ctx, `UPDATE session_message SET content=?,parts_json=?,status=?,finish_reason=?,error_text=?,usage_json=? WHERE id=? AND session_id=? AND status='active'`, textContent(final.Parts), parts, final.Status, final.FinishReason, final.Error, usage, messageID, s.sessionID)
 		if err != nil {
 			return err
@@ -387,7 +400,7 @@ func (s *agentSessionStore) AddToolCall(ctx context.Context, messageID string, c
 	}
 	payload, _ := json.Marshal(v1.ToolEvent{CallID: call.ID, ToolName: call.Name, Input: input, Status: "pending"})
 	var out ToolCall
-	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.tool.pending", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: v1.EventSessionToolPending, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		_, err := tx.ExecContext(ctx, `INSERT INTO session_tool_call(id,session_id,message_id,name,input_json,status,sequence,created_at) VALUES(?,?,?,?,?,'pending',?,?)`, call.ID, s.sessionID, messageID, call.Name, []byte(call.Input), events[0].Sequence, formatTime(events[0].CreatedAt))
 		out = ToolCall{ID: call.ID, SessionID: s.sessionID, MessageID: messageID, Name: call.Name, Input: append(json.RawMessage(nil), call.Input...), Status: "pending", Sequence: events[0].Sequence}
 		return err
@@ -438,7 +451,18 @@ func (s *agentSessionStore) transitionTool(ctx context.Context, callID, status, 
 			}
 			return nil
 		}
-		return []event.NewEvent{{Type: "session.tool." + status, Data: payload}}, project, nil
+		eventType := ""
+		switch status {
+		case "running":
+			eventType = v1.EventSessionToolRunning
+		case "success":
+			eventType = v1.EventSessionToolSuccess
+		case "failure":
+			eventType = v1.EventSessionToolFailure
+		case "interrupted":
+			eventType = v1.EventSessionToolInterrupted
+		}
+		return []event.NewEvent{{Type: eventType, Data: payload}}, project, nil
 	})
 	return err
 }
@@ -488,9 +512,9 @@ func (s *agentSessionStore) RepairActive(ctx context.Context) error {
 		pending := make([]event.NewEvent, 0, len(tools)+1)
 		for _, item := range tools {
 			payload, _ := json.Marshal(v1.ToolEvent{CallID: item.id, ToolName: item.name, Status: "interrupted", Error: reason})
-			pending = append(pending, event.NewEvent{Type: "session.tool.interrupted", Data: payload})
+			pending = append(pending, event.NewEvent{Type: v1.EventSessionToolInterrupted, Data: payload})
 		}
-		pending = append(pending, event.NewEvent{Type: "session.runtime.repaired", Data: data})
+		pending = append(pending, event.NewEvent{Type: v1.EventSessionRuntimeRepaired, Data: data})
 		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 			if _, err := tx.ExecContext(ctx, `UPDATE session_message SET status='interrupted',error_text=? WHERE session_id=? AND status='active'`, reason, s.sessionID); err != nil {
 				return err
@@ -515,7 +539,7 @@ func (s *agentSessionStore) RepairActive(ctx context.Context) error {
 
 func (s *agentSessionStore) RecordCompactionRetry(ctx context.Context, providerCode, recordID string) error {
 	data, _ := json.Marshal(map[string]string{"provider_code": providerCode, "compaction_record_id": recordID})
-	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.compaction.retry", Data: data}}, nil)
+	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: v1.EventSessionCompactionRetry, Data: data}}, nil)
 	return err
 }
 

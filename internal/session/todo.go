@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"strings"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/store"
@@ -38,7 +39,7 @@ type Todo struct {
 	Position int          `json:"position"`
 }
 
-const EventTodoUpdated = "todo.updated"
+const EventTodoUpdated = v1.EventTodoUpdated
 
 type TodoService struct {
 	sessions *store.Registry
@@ -136,7 +137,7 @@ func (s *TodoService) Replace(ctx context.Context, sessionID string, todos []Tod
 		if marshalErr != nil {
 			return nil, fmt.Errorf("session: marshal todo update: %w", marshalErr)
 		}
-		_, err = s.events.Append(ctx, sessionID, []event.NewEvent{{Type: EventTodoUpdated, Data: data}}, project)
+		_, err = s.events.Append(ctx, sessionID, []event.NewEvent{{Type: v1.EventTodoUpdated, Data: data}}, project)
 	} else {
 		db, resolveErr := s.sessions.Session(ctx, sessionID)
 		if resolveErr != nil {

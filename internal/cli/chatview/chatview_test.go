@@ -588,9 +588,9 @@ func TestRuntimeActivityTrackerIgnoresUnownedSessionEventsBeforeChildStart(t *te
 	}{
 		{name: "input admitted", eventType: v1.EventSessionInputAdmitted, data: json.RawMessage(`{"input_id":"input","message_id":"message","content":"inspect","delivery":"steer"}`)},
 		{name: "input promoted", eventType: v1.EventSessionInputPromoted, data: json.RawMessage(`{"input_id":"input","message_id":"message"}`)},
-		{name: "message appended", eventType: "session.message.appended", data: json.RawMessage(`{}`)},
-		{name: "status prompt appended", eventType: "session.status_prompt.appended", data: json.RawMessage(`{}`)},
-		{name: "selection changed", eventType: "session.selection.changed", data: json.RawMessage(`{}`)},
+		{name: "message appended", eventType: v1.EventSessionMessageAppended, data: json.RawMessage(`{}`)},
+		{name: "status prompt appended", eventType: v1.EventSessionStatusPromptAppended, data: json.RawMessage(`{}`)},
+		{name: "selection changed", eventType: v1.EventSessionSelectionChanged, data: json.RawMessage(`{}`)},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			reports, err := tracker.Apply(v1.Event{Type: test.eventType, SessionID: "child", Data: test.data}, false)

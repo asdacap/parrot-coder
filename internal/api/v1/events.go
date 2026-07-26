@@ -11,35 +11,49 @@ import (
 )
 
 const (
-	EventServerConnected        = "server.connected"
-	EventMessagePartDelta       = "message.part.delta"
-	EventSessionStatus          = "session.status"
-	EventPermission             = "permission.pending"
-	EventPermissionReply        = "permission.resolved"
-	EventQuestion               = "question.pending"
-	EventQuestionReply          = "question.resolved"
-	EventSessionInputAdmitted   = "session.input.admitted"
-	EventSessionInputPromoted   = "session.input.promoted"
-	EventTodoUpdated            = "todo.updated"
-	EventGoalUpdated            = "goal.updated"
-	EventGoalCleared            = "goal.cleared"
-	EventAgentSessionProgress   = "agent_session.progress"
-	EventUserSessionStart       = "user_session.start"
-	EventUserSessionWorking     = "user_session.working"
-	EventUserSessionIdle        = "user_session.idle"
-	EventAgentSessionStart      = "agent_session.start"
-	EventAgentSessionWorking    = "agent_session.working"
-	EventAgentSessionIdle       = "agent_session.idle"
-	EventAgentSessionFinished   = "agent_session.finished"
-	EventProcessStart           = "process.start"
-	EventProcessFinished        = "process.finished"
-	EventSessionToolPending     = "session.tool.pending"
-	EventSessionToolRunning     = "session.tool.running"
-	EventSessionToolSuccess     = "session.tool.success"
-	EventSessionToolFailure     = "session.tool.failure"
-	EventSessionToolInterrupted = "session.tool.interrupted"
-	EventToolOutputDelta        = "tool.output.delta"
-	EventCodeDisplay            = "tool.code.display"
+	EventServerConnected             = "server.connected"
+	EventMessagePartDelta            = "message.part.delta"
+	EventSessionStatus               = "session.status"
+	EventPermission                  = "permission.pending"
+	EventPermissionReply             = "permission.resolved"
+	EventQuestion                    = "question.pending"
+	EventQuestionReply               = "question.resolved"
+	EventSessionInputAdmitted        = "session.input.admitted"
+	EventSessionInputPromoted        = "session.input.promoted"
+	EventTodoUpdated                 = "todo.updated"
+	EventGoalUpdated                 = "goal.updated"
+	EventGoalCleared                 = "goal.cleared"
+	EventAgentSessionProgress        = "agent_session.progress"
+	EventUserSessionStart            = "user_session.start"
+	EventUserSessionWorking          = "user_session.working"
+	EventUserSessionIdle             = "user_session.idle"
+	EventAgentSessionStart           = "agent_session.start"
+	EventAgentSessionWorking         = "agent_session.working"
+	EventAgentSessionIdle            = "agent_session.idle"
+	EventAgentSessionFinished        = "agent_session.finished"
+	EventProcessStart                = "process.start"
+	EventProcessFinished             = "process.finished"
+	EventSessionToolPending          = "session.tool.pending"
+	EventSessionToolRunning          = "session.tool.running"
+	EventSessionToolSuccess          = "session.tool.success"
+	EventSessionToolFailure          = "session.tool.failure"
+	EventSessionToolInterrupted      = "session.tool.interrupted"
+	EventToolOutputDelta             = "tool.output.delta"
+	EventCodeDisplay                 = "tool.code.display"
+	EventSessionSelectionChanged     = "session.selection.changed"
+	EventSessionContextInitialized   = "session.context.initialized"
+	EventSessionContextObserved      = "session.context.observed"
+	EventSessionContextChanged       = "session.context.changed"
+	EventSessionContextReplaced      = "session.context.replaced"
+	EventSessionMessageAppended      = "session.message.appended"
+	EventSessionStatusPromptAppended = "session.status_prompt.appended"
+	EventSessionAssistantStarted     = "session.assistant.started"
+	EventSessionAssistantComplete    = "session.assistant.complete"
+	EventSessionAssistantError       = "session.assistant.error"
+	EventSessionAssistantInterrupted = "session.assistant.interrupted"
+	EventSessionRuntimeRepaired      = "session.runtime.repaired"
+	EventSessionCompactionCompleted  = "session.compaction.completed"
+	EventSessionCompactionRetry      = "session.compaction.retry"
 )
 
 // Event is used for both durable and disposable live events. SessionID always
@@ -204,25 +218,25 @@ var EventManifest = []EventDefinition{
 	{Name: EventProcessFinished, Payload: "ProcessEvent"},
 	{Name: EventToolOutputDelta, Payload: "ToolOutputDelta"},
 	{Name: EventCodeDisplay, Payload: "CodeDisplay"},
-	{Name: "session.selection.changed", Durable: true, Payload: "object"},
-	{Name: "session.context.initialized", Durable: true, Payload: "object"},
-	{Name: "session.context.observed", Durable: true, Payload: "object"},
-	{Name: "session.context.changed", Durable: true, Payload: "object"},
-	{Name: "session.context.replaced", Durable: true, Payload: "object"},
-	{Name: "session.message.appended", Durable: true, Payload: "object"},
-	{Name: "session.status_prompt.appended", Durable: true, Payload: "object"},
-	{Name: "session.assistant.started", Durable: true, Payload: "object"},
-	{Name: "session.assistant.complete", Durable: true, Payload: "object"},
-	{Name: "session.assistant.error", Durable: true, Payload: "object"},
-	{Name: "session.assistant.interrupted", Durable: true, Payload: "object"},
+	{Name: EventSessionSelectionChanged, Durable: true, Payload: "object"},
+	{Name: EventSessionContextInitialized, Durable: true, Payload: "object"},
+	{Name: EventSessionContextObserved, Durable: true, Payload: "object"},
+	{Name: EventSessionContextChanged, Durable: true, Payload: "object"},
+	{Name: EventSessionContextReplaced, Durable: true, Payload: "object"},
+	{Name: EventSessionMessageAppended, Durable: true, Payload: "object"},
+	{Name: EventSessionStatusPromptAppended, Durable: true, Payload: "object"},
+	{Name: EventSessionAssistantStarted, Durable: true, Payload: "object"},
+	{Name: EventSessionAssistantComplete, Durable: true, Payload: "object"},
+	{Name: EventSessionAssistantError, Durable: true, Payload: "object"},
+	{Name: EventSessionAssistantInterrupted, Durable: true, Payload: "object"},
 	{Name: EventSessionToolPending, Durable: true, Payload: "ToolEvent"},
 	{Name: EventSessionToolRunning, Durable: true, Payload: "ToolEvent"},
 	{Name: EventSessionToolSuccess, Durable: true, Payload: "ToolEvent"},
 	{Name: EventSessionToolFailure, Durable: true, Payload: "ToolEvent"},
 	{Name: EventSessionToolInterrupted, Durable: true, Payload: "ToolEvent"},
-	{Name: "session.runtime.repaired", Durable: true, Payload: "object"},
-	{Name: "session.compaction.completed", Durable: true, Payload: "object"},
-	{Name: "session.compaction.retry", Durable: true, Payload: "object"},
+	{Name: EventSessionRuntimeRepaired, Durable: true, Payload: "object"},
+	{Name: EventSessionCompactionCompleted, Durable: true, Payload: "object"},
+	{Name: EventSessionCompactionRetry, Durable: true, Payload: "object"},
 }
 
 func KnownEvent(name string) bool {

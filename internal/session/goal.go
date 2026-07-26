@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
@@ -32,8 +33,8 @@ var (
 )
 
 const (
-	EventGoalUpdated = "goal.updated"
-	EventGoalCleared = "goal.cleared"
+	EventGoalUpdated = v1.EventGoalUpdated
+	EventGoalCleared = v1.EventGoalCleared
 )
 
 type Goal struct {
@@ -107,7 +108,7 @@ func (s *GoalService) Create(ctx context.Context, sessionID, objective string, t
 	}
 	now := time.Now().UTC()
 	goal := Goal{ID: goalID, SessionID: sessionID, Objective: objective, Status: GoalActive, TokenBudget: tokenBudget, CreatedAt: now, UpdatedAt: now}
-	_, err = s.write(ctx, sessionID, EventGoalUpdated, func(ctx context.Context, tx *sql.Tx) (Goal, error) {
+	_, err = s.write(ctx, sessionID, v1.EventGoalUpdated, func(ctx context.Context, tx *sql.Tx) (Goal, error) {
 		var status GoalStatus
 		err := tx.QueryRowContext(ctx, `SELECT status FROM session_goal WHERE session_id = ?`, sessionID).Scan(&status)
 		if err != nil && !errors.Is(err, sql.ErrNoRows) {
@@ -149,7 +150,7 @@ func (s *GoalService) Update(ctx context.Context, sessionID string, mutation Goa
 	if mutation.TokenBudget != nil && *mutation.TokenBudget <= 0 {
 		return Goal{}, errors.New("session: goal token budget must be positive")
 	}
-	updated, err := s.write(ctx, sessionID, EventGoalUpdated, func(ctx context.Context, tx *sql.Tx) (Goal, error) {
+	updated, err := s.write(ctx, sessionID, v1.EventGoalUpdated, func(ctx context.Context, tx *sql.Tx) (Goal, error) {
 		goal, err := scanGoal(tx.QueryRowContext(ctx, goalSelect+` WHERE session_id = ?`, sessionID))
 		if errors.Is(err, sql.ErrNoRows) {
 			return Goal{}, ErrGoalNotFound
@@ -186,7 +187,7 @@ func (s *GoalService) Update(ctx context.Context, sessionID string, mutation Goa
 }
 
 func (s *GoalService) Clear(ctx context.Context, sessionID string) error {
-	_, err := s.write(ctx, sessionID, EventGoalCleared, func(ctx context.Context, tx *sql.Tx) (Goal, error) {
+	_, err := s.write(ctx, sessionID, v1.EventGoalCleared, func(ctx context.Context, tx *sql.Tx) (Goal, error) {
 		goal, err := scanGoal(tx.QueryRowContext(ctx, goalSelect+` WHERE session_id = ?`, sessionID))
 		if errors.Is(err, sql.ErrNoRows) {
 			return Goal{}, ErrGoalNotFound
@@ -252,7 +253,7 @@ func (s *GoalService) MarkUsageLimited(ctx context.Context, sessionID string) (G
 		if err != nil {
 			return nil, nil, err
 		}
-		return []event.NewEvent{{Type: EventGoalUpdated, Data: data}}, nil, nil
+		return []event.NewEvent{{Type: v1.EventGoalUpdated, Data: data}}, nil, nil
 	})
 	if errors.Is(err, store.ErrNoSession) {
 		err = ErrNotFound
@@ -267,7 +268,7 @@ func (s *GoalService) AccountUsage(ctx context.Context, sessionID string, usage 
 	cached := max(int64(usage.CachedInputTokens), 0)
 	output := max(int64(usage.OutputTokens), 0)
 	delta := min(max(input-cached, 0), maxInt64-output) + output
-	updated, err := s.write(ctx, sessionID, EventGoalUpdated, func(ctx context.Context, tx *sql.Tx) (Goal, error) {
+	updated, err := s.write(ctx, sessionID, v1.EventGoalUpdated, func(ctx context.Context, tx *sql.Tx) (Goal, error) {
 		goal, err := scanGoal(tx.QueryRowContext(ctx, goalSelect+` WHERE session_id = ?`, sessionID))
 		if errors.Is(err, sql.ErrNoRows) {
 			return Goal{}, ErrGoalNotFound

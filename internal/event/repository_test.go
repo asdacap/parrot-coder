@@ -11,13 +11,14 @@ import (
 	"testing"
 	"time"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 )
 
 // testEventType stands in for any durable event. Append accepts only manifested
 // types, and none of the sequencing tests below depend on which one they use.
-const testEventType = "session.message.appended"
+const testEventType = v1.EventSessionMessageAppended
 
 func TestAppendRejectsEventTheStreamCannotCarry(t *testing.T) {
 	ctx := context.Background()

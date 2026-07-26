@@ -85,7 +85,7 @@ func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 	}
 	var changes []bool
 	for _, item := range events {
-		if item.Type != "session.selection.changed" {
+		if item.Type != v1.EventSessionSelectionChanged {
 			continue
 		}
 		var data struct {
@@ -299,7 +299,7 @@ func TestToolLifecycleEventsUseCanonicalPayload(t *testing.T) {
 	seen := make(map[string]v1.ToolEvent)
 	for _, item := range events {
 		switch item.Type {
-		case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
+		case v1.EventSessionToolPending, v1.EventSessionToolRunning, v1.EventSessionToolSuccess, v1.EventSessionToolFailure, v1.EventSessionToolInterrupted:
 		default:
 			continue
 		}
@@ -375,7 +375,7 @@ func TestRepairActiveAfterReopenSettlesDurableState(t *testing.T) {
 	eventsBefore, _ := repository.List(ctx, created.ID, -1, 100)
 	interrupted := make(map[string]v1.ToolEvent)
 	for _, item := range eventsBefore {
-		if item.Type != "session.tool.interrupted" {
+		if item.Type != v1.EventSessionToolInterrupted {
 			continue
 		}
 		var payload v1.ToolEvent

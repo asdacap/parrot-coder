@@ -425,7 +425,7 @@ func TestTodosOrderedReplacementValidationAndConcurrency(t *testing.T) {
 		t.Fatalf("list = %#v, %v", listed, err)
 	}
 	events, err := repository.List(ctx, sessionID, -1, 20)
-	if err != nil || len(events) == 0 || events[len(events)-1].Type != session.EventTodoUpdated {
+	if err != nil || len(events) == 0 || events[len(events)-1].Type != v1.EventTodoUpdated {
 		t.Fatalf("todo event = %#v, %v", events, err)
 	}
 	if _, err := service.Replace(ctx, sessionID, []session.Todo{{Content: "bad", Status: "unknown", Priority: session.TodoLow}}); err == nil {

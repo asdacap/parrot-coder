@@ -149,7 +149,7 @@ func TestRunTextAndJSONLThroughInProcessClient(t *testing.T) {
 					t.Fatalf("stdout = %q", stdout.String())
 				}
 			} else {
-				if !strings.Contains(stdout.String(), test.stdout) || !strings.Contains(stdout.String(), `"type":"session.status"`) {
+				if !strings.Contains(stdout.String(), test.stdout) || !strings.Contains(stdout.String(), fmt.Sprintf(`"type":%q`, v1.EventSessionStatus)) {
 					t.Fatalf("jsonl stdout = %q", stdout.String())
 				}
 				for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {

@@ -710,7 +710,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Type != "session.input.admitted" {
+	if len(items) != 1 || items[0].Type != v1.EventSessionInputAdmitted {
 		t.Fatalf("events = %#v", items)
 	}
 
@@ -845,7 +845,7 @@ func TestSSEHeadersFieldsReplayHeartbeatAndCancel(t *testing.T) {
 	closed := make(chan struct{})
 	sequence := int64(4)
 	backend := &stubBackend{stream: &EventStream{
-		Replay:  []v1.Event{{ID: "evt_replay", Type: "session.input.admitted", SessionID: "ses_test", Sequence: &sequence, Data: json.RawMessage(`{"ok":true}`)}},
+		Replay:  []v1.Event{{ID: "evt_replay", Type: v1.EventSessionInputAdmitted, SessionID: "ses_test", Sequence: &sequence, Data: json.RawMessage(`{"ok":true}`)}},
 		Durable: durable, Live: live, Close: func() { close(closed) },
 	}}
 	server := httptest.NewServer(New(backend, Config{HeartbeatInterval: 10 * time.Millisecond}))
@@ -903,7 +903,7 @@ func TestSSEWritesReadyLiveEventsBeforeDurableCompletion(t *testing.T) {
 	durable := make(chan v1.Event, 1)
 	live := make(chan v1.Event, 1)
 	live <- v1.Event{ID: "evt_live", Type: v1.EventMessagePartDelta, SessionID: "ses_test", Data: json.RawMessage(`{"kind":"reasoning_summary","delta":"Checking"}`)}
-	durable <- v1.Event{ID: "evt_complete", Type: "session.assistant.complete", SessionID: "ses_test", Data: json.RawMessage(`{"message_id":"msg_test"}`)}
+	durable <- v1.Event{ID: "evt_complete", Type: v1.EventSessionAssistantComplete, SessionID: "ses_test", Data: json.RawMessage(`{"message_id":"msg_test"}`)}
 	backend := &stubBackend{stream: &EventStream{Durable: durable, Live: live}}
 	server := httptest.NewServer(New(backend, Config{HeartbeatInterval: time.Second}))
 	defer server.Close()
@@ -935,7 +935,7 @@ func TestSSEDefersNextAssistantDeltaUntilPriorAssistantCompletes(t *testing.T) {
 	live := make(chan v1.Event, 2)
 	backend := &stubBackend{stream: &EventStream{
 		Replay: []v1.Event{{
-			ID: "evt_first_started", Type: "session.assistant.started", SessionID: "ses_test",
+			ID: "evt_first_started", Type: v1.EventSessionAssistantStarted, SessionID: "ses_test",
 			Data: json.RawMessage(`{"message_id":"msg_first"}`),
 		}},
 		Durable: durable,
@@ -975,11 +975,11 @@ func TestSSEDefersNextAssistantDeltaUntilPriorAssistantCompletes(t *testing.T) {
 		Data: json.RawMessage(`{"message_id":"msg_second","kind":"text","delta":"second"}`),
 	}
 	durable <- v1.Event{
-		ID: "evt_first_complete", Type: "session.assistant.complete", SessionID: "ses_test",
+		ID: "evt_first_complete", Type: v1.EventSessionAssistantComplete, SessionID: "ses_test",
 		Data: json.RawMessage(`{"message_id":"msg_first"}`),
 	}
 	durable <- v1.Event{
-		ID: "evt_second_started", Type: "session.assistant.started", SessionID: "ses_test",
+		ID: "evt_second_started", Type: v1.EventSessionAssistantStarted, SessionID: "ses_test",
 		Data: json.RawMessage(`{"message_id":"msg_second"}`),
 	}
 
