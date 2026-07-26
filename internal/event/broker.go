@@ -25,6 +25,7 @@ type Broker struct {
 	observer  map[string]map[uint64]func(v1.Event)
 	taskIDFor func(string) string
 	next      uint64
+	handler   func(BrokerEvent) func()
 }
 
 func NewBroker(durable *Repository, transient *TransientRepository, hierarchy ...SessionHierarchy) *Broker {
@@ -157,8 +158,34 @@ func (b *Broker) Subscribe(sessionID string, capacity int) (<-chan v1.Event, fun
 	return b.transient.Subscribe(sessionID, capacity)
 }
 
-// Publish implements agent.LivePublisher.
-func (b *Broker) Publish(sessionID string, item protocol.Event) {
+// SetEventHandler installs the synchronous handler for predefined domain
+// events. It is configured once during application assembly.
+func (b *Broker) SetEventHandler(handler func(BrokerEvent) func()) {
+	b.mu.Lock()
+	b.handler = handler
+	b.mu.Unlock()
+}
+
+// Publish implements EventBroker.
+func (b *Broker) Publish(item BrokerEvent) func() {
+	if b == nil || !item.Name.Valid() {
+		return func() {}
+	}
+	b.mu.RLock()
+	handler := b.handler
+	b.mu.RUnlock()
+	if handler == nil {
+		return func() {}
+	}
+	stop := handler(item)
+	if stop == nil {
+		return func() {}
+	}
+	return stop
+}
+
+// PublishProtocol maps a canonical runner event into the API event stream.
+func (b *Broker) PublishProtocol(sessionID string, item protocol.Event) {
 	if b == nil {
 		return
 	}

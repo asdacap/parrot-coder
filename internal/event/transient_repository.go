@@ -69,9 +69,8 @@ func (b *TransientRepository) Subscribe(sessionID string, capacity int) (<-chan 
 	}
 }
 
-// Publish maps canonical runner events into disposable v1 deltas and statuses.
-// It implements agent.LivePublisher without coupling the runner to the API.
-func (b *TransientRepository) Publish(sessionID string, item protocol.Event) {
+// PublishProtocol maps canonical runner events into disposable v1 deltas and statuses.
+func (b *TransientRepository) PublishProtocol(sessionID string, item protocol.Event) {
 	event, ok := protocolEvent(sessionID, item)
 	if ok {
 		event.TaskID = b.taskID(sessionID)

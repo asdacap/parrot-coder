@@ -33,12 +33,12 @@ type SystemContextPrompt interface {
 }
 
 type LivePublisher interface {
-	Publish(string, protocol.Event)
+	PublishProtocol(string, protocol.Event)
 }
 
 type noopLivePublisher struct{}
 
-func (noopLivePublisher) Publish(string, protocol.Event) {}
+func (noopLivePublisher) PublishProtocol(string, protocol.Event) {}
 
 type toolOutputWriter struct {
 	live      LivePublisher
@@ -63,7 +63,7 @@ func (w *toolOutputWriter) Write(p []byte) (int, error) {
 		}
 	}
 	if complete > 0 && w.live != nil {
-		w.live.Publish(w.sessionID, protocol.Event{Type: protocol.EventToolOutputDelta, ToolCallID: w.callID, Text: string(w.pending[:complete])})
+		w.live.PublishProtocol(w.sessionID, protocol.Event{Type: protocol.EventToolOutputDelta, ToolCallID: w.callID, Text: string(w.pending[:complete])})
 	}
 	w.pending = append(w.pending[:0], w.pending[complete:]...)
 	return len(p), nil
@@ -79,7 +79,7 @@ func (p toolDisplayPublisher) DisplayCode(display tool.CodeDisplay) {
 	if p.live == nil {
 		return
 	}
-	p.live.Publish(p.sessionID, protocol.Event{Type: protocol.EventCodeDisplay, CodeDisplay: &protocol.CodeDisplay{
+	p.live.PublishProtocol(p.sessionID, protocol.Event{Type: protocol.EventCodeDisplay, CodeDisplay: &protocol.CodeDisplay{
 		ToolCallID: p.callID, Source: display.Source, Path: display.Path, Language: display.Language, StartLine: display.StartLine,
 	}})
 }
