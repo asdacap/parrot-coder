@@ -25,7 +25,6 @@ type BuiltinServices struct {
 	Todos     *session.TodoService
 	Goals     *session.GoalService
 	Questions *question.Broker
-	Queues    QueueService
 
 	Skills    *skill.Registry
 	MCP       MCPCaller
@@ -39,7 +38,7 @@ type BuiltinServices struct {
 // BuiltinProviders assembles one provider per enabled built-in tool. Providers
 // retain shared services and allocate a new tool for every bound agent session.
 func BuiltinProviders(services BuiltinServices) (Providers, error) {
-	if services.Skills == nil || services.WebFetch == nil || services.Agents == nil || services.Status == nil || services.Queues == nil {
+	if services.Skills == nil || services.WebFetch == nil || services.Agents == nil || services.Status == nil {
 		return Providers{}, errors.New("tool: built-in services are required")
 	}
 	constructors := []func() Tool{
@@ -61,11 +60,6 @@ func BuiltinProviders(services BuiltinServices) (Providers, error) {
 		func() Tool { return NewWebFetchTool(services.WebFetch) },
 		func() Tool { return NewGitDiffTool() },
 		func() Tool { return NewSetConfigTool(services.ConfigDir) },
-		func() Tool { return NewStatusTool(services.Status) },
-	}
-	for _, kind := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
-		kind := kind
-		constructors = append(constructors, func() Tool { return &QueueTool{Kind: kind, Store: services.Queues} })
 	}
 	for _, kind := range []string{"task_list_active", "task_interrupt"} {
 		kind := kind
@@ -75,11 +69,31 @@ func BuiltinProviders(services BuiltinServices) (Providers, error) {
 		kind := kind
 		constructors = append(constructors, func() Tool { return &WaitTool{Kind: kind, Controller: services.Tasks} })
 	}
-	items := make([]ToolProvider, 0, len(constructors)+2+len(services.MCPTools))
+	items := make([]ToolProvider, 0, len(constructors)+8+len(services.MCPTools))
 	for _, constructor := range constructors {
 		constructor := constructor
 		items = append(items, providerFor(constructor))
 	}
+	for _, kind := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
+		kind := kind
+		prototype := &QueueTool{Kind: kind}
+		items = append(items, &ProviderFunc{ToolDescriptor: DescriptorOf(prototype), CreateTool: func(state AgentSession) (Tool, error) {
+			if state == nil || state.Queues() == nil {
+				return nil, errors.New("user session queue manager is required")
+			}
+			return &QueueTool{Kind: kind, Store: state.Queues()}, nil
+		}})
+	}
+	items = append(items, &ProviderFunc{ToolDescriptor: DescriptorOf(NewStatusTool(services.Status)), CreateTool: func(state AgentSession) (Tool, error) {
+		if state == nil || state.Queues() == nil {
+			return nil, errors.New("user session queue manager is required")
+		}
+		registry, err := services.Status.With(statusinfo.NewQueues(state.Queues()))
+		if err != nil {
+			return nil, err
+		}
+		return NewStatusTool(registry), nil
+	}})
 	for _, kind := range []string{agentSpawnID, agentSendID} {
 		kind := kind
 		items = append(items, &ProviderFunc{ToolDescriptor: AgentDescriptor(kind), CreateTool: func(state AgentSession) (Tool, error) {

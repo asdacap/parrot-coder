@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/queue"
@@ -20,11 +21,22 @@ func (a *recordingErrorAdvisor) Advise(_ context.Context, err error, advice Erro
 	return err
 }
 
-type builtinTestAgentSession struct{ subagent bool }
+type builtinTestAgentSession struct {
+	id       string
+	subagent bool
+	queues   QueueService
+}
 
-func (builtinTestAgentSession) SessionID() string   { return "session" }
-func (builtinTestAgentSession) SessionName() string { return "test-session" }
-func (s builtinTestAgentSession) IsSubagent() bool  { return s.subagent }
+func (s builtinTestAgentSession) SessionID() string {
+	if s.id != "" {
+		return s.id
+	}
+	return "session"
+}
+func (builtinTestAgentSession) SessionName() string    { return "test-session" }
+func (s builtinTestAgentSession) IsSubagent() bool     { return s.subagent }
+func (s builtinTestAgentSession) Queues() QueueService { return s.queues }
+func (*agentTestSession) Queues() QueueService         { return nil }
 func (builtinTestAgentSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
 	return nil, errors.New("not implemented")
 }
@@ -37,7 +49,11 @@ func TestQueueToolsHonorCancellation(t *testing.T) {
 	cancel()
 	for _, kind := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
 		t.Run(kind, func(t *testing.T) {
-			item := &QueueTool{Kind: kind, Store: queue.New(t.TempDir())}
+			store, err := queue.New(t.TempDir())
+			if err != nil {
+				t.Fatal(err)
+			}
+			item := &QueueTool{Kind: kind, Store: store}
 			if _, err := item.Plan(ctx, json.RawMessage(`{"name":"work-now","item":"x"}`), CallContext{SessionID: "session"}); !errors.Is(err, context.Canceled) {
 				t.Fatalf("Plan() error = %v, want context canceled", err)
 			}
@@ -59,22 +75,30 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 		WebFetch: webfetch.New(webfetch.Config{}),
 		Agents:   func(string) (bool, error) { return true, nil },
 		Status:   statuses,
-		Queues:   queue.New(t.TempDir()),
 	}
 	providers, err := BuiltinProviders(services)
 	if err != nil {
 		t.Fatal(err)
 	}
-	state := builtinTestAgentSession{}
-	first, err := providers.Materialize(state)
+	firstManager, err := queue.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := providers.Materialize(state)
+	secondManager, err := queue.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := providers.Materialize(builtinTestAgentSession{subagent: true})
+	firstState := builtinTestAgentSession{id: "first", queues: firstManager}
+	secondState := builtinTestAgentSession{id: "second", queues: secondManager}
+	first, err := providers.Materialize(firstState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := providers.Materialize(secondState)
+	if err != nil {
+		t.Fatal(err)
+	}
+	child, err := providers.Materialize(builtinTestAgentSession{id: "child", subagent: true, queues: firstManager})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,6 +117,40 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 		if item == second.tools[id] {
 			t.Fatalf("tool %q was reused across sessions", id)
 		}
+	}
+	for _, id := range []string{"queue_create", "queue_info", "queue_monitor", "queue_push", "queue_take"} {
+		firstQueue := first.tools[id].(*QueueTool)
+		secondQueue := second.tools[id].(*QueueTool)
+		childQueue := child.tools[id].(*QueueTool)
+		if firstQueue.Store != firstManager || secondQueue.Store != secondManager || firstQueue.Store == secondQueue.Store {
+			t.Fatalf("%s did not bind its tool session's queue manager", id)
+		}
+		if childQueue.Store != firstQueue.Store {
+			t.Fatalf("%s did not preserve the shared parent/child queue manager", id)
+		}
+	}
+	if _, err := firstManager.Create("first-bound-queues", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := secondManager.Create("second-bound-queues", ""); err != nil {
+		t.Fatal(err)
+	}
+	statusText := func(snapshot Snapshot) string {
+		t.Helper()
+		item := snapshot.tools["status"].(*StatusTool)
+		text, err := item.Registry.Observe(context.Background(), statusinfo.Query{}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return text
+	}
+	firstStatus, secondStatus, childStatus := statusText(first), statusText(second), statusText(child)
+	if !strings.Contains(firstStatus, "first-bound-queues") || strings.Contains(firstStatus, "second-bound-queues") ||
+		!strings.Contains(secondStatus, "second-bound-queues") || strings.Contains(secondStatus, "first-bound-queues") {
+		t.Fatalf("status providers were not bound to their tool sessions: first=%q second=%q", firstStatus, secondStatus)
+	}
+	if childStatus != firstStatus {
+		t.Fatalf("shared parent/child manager status differs: parent=%q child=%q", firstStatus, childStatus)
 	}
 	for _, id := range []string{"set_config", "request_write_permission"} {
 		got := ChoicesFor(first.tools[id])

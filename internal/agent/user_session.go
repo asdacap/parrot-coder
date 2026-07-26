@@ -83,7 +83,7 @@ type userSession struct {
 	config             UserSessionConfig
 	sessions           SessionRuntime
 	systemContext      SystemContextPrompt
-	queueMonitor       QueueMonitor
+	queues             QueueManager
 	stateDirectories   UserSessionStateDirectories
 	profiles           ProfileResolver
 	providers          ProviderResolver
@@ -108,6 +108,7 @@ type userSession struct {
 	childTurns         *childTurnSemaphore
 	quotaMu            sync.Mutex
 	childMu            sync.Mutex
+	queueDeliveryMu    sync.Mutex
 	closed             bool
 }
 
@@ -115,7 +116,7 @@ var _ UserSession = (*userSession)(nil)
 
 // NewUserSession creates a user runtime with its own agent-session repository.
 func NewUserSession(
-	ctx context.Context, sessions SessionRuntime, systemContext SystemContextPrompt, queueMonitor QueueMonitor, config UserSessionConfig,
+	ctx context.Context, sessions SessionRuntime, systemContext SystemContextPrompt, queues QueueManager, config UserSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
@@ -127,8 +128,8 @@ func NewUserSession(
 	if config.MaxConcurrentChildTurns <= 0 || config.MaxConcurrentChildTurnsPerParent <= 0 || config.MaxConcurrentChildTurnsPerParent > config.MaxConcurrentChildTurns {
 		return nil, errors.New("agent: child turn concurrency limits are invalid")
 	}
-	if sessions == nil || systemContext == nil {
-		return nil, errors.New("agent: session persistence and system context prompt are required")
+	if sessions == nil || systemContext == nil || queues == nil {
+		return nil, errors.New("agent: session persistence, system context prompt, and queue manager are required")
 	}
 	if stateDirectories == nil || profiles == nil || providers == nil {
 		return nil, errors.New("agent: session dependencies are required")
@@ -146,7 +147,7 @@ func NewUserSession(
 	if toolPanicLogger == nil {
 		toolPanicLogger = func(context.Context, string, string, any, []byte) {}
 	}
-	created := &userSession{config: config, sessions: sessions, systemContext: systemContext, queueMonitor: queueMonitor,
+	created := &userSession{config: config, sessions: sessions, systemContext: systemContext, queues: queues,
 		stateDirectories: stateDirectories, profiles: profiles, providers: providers, toolProviders: toolProviders,
 		toolAuthorizer: toolAuthorizer, toolErrorAdvisor: toolErrorAdvisor, workspace: workspace, outputs: outputs,
 		processes: processes, live: live, compactor: compactor, goals: goals, statusObserver: status,
@@ -643,19 +644,17 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	r.mu.Unlock()
 
 	var (
-		user                                     UserSession
+		user                                     *userSession
 		systemContext                            SystemContextPrompt
-		queueMonitor                             QueueMonitor
 		maxChildPromptBytes, maxChildResultBytes int
 	)
 	if r.user != nil {
 		user = r.user
 		systemContext = r.user.systemContext
-		queueMonitor = r.user.queueMonitor
 		maxChildPromptBytes, maxChildResultBytes = r.user.config.MaxChildPromptBytes, r.user.config.MaxChildResultBytes
 	}
 	candidate := newAgentSession(
-		dto, parent, user, r, store, systemContext, queueMonitor, r.config,
+		dto, parent, user, r, store, systemContext, r.config,
 		r.stateDirectories, r.profiles, r.providers, r.workspace, r.outputs, r.processes,
 		r.live, r.compactor, r.goals, r.status, r.toolPanicLogger,
 		r.maxConcurrentChildTurns, r.observers, maxChildPromptBytes, maxChildResultBytes, r.events,
@@ -705,6 +704,12 @@ type agentToolSession struct{ session *agentSession }
 func (s agentToolSession) SessionID() string   { return s.session.ID() }
 func (s agentToolSession) SessionName() string { return s.session.Name() }
 func (s agentToolSession) IsSubagent() bool    { return s.session.Parent() != nil }
+func (s agentToolSession) Queues() tool.QueueService {
+	if s.session == nil || s.session.user == nil {
+		return nil
+	}
+	return s.session.user.queues
+}
 func (s agentToolSession) CreateAgent(ctx context.Context, callerAgent, prompt, target, model, name string) (tool.ChildAgent, error) {
 	child, err := s.session.CreateChild(ctx, ChildRequest{Prompt: prompt, Agent: target, Model: model, Name: name})
 	if err != nil {

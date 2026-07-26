@@ -10,11 +10,12 @@ import (
 )
 
 type QueueService interface {
-	Create(sessionID, name, description string) (queue.Info, error)
-	Push(sessionID, name, item string, direction queue.Direction) (queue.Info, error)
-	Take(sessionID, name string, direction queue.Direction) (string, queue.Info, error)
-	Get(sessionID, name string) (queue.Info, error)
-	Monitor(sessionID, name string, enabled bool) (queue.Info, error)
+	Create(name, description string) (queue.Info, error)
+	Push(name, item string, direction queue.Direction) (queue.Info, error)
+	Take(name string, direction queue.Direction) (string, queue.Info, error)
+	Get(name string) (queue.Info, error)
+	List() ([]queue.Info, error)
+	Monitor(name string, enabled bool) (queue.Info, error)
 }
 
 type QueueTool struct {
@@ -40,15 +41,15 @@ func (t *QueueTool) Descriptor() Descriptor {
 func (t *QueueTool) Description() string {
 	switch t.Kind {
 	case "queue_create":
-		return "Explicitly create a session-scoped persistent queue. Queue names must be exactly three lowercase ASCII alphanumeric words separated by hyphens."
+		return "Explicitly create a persistent queue shared by agents in the current user session. Queue names must be exactly three lowercase ASCII alphanumeric words separated by hyphens."
 	case "queue_push":
-		return "Push a string onto an existing session queue. Direction defaults to back."
+		return "Push a string onto an existing shared user-session queue. Direction defaults to back."
 	case "queue_take":
-		return "Remove and return a string from an existing session queue. Direction defaults to front."
+		return "Remove and return a string from an existing shared user-session queue. Direction defaults to front."
 	case "queue_monitor":
-		return "Enable or disable idle notification delivery from an existing session queue. Monitoring remains enabled after each FIFO delivery."
+		return "Enable or disable idle notification delivery from an existing shared user-session queue. Monitoring remains enabled after each FIFO delivery."
 	default:
-		return "Get metadata and the current size of an existing session queue."
+		return "Get metadata and the current size of an existing shared user-session queue."
 	}
 }
 
@@ -88,12 +89,12 @@ func (t *QueueTool) Plan(ctx context.Context, raw json.RawMessage, _ CallContext
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
 
-func (t *QueueTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
+func (t *QueueTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Result, error) {
 	if err := ctx.Err(); err != nil {
 		return Result{}, err
 	}
-	if t.Store == nil || call.SessionID == "" {
-		return Result{}, errors.New(t.Kind + ": store and session are required")
+	if t.Store == nil {
+		return Result{}, errors.New(t.Kind + ": queue manager is required")
 	}
 	input := plan.Data.(queueInput)
 	var info queue.Info
@@ -101,19 +102,19 @@ func (t *QueueTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 	var err error
 	switch t.Kind {
 	case "queue_create":
-		info, err = t.Store.Create(call.SessionID, input.Name, input.Description)
+		info, err = t.Store.Create(input.Name, input.Description)
 	case "queue_push":
-		info, err = t.Store.Push(call.SessionID, input.Name, input.Item, input.Direction)
+		info, err = t.Store.Push(input.Name, input.Item, input.Direction)
 	case "queue_take":
-		item, info, err = t.Store.Take(call.SessionID, input.Name, input.Direction)
+		item, info, err = t.Store.Take(input.Name, input.Direction)
 	case "queue_info":
-		info, err = t.Store.Get(call.SessionID, input.Name)
+		info, err = t.Store.Get(input.Name)
 	case "queue_monitor":
 		enabled := true
 		if input.Enabled != nil {
 			enabled = *input.Enabled
 		}
-		info, err = t.Store.Monitor(call.SessionID, input.Name, enabled)
+		info, err = t.Store.Monitor(input.Name, enabled)
 	default:
 		return Result{}, fmt.Errorf("unknown queue tool %q", t.Kind)
 	}

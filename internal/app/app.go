@@ -422,8 +422,15 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	result.notifications = notifications
 	live.SetEventHandler(func(item event.BrokerEvent) func() { return publishAgentTurnEvent(live, notifications, item) })
 	processes.SetPersistentEventHandler(func(item process.PersistentEvent) { publishPersistentProcessEvent(live, item) })
-	queues := queue.New(paths.State)
-	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks), statusinfo.NewQueues(queues))
+	queuePath, err := agent.UserSessionQueuesPath(paths.State, info.ID)
+	if err != nil {
+		return nil, fmt.Errorf("app: user session queues: %w", err)
+	}
+	queues, err := queue.New(queuePath)
+	if err != nil {
+		return nil, fmt.Errorf("app: user session queue manager: %w", err)
+	}
+	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks))
 	if err != nil {
 		return nil, fmt.Errorf("app: status registry: %w", err)
 	}
@@ -433,7 +440,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	toolProviders, err := tool.BuiltinProviders(tool.BuiltinServices{
 		Changes: changes, Processes: processes, Tasks: &managedTaskController{tasks: tasks}, Todos: todos, Goals: goals, Questions: questions,
-		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web, Agents: agentLookup, Queues: queues,
+		Skills: skills, MCP: mcpManager, MCPTools: mcpDefinitions, WebFetch: web, Agents: agentLookup,
 		ConfigDir: paths.Config, Status: statusRegistry,
 	})
 	if err != nil {
@@ -475,12 +482,16 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: session state directories: %w", err)
 	}
+	userStatusRegistry, err := statusRegistry.With(statusinfo.NewQueues(queues))
+	if err != nil {
+		return nil, fmt.Errorf("app: user session status registry: %w", err)
+	}
 	userSession, err := agent.NewUserSession(ctx, sessions, contextRegistry, queues, agent.UserSessionConfig{
 		MaxConcurrentChildTurns:          loaded.Config.Subagents.MaxConcurrent,
 		MaxConcurrentChildTurnsPerParent: loaded.Config.Subagents.MaxConcurrentPerParent,
 		MaxChildDepth:                    loaded.Config.Subagents.MaxDepth, ProjectID: info.ID, DefaultSelection: defaultSelection,
 	}, stateDirectories, profileResolver, providerRegistry, toolProviders, permissions, pathErrorAdvisor,
-		ws, outputs, processes, live, live, compactionService, goals, statusRegistry, toolPanicLogger(), tasks,
+		ws, outputs, processes, live, live, compactionService, goals, userStatusRegistry, toolPanicLogger(), tasks,
 		func(id string) string {
 			profile, resolveErr := profileResolver.GetProfile(id)
 			if resolveErr != nil {
