@@ -120,13 +120,13 @@ type Service struct {
 	pid      int
 }
 
-type userSession struct {
+type agentSessionStore struct {
 	*Service
 	sessionID string
 }
 
-func (s *Service) GetSession(sessionID string) UserSession {
-	return &userSession{Service: s, sessionID: sessionID}
+func (s *Service) GetSession(sessionID string) AgentSessionStore {
+	return &agentSessionStore{Service: s, sessionID: sessionID}
 }
 
 func NewService(sessions *store.Registry, events *event.Repository) *Service {
@@ -240,7 +240,7 @@ func (s *Service) publish(item AgentSessionDto) error {
 
 // republish refreshes the index entry from the session database. Callers use it
 // after a commit that changed indexed fields.
-func (s *userSession) republish(ctx context.Context) error {
+func (s *agentSessionStore) republish(ctx context.Context) error {
 	item, err := s.Get(ctx)
 	if err != nil {
 		return err
@@ -324,7 +324,7 @@ func (s *Service) claimInteractiveOnce(ctx context.Context, owner InteractiveOwn
 	return InteractiveClaim{Session: item, Disposition: ClaimCreated}, nil
 }
 
-func (s *userSession) Get(ctx context.Context) (AgentSessionDto, error) {
+func (s *agentSessionStore) Get(ctx context.Context) (AgentSessionDto, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if errors.Is(err, store.ErrNoSession) {
 		return AgentSessionDto{}, ErrNotFound
@@ -383,7 +383,7 @@ func (s *Service) LatestSelection(ctx context.Context, projectID string) (Select
 // Delete removes a session directory. The old shared table relied on cascading
 // deletes that its own RESTRICT constraints could block; a session now owns its
 // file, so deleting it is removing that file.
-func (s *userSession) Delete(ctx context.Context) error {
+func (s *agentSessionStore) Delete(ctx context.Context) error {
 	err := s.sessions.Remove(s.sessionID)
 	if errors.Is(err, store.ErrNoSession) {
 		return ErrNotFound
@@ -391,7 +391,7 @@ func (s *userSession) Delete(ctx context.Context) error {
 	return err
 }
 
-func (s *userSession) Admit(ctx context.Context, params AdmitParams) (Admission, error) {
+func (s *agentSessionStore) Admit(ctx context.Context, params AdmitParams) (Admission, error) {
 	if params.MessageID == "" {
 		return Admission{}, errors.New("session: message ID is required")
 	}
@@ -468,12 +468,12 @@ func (s *userSession) Admit(ctx context.Context, params AdmitParams) (Admission,
 }
 
 // PromoteSteers promotes all pending steer inputs admitted through cutoff.
-func (s *userSession) PromoteSteers(ctx context.Context, cutoff int64) ([]Message, error) {
+func (s *agentSessionStore) PromoteSteers(ctx context.Context, cutoff int64) ([]Message, error) {
 	return s.promote(ctx, DeliverySteer, cutoff)
 }
 
 // PromoteNextQueue promotes at most one pending queue input.
-func (s *userSession) PromoteNextQueue(ctx context.Context) ([]Message, error) {
+func (s *agentSessionStore) PromoteNextQueue(ctx context.Context) ([]Message, error) {
 	return s.promote(ctx, DeliveryQueue, -1)
 }
 
@@ -481,7 +481,7 @@ func (s *userSession) PromoteNextQueue(ctx context.Context) ([]Message, error) {
 // admitted but not yet promoted. The interrupt path uses this to decide
 // whether to automatically resume the drain so queued steers are processed
 // without the user re-prompting.
-func (s *userSession) HasPendingInputs(ctx context.Context) (bool, error) {
+func (s *agentSessionStore) HasPendingInputs(ctx context.Context) (bool, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return false, err
@@ -494,7 +494,7 @@ func (s *userSession) HasPendingInputs(ctx context.Context) (bool, error) {
 	return count > 0, nil
 }
 
-func (s *userSession) promote(ctx context.Context, delivery Delivery, cutoff int64) ([]Message, error) {
+func (s *agentSessionStore) promote(ctx context.Context, delivery Delivery, cutoff int64) ([]Message, error) {
 	var promoted []Input
 	var messages []Message
 	_, err := s.events.AppendBuilt(ctx, s.sessionID, func(ctx context.Context, tx *sql.Tx, next int64) ([]event.NewEvent, event.Projector, error) {
@@ -589,7 +589,7 @@ func (s *userSession) promote(ctx context.Context, delivery Delivery, cutoff int
 	return messages, nil
 }
 
-func (s *userSession) ListMessages(ctx context.Context) ([]Message, error) {
+func (s *agentSessionStore) ListMessages(ctx context.Context) ([]Message, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return nil, err
@@ -626,7 +626,7 @@ func (s *userSession) ListMessages(ctx context.Context) ([]Message, error) {
 	return result, nil
 }
 
-func (s *userSession) inputByMessageID(ctx context.Context, messageID string) (Input, error) {
+func (s *agentSessionStore) inputByMessageID(ctx context.Context, messageID string) (Input, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return Input{}, err

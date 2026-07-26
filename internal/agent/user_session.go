@@ -20,7 +20,7 @@ var (
 )
 
 type SessionRuntime interface {
-	GetSession(string) session.UserSession
+	GetSession(string) session.AgentSessionStore
 	List(context.Context) ([]session.AgentSessionDto, error)
 	CreateSelected(context.Context, session.CreateParams, session.Selection) (session.AgentSessionDto, error)
 }
@@ -52,6 +52,14 @@ type UserSession interface {
 	Status(sessionID string) AgentStatus
 	Remove(sessionID string) error
 	Shutdown(context.Context) error
+	createChild(context.Context, *agentSession, ChildRequest) (AgentSession, error)
+	observeChild(string, string) (ChildTurnObserver, error)
+	resolveChild(string, string) (AgentSession, error)
+	runChild(*agentSession, *childTurnState)
+	sendManagedTurn(context.Context, *agentSession, string, string) (string, error)
+	forgetChild(*agentSession) error
+	reportChildProgress(*agentSession, ChildProgress)
+	resolveAgentSessionStore(string) session.AgentSessionStore
 }
 
 type UserSessionConfig struct {
@@ -108,7 +116,7 @@ func NewUserSession(ctx context.Context, sessions SessionRuntime, config UserSes
 	return created, nil
 }
 
-func (s *userSession) persistent(sessionID string) session.UserSession {
+func (s *userSession) resolveAgentSessionStore(sessionID string) session.AgentSessionStore {
 	return s.sessions.GetSession(sessionID)
 }
 
@@ -121,7 +129,7 @@ func (s *userSession) createSelected(ctx context.Context, params session.CreateP
 }
 
 func (s *userSession) delete(ctx context.Context, sessionID string) error {
-	return s.persistent(sessionID).Delete(ctx)
+	return s.resolveAgentSessionStore(sessionID).Delete(ctx)
 }
 
 func (s *userSession) AddChildCreatedObserver(observer ChildCreatedObserver) {
@@ -204,13 +212,13 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	if parent == nil || parent.ID() == "" {
 		return nil, errors.New("agent: child parent session is required")
 	}
-	selectedParent, err := r.user.persistent(parent.ID()).Get(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("agent: child parent session: %w", err)
-	}
 	boundParent, ok := r.Lookup(parent.ID())
 	if !ok || boundParent != parent {
 		return nil, errors.New("agent: child parent runtime is not owned by this user session")
+	}
+	selectedParent, err := boundParent.(*agentSession).store.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("agent: child parent session: %w", err)
 	}
 	if selectedParent.ProjectID != request.ProjectID {
 		return nil, errors.New("agent: child parent belongs to another project")
@@ -257,7 +265,7 @@ func (r *agentSessionRepository) CreateChild(ctx context.Context, parent AgentSe
 	r.dtos[child.ID] = child
 	observers := append([]ChildCreatedObserver(nil), r.childObservers...)
 	r.mu.Unlock()
-	runtime, err := r.bind(child, parent, func() error { return r.user.delete(ctx, child.ID) })
+	runtime, err := r.bind(child, parent, nil, func() error { return r.user.delete(ctx, child.ID) })
 	if err != nil {
 		if _, retained := r.ChildRelation(child.ID); retained {
 			for _, observer := range observers {
@@ -396,8 +404,10 @@ func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 	dto, known := r.dtos[sessionID]
 	r.mu.Unlock()
 
+	var store session.AgentSessionStore
 	if !known && r.user != nil {
-		loaded, err := r.user.persistent(sessionID).Get(context.Background())
+		store = r.user.resolveAgentSessionStore(sessionID)
+		loaded, err := store.Get(context.Background())
 		if err != nil {
 			return nil, fmt.Errorf("agent: get session %s: %w", sessionID, err)
 		}
@@ -429,10 +439,10 @@ func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 			return nil, fmt.Errorf("agent: bind parent %s: %w", relation.ParentSessionID, err)
 		}
 	}
-	return r.bind(dto, parent, nil)
+	return r.bind(dto, parent, store, nil)
 }
 
-func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentSession, rollback func() error) (created AgentSession, err error) {
+func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentSession, store session.AgentSessionStore, rollback func() error) (created AgentSession, err error) {
 	r.mu.Lock()
 	if existing := r.sessions[dto.ID]; existing != nil {
 		r.mu.Unlock()
@@ -454,7 +464,11 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	r.bindings[dto.ID] = binding
 	r.mu.Unlock()
 
-	candidate := &agentSession{dto: dto, parent: parent, user: r.user, config: r.config, childTurns: newChildTurnSemaphore(r.maxConcurrentChildTurns), observers: r.observers}
+	var user UserSession
+	if r.user != nil {
+		user = r.user
+	}
+	candidate := newAgentSession(dto, parent, user, store, r.config, r.maxConcurrentChildTurns, r.observers)
 	rolledBack := false
 	defer func() {
 		if recovered := recover(); recovered != nil {

@@ -36,12 +36,12 @@ type memoryEpochStore struct {
 }
 
 type memoryUserSession struct {
-	session.UserSession
+	session.AgentSessionStore
 	store     *memoryEpochStore
 	sessionID string
 }
 
-func (s *memoryEpochStore) GetSession(sessionID string) session.UserSession {
+func (s *memoryEpochStore) GetSession(sessionID string) session.AgentSessionStore {
 	return &memoryUserSession{store: s, sessionID: sessionID}
 }
 

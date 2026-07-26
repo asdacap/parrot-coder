@@ -34,7 +34,7 @@ type SelectionPatch struct {
 
 type SelectionValidator func(Selection) error
 
-type UserSession interface {
+type AgentSessionStore interface {
 	Get(context.Context) (AgentSessionDto, error)
 	Delete(context.Context) error
 	SetSelection(context.Context, Selection) error
@@ -64,7 +64,7 @@ type UserSession interface {
 	RecordCompactionRetry(context.Context, string, string) error
 }
 
-func (s *userSession) SetSelection(ctx context.Context, selection Selection) error {
+func (s *agentSessionStore) SetSelection(ctx context.Context, selection Selection) error {
 	if selection.Agent == "" || selection.Provider == "" || selection.Model == "" {
 		return ErrSelectionRequired
 	}
@@ -75,7 +75,7 @@ func (s *userSession) SetSelection(ctx context.Context, selection Selection) err
 // UpdateSelection carries omitted values forward and persists the resulting
 // complete selection in the same aggregate transaction. The validator runs
 // after the current values are read and before an event or projection is made.
-func (s *userSession) UpdateSelection(ctx context.Context, patch SelectionPatch, validate SelectionValidator) (AgentSessionDto, error) {
+func (s *agentSessionStore) UpdateSelection(ctx context.Context, patch SelectionPatch, validate SelectionValidator) (AgentSessionDto, error) {
 	var updated AgentSessionDto
 	_, err := s.events.AppendBuilt(ctx, s.sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		current, err := scanSession(tx.QueryRowContext(ctx, `
@@ -152,7 +152,7 @@ func (s *userSession) UpdateSelection(ctx context.Context, patch SelectionPatch,
 // message. A status is needed once for a new session and after each actual mode
 // change. The append event is the consumption marker, so an interrupted turn
 // does not append the same status again.
-func (s *userSession) StatusPromptPending(ctx context.Context) (bool, error) {
+func (s *agentSessionStore) StatusPromptPending(ctx context.Context) (bool, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return false, err
@@ -172,7 +172,7 @@ func (s *userSession) StatusPromptPending(ctx context.Context) (bool, error) {
 	return statusCount == 0 || changedAfterStatus > 0, nil
 }
 
-func (s *userSession) LatestSequence(ctx context.Context) (int64, error) {
+func (s *agentSessionStore) LatestSequence(ctx context.Context) (int64, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return 0, err
@@ -185,7 +185,7 @@ func (s *userSession) LatestSequence(ctx context.Context) (int64, error) {
 	return next - 1, err
 }
 
-func (s *userSession) PendingCutoff(ctx context.Context) (int64, error) {
+func (s *agentSessionStore) PendingCutoff(ctx context.Context) (int64, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return -1, err
@@ -208,7 +208,7 @@ type ContextEpoch struct {
 	CreatedAt     time.Time
 }
 
-func (s *userSession) CurrentContextEpoch(ctx context.Context) (ContextEpoch, error) {
+func (s *agentSessionStore) CurrentContextEpoch(ctx context.Context) (ContextEpoch, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return ContextEpoch{}, err
@@ -226,7 +226,7 @@ func (s *userSession) CurrentContextEpoch(ctx context.Context) (ContextEpoch, er
 	return item, err
 }
 
-func (s *userSession) InitializeContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (ContextEpoch, error) {
+func (s *agentSessionStore) InitializeContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (ContextEpoch, error) {
 	if !json.Valid(sources) {
 		return ContextEpoch{}, errors.New("session: invalid context sources JSON")
 	}
@@ -258,7 +258,7 @@ func (s *userSession) InitializeContext(ctx context.Context, baseline string, so
 
 // ReconcileContext appends one combined system message and advances the source
 // snapshot in the same transaction. An unchanged snapshot is a durable no-op.
-func (s *userSession) ReconcileContext(ctx context.Context, text string, sources json.RawMessage) error {
+func (s *agentSessionStore) ReconcileContext(ctx context.Context, text string, sources json.RawMessage) error {
 	if !json.Valid(sources) {
 		return errors.New("session: invalid context sources JSON")
 	}
@@ -333,7 +333,7 @@ func loadedAgentsFiles(previous, next json.RawMessage) []string {
 	return paths
 }
 
-func (s *userSession) ReplaceContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (ContextEpoch, error) {
+func (s *agentSessionStore) ReplaceContext(ctx context.Context, baseline string, sources json.RawMessage, cutoff int64) (ContextEpoch, error) {
 	if !json.Valid(sources) || cutoff < 0 {
 		return ContextEpoch{}, errors.New("session: invalid replacement context")
 	}
@@ -354,7 +354,7 @@ func (s *userSession) ReplaceContext(ctx context.Context, baseline string, sourc
 	return out, err
 }
 
-func (s *userSession) AppendMessage(ctx context.Context, message protocol.Message) (Message, error) {
+func (s *agentSessionStore) AppendMessage(ctx context.Context, message protocol.Message) (Message, error) {
 	messageID, err := id.New("msg")
 	if err != nil {
 		return Message{}, err
@@ -378,7 +378,7 @@ func (s *userSession) AppendMessage(ctx context.Context, message protocol.Messag
 
 // AppendStatusPrompt persists rendered runtime status in its model-history
 // position and records the marker used to avoid duplicate delivery.
-func (s *userSession) AppendStatusPrompt(ctx context.Context, text string) (Message, error) {
+func (s *agentSessionStore) AppendStatusPrompt(ctx context.Context, text string) (Message, error) {
 	messageID, err := id.New("msg")
 	if err != nil {
 		return Message{}, err
@@ -399,7 +399,7 @@ func (s *userSession) AppendStatusPrompt(ctx context.Context, text string) (Mess
 	return out, err
 }
 
-func (s *userSession) StartAssistant(ctx context.Context) (Message, error) {
+func (s *agentSessionStore) StartAssistant(ctx context.Context) (Message, error) {
 	messageID, _ := id.New("msg")
 	payload, _ := json.Marshal(map[string]string{"message_id": messageID})
 	var out Message
@@ -419,7 +419,7 @@ type AssistantFinal struct {
 	Status       string
 }
 
-func (s *userSession) FinishAssistant(ctx context.Context, messageID string, final AssistantFinal) error {
+func (s *agentSessionStore) FinishAssistant(ctx context.Context, messageID string, final AssistantFinal) error {
 	if final.Status == "" {
 		final.Status = "complete"
 	}
@@ -446,7 +446,7 @@ type ToolCall struct {
 	Sequence                                              int64
 }
 
-func (s *userSession) AddToolCall(ctx context.Context, messageID string, call protocol.ToolCall) (ToolCall, error) {
+func (s *agentSessionStore) AddToolCall(ctx context.Context, messageID string, call protocol.ToolCall) (ToolCall, error) {
 	if call.ID == "" || call.Name == "" || !json.Valid(call.Input) {
 		return ToolCall{}, errors.New("session: invalid tool call")
 	}
@@ -460,22 +460,22 @@ func (s *userSession) AddToolCall(ctx context.Context, messageID string, call pr
 	return out, err
 }
 
-func (s *userSession) StartTool(ctx context.Context, callID string) error {
+func (s *agentSessionStore) StartTool(ctx context.Context, callID string) error {
 	return s.transitionTool(ctx, callID, "running", "", "")
 }
 
-func (s *userSession) SettleTool(ctx context.Context, callID, status, result, errorText string) error {
+func (s *agentSessionStore) SettleTool(ctx context.Context, callID, status, result, errorText string) error {
 	return s.SettleToolWithOutput(ctx, callID, status, result, errorText, "")
 }
 
-func (s *userSession) SettleToolWithOutput(ctx context.Context, callID, status, result, errorText, outputTail string) error {
+func (s *agentSessionStore) SettleToolWithOutput(ctx context.Context, callID, status, result, errorText, outputTail string) error {
 	if status != "success" && status != "failure" && status != "interrupted" {
 		return errors.New("session: invalid terminal tool status")
 	}
 	return s.transitionTool(ctx, callID, status, result, errorText, outputTail)
 }
 
-func (s *userSession) transitionTool(ctx context.Context, callID, status, resultText, errorText string, outputTail ...string) error {
+func (s *agentSessionStore) transitionTool(ctx context.Context, callID, status, resultText, errorText string, outputTail ...string) error {
 	_, err := s.events.AppendBuilt(ctx, s.sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
 		var name string
 		if err := tx.QueryRowContext(ctx, `SELECT name FROM session_tool_call WHERE id=? AND session_id=?`, callID, s.sessionID).Scan(&name); err != nil {
@@ -516,7 +516,7 @@ func (s *userSession) transitionTool(ctx context.Context, callID, status, result
 // They were previously swept across every session in a shared database, which
 // interrupted compactions that other live processes, on other machines, were
 // still running.
-func (s *userSession) RepairActive(ctx context.Context) error {
+func (s *agentSessionStore) RepairActive(ctx context.Context) error {
 	const reason = "process restarted"
 	data := json.RawMessage(`{"reason":"process restarted"}`)
 	_, err := s.events.AppendBuilt(ctx, s.sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
@@ -578,13 +578,13 @@ func (s *userSession) RepairActive(ctx context.Context) error {
 	return err
 }
 
-func (s *userSession) RecordCompactionRetry(ctx context.Context, providerCode, recordID string) error {
+func (s *agentSessionStore) RecordCompactionRetry(ctx context.Context, providerCode, recordID string) error {
 	data, _ := json.Marshal(map[string]string{"provider_code": providerCode, "compaction_record_id": recordID})
 	_, err := s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: "session.compaction.retry", Data: data}}, nil)
 	return err
 }
 
-func (s *userSession) ListModelHistory(ctx context.Context, cutoff int64) ([]protocol.Message, error) {
+func (s *agentSessionStore) ListModelHistory(ctx context.Context, cutoff int64) ([]protocol.Message, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return nil, err
@@ -635,7 +635,7 @@ type historyToolState struct {
 // output directly. This fallback also repairs sessions created before that
 // behavior existed, and calls interrupted by a process crash between settling
 // the tool and appending its result message.
-func (s *userSession) repairToolHistory(ctx context.Context, cutoff int64, messages []protocol.Message) ([]protocol.Message, error) {
+func (s *agentSessionStore) repairToolHistory(ctx context.Context, cutoff int64, messages []protocol.Message) ([]protocol.Message, error) {
 	db, err := s.sessions.Session(ctx, s.sessionID)
 	if err != nil {
 		return nil, err

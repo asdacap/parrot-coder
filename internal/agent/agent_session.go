@@ -116,7 +116,7 @@ func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
 // Prompt admits input, runs the session to idle, and returns the assistant
 // message produced by that execution lifecycle.
 func (s *agentSession) Prompt(ctx context.Context, content string) (string, error) {
-	messages, err := s.user.persistent(s.dto.ID).ListMessages(ctx)
+	messages, err := s.store.ListMessages(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -136,7 +136,7 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 		}
 		return "", err
 	}
-	messages, err = s.user.persistent(s.dto.ID).ListMessages(ctx)
+	messages, err = s.store.ListMessages(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -155,7 +155,7 @@ func (s *agentSession) Prompt(ctx context.Context, content string) (string, erro
 // Send admits steer input and wakes the session without waiting for it to idle.
 func (s *agentSession) Send(ctx context.Context, content string) (string, error) {
 	if s.user != nil && s.parent != nil {
-		return s.sendManagedTurn(ctx, content, content)
+		return s.user.sendManagedTurn(ctx, s, content, content)
 	}
 	messageID, _, err := s.admitAndStart(ctx, content)
 	return messageID, err
@@ -164,7 +164,7 @@ func (s *agentSession) Send(ctx context.Context, content string) (string, error)
 func (s *agentSession) SendAgentMessage(ctx context.Context, message tool.AgentMessage) (string, error) {
 	content := message.String()
 	if s.user != nil && s.parent != nil {
-		return s.sendManagedTurn(ctx, content, message.Content)
+		return s.user.sendManagedTurn(ctx, s, content, message.Content)
 	}
 	messageID, _, err := s.admitAndStart(ctx, content)
 	return messageID, err
@@ -196,7 +196,7 @@ func (s *agentSession) admitLocked(ctx context.Context, content string) (string,
 	if err != nil {
 		return "", err
 	}
-	if _, err := s.user.persistent(s.dto.ID).Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
+	if _, err := s.store.Admit(ctx, session.AdmitParams{MessageID: messageID, Content: content, Delivery: session.DeliverySteer}); err != nil {
 		return "", err
 	}
 	return messageID, nil

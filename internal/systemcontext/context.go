@@ -112,7 +112,7 @@ func (r *Registry) Observe(ctx context.Context) (Snapshot, error) {
 }
 
 type EpochStore interface {
-	GetSession(string) session.UserSession
+	GetSession(string) session.AgentSessionStore
 }
 
 type Manager struct {

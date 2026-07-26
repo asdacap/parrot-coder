@@ -54,12 +54,15 @@ func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (A
 	if s.user == nil {
 		return nil, ErrChildNotFound
 	}
+	return s.user.createChild(ctx, s, request)
+}
+
+func (user *userSession) createChild(ctx context.Context, s *agentSession, request ChildRequest) (AgentSession, error) {
 	if err := s.reserveChildCreation(); err != nil {
 		return nil, err
 	}
 	defer s.releaseChildCreation()
 
-	user := s.user
 	user.childMu.Lock()
 	defer user.childMu.Unlock()
 	if user.closed {
@@ -98,7 +101,7 @@ func (s *agentSession) CreateChild(ctx context.Context, request ChildRequest) (A
 	}
 	user.workers.Add(1)
 	user.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleStart, Task: created.statusSnapshot()})
-	go created.runChild(turn)
+	go user.runChild(created, turn)
 	return child, nil
 }
 
@@ -144,15 +147,15 @@ func (s *userSession) admitChildTurn(parent *agentSession) (childPermit, error) 
 	return childPermit{user: userPermit, parent: parentPermit}, nil
 }
 
-func (s *agentSession) runChild(turn *childTurnState) {
+func (user *userSession) runChild(s *agentSession, turn *childTurnState) {
 	s.mu.Lock()
 	state := s.child
 	task := cloneStatus(state.status)
 	s.mu.Unlock()
-	s.user.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleWorking, Task: task})
+	user.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleWorking, Task: task})
 	stop := func() {}
-	if s.user.config.ObserveChildProgress != nil {
-		stop = s.user.config.ObserveChildProgress(s.ID(), s.reportChildProgress)
+	if user.config.ObserveChildProgress != nil {
+		stop = user.config.ObserveChildProgress(s.ID(), s.reportChildProgress)
 	}
 	output, runErr := s.Prompt(turn.ctx, state.request.Prompt)
 	stop()
@@ -166,8 +169,8 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	if errors.Is(turn.ctx.Err(), context.Canceled) && errors.Is(runErr, context.Canceled) {
 		status, errText = StatusCanceled, ErrChildCanceled.Error()
 	}
-	output, outputTruncated := truncateChild(output, s.user.config.MaxChildResultBytes)
-	errText, errorTruncated := truncateChild(errText, s.user.config.MaxChildResultBytes)
+	output, outputTruncated := truncateChild(output, user.config.MaxChildResultBytes)
+	errText, errorTruncated := truncateChild(errText, user.config.MaxChildResultBytes)
 	state.status.State, state.status.Output, state.status.Error = status, output, errText
 	state.status.Truncated = outputTruncated || errorTruncated
 	state.status.FinishedAt = time.Now().UTC()
@@ -178,23 +181,23 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	// Publish terminal state while childOp still prevents a follow-up turn from
 	// starting. Otherwise its task.working event can overtake this turn's final
 	// events and make consumers attribute the old counters to the new turn.
-	s.user.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleFinished, Task: result})
-	if s.user.config.OnChildProgress != nil {
-		s.user.config.OnChildProgress(result)
+	user.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleFinished, Task: result})
+	if user.config.OnChildProgress != nil {
+		user.config.OnChildProgress(result)
 	}
 	close(turn.done)
-	s.user.workers.Done()
+	user.workers.Done()
 	s.childOp.Unlock()
-	if s.user.config.OnChildComplete != nil {
-		s.user.config.OnChildComplete(result)
+	if user.config.OnChildComplete != nil {
+		user.config.OnChildComplete(result)
 	}
 }
 
-func (s *agentSession) sendManagedTurn(ctx context.Context, content, measuredContent string) (string, error) {
+func (user *userSession) sendManagedTurn(ctx context.Context, s *agentSession, content, measuredContent string) (string, error) {
 	if strings.TrimSpace(measuredContent) == "" {
 		return "", ErrInvalidChildRequest
 	}
-	if len(measuredContent) > s.user.config.MaxChildPromptBytes {
+	if len(measuredContent) > user.config.MaxChildPromptBytes {
 		return "", ErrChildRequestLimit
 	}
 retry:
@@ -228,12 +231,12 @@ retry:
 	}
 	s.mu.Unlock()
 	defer s.childOp.Unlock()
-	s.user.childMu.Lock()
-	defer s.user.childMu.Unlock()
-	if s.user.closed {
+	user.childMu.Lock()
+	defer user.childMu.Unlock()
+	if user.closed {
 		return "", ErrUserSessionClosed
 	}
-	permit, err := s.user.admitChildTurn(s.parent.(*agentSession))
+	permit, err := user.admitChildTurn(s.parent.(*agentSession))
 	if err != nil {
 		return "", err
 	}
@@ -252,8 +255,8 @@ retry:
 	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), permit: permit}
 	state.turn, state.cancel = turn, cancel
 	s.mu.Unlock()
-	s.user.workers.Add(1)
-	go s.runChild(turn)
+	user.workers.Add(1)
+	go user.runChild(s, turn)
 	return "", nil
 }
 
@@ -306,10 +309,17 @@ func (o childObserver) Wait(ctx context.Context) (Status, error) {
 }
 
 func (s *agentSession) forget() error {
+	if s.user == nil {
+		return ErrChildNotFound
+	}
+	return s.user.forgetChild(s)
+}
+
+func (user *userSession) forgetChild(s *agentSession) error {
 	s.childOp.Lock()
 	defer s.childOp.Unlock()
-	s.user.childMu.Lock()
-	defer s.user.childMu.Unlock()
+	user.childMu.Lock()
+	defer user.childMu.Unlock()
 	s.mu.Lock()
 	if s.child == nil {
 		s.mu.Unlock()
@@ -320,14 +330,14 @@ func (s *agentSession) forget() error {
 		return ErrChildRunning
 	}
 	s.mu.Unlock()
-	if s.user.repository.HasChildSessions(s.ID()) {
+	if user.repository.HasChildSessions(s.ID()) {
 		return errors.New("agent: cannot forget an agent with retained children")
 	}
-	if err := s.user.repository.ForgetChild(s.ID()); err != nil {
+	if err := user.repository.ForgetChild(s.ID()); err != nil {
 		return err
 	}
-	if s.user.config.ChildTasks != nil {
-		s.user.config.ChildTasks.Unregister(s.ID())
+	if user.config.ChildTasks != nil {
+		user.config.ChildTasks.Unregister(s.ID())
 	}
 	return nil
 }
@@ -417,6 +427,12 @@ func (s *agentSession) statusSnapshot() Status {
 }
 
 func (s *agentSession) reportChildProgress(progress ChildProgress) {
+	if s.user != nil {
+		s.user.reportChildProgress(s, progress)
+	}
+}
+
+func (user *userSession) reportChildProgress(s *agentSession, progress ChildProgress) {
 	if progress.ToolUses < 0 || progress.Usage.InputTokens < 0 || progress.Usage.OutputTokens < 0 || progress.Usage.TotalTokens < 0 || progress.Usage.ReasoningTokens < 0 || progress.Usage.CachedInputTokens < 0 {
 		return
 	}
@@ -433,8 +449,8 @@ func (s *agentSession) reportChildProgress(progress ChildProgress) {
 	s.child.status.ToolUses += progress.ToolUses
 	task := cloneStatus(s.child.status)
 	s.mu.Unlock()
-	if s.user.config.OnChildProgress != nil {
-		s.user.config.OnChildProgress(task)
+	if user.config.OnChildProgress != nil {
+		user.config.OnChildProgress(task)
 	}
 }
 

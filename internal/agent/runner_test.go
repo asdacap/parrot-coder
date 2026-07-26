@@ -87,21 +87,24 @@ func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
 
 type recordingSessionRuntime struct {
 	SessionRuntime
-	mu  sync.Mutex
-	ids []string
+	mu     sync.Mutex
+	ids    []string
+	stores []session.AgentSessionStore
 }
 
-func (r *recordingSessionRuntime) GetSession(sessionID string) session.UserSession {
+func (r *recordingSessionRuntime) GetSession(sessionID string) session.AgentSessionStore {
+	store := r.SessionRuntime.GetSession(sessionID)
 	r.mu.Lock()
 	r.ids = append(r.ids, sessionID)
+	r.stores = append(r.stores, store)
 	r.mu.Unlock()
-	return r.SessionRuntime.GetSession(sessionID)
+	return store
 }
 
-func (r *recordingSessionRuntime) IDs() []string {
+func (r *recordingSessionRuntime) Resolutions() ([]string, []session.AgentSessionStore) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]string(nil), r.ids...)
+	return append([]string(nil), r.ids...), append([]session.AgentSessionStore(nil), r.stores...)
 }
 
 type failingGetSessionRuntime struct {
@@ -109,9 +112,9 @@ type failingGetSessionRuntime struct {
 	sessionID string
 }
 
-type failingGetUserSession struct{ session.UserSession }
+type failingGetUserSession struct{ session.AgentSessionStore }
 
-func (r failingGetSessionRuntime) GetSession(sessionID string) session.UserSession {
+func (r failingGetSessionRuntime) GetSession(sessionID string) session.AgentSessionStore {
 	if sessionID == r.sessionID {
 		return failingGetUserSession{}
 	}
@@ -856,17 +859,17 @@ type deleteFailSessionRuntime struct {
 }
 
 type deleteFailUserSession struct {
-	session.UserSession
+	session.AgentSessionStore
 	err error
 }
 
-func (r deleteFailSessionRuntime) GetSession(sessionID string) session.UserSession {
-	return deleteFailUserSession{UserSession: r.SessionRuntime.GetSession(sessionID), err: r.err}
+func (r deleteFailSessionRuntime) GetSession(sessionID string) session.AgentSessionStore {
+	return deleteFailUserSession{AgentSessionStore: r.SessionRuntime.GetSession(sessionID), err: r.err}
 }
 
 func (r deleteFailUserSession) Delete(context.Context) error { return r.err }
 
-func TestAgentSessionsResolvePersistenceThroughOwningUserSession(t *testing.T) {
+func TestAgentSessionsResolvePersistenceOnceWhenBound(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	recording := &recordingSessionRuntime{SessionRuntime: h.sessions}
 	created, err := NewUserSession(t.Context(), recording, h.agentSessions.config)
@@ -888,9 +891,19 @@ func TestAgentSessionsResolvePersistenceThroughOwningUserSession(t *testing.T) {
 	if _, err := child.(*agentSession).admit(context.Background(), "child input"); err != nil {
 		t.Fatal(err)
 	}
-	ids := recording.IDs()
-	if len(ids) != 3 || ids[0] != parent.ID() || ids[1] != parent.ID() || ids[2] != child.ID() {
-		t.Fatalf("persistent session resolutions = %q, want [%q %q %q]", ids, parent.ID(), parent.ID(), child.ID())
+	lazy, err := h.sessions.CreateSelected(context.Background(), session.CreateParams{
+		Name: "lazy", ProjectID: parent.(*agentSession).dto.ProjectID, ProjectRoot: parent.(*agentSession).dto.ProjectRoot,
+	}, session.Selection{Agent: BuildID, Provider: "fake", Model: "model"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	lazyRuntime := mustGetAgentSession(t, agentSessions, lazy.ID).(*agentSession)
+	ids, stores := recording.Resolutions()
+	if len(stores) != 3 || lazyRuntime.store != stores[2] {
+		t.Fatal("lazy bind did not retain the store used to load its DTO")
+	}
+	if len(ids) != 3 || ids[0] != parent.ID() || ids[1] != child.ID() || ids[2] != lazy.ID {
+		t.Fatalf("persistent session resolutions = %q, want [%q %q %q]", ids, parent.ID(), child.ID(), lazy.ID)
 	}
 }
 

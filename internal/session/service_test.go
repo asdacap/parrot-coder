@@ -62,7 +62,7 @@ func TestBoundSessionsKeepOperationsIsolated(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, test := range []struct {
-		bound session.UserSession
+		bound session.AgentSessionStore
 		id    string
 		name  string
 		text  string
