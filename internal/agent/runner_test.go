@@ -2695,7 +2695,7 @@ func TestRunnerRetriesCanonicalOverflowExactlyOnce(t *testing.T) {
 	}
 	retries := 0
 	for _, item := range events {
-		if item.Type == "session.compaction.retry" {
+		if item.Type == v1.EventSessionCompactionRetry {
 			retries++
 		}
 	}
@@ -2743,7 +2743,7 @@ func TestRunnerRetriesMessageOnlyOverflowExactlyOnce(t *testing.T) {
 	}
 	retries := 0
 	for _, item := range events {
-		if item.Type == "session.compaction.retry" {
+		if item.Type == v1.EventSessionCompactionRetry {
 			retries++
 		}
 	}

@@ -490,7 +490,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			return err
 		}
 		r.updateToolOutput(payload.(*v1.ToolOutputDelta))
-	case "session.context.initialized", "session.context.changed", "session.context.replaced":
+	case v1.EventSessionContextInitialized, v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
 		for _, line := range agentsLoadedActivities(item) {
 			if r.shell != nil && r.shell.renderer != nil {
 				if err := r.shell.renderer.CommitStyled(terminal.MutedText(line)); err != nil {
@@ -498,7 +498,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 				}
 			}
 		}
-	case "session.assistant.started":
+	case v1.EventSessionAssistantStarted:
 		var payload struct {
 			MessageID string `json:"message_id"`
 		}
@@ -514,7 +514,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		}
 		r.startAssistantActivity(payload.MessageID)
 		r.status = "working"
-	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
+	case v1.EventSessionAssistantComplete, v1.EventSessionAssistantError, v1.EventSessionAssistantInterrupted:
 		var payload struct {
 			MessageID string `json:"message_id"`
 		}
@@ -523,20 +523,20 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		}
 		if payload.MessageID != "" {
 			status := "success"
-			if item.Type == "session.assistant.error" {
+			if item.Type == v1.EventSessionAssistantError {
 				status = "failure"
-			} else if item.Type == "session.assistant.interrupted" {
+			} else if item.Type == v1.EventSessionAssistantInterrupted {
 				status = "interrupted"
 			}
 			r.completeAssistantActivity(payload.MessageID, status)
-			if item.Type == "session.assistant.complete" {
+			if item.Type == v1.EventSessionAssistantComplete {
 				r.lastCompleteID = payload.MessageID
 			}
 		}
 		if err := r.commitCompletedAssistants(payload.MessageID); err != nil {
 			return err
 		}
-	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
+	case v1.EventSessionToolPending, v1.EventSessionToolRunning, v1.EventSessionToolSuccess, v1.EventSessionToolFailure, v1.EventSessionToolInterrupted:
 		r.handleToolActivity(item)
 		r.status = "tool " + strings.TrimPrefix(item.Type, "session.tool.")
 	}

@@ -99,15 +99,15 @@ func TestGoalLifecycleAccountingElapsedTimeAndEvents(t *testing.T) {
 	}
 	var updated, cleared bool
 	for _, item := range events {
-		if item.Type != session.EventGoalUpdated && item.Type != session.EventGoalCleared {
+		if item.Type != v1.EventGoalUpdated && item.Type != v1.EventGoalCleared {
 			continue
 		}
 		var payload v1.Goal
 		if err := json.Unmarshal(item.Data, &payload); err != nil || payload.ID == "" || payload.SessionID != created.ID {
 			t.Fatalf("goal event %q payload = %#v, %v", item.Type, payload, err)
 		}
-		updated = updated || item.Type == session.EventGoalUpdated
-		cleared = cleared || item.Type == session.EventGoalCleared
+		updated = updated || item.Type == v1.EventGoalUpdated
+		cleared = cleared || item.Type == v1.EventGoalCleared
 	}
 	if !updated || !cleared {
 		t.Fatalf("goal events missing: updated=%t cleared=%t", updated, cleared)

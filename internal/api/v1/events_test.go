@@ -100,7 +100,7 @@ func TestDecodeSessionInputEventDataRejectsUnknownFields(t *testing.T) {
 		{Type: v1.EventProcessStart, Data: json.RawMessage(`{"session_id":"ses_main","process_id":"proc_1","extra":true}`)},
 		{Type: v1.EventAgentSessionProgress, Data: json.RawMessage(`{"task` + `_id":"task_1","session_id":"ses_child","agent":"explore","status":"running","usage":{},"tool_uses":0}`)},
 		{Type: v1.EventCodeDisplay, Data: json.RawMessage(`{"tool_call_id":"call_1","source":"x","extra":true}`)},
-		{Type: "session.tool.success", Data: json.RawMessage(`{"call_id":"call_1","result":"ok","extra":true}`)},
+		{Type: v1.EventSessionToolSuccess, Data: json.RawMessage(`{"call_id":"call_1","result":"ok","extra":true}`)},
 	} {
 		if _, err := v1.DecodeEventData(event); err == nil {
 			t.Fatalf("DecodeEventData(%q) accepted an unknown field", event.Type)
@@ -172,7 +172,40 @@ func TestDecodePendingToolEventRejectsNonContractShapes(t *testing.T) {
 	}
 }
 
-func TestEventManifestUsesDomainLifecycleAndTypedTools(t *testing.T) {
+func TestEventManifestUsesCanonicalNamesAndTypedPayloads(t *testing.T) {
+	canonical := []string{
+		v1.EventServerConnected, v1.EventMessagePartDelta, v1.EventSessionStatus,
+		v1.EventPermission, v1.EventPermissionReply, v1.EventQuestion, v1.EventQuestionReply,
+		v1.EventSessionInputAdmitted, v1.EventSessionInputPromoted, v1.EventTodoUpdated,
+		v1.EventGoalUpdated, v1.EventGoalCleared, v1.EventAgentSessionProgress,
+		v1.EventUserSessionStart, v1.EventUserSessionWorking, v1.EventUserSessionIdle,
+		v1.EventAgentSessionStart, v1.EventAgentSessionWorking, v1.EventAgentSessionIdle, v1.EventAgentSessionFinished,
+		v1.EventProcessStart, v1.EventProcessFinished, v1.EventToolOutputDelta, v1.EventCodeDisplay,
+		v1.EventSessionSelectionChanged, v1.EventSessionContextInitialized, v1.EventSessionContextObserved,
+		v1.EventSessionContextChanged, v1.EventSessionContextReplaced, v1.EventSessionMessageAppended,
+		v1.EventSessionStatusPromptAppended, v1.EventSessionAssistantStarted, v1.EventSessionAssistantComplete,
+		v1.EventSessionAssistantError, v1.EventSessionAssistantInterrupted, v1.EventSessionToolPending,
+		v1.EventSessionToolRunning, v1.EventSessionToolSuccess, v1.EventSessionToolFailure,
+		v1.EventSessionToolInterrupted, v1.EventSessionRuntimeRepaired, v1.EventSessionCompactionCompleted,
+		v1.EventSessionCompactionRetry,
+	}
+	if len(v1.EventManifest) != len(canonical) {
+		t.Fatalf("manifest size = %d, canonical event count = %d", len(v1.EventManifest), len(canonical))
+	}
+	seen := make(map[string]int, len(v1.EventManifest))
+	for _, definition := range v1.EventManifest {
+		seen[definition.Name]++
+	}
+	for _, name := range canonical {
+		if seen[name] != 1 {
+			t.Fatalf("canonical event %q occurs %d times in manifest", name, seen[name])
+		}
+		delete(seen, name)
+	}
+	if len(seen) != 0 {
+		t.Fatalf("manifest has events without canonical constants: %#v", seen)
+	}
+
 	want := map[string]string{
 		v1.EventUserSessionStart:       "UserSessionEvent",
 		v1.EventUserSessionWorking:     "UserSessionEvent",

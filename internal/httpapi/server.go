@@ -619,7 +619,7 @@ func replayAssistantState(events []v1.Event) (string, bool) {
 }
 
 func startedAssistantID(item v1.Event) string {
-	if item.Type != "session.assistant.started" {
+	if item.Type != v1.EventSessionAssistantStarted {
 		return ""
 	}
 	return eventMessageID(item)
@@ -627,7 +627,7 @@ func startedAssistantID(item v1.Event) string {
 
 func settledAssistantID(item v1.Event) string {
 	switch item.Type {
-	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
+	case v1.EventSessionAssistantComplete, v1.EventSessionAssistantError, v1.EventSessionAssistantInterrupted:
 		return eventMessageID(item)
 	default:
 		return ""

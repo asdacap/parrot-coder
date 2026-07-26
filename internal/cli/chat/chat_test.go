@@ -825,7 +825,7 @@ func TestFormatTokenCountByHundreds(t *testing.T) {
 }
 
 func TestAgentsLoadedActivityMentionsSourcePath(t *testing.T) {
-	item := v1.Event{Type: "session.context.initialized", Data: json.RawMessage(`{"agents_files":["/work/AGENTS.md","/work/nested/AGENTS.md"]}`)}
+	item := v1.Event{Type: v1.EventSessionContextInitialized, Data: json.RawMessage(`{"agents_files":["/work/AGENTS.md","/work/nested/AGENTS.md"]}`)}
 	want := []string{"/work/AGENTS.md", "/work/nested/AGENTS.md"}
 	if got := agentsLoadedPaths(item); !reflect.DeepEqual(got, want) {
 		t.Fatalf("agentsLoadedPaths() = %#v, want %#v", got, want)
@@ -836,20 +836,20 @@ func TestAgentsLoadedActivityMentionsSourcePath(t *testing.T) {
 }
 
 func TestAgentsLoadedActivitiesMentionsWhenNoFilesWereLoaded(t *testing.T) {
-	initialized := v1.Event{Type: "session.context.initialized", Data: json.RawMessage(`{"agents_files":[]}`)}
+	initialized := v1.Event{Type: v1.EventSessionContextInitialized, Data: json.RawMessage(`{"agents_files":[]}`)}
 	if got, want := agentsLoadedActivities(initialized), []string{"No AGENTS.md files loaded"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("agentsLoadedActivities(initialized) = %#v, want %#v", got, want)
 	}
 
 	// A changed event contains only newly loaded or modified files, not the full
 	// set. It must not claim that the session loaded no AGENTS.md files.
-	changed := v1.Event{Type: "session.context.changed", Data: json.RawMessage(`{"agents_files":[]}`)}
+	changed := v1.Event{Type: v1.EventSessionContextChanged, Data: json.RawMessage(`{"agents_files":[]}`)}
 	if got := agentsLoadedActivities(changed); len(got) != 0 {
 		t.Fatalf("agentsLoadedActivities(changed) = %#v, want no activity", got)
 	}
 	for _, item := range []v1.Event{
-		{Type: "session.context.initialized", Data: json.RawMessage(`{}`)},
-		{Type: "session.context.initialized", Data: json.RawMessage(`not-json`)},
+		{Type: v1.EventSessionContextInitialized, Data: json.RawMessage(`{}`)},
+		{Type: v1.EventSessionContextInitialized, Data: json.RawMessage(`not-json`)},
 	} {
 		if got := agentsLoadedActivities(item); len(got) != 0 {
 			t.Fatalf("agentsLoadedActivities(%s) = %#v, want no activity", item.Data, got)
@@ -1021,7 +1021,7 @@ func TestStreamRuntimeActivityEventPrefixesCompletedResponseByDepth(t *testing.T
 		t.Fatal(err)
 	}
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", "session.assistant.complete", complete)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", v1.EventSessionAssistantComplete, complete)); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); got != "    ○ [review] response: review result\n    [review] more detail\n" {
@@ -1064,10 +1064,10 @@ func TestStreamRuntimeActivityEventSkipsEmptyCompletedResponse(t *testing.T) {
 	if err := writeStreamRuntimeActivityEvent(options, &tracker, agentStart("session-review", "session-main", "review")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", "session.assistant.started", started)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", v1.EventSessionAssistantStarted, started)); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", "session.assistant.complete", complete)); err != nil {
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-review", v1.EventSessionAssistantComplete, complete)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != 0 {
@@ -1114,6 +1114,30 @@ func TestStreamRuntimeActivityTerminalProgressClearsLiveRow(t *testing.T) {
 	}
 }
 
+func TestStreamRuntimeActivityIgnoresChildAdmissionBeforeStart(t *testing.T) {
+	var output bytes.Buffer
+	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
+	options := streamOptions{stderr: &output}
+	admitted, _ := json.Marshal(v1.SessionInputAdmitted{InputID: "input", MessageID: "message", Content: "inspect", Delivery: "steer"})
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-child", v1.EventSessionInputAdmitted, admitted)); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, agentStart("session-child", "session-main", "explore")); err != nil {
+		t.Fatal(err)
+	}
+	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "done"})
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-child", v1.EventMessagePartDelta, delta)); err != nil {
+		t.Fatal(err)
+	}
+	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
+	if err := writeStreamRuntimeActivityEvent(options, &tracker, sessionEvent("session-child", v1.EventSessionAssistantComplete, complete)); err != nil {
+		t.Fatal(err)
+	}
+	if got := output.String(); got != "  ○ [explore] response: done\n" {
+		t.Fatalf("child output = %q", got)
+	}
+}
+
 func TestSessionEventWithoutKnownOriginReportsUnknownOrigin(t *testing.T) {
 	var output bytes.Buffer
 	tracker := newRuntimeActivityStreamTracker(chatview.Presentations{}, "session-main")
@@ -1155,7 +1179,7 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 				}
 			}
 			complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-			reports, err := tracker.describe(sessionEvent("session-review", "session.assistant.complete", complete), true)
+			reports, err := tracker.describe(sessionEvent("session-review", v1.EventSessionAssistantComplete, complete), true)
 			if err != nil {
 				t.Fatal(err)
 			}

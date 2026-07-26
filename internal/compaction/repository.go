@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
@@ -119,7 +120,7 @@ func (r *Repository) Complete(ctx context.Context, attempt Attempt, summary Summ
 	}
 	payload, _ := json.Marshal(map[string]any{"attempt_id": attempt.ID, "record_id": recordID, "source_epoch_id": attempt.SourceEpochID, "target_epoch_id": epochID, "history_cutoff": attempt.HistoryCutoff})
 	var record Record
-	_, err = r.events.Append(ctx, attempt.SessionID, []event.NewEvent{{Type: "session.compaction.completed", Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+	_, err = r.events.Append(ctx, attempt.SessionID, []event.NewEvent{{Type: v1.EventSessionCompactionCompleted, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
 		var status string
 		if err := tx.QueryRowContext(ctx, `SELECT status FROM compaction_attempt WHERE id=?`, attempt.ID).Scan(&status); err != nil {
 			return err

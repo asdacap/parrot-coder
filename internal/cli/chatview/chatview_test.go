@@ -577,6 +577,43 @@ func TestRuntimeActivityTrackerDefersProgressUntilDescendantsFinish(t *testing.T
 	}
 }
 
+func TestRuntimeActivityTrackerIgnoresUnownedSessionEventsBeforeChildStart(t *testing.T) {
+	tracker := NewRuntimeActivityTracker("session-main")
+	startRootSession(tracker)
+
+	for _, test := range []struct {
+		name      string
+		eventType string
+		data      json.RawMessage
+	}{
+		{name: "input admitted", eventType: v1.EventSessionInputAdmitted, data: json.RawMessage(`{"input_id":"input","message_id":"message","content":"inspect","delivery":"steer"}`)},
+		{name: "input promoted", eventType: v1.EventSessionInputPromoted, data: json.RawMessage(`{"input_id":"input","message_id":"message"}`)},
+		{name: "message appended", eventType: v1.EventSessionMessageAppended, data: json.RawMessage(`{}`)},
+		{name: "status prompt appended", eventType: v1.EventSessionStatusPromptAppended, data: json.RawMessage(`{}`)},
+		{name: "selection changed", eventType: v1.EventSessionSelectionChanged, data: json.RawMessage(`{}`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reports, err := tracker.Apply(v1.Event{Type: test.eventType, SessionID: "child", Data: test.data}, false)
+			if err != nil || len(reports) != 0 {
+				t.Fatalf("reports = %#v, err = %v", reports, err)
+			}
+		})
+	}
+
+	reports, err := tracker.Apply(sessionDelta("child", v1.MessagePartDelta{MessageID: "message", Kind: "text", Delta: "lost"}), false)
+	if err != nil || len(reports) != 1 || reports[0].Line != "✗ unknown event origin child (message.part.delta)" {
+		t.Fatalf("unknown activity reports = %#v, err = %v", reports, err)
+	}
+
+	if _, err := tracker.Apply(agentSessionEvent(v1.EventAgentSessionStart, v1.AgentSessionEvent{SessionID: "child", ParentSessionID: "session-main", Agent: "explore"}), false); err != nil {
+		t.Fatal(err)
+	}
+	reports, err = tracker.Apply(sessionDelta("child", v1.MessagePartDelta{MessageID: "message", Kind: "text", Delta: "working"}), false)
+	if err != nil || len(reports) != 1 || reports[0].Line != "  ○ [explore] response: working" {
+		t.Fatalf("registered child reports = %#v, err = %v", reports, err)
+	}
+}
+
 func TestRuntimeActivityTrackerTracksTreeAndReportsUnknownOrigins(t *testing.T) {
 	tracker := NewRuntimeActivityTracker("session-main")
 	startRootSession(tracker)

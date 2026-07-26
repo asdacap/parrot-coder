@@ -951,6 +951,23 @@ func isLifecycleEvent(eventType string) bool {
 	}
 }
 
+// isRuntimeActivityContentEvent reports whether a non-lifecycle event needs a
+// registered activity owner. Other known events describe session resources and
+// are intentionally ignored when they are projected from a child session.
+func isRuntimeActivityContentEvent(eventType string) bool {
+	switch eventType {
+	case v1.EventMessagePartDelta, v1.EventSessionStatus, v1.EventAgentSessionProgress,
+		v1.EventSessionToolPending, v1.EventSessionToolRunning, v1.EventSessionToolSuccess,
+		v1.EventSessionToolFailure, v1.EventSessionToolInterrupted, v1.EventToolOutputDelta,
+		v1.EventCodeDisplay, v1.EventSessionAssistantStarted, v1.EventSessionAssistantComplete,
+		v1.EventSessionAssistantError, v1.EventSessionAssistantInterrupted, v1.EventSessionContextInitialized,
+		v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
+		return true
+	default:
+		return false
+	}
+}
+
 func decodeLifecycleEvent(item v1.Event) (runtimeLifecycleEvent, error) {
 	payload, err := v1.DecodeEventData(item)
 	if err != nil {
@@ -1121,6 +1138,9 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 	if isLifecycleEvent(item.Type) {
 		return t.applyLifecycle(item)
 	}
+	if v1.KnownEvent(item.Type) && !isRuntimeActivityContentEvent(item.Type) {
+		return nil, nil
+	}
 	sessionID, processID := t.eventOrigin(item)
 	node := t.known(sessionID, processID)
 	if node == nil {
@@ -1134,7 +1154,7 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 	}
 	scope := node.id + ":"
 	switch item.Type {
-	case "session.assistant.started":
+	case v1.EventSessionAssistantStarted:
 		var payload struct {
 			MessageID string `json:"message_id"`
 		}
@@ -1222,7 +1242,7 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 		default:
 			return []RuntimeActivityReport{{ID: key + ":status", Line: t.eventLine(node, "status: "+delta.Kind), Style: terminal.TextStyleMuted}}, nil
 		}
-	case "session.assistant.complete", "session.assistant.error", "session.assistant.interrupted":
+	case v1.EventSessionAssistantComplete, v1.EventSessionAssistantError, v1.EventSessionAssistantInterrupted:
 		var payload struct {
 			MessageID string `json:"message_id"`
 			Error     string `json:"error"`
@@ -1241,9 +1261,9 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 		}
 		node.done[key] = true
 		status := PendingIcon
-		if item.Type == "session.assistant.error" {
+		if item.Type == v1.EventSessionAssistantError {
 			status = FailureIcon
-		} else if item.Type == "session.assistant.interrupted" {
+		} else if item.Type == v1.EventSessionAssistantInterrupted {
 			status = InterruptedIcon
 		}
 		text := ""
@@ -1271,14 +1291,14 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 			}
 			reports = append(reports, reasoning)
 		}
-		if text == "" && item.Type == "session.assistant.complete" {
+		if text == "" && item.Type == v1.EventSessionAssistantComplete {
 			return append(reports, RuntimeActivityReport{ID: key + ":response", Terminal: true, Skip: true}), nil
 		}
 		if text == "" {
 			text = "response complete"
 		}
 		return append(reports, RuntimeActivityReport{ID: key + ":response", Line: t.eventLine(node, status+" "+text), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}), nil
-	case "session.tool.pending", "session.tool.running", "session.tool.success", "session.tool.failure", "session.tool.interrupted":
+	case v1.EventSessionToolPending, v1.EventSessionToolRunning, v1.EventSessionToolSuccess, v1.EventSessionToolFailure, v1.EventSessionToolInterrupted:
 		if node.tools == nil {
 			node.tools = &StreamToolTracker{Presentation: t.Presentation}
 		}
@@ -1354,7 +1374,7 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 			line = status.Message
 		}
 		return []RuntimeActivityReport{{ID: scope + "status:" + status.MessageID, Line: t.eventLine(node, StatusNoticeIcon+" "+line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
-	case "session.context.initialized", "session.context.changed", "session.context.replaced":
+	case v1.EventSessionContextInitialized, v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
 		lines := AgentsLoadedActivities(item)
 		reports := make([]RuntimeActivityReport, 0, len(lines))
 		for i, line := range lines {
@@ -1637,7 +1657,7 @@ func AgentsLoadedActivities(item v1.Event) []string {
 	// changed. An empty changed event therefore says nothing about the complete
 	// context. Initialization and replacement events are complete snapshots, so
 	// they can accurately report that no AGENTS.md files were loaded.
-	if len(paths) == 0 && item.Type == "session.context.changed" {
+	if len(paths) == 0 && item.Type == v1.EventSessionContextChanged {
 		return nil
 	}
 	return AgentsLoadedLines(paths)

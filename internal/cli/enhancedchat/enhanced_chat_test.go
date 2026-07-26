@@ -445,7 +445,7 @@ func TestEnhancedIdleWaitsForQueuedPromotionBeforeFinalAssistant(t *testing.T) {
 		t.Fatalf("idle settled before promotion: busy=%t output=%q", runtime.busy, output.String())
 	}
 	complete, _ := json.Marshal(map[string]string{"message_id": "first"})
-	if err := runtime.handleEvent(v1.Event{Type: "session.assistant.complete", Data: complete}); err != nil {
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionAssistantComplete, Data: complete}); err != nil {
 		t.Fatal(err)
 	}
 	promoted, _ := json.Marshal(v1.SessionInputPromoted{InputID: "input", MessageID: "queued"})
@@ -466,9 +466,9 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 		name, eventType, status, messageError string
 		wantCallback                          bool
 	}{
-		{name: "complete", eventType: "session.assistant.complete", status: "complete", wantCallback: true},
-		{name: "error", eventType: "session.assistant.error", status: "error", messageError: "failed"},
-		{name: "interrupted", eventType: "session.assistant.interrupted", status: "interrupted"},
+		{name: "complete", eventType: v1.EventSessionAssistantComplete, status: "complete", wantCallback: true},
+		{name: "error", eventType: v1.EventSessionAssistantError, status: "error", messageError: "failed"},
+		{name: "interrupted", eventType: v1.EventSessionAssistantInterrupted, status: "interrupted"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			api := &enhancedQueueAPI{messages: v1.MessageList{Items: []v1.Message{{ID: "assistant", Role: "assistant", Content: "finished plan", Status: test.status, Error: test.messageError}}}}
@@ -887,6 +887,25 @@ func runtimeActivityEvent(sessionID string, eventType string, data json.RawMessa
 	return v1.Event{Type: eventType, SessionID: sessionID, Data: data}
 }
 
+func TestEnhancedChildAdmissionDoesNotChangeRootPendingInputs(t *testing.T) {
+	var output bytes.Buffer
+	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}, renderer: renderer}, knownMessages: map[string]bool{}}
+	data, _ := json.Marshal(v1.SessionInputAdmitted{InputID: "input", MessageID: "message", Content: "queued", Delivery: "queue"})
+	if err := runtime.handleEvent(runtimeActivityEvent("session-child", v1.EventSessionInputAdmitted, data)); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.pending) != 0 || len(runtime.activity) != 0 || output.Len() != 0 {
+		t.Fatalf("child admission changed root UI: pending=%#v activity=%#v output=%q", runtime.pending, runtime.activity, output.String())
+	}
+	if err := runtime.handleEvent(runtimeActivityEvent("session-main", v1.EventSessionInputAdmitted, data)); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.pending) != 1 || runtime.pending[0].inputID != "input" {
+		t.Fatalf("root pending inputs = %#v", runtime.pending)
+	}
+}
+
 func TestEnhancedChildAgentProgressUpdatesToolActivity(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
 	if err := runtime.handleEvent(runtimeActivityStart("session-1", "session-main", "explore")); err != nil {
@@ -1034,7 +1053,7 @@ func TestEnhancedSubagentCompletionRemovesAllRowsAndIgnoresLateEvents(t *testing
 	}
 
 	data, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	if err := runtime.handleEvent(runtimeActivityEvent("session-review", "session.assistant.complete", data)); err != nil {
+	if err := runtime.handleEvent(runtimeActivityEvent("session-review", v1.EventSessionAssistantComplete, data)); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {
@@ -1258,7 +1277,7 @@ func TestEnhancedLateAssistantStartDoesNotRecreateFinalizedSummary(t *testing.T)
 		}
 	}
 	started, _ := json.Marshal(map[string]string{"message_id": "assistant"})
-	if err := runtime.handleEvent(v1.Event{Type: "session.assistant.started", Data: started}); err != nil {
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionAssistantStarted, Data: started}); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 0 {
@@ -1275,7 +1294,7 @@ func TestEnhancedLateAssistantStartKeepsReasoningSummaryRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	started, _ := json.Marshal(map[string]string{"message_id": "assistant"})
-	if err := runtime.handleEvent(v1.Event{Type: "session.assistant.started", Data: started}); err != nil {
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionAssistantStarted, Data: started}); err != nil {
 		t.Fatal(err)
 	}
 	if len(runtime.activity) != 1 || runtime.activity[0].label != "Checking tests" || !runtime.activity[0].reasoning {
