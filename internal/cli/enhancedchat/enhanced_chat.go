@@ -116,6 +116,13 @@ type enhancedSessionEvent struct {
 	err        error
 }
 
+type enhancedCompactionResult struct {
+	activityID string
+	sessionID  string
+	result     v1.Compaction
+	err        error
+}
+
 type queuedChatInput struct {
 	inputID   string
 	messageID string
@@ -222,32 +229,37 @@ type enhancedChatRuntime struct {
 	shell *chatShell
 	state *terminal.EditorState
 
-	busy              bool
-	idleSeen          bool
-	status            string
-	spinner           int
-	interruptCount    int
-	toolInput         bool
-	streamed          strings.Builder
-	reasoningText     strings.Builder
-	reasoningSummary  bool
-	reasoningParts    map[string]string
-	streamMessageID   string
-	pending           []queuedChatInput
-	modal             *enhancedModal
-	inputMode         enhancedInputMode
-	knownMessages     map[string]bool
-	unsyncedMessages  map[string]bool
-	activity          []enhancedActivityItem
-	completedTools    []enhancedActivityItem
-	turnCompleteID    string
-	lastCompleteID    string
-	borderCommitted   bool
-	contextTokens     int
-	runtimeUsage      chatview.RuntimeActivityUsage
-	runtimeActivities runtimeActivityStreamTracker
-	pendingToolOutput map[string]shellOutputTail
-	completedToolIDs  map[string]bool
+	busy                bool
+	idleSeen            bool
+	status              string
+	spinner             int
+	interruptCount      int
+	toolInput           bool
+	streamed            strings.Builder
+	reasoningText       strings.Builder
+	reasoningSummary    bool
+	reasoningParts      map[string]string
+	streamMessageID     string
+	pending             []queuedChatInput
+	modal               *enhancedModal
+	inputMode           enhancedInputMode
+	knownMessages       map[string]bool
+	unsyncedMessages    map[string]bool
+	activity            []enhancedActivityItem
+	completedActivities []enhancedActivityItem
+	turnCompleteID      string
+	lastCompleteID      string
+	borderCommitted     bool
+	contextTokens       int
+	runtimeUsage        chatview.RuntimeActivityUsage
+	runtimeActivities   runtimeActivityStreamTracker
+	pendingToolOutput   map[string]shellOutputTail
+	completedToolIDs    map[string]bool
+
+	ctx               context.Context
+	cancel            context.CancelFunc
+	compactionResults chan enhancedCompactionResult
+	compacting        map[string]string
 
 	stream           *client.EventStream
 	streamSessionID  string
@@ -265,11 +277,14 @@ func (s *chatShell) runEnhanced(first string) int {
 		s.commitError(err.Error())
 		return exitWithReason(s.ctx, exitError, "enhanced_editor_start_failed", err)
 	}
+	runtimeContext, cancelRuntime := context.WithCancel(s.ctx)
 	runtime := &enhancedChatRuntime{
 		shell: s, state: state, knownMessages: make(map[string]bool), unsyncedMessages: make(map[string]bool),
-		events: make(chan enhancedSessionEvent, 128),
+		ctx: runtimeContext, cancel: cancelRuntime, events: make(chan enhancedSessionEvent, 128),
+		compactionResults: make(chan enhancedCompactionResult, 16), compacting: make(map[string]string),
 	}
 	defer runtime.stopStream()
+	defer runtime.cancel()
 
 	if first != "" {
 		outcome := runtime.handleInput(first)
@@ -468,6 +483,13 @@ func (s *chatShell) runEnhanced(first string) int {
 				return exitWithReason(s.ctx, outcome.code, chatExitReason(outcome.code), nil)
 			}
 			pump = startEnhancedKeyPump(s.ctx, s.decoder, &runtime.inputMode)
+			if err := runtime.render(); err != nil {
+				return s.enhancedRenderError(err)
+			}
+		case result := <-runtime.compactionResults:
+			if err := runtime.settleCompaction(result); err != nil {
+				runtime.commitError(err.Error())
+			}
 			if err := runtime.render(); err != nil {
 				return s.enhancedRenderError(err)
 			}

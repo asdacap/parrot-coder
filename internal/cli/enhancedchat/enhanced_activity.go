@@ -671,25 +671,25 @@ func (r *enhancedChatRuntime) upsertActivity(id, label, status string, terminal,
 	r.activity = append(r.activity, enhancedActivityItem{id: id, label: label, status: status, started: now, terminal: terminal, reasoning: reasoning, reasoningSummary: reasoningSummary})
 }
 
-func (r *enhancedChatRuntime) queueCompletedTool(id string) {
+func (r *enhancedChatRuntime) queueCompletedActivity(id string) {
 	for i := range r.activity {
 		if r.activity[i].id != id {
 			continue
 		}
-		r.completedTools = append(r.completedTools, r.activity[i])
+		r.completedActivities = append(r.completedActivities, r.activity[i])
 		r.activity = append(r.activity[:i], r.activity[i+1:]...)
 		return
 	}
 }
 
-// flushCompletedTools commits terminal tool statuses only between assistant
+// flushCompletedActivities commits terminal activities only between assistant
 // messages. This keeps an activity line from splitting a streaming response.
-func (r *enhancedChatRuntime) flushCompletedTools() error {
+func (r *enhancedChatRuntime) flushCompletedActivities() error {
 	if r.assistantMessageOpen() || r.shell == nil || r.shell.renderer == nil {
 		return nil
 	}
-	for len(r.completedTools) > 0 {
-		item := r.completedTools[0]
+	for len(r.completedActivities) > 0 {
+		item := r.completedActivities[0]
 		line := formatActivity(item, time.Now())
 		var err error
 		styled := terminal.StyledText{Text: line, Style: item.style}
@@ -704,7 +704,7 @@ func (r *enhancedChatRuntime) flushCompletedTools() error {
 		if err != nil {
 			return err
 		}
-		r.completedTools = r.completedTools[1:]
+		r.completedActivities = r.completedActivities[1:]
 		r.borderCommitted = false
 	}
 	return nil

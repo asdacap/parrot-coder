@@ -162,6 +162,216 @@ func TestEnhancedBusySubmissionSteersAndPromotionCommits(t *testing.T) {
 	}
 }
 
+type enhancedCompactionAPI struct {
+	apiClient
+	started  chan string
+	release  chan struct{}
+	canceled chan struct{}
+	result   v1.Compaction
+	err      error
+}
+
+func (a *enhancedCompactionAPI) Compact(ctx context.Context, sessionID string) (v1.Compaction, error) {
+	select {
+	case a.started <- sessionID:
+	case <-ctx.Done():
+		return v1.Compaction{}, ctx.Err()
+	}
+	select {
+	case <-a.release:
+		return a.result, a.err
+	case <-ctx.Done():
+		if a.canceled != nil {
+			close(a.canceled)
+		}
+		return v1.Compaction{}, ctx.Err()
+	}
+}
+
+func newEnhancedCompactionRuntime(t *testing.T, api API, output *bytes.Buffer) (*enhancedChatRuntime, context.CancelFunc) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	state, err := terminal.NewEditorIO(bytes.NewBuffer(nil), nil).Start("")
+	if err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	runtime := &enhancedChatRuntime{
+		shell: &chatShell{
+			ctx: ctx, api: api, current: v1.Session{ID: "current"},
+			renderer: terminal.NewLiveRenderer(output, terminal.RendererConfig{TTY: true, Columns: 100}),
+		},
+		ctx: ctx, state: state, compactionResults: make(chan enhancedCompactionResult, 2), compacting: make(map[string]string),
+		knownMessages: map[string]bool{},
+	}
+	return runtime, cancel
+}
+
+func TestEnhancedCompactionStartsNonblockingLiveActivityForAliases(t *testing.T) {
+	for _, test := range []struct {
+		name, input, sessionID string
+	}{
+		{name: "compact current", input: "/compact", sessionID: "current"},
+		{name: "compact explicit", input: "/compact other", sessionID: "other"},
+		{name: "session compact current", input: "/session compact", sessionID: "current"},
+		{name: "session compact explicit", input: "/session compact other", sessionID: "other"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := &enhancedCompactionAPI{started: make(chan string, 1), release: make(chan struct{}), result: v1.Compaction{Status: "complete"}}
+			var output bytes.Buffer
+			runtime, cancel := newEnhancedCompactionRuntime(t, api, &output)
+			defer cancel()
+
+			done := make(chan struct{})
+			go func() {
+				runtime.handleInput(test.input)
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-time.After(time.Second):
+				t.Fatal("slash command blocked on compaction")
+			}
+			select {
+			case sessionID := <-api.started:
+				if sessionID != test.sessionID {
+					t.Fatalf("compacted session = %q, want %q", sessionID, test.sessionID)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("compaction did not start")
+			}
+			if len(runtime.activity) != 1 || runtime.activity[0].status != "running" || runtime.activity[0].label != "Compaction · "+test.sessionID || runtime.activity[0].sessionID != test.sessionID {
+				t.Fatalf("running activity = %#v", runtime.activity)
+			}
+			started := runtime.activity[0].started
+			firstFrame := formatActivity(runtime.activity[0], started)
+			secondFrame := formatActivity(runtime.activity[0], started.Add(100*time.Millisecond))
+			if firstFrame == secondFrame || !strings.Contains(firstFrame, "Working: Compaction · "+test.sessionID) {
+				t.Fatalf("spinner frames = %q, %q", firstFrame, secondFrame)
+			}
+			if err := runtime.render(); err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(output.String(), "Working: Compaction · "+test.sessionID) {
+				t.Fatalf("running frame = %q", output.String())
+			}
+			close(api.release)
+			select {
+			case settled := <-runtime.compactionResults:
+				if err := runtime.settleCompaction(settled); err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("compaction did not settle")
+			}
+		})
+	}
+}
+
+func TestEnhancedCompactionTerminalOutcomes(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		result v1.Compaction
+		err    error
+		want   string
+	}{
+		{name: "complete", result: v1.Compaction{Status: "complete"}, want: "✓ Compaction: complete · current"},
+		{name: "incomplete reason", result: v1.Compaction{Status: "skipped", Reason: "not enough history"}, want: "✗ Compaction · current · not enough history"},
+		{name: "incomplete fallback", result: v1.Compaction{Status: "skipped"}, want: "✗ Compaction · current · compaction did not complete"},
+		{name: "request error", err: errors.New("compact failed"), want: "✗ Compaction · current · compact failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			api := &enhancedCompactionAPI{started: make(chan string, 1), release: make(chan struct{}), result: test.result, err: test.err}
+			var output bytes.Buffer
+			runtime, cancel := newEnhancedCompactionRuntime(t, api, &output)
+			defer cancel()
+			runtime.handleInput("/compact")
+			<-api.started
+			close(api.release)
+			settled := <-runtime.compactionResults
+			if err := runtime.settleCompaction(settled); err != nil {
+				t.Fatal(err)
+			}
+			if len(runtime.activity) != 0 || len(runtime.completedActivities) != 0 || runtime.compacting["current"] != "" || !strings.Contains(output.String(), test.want) {
+				t.Fatalf("settled activity=%#v queued=%#v compacting=%#v output=%q", runtime.activity, runtime.completedActivities, runtime.compacting, output.String())
+			}
+		})
+	}
+}
+
+func TestEnhancedCompactionValidationUnsupportedAndDuplicate(t *testing.T) {
+	for _, test := range []struct {
+		name, input, want string
+		api               API
+		current           string
+		startFirst        bool
+	}{
+		{name: "compact validation", input: "/compact one two", want: "usage: /compact [ID]", api: &enhancedCompactionAPI{}},
+		{name: "session validation", input: "/session compact one two", want: "usage: /session compact [ID]", api: &enhancedCompactionAPI{}},
+		{name: "no active session", input: "/compact", want: "no active session", api: &enhancedCompactionAPI{}},
+		{name: "unsupported", input: "/compact", want: "connected server does not support compaction", api: &enhancedQueueAPI{}, current: "current"},
+		{name: "duplicate same session", input: "/session compact current", want: "compaction already in progress for session current", api: &enhancedCompactionAPI{started: make(chan string, 2), release: make(chan struct{})}, current: "current", startFirst: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			runtime, cancel := newEnhancedCompactionRuntime(t, test.api, &output)
+			defer cancel()
+			runtime.shell.current.ID = test.current
+			if test.startFirst {
+				runtime.handleInput("/compact")
+				<-test.api.(*enhancedCompactionAPI).started
+			}
+			runtime.handleInput(test.input)
+			if !strings.Contains(output.String(), test.want) {
+				t.Fatalf("output = %q, want %q", output.String(), test.want)
+			}
+			if test.startFirst && len(runtime.activity) != 1 {
+				t.Fatalf("duplicate created activity: %#v", runtime.activity)
+			}
+		})
+	}
+}
+
+func TestEnhancedCompactionUsesRuntimeCancellation(t *testing.T) {
+	api := &enhancedCompactionAPI{started: make(chan string, 1), release: make(chan struct{}), canceled: make(chan struct{})}
+	var output bytes.Buffer
+	runtime, cancel := newEnhancedCompactionRuntime(t, api, &output)
+	runtime.handleInput("/compact")
+	<-api.started
+	cancel()
+	select {
+	case <-api.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("compaction did not observe runtime cancellation")
+	}
+}
+
+func TestEnhancedCompactionDefersSettlementUntilAssistantStreamBoundary(t *testing.T) {
+	api := &enhancedCompactionAPI{started: make(chan string, 1), release: make(chan struct{}), result: v1.Compaction{Status: "complete"}}
+	var output bytes.Buffer
+	runtime, cancel := newEnhancedCompactionRuntime(t, api, &output)
+	defer cancel()
+	runtime.streamMessageID = "assistant"
+	runtime.streamed.WriteString("answer in progress")
+	runtime.handleInput("/compact")
+	<-api.started
+	close(api.release)
+	if err := runtime.settleCompaction(<-runtime.compactionResults); err != nil {
+		t.Fatal(err)
+	}
+	if output.Len() != 0 || len(runtime.completedActivities) != 1 || len(runtime.activity) != 0 {
+		t.Fatalf("settlement split assistant stream: output=%q queued=%#v activity=%#v", output.String(), runtime.completedActivities, runtime.activity)
+	}
+	runtime.streamMessageID = ""
+	runtime.streamed.Reset()
+	if err := runtime.flushCompletedActivities(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "✓ Compaction: complete · current") || len(runtime.completedActivities) != 0 {
+		t.Fatalf("deferred settlement was not flushed: output=%q queued=%#v", output.String(), runtime.completedActivities)
+	}
+}
+
 func TestEnhancedBusySlashRunsSafeAndRejectsMutation(t *testing.T) {
 	api := &enhancedQueueAPI{}
 	var output bytes.Buffer
@@ -184,6 +394,11 @@ func TestEnhancedBusySlashRunsSafeAndRejectsMutation(t *testing.T) {
 	runtime.handleBuiltin("/new", "")
 	if shell.current.ID != "session" || !strings.Contains(output.String(), "unavailable while the agent is working") {
 		t.Fatalf("busy mutation changed session: %#v output=%q", shell.current, output.String())
+	}
+	before := len(runtime.activity)
+	runtime.handleBuiltin("/compact", "")
+	if len(runtime.activity) != before || !strings.Contains(output.String(), "/compact is unavailable while the agent is working") {
+		t.Fatalf("busy compact started: activity=%#v output=%q", runtime.activity, output.String())
 	}
 }
 
@@ -1533,11 +1748,11 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	if output.Len() != 0 {
 		t.Fatalf("completed tool split the active assistant message: %q", output.String())
 	}
-	if len(runtime.completedTools) != 1 || runtime.completedTools[0].label != "read · internal/cli/enhanced_chat.go" {
-		t.Fatalf("queued tools = %#v", runtime.completedTools)
+	if len(runtime.completedActivities) != 1 || runtime.completedActivities[0].label != "read · internal/cli/enhanced_chat.go" {
+		t.Fatalf("queued activities = %#v", runtime.completedActivities)
 	}
 	runtime.streamMessageID = ""
-	if err := runtime.flushCompletedTools(); err != nil {
+	if err := runtime.flushCompletedActivities(); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); !strings.Contains(got, "✓ read · internal/cli/enhanced_chat.go ·") || strings.Contains(got, "call_opaque") {
@@ -1567,8 +1782,8 @@ func TestEnhancedLiveOnlyToolIsRemovedWithoutCommit(t *testing.T) {
 	if err := runtime.handleEvent(v1.Event{Type: v1.EventToolOutputDelta, Data: late}); err != nil {
 		t.Fatal(err)
 	}
-	if len(runtime.activity) != 0 || len(runtime.completedTools) != 0 || len(runtime.pendingToolOutput) != 0 || output.Len() != 0 || !runtime.completedToolIDs["wait-call"] {
-		t.Fatalf("completed live-only tool: activity=%#v queued=%#v pending=%#v output=%q completed=%#v", runtime.activity, runtime.completedTools, runtime.pendingToolOutput, output.String(), runtime.completedToolIDs)
+	if len(runtime.activity) != 0 || len(runtime.completedActivities) != 0 || len(runtime.pendingToolOutput) != 0 || output.Len() != 0 || !runtime.completedToolIDs["wait-call"] {
+		t.Fatalf("completed live-only tool: activity=%#v queued=%#v pending=%#v output=%q completed=%#v", runtime.activity, runtime.completedActivities, runtime.pendingToolOutput, output.String(), runtime.completedToolIDs)
 	}
 }
 
@@ -1670,7 +1885,7 @@ func TestEnhancedFailedToolRetainsMoreThanTwelvePendingRequests(t *testing.T) {
 		runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolFailure, Data: failure})
 	}
 	runtime.streamMessageID = ""
-	if err := runtime.flushCompletedTools(); err != nil {
+	if err := runtime.flushCompletedActivities(); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()
@@ -1705,7 +1920,7 @@ func TestEnhancedTodoWriteCommitsAccessibleOrderedChecklist(t *testing.T) {
 		t.Fatalf("todowrite split the active assistant message: %q", output.String())
 	}
 	runtime.streamMessageID = ""
-	if err := runtime.flushCompletedTools(); err != nil {
+	if err := runtime.flushCompletedActivities(); err != nil {
 		t.Fatal(err)
 	}
 	got := output.String()

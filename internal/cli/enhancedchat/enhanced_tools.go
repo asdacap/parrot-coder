@@ -207,8 +207,8 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		}
 		r.completedToolIDs[callID] = true
 		delete(r.pendingToolOutput, callID)
-		r.queueCompletedTool(callID)
-		if err := r.flushCompletedTools(); err != nil {
+		r.queueCompletedActivity(callID)
+		if err := r.flushCompletedActivities(); err != nil {
 			r.status = "tool activity flush failed"
 		}
 	}

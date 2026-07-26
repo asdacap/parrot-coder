@@ -631,7 +631,7 @@ func (r *enhancedChatRuntime) commitCompletedAssistants(messageID string) error 
 		r.toolInput = false
 		r.streamMessageID = ""
 	}
-	if err := r.flushCompletedTools(); err != nil {
+	if err := r.flushCompletedActivities(); err != nil {
 		return err
 	}
 	r.status = ""

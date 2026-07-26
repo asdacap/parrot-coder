@@ -68,6 +68,10 @@ func (r *enhancedChatRuntime) handleInput(value string) enhancedInputOutcome {
 	return enhancedInputOutcome{}
 }
 
+type compactionAPI interface {
+	Compact(context.Context, string) (v1.Compaction, error)
+}
+
 func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInputOutcome {
 	if name == "/exit" {
 		if r.busy {
@@ -77,6 +81,14 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 	}
 	if r.busy && !safeBusySlash(name) {
 		r.commitError(name + " is unavailable while the agent is working")
+		return enhancedInputOutcome{}
+	}
+	if name == "/compact" {
+		r.startCompaction(arguments, "usage: /compact [ID]")
+		return enhancedInputOutcome{}
+	}
+	if fields := strings.Fields(arguments); name == "/session" && len(fields) > 0 && fields[0] == "compact" {
+		r.startCompaction(strings.Join(fields[1:], " "), "usage: /session compact [ID]")
 		return enhancedInputOutcome{}
 	}
 	if name == "/resume" {
@@ -115,6 +127,96 @@ func (r *enhancedChatRuntime) handleBuiltin(name, arguments string) enhancedInpu
 	// stranded above and below every status line in the transcript.
 	r.borderCommitted = false
 	return enhancedInputOutcome{exit: exit, code: code}
+}
+
+func (r *enhancedChatRuntime) startCompaction(argument, usage string) {
+	fields := strings.Fields(argument)
+	if len(fields) > 1 {
+		r.commitError(usage)
+		return
+	}
+	sessionID := r.shell.current.ID
+	if len(fields) == 1 {
+		sessionID = fields[0]
+	}
+	if sessionID == "" {
+		r.commitError("no active session")
+		return
+	}
+	api, ok := r.shell.api.(compactionAPI)
+	if !ok {
+		r.commitError("connected server does not support compaction")
+		return
+	}
+	if r.compacting == nil {
+		r.compacting = make(map[string]string)
+	}
+	if r.compacting[sessionID] != "" {
+		r.commitError("compaction already in progress for session " + sessionID)
+		return
+	}
+	activityID, err := opaqueID("compaction")
+	if err != nil {
+		r.commitError(err.Error())
+		return
+	}
+	if r.ctx == nil {
+		r.ctx = r.shell.ctx
+	}
+	if r.compactionResults == nil {
+		r.compactionResults = make(chan enhancedCompactionResult, 1)
+	}
+	r.compacting[sessionID] = activityID
+	r.upsertActivity(activityID, "Compaction · "+sessionID, "running", false, false, false)
+	for i := range r.activity {
+		if r.activity[i].id == activityID {
+			r.activity[i].sessionID = sessionID
+			break
+		}
+	}
+	ctx := r.ctx
+	results := r.compactionResults
+	go func() {
+		result, err := api.Compact(ctx, sessionID)
+		select {
+		case results <- enhancedCompactionResult{activityID: activityID, sessionID: sessionID, result: result, err: err}:
+		case <-ctx.Done():
+		}
+	}()
+}
+
+func (r *enhancedChatRuntime) settleCompaction(settled enhancedCompactionResult) error {
+	if r.compacting[settled.sessionID] != settled.activityID {
+		return nil
+	}
+	delete(r.compacting, settled.sessionID)
+	status := "success"
+	reason := ""
+	if settled.err != nil {
+		status = "failure"
+		reason = settled.err.Error()
+	} else if settled.result.Status != "complete" {
+		status = "failure"
+		reason = settled.result.Reason
+		if reason == "" {
+			reason = "compaction did not complete"
+		}
+	}
+	for i := range r.activity {
+		if r.activity[i].id != settled.activityID {
+			continue
+		}
+		r.activity[i].status = status
+		r.activity[i].error = reason
+		r.activity[i].terminal = true
+		r.activity[i].ended = time.Now()
+		if status == "success" {
+			r.activity[i].label = "Compaction: complete · " + settled.sessionID
+		}
+		break
+	}
+	r.queueCompletedActivity(settled.activityID)
+	return r.flushCompletedActivities()
 }
 
 func safeBusySlash(name string) bool {
