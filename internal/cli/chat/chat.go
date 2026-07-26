@@ -359,6 +359,7 @@ func command(ctx context.Context, config Config) int {
 	// which renders through the generic fallback rather than failing startup.
 	toolList, _ := api.Tools(ctx)
 	var current v1.Session
+	claimDisposition := ""
 	if options.continued || options.session != "" {
 		current, err = chooseSession(ctx, api, runtime.Project.ID, options.continued, options.session, "")
 		if err != nil {
@@ -392,6 +393,7 @@ func command(ctx context.Context, config Config) int {
 			return finish(ctx, exitError, "session_claim_failed", claimErr)
 		}
 		current = claimed.Session
+		claimDisposition = claimed.Disposition
 		if err := applySelection(ctx, api, current.ID, options.agent, options.model, optionalVariant(options.variant)); err != nil {
 			fmt.Fprintln(stderr, err)
 			return finish(ctx, exitError, "selection_update_failed", err)
@@ -460,6 +462,7 @@ func command(ctx context.Context, config Config) int {
 	if !shell.enhanced {
 		shell.reader = bufio.NewReader(stdin)
 	}
+	shell.announceExistingSession(current, claimDisposition)
 	first := ""
 	if fs.NArg() == 1 {
 		first = fs.Arg(0)
@@ -1707,6 +1710,9 @@ func (s *chatShell) createSession(title string, forceNew bool) (v1.Session, erro
 		request.Title, request.Agent, request.Model, request.ForceNew = line, s.selection.agent, s.selection.modelName(), forceNew
 		request.Variant = &s.selection.variant
 		claimed, err := claimer.ClaimSession(s.ctx, request)
+		if err == nil {
+			s.announceExistingSession(claimed.Session, claimed.Disposition)
+		}
 		return claimed.Session, err
 	}
 	return createChatSession(s.ctx, s.api, s.projectID, title, s.selection)
@@ -1773,6 +1779,13 @@ func (s *chatShell) commitStatus(text string) {
 		return
 	}
 	fmt.Fprintln(s.stderr, terminal.Sanitize(text))
+}
+
+func (s *chatShell) announceExistingSession(session v1.Session, disposition string) {
+	if disposition != v1.ClaimSessionExisting && disposition != v1.ClaimSessionReclaimed {
+		return
+	}
+	s.commitStatus(chatview.StatusNoticeIcon + " Existing session detected: " + session.ID)
 }
 
 func selectionFromSession(item v1.Session, fallbackAgent string) chatSelection {

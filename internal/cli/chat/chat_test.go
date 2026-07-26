@@ -30,6 +30,73 @@ type failingWriter struct{}
 
 func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("write failed") }
 
+func TestDeferredClaimAnnouncesExistingSession(t *testing.T) {
+	const sessionID = "ses_deferred"
+	var output bytes.Buffer
+	shell := chatShell{
+		ctx: context.Background(),
+		api: claimingAPI{response: v1.ClaimSessionResponse{
+			Session: v1.Session{ID: sessionID}, Disposition: v1.ClaimSessionExisting,
+		}},
+		selection:    chatSelection{agent: "build", provider: "local", model: "test"},
+		claimRequest: v1.ClaimSessionRequest{WorkingDirectory: "/project"},
+		stderr:       &output,
+	}
+
+	if _, err := shell.createSession("deferred", false); err != nil {
+		t.Fatal(err)
+	}
+	want := chatview.StatusNoticeIcon + " Existing session detected: " + sessionID
+	if !strings.Contains(output.String(), want) {
+		t.Fatalf("deferred claim notice missing from %q", output.String())
+	}
+}
+
+func TestExistingSessionClaimIsCommittedToScrollback(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		disposition string
+		wantNotice  bool
+	}{
+		{name: "created", disposition: v1.ClaimSessionCreated},
+		{name: "existing", disposition: v1.ClaimSessionExisting, wantNotice: true},
+		{name: "reclaimed", disposition: v1.ClaimSessionReclaimed, wantNotice: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			const sessionID = "ses_existing"
+			want := chatview.StatusNoticeIcon + " Existing session detected: " + sessionID
+
+			for _, outputMode := range []string{"enhanced", "plain"} {
+				t.Run(outputMode, func(t *testing.T) {
+					var output bytes.Buffer
+					shell := chatShell{stderr: &output}
+					if outputMode == "enhanced" {
+						shell.renderer = terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
+						if err := shell.renderer.Update([]string{"temporary live frame"}); err != nil {
+							t.Fatal(err)
+						}
+						output.Reset()
+					}
+
+					shell.announceExistingSession(v1.Session{ID: sessionID}, test.disposition)
+					if got := output.String(); test.wantNotice != strings.Contains(got, want) {
+						t.Fatalf("notice presence = %t, want %t in %q", strings.Contains(got, want), test.wantNotice, got)
+					}
+					if test.wantNotice && outputMode == "enhanced" {
+						output.Reset()
+						if err := shell.renderer.Clear(); err != nil {
+							t.Fatal(err)
+						}
+						if output.Len() != 0 {
+							t.Fatalf("notice remained in live region: %q", output.String())
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestPromptInputPreservesPipedWhitespace(t *testing.T) {
 	got, err := promptInput(strings.NewReader(" piped prompt\n"), []string{"argument prompt"})
 	if err != nil {
@@ -253,6 +320,15 @@ func TestSelectingModelDefaultsEffortUnlessAlreadySelected(t *testing.T) {
 }
 
 type recordingSessionCreator struct{ request v1.CreateSessionRequest }
+
+type claimingAPI struct {
+	apiClient
+	response v1.ClaimSessionResponse
+}
+
+func (a claimingAPI) ClaimSession(context.Context, v1.ClaimSessionRequest) (v1.ClaimSessionResponse, error) {
+	return a.response, nil
+}
 
 func TestChatCompletionCandidatesIncludeBuiltinsAndCustomCommands(t *testing.T) {
 	root := t.TempDir()
