@@ -26,8 +26,10 @@ var (
 type ChildRequest struct {
 	Prompt string
 	Agent  string
-	Model  string
-	Name   string
+	// Model is a canonical provider/model[/variant] selector. Empty inherits the
+	// parent's complete selector.
+	Model string
+	Name  string
 }
 
 type ChildUsage struct {
@@ -48,9 +50,7 @@ type Status struct {
 	ParentSession  string
 	RootSession    string
 	Agent          string
-	Provider       string
 	Model          string
-	Variant        string
 	Name           string
 	Lineage        []string
 	Depth          int

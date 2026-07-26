@@ -37,11 +37,12 @@ type fakeProvider struct {
 	stream      func(int, context.Context, protocol.Request) (provider.Stream, error)
 	inputPrice  float64
 	outputPrice float64
+	variants    []provider.Variant
 }
 
 func (*fakeProvider) ID() string { return "fake" }
 func (p *fakeProvider) Models() []provider.Model {
-	return []provider.Model{{ID: "model", InputPrice: p.inputPrice, OutputPrice: p.outputPrice, Capabilities: provider.Capabilities{Tools: true}}}
+	return []provider.Model{{ID: "model", InputPrice: p.inputPrice, OutputPrice: p.outputPrice, Capabilities: provider.Capabilities{Tools: true, Variants: p.variants}}}
 }
 func (p *fakeProvider) Stream(ctx context.Context, request protocol.Request) (provider.Stream, error) {
 	p.mu.Lock()
@@ -152,38 +153,36 @@ func TestUpdateSelectionReconcilesCommittedSelectionAfterError(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	publishErr := errors.New("publish failed")
 	h.runner.store = updateErrorStore{AgentSessionStore: h.runner.store, err: publishErr}
-	variant := "high"
-	if _, err := h.runner.UpdateSelection(t.Context(), session.SelectionPatch{Agent: "plan", Provider: "other", Model: "new-model", Variant: &variant}, nil); !errors.Is(err, publishErr) {
+	if _, err := h.runner.UpdateSelection(t.Context(), session.SelectionPatch{Agent: "plan", Model: "other/new-model/high"}, nil); !errors.Is(err, publishErr) {
 		t.Fatalf("UpdateSelection error = %v, want %v", err, publishErr)
 	}
 	status := h.runner.Status()
-	if status.Agent != "plan" || status.Provider != "other" || status.Model != "new-model" || status.Variant != variant {
-		t.Fatalf("reconciled status selection = %s/%s/%s (%s)", status.Agent, status.Provider, status.Model, status.Variant)
+	if status.Agent != "plan" || status.Model != "other/new-model/high" {
+		t.Fatalf("reconciled status selection = %s/%s", status.Agent, status.Model)
 	}
 	h.agentSessions.repository.mu.Lock()
 	cached := h.agentSessions.repository.dtos[h.sessionID]
 	h.agentSessions.repository.mu.Unlock()
-	if cached.Agent != status.Agent || cached.Provider != status.Provider || cached.Model != status.Model || cached.Variant != status.Variant {
-		t.Fatalf("cached selection = %s/%s/%s (%s), want reconciled status", cached.Agent, cached.Provider, cached.Model, cached.Variant)
+	if cached.Agent != status.Agent || cached.Model != status.Model {
+		t.Fatalf("cached selection = %s/%s, want reconciled status", cached.Agent, cached.Model)
 	}
 }
 
 func TestUpdateSelectionSynchronizesRuntimeAndRepositoryStatus(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
-	variant := "high"
-	updated, err := h.runner.UpdateSelection(t.Context(), session.SelectionPatch{Agent: "plan", Provider: "other", Model: "new-model", Variant: &variant}, nil)
+	updated, err := h.runner.UpdateSelection(t.Context(), session.SelectionPatch{Agent: "plan", Model: "other/new-model/high"}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	status := h.runner.Status()
-	if status.Agent != updated.Agent || status.Provider != updated.Provider || status.Model != updated.Model || status.Variant != updated.Variant {
-		t.Fatalf("status selection = %s/%s/%s (%s), want %s/%s/%s (%s)", status.Agent, status.Provider, status.Model, status.Variant, updated.Agent, updated.Provider, updated.Model, updated.Variant)
+	if status.Agent != updated.Agent || status.Model != updated.Model {
+		t.Fatalf("status selection = %s/%s, want %s/%s", status.Agent, status.Model, updated.Agent, updated.Model)
 	}
 	h.agentSessions.repository.mu.Lock()
 	cached := h.agentSessions.repository.dtos[h.sessionID]
 	h.agentSessions.repository.mu.Unlock()
-	if cached.Agent != updated.Agent || cached.Provider != updated.Provider || cached.Model != updated.Model || cached.Variant != updated.Variant {
-		t.Fatalf("cached selection = %s/%s/%s (%s), want %s/%s/%s (%s)", cached.Agent, cached.Provider, cached.Model, cached.Variant, updated.Agent, updated.Provider, updated.Model, updated.Variant)
+	if cached.Agent != updated.Agent || cached.Model != updated.Model {
+		t.Fatalf("cached selection = %s/%s, want %s/%s", cached.Agent, cached.Model, updated.Agent, updated.Model)
 	}
 }
 
@@ -196,8 +195,7 @@ func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 	runner := mustGetAgentSession(t, created.(*userSession), h.sessionID).(*agentSession)
 	query := runner.statusQuery(session.AgentSessionDto{
 		ParentSessionID: "ses_deleted_parent",
-		Provider:        "openai",
-		Model:           "gpt",
+		Model:           "openai/gpt",
 	}, Profile{ID: "build"})
 	if query.ParentSessionID != "ses_deleted_parent" || query.ParentSessionName != "" {
 		t.Fatalf("parent status = %q (%q), want %q with no details", query.ParentSessionID, query.ParentSessionName, "ses_deleted_parent")
@@ -218,7 +216,7 @@ func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
 	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
 	child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{
 		ProjectID: h.runner.dto.ProjectID, Name: "inspect", Agent: BuildID,
-		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+		DefaultSelection: session.Selection{Model: "fake/model"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -228,7 +226,7 @@ func TestRunnerIncludesDirectParentInStatusPrompt(t *testing.T) {
 	}
 	nested, err := h.agentSessions.repository.CreateChild(context.Background(), child, ChildSessionRequest{
 		ProjectID: h.runner.dto.ProjectID, Name: "nested", Agent: BuildID,
-		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+		DefaultSelection: session.Selection{Model: "fake/model"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -398,6 +396,32 @@ func TestRunnerPublishesPricedUsage(t *testing.T) {
 	}
 }
 
+func TestRunnerResolvesCanonicalSelectorForProviderRequest(t *testing.T) {
+	fake := &fakeProvider{
+		variants: []provider.Variant{{Name: "high", ReasoningEffort: "xhigh"}},
+		stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+			if request.Model != "model" {
+				return nil, fmt.Errorf("provider model = %q, want base model ID", request.Model)
+			}
+			if request.Reasoning == nil || request.Reasoning.Effort != "xhigh" || request.Reasoning.Summary != "auto" {
+				return nil, fmt.Errorf("reasoning = %#v, want mapped xhigh effort", request.Reasoning)
+			}
+			return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+		},
+	}
+	h := newRunnerHarness(t, fake, nil)
+	if _, err := h.runner.UpdateSelection(t.Context(), session.SelectionPatch{Model: "fake/model/high"}, nil); err != nil {
+		t.Fatal(err)
+	}
+	h.admit(t, "user", "work", session.DeliverySteer)
+	if err := h.runner.drainOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if status := h.runner.Status(); status.Model != "fake/model/high" {
+		t.Fatalf("status model = %q, want canonical selector", status.Model)
+	}
+}
+
 func TestReasoningSummaryAccumulatorPreservesPartOrder(t *testing.T) {
 	var summary reasoningSummaryAccumulator
 	summary.Write("reasoning:0", "First")
@@ -552,7 +576,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if len(profiles) > 0 {
 		profile = profiles[0].ID
 	}
-	if err := sessions.GetSession(created.ID).SetSelection(ctx, session.Selection{Agent: profile, Provider: "fake", Model: "model"}); err != nil {
+	if err := sessions.GetSession(created.ID).SetSelection(ctx, session.Selection{Agent: profile, Model: "fake/model"}); err != nil {
 		t.Fatal(err)
 	}
 	providers, err := NewProviderRegistry(fake)
@@ -1362,6 +1386,49 @@ type childCreatedObserverFunc func(ChildSession)
 
 func (f childCreatedObserverFunc) ChildCreated(child ChildSession) { f(child) }
 
+func TestAgentSessionRepositoryChildSelectorInheritanceAndReplacement(t *testing.T) {
+	fake := &fakeProvider{variants: []provider.Variant{{Name: "high", ReasoningEffort: "high"}}}
+	h := newRunnerHarness(t, fake, nil)
+	parent := mustGetAgentSession(t, h.agentSessions, h.sessionID)
+	if _, err := parent.UpdateSelection(t.Context(), session.SelectionPatch{Model: "fake/model/high"}, nil); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name      string
+		model     string
+		wantModel string
+		wantErr   bool
+	}{
+		{name: "inherits full parent selector", wantModel: "fake/model/high"},
+		{name: "explicit selector replaces full parent selector", model: "fake/model", wantModel: "fake/model"},
+		{name: "invalid explicit selector is rejected", model: "fake/missing", wantErr: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			child, err := h.agentSessions.repository.CreateChild(t.Context(), parent, ChildSessionRequest{
+				ProjectID: h.runner.dto.ProjectID, Name: strings.ReplaceAll(test.name, " ", "-"), Agent: BuildID,
+				Model: test.model, DefaultSelection: session.Selection{Model: "fake/model"},
+			})
+			if test.wantErr {
+				if err == nil || child != nil {
+					t.Fatalf("CreateChild() = %#v, %v; want validation error", child, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			selected, err := child.Details(t.Context())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if selected.Model != test.wantModel || child.Status().Model != test.wantModel {
+				t.Fatalf("child selector = %q/status %q, want %q", selected.Model, child.Status().Model, test.wantModel)
+			}
+		})
+	}
+}
+
 func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	h := newRunnerHarness(t, &fakeProvider{}, nil)
 	parent, err := h.sessions.GetSession(h.sessionID).Get(context.Background())
@@ -1384,7 +1451,7 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 		Name:             "inspect",
 		Agent:            BuildID,
 		Model:            "fake/model",
-		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+		DefaultSelection: session.Selection{Model: "fake/model"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1393,7 +1460,7 @@ func TestAgentSessionRepositoryCreatesSelectedChild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected.ParentSessionID != parent.ID || selected.Name != "inspect" || selected.Agent != BuildID || selected.Provider != "fake" || selected.Model != "model" || selected.Title != "Subtask inspect [build]" {
+	if selected.ParentSessionID != parent.ID || selected.Name != "inspect" || selected.Agent != BuildID || selected.Model != "fake/model" || selected.Title != "Subtask inspect [build]" {
 		t.Fatalf("child = %#v", selected)
 	}
 	if bound, ok := h.agentSessions.Lookup(selected.ID); !ok || bound != child {
@@ -1442,7 +1509,7 @@ func TestAgentSessionsResolvePersistenceOnceWhenBound(t *testing.T) {
 	}
 	child, err := agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{
 		ProjectID: parent.(*agentSession).dto.ProjectID, Name: "bound", Agent: BuildID,
-		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+		DefaultSelection: session.Selection{Model: "fake/model"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1452,7 +1519,7 @@ func TestAgentSessionsResolvePersistenceOnceWhenBound(t *testing.T) {
 	}
 	lazy, err := h.sessions.CreateSelected(context.Background(), session.CreateParams{
 		Name: "lazy", ProjectID: parent.(*agentSession).dto.ProjectID, ProjectRoot: parent.(*agentSession).dto.ProjectRoot,
-	}, session.Selection{Agent: BuildID, Provider: "fake", Model: "model"})
+	}, session.Selection{Agent: BuildID, Model: "fake/model"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1484,7 +1551,7 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created, err := h.agentSessions.CreateSelected(context.Background(), session.CreateParams{Title: "rollback"}, session.Selection{Agent: BuildID, Provider: "fake", Model: "model"}); !errors.Is(err, providerErr) || created != nil {
+	if created, err := h.agentSessions.CreateSelected(context.Background(), session.CreateParams{Title: "rollback"}, session.Selection{Agent: BuildID, Model: "fake/model"}); !errors.Is(err, providerErr) || created != nil {
 		t.Fatalf("CreateSelected = %#v, %v", created, err)
 	}
 	afterCreate, err := h.sessions.List(context.Background())
@@ -1500,7 +1567,7 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{ProjectID: parent.(*agentSession).dto.ProjectID, Name: "rollback", Agent: BuildID, DefaultSelection: session.Selection{Provider: "fake", Model: "model"}}); !errors.Is(err, providerErr) || child != nil {
+	if child, err := h.agentSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{ProjectID: parent.(*agentSession).dto.ProjectID, Name: "rollback", Agent: BuildID, DefaultSelection: session.Selection{Model: "fake/model"}}); !errors.Is(err, providerErr) || child != nil {
 		t.Fatalf("CreateChild = %#v, %v", child, err)
 	}
 	after, err := h.sessions.List(context.Background())
@@ -1522,7 +1589,7 @@ func TestAgentSessionRepositoryRollsBackChildWhenToolsFail(t *testing.T) {
 	}
 	cleanupSessions := created.(*userSession)
 	parent = mustGetAgentSession(t, cleanupSessions, h.sessionID)
-	if child, err := cleanupSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{ProjectID: parent.(*agentSession).dto.ProjectID, Name: "retained", Agent: BuildID, DefaultSelection: session.Selection{Provider: "fake", Model: "model"}}); !errors.Is(err, providerErr) || !errors.Is(err, cleanupErr) || child != nil {
+	if child, err := cleanupSessions.repository.CreateChild(context.Background(), parent, ChildSessionRequest{ProjectID: parent.(*agentSession).dto.ProjectID, Name: "retained", Agent: BuildID, DefaultSelection: session.Selection{Model: "fake/model"}}); !errors.Is(err, providerErr) || !errors.Is(err, cleanupErr) || child != nil {
 		t.Fatalf("CreateChild cleanup failure = %#v, %v", child, err)
 	}
 	children := cleanupSessions.ChildSessions(h.sessionID)
@@ -1544,7 +1611,7 @@ func TestAgentSessionRepositoryDiscardsPreparedChild(t *testing.T) {
 		ProjectID:        parent.ProjectID,
 		Name:             "discard",
 		Agent:            BuildID,
-		DefaultSelection: session.Selection{Provider: "fake", Model: "model"},
+		DefaultSelection: session.Selection{Model: "fake/model"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -1679,7 +1746,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	selection := session.Selection{Agent: BuildID, Provider: "fake", Model: "model"}
+	selection := session.Selection{Agent: BuildID, Model: "fake/model"}
 	createChild := func(parentID, title string) session.AgentSessionDto {
 		t.Helper()
 		child, err := h.sessions.CreateSelected(ctx, session.CreateParams{

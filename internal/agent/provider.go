@@ -4,13 +4,14 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 )
 
 type ProviderResolver interface {
-	Resolve(providerID, modelID string) (provider.Provider, provider.Model, error)
+	Resolve(selector string) (provider.Provider, provider.Model, *provider.Variant, error)
 }
 
 // ProviderLister reports the registered providers in deterministic order. The
@@ -85,30 +86,49 @@ func (r *ProviderRegistry) List() []provider.Provider {
 	return out
 }
 
-func (r *ProviderRegistry) Resolve(providerID, modelID string) (provider.Provider, provider.Model, error) {
+func (r *ProviderRegistry) Resolve(selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
+	providerID, remainder, found := strings.Cut(selector, "/")
+	if !found || providerID == "" || remainder == "" || strings.HasSuffix(remainder, "/") || strings.Contains(remainder, "//") {
+		return nil, provider.Model{}, nil, fmt.Errorf("agent: malformed provider selector %q", selector)
+	}
+
 	r.mu.RLock()
-	ids := make([]string, 0, len(r.providers))
-	for id := range r.providers {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	if providerID == "" && len(ids) > 0 {
-		providerID = ids[0]
-	}
 	selected := r.providers[providerID]
 	r.mu.RUnlock()
 	if selected == nil {
-		return nil, provider.Model{}, fmt.Errorf("agent: unknown provider %q", providerID)
+		return nil, provider.Model{}, nil, fmt.Errorf("agent: unknown provider %q", providerID)
 	}
-	models := selected.Models()
-	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
-	if modelID == "" && len(models) > 0 {
-		modelID = models[0].ID
+
+	var baseModel *provider.Model
+	type variantMatch struct {
+		model   provider.Model
+		variant provider.Variant
 	}
-	for _, model := range models {
-		if model.ID == modelID {
-			return selected, model, nil
+	var variantMatches []variantMatch
+	for _, model := range selected.Models() {
+		if model.ID == remainder {
+			match := model
+			baseModel = &match
+		}
+		for _, variant := range model.Capabilities.Variants {
+			if model.ID+"/"+variant.Name == remainder {
+				variantMatches = append(variantMatches, variantMatch{model: model, variant: variant})
+			}
 		}
 	}
-	return nil, provider.Model{}, fmt.Errorf("agent: unknown model %q for provider %q", modelID, providerID)
+
+	// Model IDs may contain slash-delimited components which also happen to be
+	// variant names. An exact catalog model is authoritative; only interpret a
+	// suffix as a variant when no exact model exists.
+	if baseModel != nil {
+		return selected, *baseModel, nil, nil
+	}
+	if len(variantMatches) == 1 {
+		match := variantMatches[0]
+		return selected, match.model, &match.variant, nil
+	}
+	if len(variantMatches) > 1 {
+		return nil, provider.Model{}, nil, fmt.Errorf("agent: ambiguous model selector %q", selector)
+	}
+	return nil, provider.Model{}, nil, fmt.Errorf("agent: unknown model selector %q for provider %q", remainder, providerID)
 }

@@ -162,13 +162,9 @@ func (s *agentSession) UpdateSelection(ctx context.Context, patch session.Select
 func (s *agentSession) applySelection(updated session.AgentSessionDto) {
 	s.mu.Lock()
 	s.dto.Agent = updated.Agent
-	s.dto.Provider = updated.Provider
 	s.dto.Model = updated.Model
-	s.dto.Variant = updated.Variant
 	s.status.Agent = updated.Agent
-	s.status.Provider = updated.Provider
 	s.status.Model = updated.Model
-	s.status.Variant = updated.Variant
 	s.mu.Unlock()
 	if s.agentSessionRepository != nil {
 		s.agentSessionRepository.updateSelection(s, updated)
@@ -837,7 +833,7 @@ func newAgentSession(
 	maxChildPromptBytes, maxChildResultBytes int,
 	events event.EventBroker,
 ) *agentSession {
-	status := Status{SessionID: dto.ID, RootSession: dto.ID, Agent: dto.Agent, Provider: dto.Provider, Model: dto.Model, Variant: dto.Variant, Name: dto.Name, State: StatusIdle}
+	status := Status{SessionID: dto.ID, RootSession: dto.ID, Agent: dto.Agent, Model: dto.Model, Name: dto.Name, State: StatusIdle}
 	if parent != nil {
 		parentStatus := parent.Status()
 		status.ParentSession = parentStatus.SessionID
@@ -944,7 +940,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
 			r.securityProfile.AddCapability(security.Rule{Path: stateDirectory.QueuesPath(), Action: security.ActionAllowRead})
 		}
-		providerClient, model, err := r.providers.Resolve(selected.Provider, selected.Model)
+		providerClient, model, variant, err := r.providers.Resolve(selected.Model)
 		if err != nil {
 			return err
 		}
@@ -1007,7 +1003,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		}
 		if r.compactor != nil {
 			result, compactErr := r.compactor.Compact(ctx, compaction.Request{
-				SessionID: r.dto.ID, ProviderID: selected.Provider, Model: model,
+				SessionID: r.dto.ID, ProviderID: providerClient.ID(), Model: model,
 				Instructions: instructions, Tools: definitions,
 			})
 			if compactErr != nil {
@@ -1026,21 +1022,17 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
-		if selected.Variant != "" {
-			variant, ok := model.Capabilities.Variant(selected.Variant)
-			if !ok {
-				return fmt.Errorf("agent: unknown model variant %q", selected.Variant)
-			}
+		if variant != nil {
 			request.Reasoning = &protocol.ReasoningOptions{Effort: variant.ReasoningEffort, Summary: "auto"}
 		}
-		calls, finish, err := r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
+		calls, finish, err := r.loggedProviderTurn(ctx, providerClient.ID(), turn, providerClient, model, request)
 		if err != nil {
 			var failure *providerTurnFailure
 			if !errors.As(err, &failure) || !failure.overflow || !failure.retrySafe || r.compactor == nil {
 				return err
 			}
 			result, compactErr := r.compactor.Compact(ctx, compaction.Request{
-				SessionID: r.dto.ID, ProviderID: selected.Provider, Model: model,
+				SessionID: r.dto.ID, ProviderID: providerClient.ID(), Model: model,
 				Instructions: instructions, Tools: definitions, Force: true,
 			})
 			if compactErr != nil || result.Status != "complete" {
@@ -1062,7 +1054,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 			request.Instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, turn >= profile.MaxTurns)
 			request.Messages = history
-			calls, finish, err = r.loggedProviderTurn(ctx, selected.Provider, turn, providerClient, model, request)
+			calls, finish, err = r.loggedProviderTurn(ctx, providerClient.ID(), turn, providerClient, model, request)
 			if err != nil {
 				return err
 			}
@@ -1107,9 +1099,7 @@ func (r *agentSession) statusQuery(selected session.AgentSessionDto, profile Pro
 		SessionID:       r.dto.ID,
 		ParentSessionID: selected.ParentSessionID,
 		Agent:           profile.ID,
-		Provider:        selected.Provider,
 		Model:           selected.Model,
-		Variant:         selected.Variant,
 	}
 	if selected.ParentSessionID != "" {
 		if parent, err := r.user.Get(selected.ParentSessionID); err == nil {

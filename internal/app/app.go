@@ -138,13 +138,15 @@ func copyCredentialFile(src, dst string, perm os.FileMode) error {
 	return output.Close()
 }
 
-// Options controls process-local composition. Model accepts provider/model or
-// a model ID from the configured default provider.
+// Options controls process-local composition. Model is a canonical
+// provider/model[/variant] selector.
 type Options struct {
-	CWD            string
-	Paths          appdirs.Overrides
-	Version        string
-	Model          string
+	CWD     string
+	Paths   appdirs.Overrides
+	Version string
+	Model   string
+	// Variant is a deprecated process-local override. Persistent selections
+	// encode it in Model.
 	Variant        string
 	Agent          string
 	Mode           string
@@ -264,12 +266,25 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, err
 	}
-	providerID, modelID := "", ""
-	if !options.AllowNoModel || loaded.Config.DefaultModel != "" || options.Model != "" {
-		providerID, modelID, err = selectModel(loaded.Config.DefaultModel, options.Model, providers)
+	providerRegistry, err := agent.NewProviderRegistry(providers...)
+	if err != nil {
+		return nil, fmt.Errorf("app: providers: %w", err)
+	}
+	selectedModel := options.Model
+	if selectedModel == "" {
+		selectedModel = loaded.Config.DefaultModel
+	}
+	variantOverride := options.Variant
+	if variantOverride == "" {
+		variantOverride = loaded.LegacyVariant
+	}
+	if selectedModel != "" {
+		selectedModel, err = resolveCanonicalModelVariant(providerRegistry, selectedModel, variantOverride)
 		if err != nil {
 			return nil, err
 		}
+	} else if !options.AllowNoModel && variantOverride == "" {
+		return nil, errors.New("app: no default model configured; set model to provider/model[/variant] in parrot.yaml or pass --model")
 	}
 	modes, err := mode.NewRegistryWithPlanDirectory(filepath.Join(paths.State, "plans"))
 	if err != nil {
@@ -293,17 +308,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	for _, p := range taskAgents.List() {
 		subagentIDs = append(subagentIDs, p.ID)
 	}
-	providerRegistry, err := agent.NewProviderRegistry(providers...)
-	if err != nil {
-		return nil, fmt.Errorf("app: providers: %w", err)
-	}
-	if providerID != "" {
-		_, _, err = providerRegistry.Resolve(providerID, modelID)
-	}
-	if err != nil {
-		return nil, fmt.Errorf("app: default model: %w", err)
-	}
-
 	identity, err := processidentity.Load(paths.State)
 	if err != nil {
 		return nil, fmt.Errorf("app: host identity: %w", err)
@@ -312,10 +316,10 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: adopt legacy database: %w", err)
 	}
 	sessionStore := store.NewRegistry(paths.State, identity.HostKey)
-	defaultSelection := session.Selection{Agent: agentID, Provider: providerID, Model: modelID}
+	defaultSelection := session.Selection{Agent: agentID, Model: selectedModel}
 	result := &App{
 		Paths: paths, Project: info, WorkingDirectory: cwd, Config: loaded, Credentials: credentials, sessionStore: sessionStore,
-		DefaultSelection: v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID},
+		DefaultSelection: v1.SessionSelection{Agent: agentID, Model: selectedModel},
 	}
 	defer func() {
 		if err != nil {
@@ -327,39 +331,20 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	repository := event.NewRepository(sessionStore)
 	live := event.NewBroker(repository, event.NewTransientRepository())
 	sessions := session.NewService(sessionStore, repository)
-	configuredVariant := loaded.Config.DefaultVariant
-	if options.Variant != "" {
-		configuredVariant = options.Variant
-	}
 	selected, selectionErr := sessions.LatestSelection(ctx, info.ID)
 	if selectionErr != nil && !errors.Is(selectionErr, session.ErrNotFound) {
 		return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
 	}
-	if providerID == "" && selectionErr == nil {
-		if _, restoredModel, resolveErr := providerRegistry.Resolve(selected.Provider, selected.Model); resolveErr == nil && (configuredVariant != "" || selected.Variant == "" || modelHasVariant(restoredModel, selected.Variant)) {
-			providerID, modelID = selected.Provider, selected.Model
+	if selectedModel == "" && selectionErr == nil {
+		if restoredModel, resolveErr := resolveCanonicalModelVariant(providerRegistry, selected.Model, variantOverride); resolveErr == nil {
+			selectedModel = restoredModel
 		}
 	}
-	if configuredVariant != "" && providerID == "" {
-		return nil, fmt.Errorf("app: default variant %q requires a model", configuredVariant)
+	if selectedModel == "" && variantOverride != "" {
+		return nil, fmt.Errorf("app: default variant %q requires a model", variantOverride)
 	}
-	variant := configuredVariant
-	if variant == "" && selectionErr == nil && selected.Provider == providerID && selected.Model == modelID && selected.Variant != "" {
-		if _, restoredModel, resolveErr := providerRegistry.Resolve(providerID, modelID); resolveErr == nil && modelHasVariant(restoredModel, selected.Variant) {
-			variant = selected.Variant
-		}
-	}
-	if variant != "" {
-		_, selectedModel, resolveErr := providerRegistry.Resolve(providerID, modelID)
-		if resolveErr != nil {
-			return nil, fmt.Errorf("app: default model: %w", resolveErr)
-		}
-		if !modelHasVariant(selectedModel, variant) {
-			return nil, fmt.Errorf("app: variant %q is not available for model %s/%s", variant, providerID, modelID)
-		}
-	}
-	defaultSelection = session.Selection{Agent: agentID, Provider: providerID, Model: modelID, Variant: variant}
-	result.DefaultSelection = v1.SessionSelection{Agent: agentID, Provider: providerID, Model: modelID, Variant: variant}
+	defaultSelection = session.Selection{Agent: agentID, Model: selectedModel}
+	result.DefaultSelection = v1.SessionSelection{Agent: agentID, Model: selectedModel}
 	todos := session.NewTodoService(sessionStore, repository)
 	goals := session.NewGoalService(sessionStore, repository)
 	ws, err := workspace.New(info.Root)
@@ -469,7 +454,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	compactionRepository := compaction.NewRepository(sessionStore, repository)
 	compactionService, err := compaction.NewService(compactionRepository,
-		compaction.ProviderSummarizer{Providers: providerRegistry}, textTokenizer, compaction.Config{})
+		compaction.ProviderSummarizer{Providers: compactionProviderResolver{resolver: providerRegistry}}, textTokenizer, compaction.Config{})
 	if err != nil {
 		return nil, fmt.Errorf("app: compaction: %w", err)
 	}
@@ -538,7 +523,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 			}
 			return v1.Compaction{}, err
 		}
-		_, model, err := providerRegistry.Resolve(selected.Provider, selected.Model)
+		selectedProvider, model, _, err := providerRegistry.Resolve(selected.Model)
 		if err != nil {
 			return v1.Compaction{}, err
 		}
@@ -554,7 +539,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		if len(profile.HardRules) > 0 {
 			instructions += "\n\nHard rules:\n- " + strings.Join(profile.HardRules, "\n- ")
 		}
-		item, err := compactionService.Compact(ctx, compaction.Request{SessionID: sessionID, ProviderID: selected.Provider, Model: model, Instructions: instructions, Tools: definitions, Force: true})
+		item, err := compactionService.Compact(ctx, compaction.Request{SessionID: sessionID, ProviderID: selectedProvider.ID(), Model: model, Instructions: instructions, Tools: definitions, Force: true})
 		return v1.Compaction{Status: item.Status, AttemptID: item.AttemptID, RecordID: item.RecordID, SourceEpochID: item.SourceEpochID, TargetEpochID: item.TargetEpochID, HistoryCutoff: item.HistoryCutoff, Reason: item.Reason}, err
 	}
 	result.Backend = backend
@@ -908,11 +893,6 @@ func (a *App) ReloadProviders(ctx context.Context) error {
 
 // BuildProviders creates configured provider clients. Environment credentials
 // take precedence over credentials stored under the provider ID.
-func modelHasVariant(model provider.Model, name string) bool {
-	_, ok := model.Capabilities.Variant(name)
-	return ok
-}
-
 func BuildProviders(ctx context.Context, cfg config.Config, credentials auth.Store, httpClient *http.Client) ([]provider.Provider, error) {
 	openAI := &auth.OpenAI{HTTPClient: httpClient}
 	tokens := auth.NewTokenSource(openAI, credentials, "chatgpt")
@@ -1082,33 +1062,42 @@ func refreshProviderModels(ctx context.Context, providers []provider.Provider) e
 	return nil
 }
 
-func selectModel(configured, override string, providers []provider.Provider) (string, string, error) {
-	value := override
+// compactionProviderResolver keeps the legacy split compaction dependency at
+// the package boundary while application state remains a canonical selector.
+type compactionProviderResolver struct {
+	resolver agent.ProviderResolver
+}
+
+func (r compactionProviderResolver) Resolve(providerID, modelID string) (provider.Provider, provider.Model, error) {
+	selectedProvider, selectedModel, _, err := r.resolver.Resolve(providerID + "/" + modelID)
+	return selectedProvider, selectedModel, err
+}
+
+func resolveCanonicalModel(resolver agent.ProviderResolver, value string) (string, error) {
+	return resolveCanonicalModelVariant(resolver, value, "")
+}
+
+func resolveCanonicalModelVariant(resolver agent.ProviderResolver, value, variantOverride string) (string, error) {
 	if value == "" {
-		value = configured
+		return "", errors.New("app: no default model configured; set model to provider/model[/variant] in parrot.yaml or pass --model")
 	}
-	if value == "" {
-		return "", "", errors.New("app: no default model configured; set model to provider/model in parrot.yaml or pass --model")
-	}
-	providerID, modelID, found := strings.Cut(value, "/")
-	if !found {
-		defaultProvider, _, ok := strings.Cut(configured, "/")
-		if !ok || defaultProvider == "" {
-			return "", "", fmt.Errorf("app: model %q must include its provider as provider/model", value)
-		}
-		providerID, modelID = defaultProvider, value
-	}
-	if providerID == "" || modelID == "" {
-		return "", "", fmt.Errorf("app: invalid model selection %q; expected provider/model", value)
-	}
-	registry, err := agent.NewProviderRegistry(providers...)
+	selectedProvider, selectedModel, selectedVariant, err := resolver.Resolve(value)
 	if err != nil {
-		return "", "", err
+		return "", fmt.Errorf("app: default model: %w", err)
 	}
-	if _, _, err := registry.Resolve(providerID, modelID); err != nil {
-		return "", "", err
+	canonical := selectedProvider.ID() + "/" + selectedModel.ID
+	if variantOverride != "" {
+		canonical += "/" + variantOverride
+		providerWithVariant, modelWithVariant, selectedOverride, resolveErr := resolver.Resolve(canonical)
+		if resolveErr != nil || selectedOverride == nil || providerWithVariant.ID() != selectedProvider.ID() || modelWithVariant.ID != selectedModel.ID {
+			return "", fmt.Errorf("app: variant %q is not available for model %s/%s", variantOverride, selectedProvider.ID(), selectedModel.ID)
+		}
+		return canonical, nil
 	}
-	return providerID, modelID, nil
+	if selectedVariant != nil {
+		canonical += "/" + selectedVariant.Name
+	}
+	return canonical, nil
 }
 
 func buildMCPConfigs(configs map[string]config.MCP) ([]mcp.Config, error) {

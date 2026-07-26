@@ -38,7 +38,7 @@ func TestSubtaskPromptUsesSpawnAndWaitAgent(t *testing.T) {
 
 func TestShellCallbacksSynchronizeExtractedState(t *testing.T) {
 	firstAPI, secondAPI := &enhancedQueueAPI{}, &enhancedQueueAPI{}
-	external := v1.Session{ID: "second", Agent: "plan", Provider: "remote", Model: "model"}
+	external := v1.Session{ID: "second", Agent: "plan", Model: "remote/model"}
 	var updated v1.Session
 	shell := &chatShell{
 		api: firstAPI, current: v1.Session{ID: "first"}, selection: chatSelection{agent: "build", model: "local/model"},
@@ -48,7 +48,7 @@ func TestShellCallbacksSynchronizeExtractedState(t *testing.T) {
 			Current:         func() v1.Session { return external },
 			SetCurrent:      func(item v1.Session) { updated = item },
 			Agent:           func() string { return external.Agent },
-			ModelName:       func() string { return external.Provider + "/" + external.Model },
+			ModelName:       func() string { return external.Model },
 		},
 	}
 
@@ -56,7 +56,7 @@ func TestShellCallbacksSynchronizeExtractedState(t *testing.T) {
 	if shell.api != secondAPI || shell.current != external || shell.selection.agent != "plan" || shell.selection.model != "remote/model" || !shell.options.thinking {
 		t.Fatalf("refreshed shell = %#v", shell)
 	}
-	want := v1.Session{ID: "third", Agent: "explore", Provider: "remote", Model: "other"}
+	want := v1.Session{ID: "third", Agent: "explore", Model: "remote/other"}
 	shell.setCurrent(want)
 	if shell.current != want || updated != want || shell.selection.agent != "explore" || shell.selection.model != "remote/other" {
 		t.Fatalf("updated shell current=%#v selection=%#v callback=%#v", shell.current, shell.selection, updated)
@@ -137,7 +137,7 @@ func TestEnhancedBusySubmissionSteersAndPromotionCommits(t *testing.T) {
 		t.Fatal(err)
 	}
 	shell := &chatShell{
-		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: "build", Provider: "local", Model: "test"},
+		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: "build", Model: "local/test"},
 		selection: chatSelection{agent: "build", model: "local/test"}, renderer: renderer,
 	}
 	runtime := &enhancedChatRuntime{shell: shell, state: state, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
@@ -377,7 +377,7 @@ func TestEnhancedBusySlashRunsSafeAndRejectsMutation(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 50})
 	shell := &chatShell{
-		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: "build", Provider: "local", Model: "test"},
+		ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: "build", Model: "local/test"},
 		selection: chatSelection{agent: "build", model: "local/test"}, renderer: renderer,
 	}
 	shell.config = &Config{Slash: func(name, _ string) (bool, int) {
@@ -1513,7 +1513,7 @@ func TestEnhancedCycleModeAppliesNextAgentAndUpdatesLabels(t *testing.T) {
 	api := &modeSwitchAPI{agents: v1.AgentList{Items: []v1.Agent{{ID: "build"}, {ID: "plan"}, {ID: "explore"}}}}
 	shell := &chatShell{
 		ctx: context.Background(), api: api,
-		current:   v1.Session{ID: "session", Agent: "build", Provider: "local", Model: "test"},
+		current:   v1.Session{ID: "session", Agent: "build", Model: "local/test"},
 		selection: chatSelection{agent: "build", model: "local/test"},
 	}
 	shell.config = &Config{

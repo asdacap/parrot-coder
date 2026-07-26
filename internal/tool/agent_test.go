@@ -129,7 +129,7 @@ func TestAgentToolsContract(t *testing.T) {
 	if description := spawn.Descriptor().Description; !strings.Contains(description, "final result will automatically be sent to the caller") || !strings.Contains(description, "blocked") || !strings.Contains(description, "interrupt") {
 		t.Fatalf("agent_spawn description = %q", description)
 	}
-	if schema := string(spawn.JSONSchema()); !strings.Contains(schema, "friendly name for easy identification") || strings.Contains(schema, "UI name") {
+	if schema := string(spawn.JSONSchema()); !strings.Contains(schema, "friendly name for easy identification") || !strings.Contains(schema, "inherit the parent's complete selector") || strings.Contains(schema, "UI name") {
 		t.Fatalf("agent_spawn schema = %s", schema)
 	}
 	if _, err := spawn.Plan(context.Background(), json.RawMessage(`{"prompt":"write","agent":"build"}`), CallContext{SessionID: "root", Agent: "plan"}); err == nil {
@@ -149,11 +149,11 @@ func TestAgentToolsContract(t *testing.T) {
 		return result
 	}
 
-	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer","model":"fast","name":"code-review"}`)
+	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer","model":"provider/fast/high","name":"code-review"}`)
 	if spawned.Metadata["session_id"] != "session-child" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["status"] != "blocked" || spawned.Metadata["turn"] != 1 {
 		t.Fatalf("spawned = %#v", spawned)
 	}
-	if session.created.callerAgent != "build" || session.created.prompt != "inspect" || session.created.agent != "explorer" || session.created.model != "fast" || session.created.name != "code-review" {
+	if session.created.callerAgent != "build" || session.created.prompt != "inspect" || session.created.agent != "explorer" || session.created.model != "provider/fast/high" || session.created.name != "code-review" {
 		t.Fatalf("created = %#v", session.created)
 	}
 	sent := execute(agentSendID, `{"session_id":"code-review","message":"focus"}`)

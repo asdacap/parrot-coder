@@ -242,7 +242,7 @@ providers:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if created.Provider != "local" || created.Model != "test-model" || created.Agent != "build" {
+	if created.Model != "local/test-model" || created.Agent != "build" {
 		t.Fatalf("created selection = %#v", created)
 	}
 	after := int64(^uint64(0) >> 1)
@@ -343,7 +343,7 @@ func TestOpenModelLessCatalogsAndExplicitSessionSelection(t *testing.T) {
 	if runtime.Handler == nil || runtime.Client == nil || runtime.Commands == nil {
 		t.Fatal("model-less app did not expose its application surfaces")
 	}
-	if runtime.DefaultSelection.Agent != "build" || runtime.DefaultSelection.Provider != "" || runtime.DefaultSelection.Model != "" {
+	if runtime.DefaultSelection.Agent != "build" || runtime.DefaultSelection.Model != "" {
 		t.Fatalf("default selection = %#v", runtime.DefaultSelection)
 	}
 	models, err := runtime.Client.Models(context.Background())
@@ -371,7 +371,7 @@ func TestOpenModelLessCatalogsAndExplicitSessionSelection(t *testing.T) {
 		if createErr != nil {
 			t.Fatal(createErr)
 		}
-		if created.Agent != agentID || created.Provider != model.Provider || created.Model != model.ID {
+		if created.Agent != agentID || created.Model != qualifiedModel {
 			t.Fatalf("%s selection = %#v", agentID, created)
 		}
 		selected, updateErr := runtime.Client.UpdateSessionSelection(context.Background(), created.ID, v1.UpdateSessionSelectionRequest{Model: qualifiedModel})
@@ -410,9 +410,9 @@ func TestOpenRestoresLatestProjectModelSelection(t *testing.T) {
 		t.Fatalf("Models = %#v, %v", models, err)
 	}
 	model := models.Items[0]
-	variant := "high"
+	selectedModel := model.Provider + "/" + model.ID + "/high"
 	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
-		ProjectID: runtime.Project.ID, Title: "remember", Agent: "build", Model: model.Provider + "/" + model.ID, Variant: &variant,
+		ProjectID: runtime.Project.ID, Title: "remember", Agent: "build", Model: selectedModel,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -425,8 +425,44 @@ func TestOpenRestoresLatestProjectModelSelection(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if reopened.DefaultSelection.Provider != model.Provider || reopened.DefaultSelection.Model != model.ID || reopened.DefaultSelection.Variant != variant {
-		t.Fatalf("restored selection = %#v, want %s/%s with %s effort", reopened.DefaultSelection, model.Provider, model.ID, variant)
+	if reopened.DefaultSelection.Model != selectedModel {
+		t.Fatalf("restored selection = %#v, want %s", reopened.DefaultSelection, selectedModel)
+	}
+}
+
+func TestOpenAppliesLegacyVariantToRestoredModel(t *testing.T) {
+	root := t.TempDir()
+	paths := appdirs.Overrides{
+		Home: root, ConfigHome: filepath.Join(root, "config"), DataHome: filepath.Join(root, "data"),
+		StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache"),
+	}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	models, err := runtime.Client.Models(context.Background())
+	if err != nil || len(models.Items) == 0 {
+		t.Fatalf("Models = %#v, %v", models, err)
+	}
+	model := models.Items[0]
+	base := model.Provider + "/" + model.ID
+	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{ProjectID: runtime.Project.ID, Agent: "build", Model: base}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.Close(); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(root, "config", "parrot", config.FileName)
+	if err := os.WriteFile(configPath, []byte("variant: high\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if reopened.DefaultSelection.Model != base+"/high" {
+		t.Fatalf("restored selection = %#v, want %s/high", reopened.DefaultSelection, base)
 	}
 }
 
@@ -495,14 +531,14 @@ func TestOpenVariantPrecedenceAndValidation(t *testing.T) {
 	model := selected.Provider + "/" + selected.ID
 	historyVariant, configVariant, cliVariant := selected.Variants[0].Name, selected.Variants[1].Name, selected.Variants[2].Name
 	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
-		ProjectID: runtime.Project.ID, Title: "history", Agent: "build", Model: model, Variant: &historyVariant,
+		ProjectID: runtime.Project.ID, Title: "history", Agent: "build", Model: model + "/" + historyVariant,
 	}); err != nil {
 		t.Fatal(err)
 	}
 	if err := runtime.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := config.UpdateDefaultSelection(configPath, model, configVariant); err != nil {
+	if err := config.UpdateDefaultSelection(configPath, model+"/"+configVariant); err != nil {
 		t.Fatal(err)
 	}
 
@@ -512,7 +548,7 @@ func TestOpenVariantPrecedenceAndValidation(t *testing.T) {
 		want    string
 	}{
 		{name: "config supersedes history", options: Options{}, want: configVariant},
-		{name: "cli supersedes config", options: Options{Variant: cliVariant}, want: cliVariant},
+		{name: "cli supersedes config", options: Options{Model: model + "/" + cliVariant}, want: cliVariant},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			options := test.options
@@ -522,7 +558,7 @@ func TestOpenVariantPrecedenceAndValidation(t *testing.T) {
 				t.Fatal(openErr)
 			}
 			defer opened.Close()
-			if opened.DefaultSelection.Provider+"/"+opened.DefaultSelection.Model != model || opened.DefaultSelection.Variant != test.want {
+			if opened.DefaultSelection.Model != model+"/"+test.want {
 				t.Fatalf("selection = %#v, want %s variant %q", opened.DefaultSelection, model, test.want)
 			}
 		})
@@ -531,29 +567,21 @@ func TestOpenVariantPrecedenceAndValidation(t *testing.T) {
 	for _, test := range []struct {
 		name    string
 		model   string
-		variant string
 		wantErr string
 	}{
-		{name: "unknown", model: model, variant: "bogus", wantErr: `variant "bogus" is not available`},
-		{name: "incompatible", model: variantless.Provider + "/" + variantless.ID, variant: historyVariant, wantErr: `variant "` + historyVariant + `" is not available`},
+		{name: "unknown", model: model + "/bogus", wantErr: `unknown model selector`},
+		{name: "incompatible", model: variantless.Provider + "/" + variantless.ID + "/" + historyVariant, wantErr: `unknown model selector`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			_, openErr := Open(context.Background(), Options{CWD: root, Paths: paths, Model: test.model, Variant: test.variant, NonInteractive: true})
+			_, openErr := Open(context.Background(), Options{CWD: root, Paths: paths, Model: test.model, NonInteractive: true})
 			if openErr == nil || !strings.Contains(openErr.Error(), test.wantErr) {
 				t.Fatalf("Open error = %v, want %q", openErr, test.wantErr)
 			}
 		})
 	}
-
-	modelLessRoot := t.TempDir()
-	modelLessPaths := appdirs.Overrides{Home: modelLessRoot, ConfigHome: filepath.Join(modelLessRoot, "config"), DataHome: filepath.Join(modelLessRoot, "data"), StateHome: filepath.Join(modelLessRoot, "state"), CacheHome: filepath.Join(modelLessRoot, "cache")}
-	_, err = Open(context.Background(), Options{CWD: modelLessRoot, Paths: modelLessPaths, Variant: "high", AllowNoModel: true, NonInteractive: true})
-	if err == nil || !strings.Contains(err.Error(), `variant "high" requires a model`) {
-		t.Fatalf("model-less variant error = %v", err)
-	}
 }
 
-func TestOpenRestoresVariantWhenModelMatches(t *testing.T) {
+func TestOpenExplicitModelSupersedesHistoryVariant(t *testing.T) {
 	root := t.TempDir()
 	paths := appdirs.Overrides{
 		Home: root, ConfigHome: filepath.Join(root, "config"), DataHome: filepath.Join(root, "data"),
@@ -569,9 +597,9 @@ func TestOpenRestoresVariantWhenModelMatches(t *testing.T) {
 		t.Fatalf("Models = %#v, %v", models, err)
 	}
 	model := models.Items[0]
-	variant := "high"
+	selectedModel := model.Provider + "/" + model.ID + "/high"
 	if _, err := runtime.Client.CreateSession(context.Background(), v1.CreateSessionRequest{
-		ProjectID: runtime.Project.ID, Title: "variant", Agent: "build", Model: model.Provider + "/" + model.ID, Variant: &variant,
+		ProjectID: runtime.Project.ID, Title: "variant", Agent: "build", Model: selectedModel,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -579,18 +607,15 @@ func TestOpenRestoresVariantWhenModelMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Reopen with the model explicitly configured; variant should still be restored.
+	// Reopen with the model explicitly configured; it takes precedence over history.
 	modelArg := model.Provider + "/" + model.ID
 	reopened, err := Open(context.Background(), Options{CWD: root, Paths: paths, Model: modelArg, NonInteractive: true})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer reopened.Close()
-	if reopened.DefaultSelection.Variant != variant {
-		t.Fatalf("restored variant = %q, want %q", reopened.DefaultSelection.Variant, variant)
-	}
-	if reopened.DefaultSelection.Provider != model.Provider || reopened.DefaultSelection.Model != model.ID {
-		t.Fatalf("restored model = %s/%s, want %s/%s", reopened.DefaultSelection.Provider, reopened.DefaultSelection.Model, model.Provider, model.ID)
+	if reopened.DefaultSelection.Model != modelArg {
+		t.Fatalf("restored model = %s, want %s", reopened.DefaultSelection.Model, modelArg)
 	}
 }
 

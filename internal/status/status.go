@@ -20,9 +20,7 @@ type Query struct {
 	ParentSessionID   string
 	ParentSessionName string
 	Agent             string
-	Provider          string
 	Model             string
-	Variant           string
 }
 
 type Observation struct {
@@ -123,10 +121,7 @@ type Selection struct{}
 
 func (Selection) Key() string { return "runtime:selection" }
 func (Selection) Observe(_ context.Context, query Query) (Observation, error) {
-	lines := []string{"Active profile: " + query.Agent, "Model: " + query.Provider + "/" + query.Model}
-	if query.Variant != "" {
-		lines = append(lines, "Variant: "+query.Variant)
-	}
+	lines := []string{"Active profile: " + query.Agent, "Model: " + query.Model}
 	if query.ParentSessionID != "" {
 		parent := query.ParentSessionID
 		if name := strings.TrimSpace(query.ParentSessionName); name != "" {

@@ -411,11 +411,7 @@ func selectionFromSession(item v1.Session, fallback string) chatSelection {
 	if agent == "" {
 		agent = fallback
 	}
-	model := item.Model
-	if item.Provider != "" && model != "" {
-		model = item.Provider + "/" + model
-	}
-	return chatSelection{agent: agent, model: model}
+	return chatSelection{agent: agent, model: item.Model}
 }
 func opaqueID(prefix string) (string, error) {
 	value := make([]byte, 16)

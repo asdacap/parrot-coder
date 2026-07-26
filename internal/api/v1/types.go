@@ -44,9 +44,7 @@ type Session struct {
 	Title           string    `json:"title"`
 	Agent           string    `json:"agent,omitempty"`
 	Mode            string    `json:"mode,omitempty"`
-	Provider        string    `json:"provider,omitempty"`
 	Model           string    `json:"model,omitempty"`
-	Variant         string    `json:"variant,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
 }
@@ -57,26 +55,24 @@ type SessionList struct {
 }
 
 type CreateSessionRequest struct {
-	ParentSessionID string  `json:"parent_session_id,omitempty"`
-	ProjectID       string  `json:"project_id,omitempty"`
-	Title           string  `json:"title,omitempty"`
-	Agent           string  `json:"agent,omitempty"`
-	Mode            string  `json:"mode,omitempty"`
-	Model           string  `json:"model,omitempty"`
-	Variant         *string `json:"variant,omitempty"`
+	ParentSessionID string `json:"parent_session_id,omitempty"`
+	ProjectID       string `json:"project_id,omitempty"`
+	Title           string `json:"title,omitempty"`
+	Agent           string `json:"agent,omitempty"`
+	Mode            string `json:"mode,omitempty"`
+	Model           string `json:"model,omitempty"`
 }
 
 type ClaimSessionRequest struct {
-	WorkingDirectory string  `json:"working_directory"`
-	HostKey          string  `json:"host_key"`
-	PID              int     `json:"pid"`
-	ProjectID        string  `json:"project_id,omitempty"`
-	Title            string  `json:"title,omitempty"`
-	Agent            string  `json:"agent,omitempty"`
-	Mode             string  `json:"mode,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	Variant          *string `json:"variant,omitempty"`
-	ForceNew         bool    `json:"force_new,omitempty"`
+	WorkingDirectory string `json:"working_directory"`
+	HostKey          string `json:"host_key"`
+	PID              int    `json:"pid"`
+	ProjectID        string `json:"project_id,omitempty"`
+	Title            string `json:"title,omitempty"`
+	Agent            string `json:"agent,omitempty"`
+	Mode             string `json:"mode,omitempty"`
+	Model            string `json:"model,omitempty"`
+	ForceNew         bool   `json:"force_new,omitempty"`
 }
 
 const (
@@ -90,22 +86,20 @@ type ClaimSessionResponse struct {
 	Disposition string  `json:"disposition"`
 }
 
-// SessionSelection is the resolved execution selection persisted on a session.
+// SessionSelection is the execution selection persisted on a session. Model is
+// the encoded provider, model, and optional variant selection.
 type SessionSelection struct {
-	Agent    string `json:"agent"`
-	Mode     string `json:"mode"`
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
-	Variant  string `json:"variant,omitempty"`
+	Agent string `json:"agent"`
+	Mode  string `json:"mode"`
+	Model string `json:"model"`
 }
 
 // UpdateSessionSelectionRequest changes either or both selection dimensions.
-// Model accepts provider/model or a model ID under the current provider.
+// Model is passed to the provider resolver unchanged.
 type UpdateSessionSelectionRequest struct {
-	Agent   string  `json:"agent,omitempty"`
-	Mode    string  `json:"mode,omitempty"`
-	Model   string  `json:"model,omitempty"`
-	Variant *string `json:"variant,omitempty"`
+	Agent string `json:"agent,omitempty"`
+	Mode  string `json:"mode,omitempty"`
+	Model string `json:"model,omitempty"`
 }
 
 type Message struct {

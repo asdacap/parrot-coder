@@ -98,16 +98,17 @@ parrot auth login openai
 parrot auth login openai --no-browser
 
 parrot models
-parrot chat --model chatgpt/gpt-5.6-sol --variant high
+parrot chat --model chatgpt/gpt-5.6-sol/high
 ```
 
 OAuth credentials are stored in Parrot's private data directory. They are sent
 only to the compiled OpenAI authentication and ChatGPT endpoints.
 At startup, Parrot requests the ChatGPT Codex model catalog to obtain current
 model names, context windows, and reasoning variants. If the catalog is
-unavailable, Parrot keeps using its bundled model metadata. Interactive
-`/model` and `/effort` selections are saved as the global `model`/`variant`
-pair and become the defaults for later sessions.
+unavailable, Parrot keeps using its bundled model metadata. Model selectors use
+the canonical `provider/model[/effort-variant]` form. Interactive `/model` and
+`/effort` selections save that complete selector in the global `model` field and
+make it the default for later sessions.
 `parrot usage` (or `/usage` in chat) shows the remaining percentage and reset
 time for the subscription's available rate-limit windows. This relies on an
 upstream ChatGPT endpoint and requires a stored ChatGPT OAuth credential.
@@ -293,10 +294,11 @@ The global `--no-color` flag, `NO_COLOR`, and `TERM=dumb` disable interactive
 styling.
 
 ```text
-parrot chat [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
-            [--mode ID] [--thinking]
-parrot run [PROMPT] [--continue | --session ID] [--model PROVIDER/MODEL]
-           [--mode ID] [--thinking] [--format text|jsonl]
+parrot chat [PROMPT] [--continue | --session ID]
+            [--model PROVIDER/MODEL[/EFFORT-VARIANT]] [--mode ID] [--thinking]
+parrot run [PROMPT] [--continue | --session ID]
+           [--model PROVIDER/MODEL[/EFFORT-VARIANT]] [--mode ID] [--thinking]
+           [--format text|jsonl]
            [--interactive-prompts]
 parrot models [--format lines|json]
 parrot usage [--format lines|json]
@@ -360,8 +362,12 @@ input. On a shared display prefer `PARROT_API_KEY` or the CLI's
 `--api-key-stdin`.
 `/serve` starts the existing local runtime in the background and supports
 `/serve status` and `/serve stop`. Credential changes take effect in a new chat.
-Use `/effort` to pick from the active model's reasoning levels, or pass one
-directly, for example `/effort high`.
+Use `/effort` to pick from the active model's reasoning variants, or pass a
+variant name directly, for example `/effort high`. The command rewrites the
+selected model string: with `chatgpt/gpt-5.6-sol` active, `/effort high` selects
+and persists `chatgpt/gpt-5.6-sol/high`. A variant name is Parrot's stable
+selector suffix; its model metadata maps that name to the reasoning-effort value
+sent to the provider.
 
 Interactive chat remembers the active conversation by canonical working
 directory. On startup, Parrot reopens the previous session when its recorded
