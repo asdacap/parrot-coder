@@ -131,6 +131,7 @@ type agentSession struct {
 	drain                  *drainState
 	childCreations         int
 	removed                bool
+	shuttingDown           bool
 	childTurns             childTurnSemaphore
 	observers              []LifecycleObserver
 	toolSnapshot           tool.Snapshot

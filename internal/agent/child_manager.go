@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"time"
 
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
@@ -18,22 +19,11 @@ type childState struct {
 }
 
 type childTurnState struct {
-	ctx        context.Context
-	cancel     context.CancelFunc
-	done       chan struct{}
-	result     Status
-	permit     childPermit
-	workerDone func()
-}
-
-type childPermit struct {
-	user   ChildTurnPermit
-	parent ChildTurnPermit
-}
-
-func (p childPermit) Release() {
-	p.parent.Release()
-	p.user.Release()
+	ctx          context.Context
+	cancel       context.CancelFunc
+	done         chan struct{}
+	result       Status
+	releaseQuota func()
 }
 
 func applyChildDefaults(config *UserSessionConfig) {
@@ -74,7 +64,10 @@ func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, r
 	}
 	user.childMu.Lock()
 	defer user.childMu.Unlock()
-	if user.closed {
+	user.quotaMu.Lock()
+	closed := user.closed
+	user.quotaMu.Unlock()
+	if closed {
 		return nil, ErrUserSessionClosed
 	}
 
@@ -95,20 +88,31 @@ func (user *userSession) CreateChild(ctx context.Context, parent AgentSession, r
 	if err != nil {
 		return nil, err
 	}
-	permit, err := user.admitChildTurn(s)
+	created := child.(*agentSession)
+	releaseQuota, err := created.tryAcquireWorkerQuota()
 	if err != nil {
 		return nil, errors.Join(err, user.discardChild(context.WithoutCancel(ctx), child.ID()))
 	}
-	created := child.(*agentSession)
 	now := time.Now().UTC()
 	turnCtx, cancel := context.WithCancel(context.Background())
-	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), permit: permit, workerDone: user.workers.Done}
+	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), releaseQuota: releaseQuota}
+	created.mu.Lock()
+	if created.shuttingDown {
+		created.mu.Unlock()
+		releaseQuota()
+		return nil, errors.Join(ErrUserSessionClosed, user.discardChild(context.WithoutCancel(ctx), child.ID()))
+	}
 	created.child = &childState{status: Status{SessionID: child.ID(), ParentSession: s.ID(), RootSession: root, Agent: request.Agent, Model: request.Model, Name: name, Lineage: append([]string(nil), lineage...), Depth: len(lineage), Turn: 1, State: StatusRunning, StartedAt: now}, request: request, turn: turn, cancel: cancel}
+	created.mu.Unlock()
 	if err := user.registerChild(created); err != nil {
-		permit.Release()
+		created.mu.Lock()
+		created.child = nil
+		created.mu.Unlock()
+		cancel()
+		releaseQuota()
+		close(turn.done)
 		return nil, errors.Join(err, user.discardChild(context.WithoutCancel(ctx), child.ID()))
 	}
-	user.workers.Add(1)
 	created.emitChild(ChildLifecycleEvent{Kind: ChildLifecycleStart, Task: created.statusSnapshot()})
 	go created.runChild(turn)
 	return child, nil
@@ -143,40 +147,26 @@ func (s *userSession) validateChild(parent string, lineage []string, request Chi
 	return nil
 }
 
-func (s *userSession) admitChildTurn(parent *agentSession) (childPermit, error) {
-	userPermit, ok := s.childTurns.tryAcquire()
-	if !ok {
-		return childPermit{}, ErrChildConcurrency
+func (s *agentSession) tryAcquireWorkerQuota() (func(), error) {
+	if s.user == nil || s.parent == nil {
+		return nil, ErrChildNotFound
+	}
+	releaseGlobal, err := s.user.TryAcquireWorkerQuota()
+	if err != nil {
+		return nil, err
+	}
+	parent, ok := s.parent.(*agentSession)
+	if !ok || parent == nil {
+		releaseGlobal()
+		return nil, ErrChildNotFound
 	}
 	parentPermit, ok := parent.childTurns.tryAcquire()
 	if !ok {
-		userPermit.Release()
-		return childPermit{}, ErrChildConcurrency
+		releaseGlobal()
+		return nil, ErrChildConcurrency
 	}
-	return childPermit{user: userPermit, parent: parentPermit}, nil
-}
-
-func (s *userSession) startChildTurn(parent AgentSession, start func(childPermit, func()) error) error {
-	item, ok := parent.(*agentSession)
-	if !ok || item == nil {
-		return ErrChildNotFound
-	}
-	s.childMu.Lock()
-	defer s.childMu.Unlock()
-	if s.closed {
-		return ErrUserSessionClosed
-	}
-	permit, err := s.admitChildTurn(item)
-	if err != nil {
-		return err
-	}
-	s.workers.Add(1)
-	if err := start(permit, s.workers.Done); err != nil {
-		s.workers.Done()
-		permit.Release()
-		return err
-	}
-	return nil
+	var once sync.Once
+	return func() { once.Do(func() { parentPermit.Release(); releaseGlobal() }) }, nil
 }
 
 func (s *agentSession) runChild(turn *childTurnState) {
@@ -209,7 +199,7 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	result := cloneStatus(state.status)
 	turn.result = result
 	s.mu.Unlock()
-	turn.permit.Release()
+	turn.releaseQuota()
 	// Publish terminal state while childOp still prevents a follow-up turn from
 	// starting. Otherwise its task.working event can overtake this turn's final
 	// events and make consumers attribute the old counters to the new turn.
@@ -218,7 +208,6 @@ func (s *agentSession) runChild(turn *childTurnState) {
 		s.onChildProgress(result)
 	}
 	close(turn.done)
-	turn.workerDone()
 	s.childOp.Unlock()
 	if s.onChildComplete != nil {
 		s.onChildComplete(result)
@@ -263,25 +252,32 @@ retry:
 	}
 	s.mu.Unlock()
 	defer s.childOp.Unlock()
-	err := s.user.startChildTurn(s.parent, func(permit childPermit, workerDone func()) error {
-		s.mu.Lock()
-		if s.removed {
-			s.mu.Unlock()
-			return ErrAgentSessionRemoved
-		}
-		state.status.Turn++
-		state.status.State, state.status.StartedAt, state.status.FinishedAt = StatusRunning, time.Now().UTC(), time.Time{}
-		state.status.Output, state.status.Error, state.status.Truncated = "", "", false
-		state.status.Usage, state.status.ToolUses = ChildUsage{}, 0
-		state.request = ChildRequest{Prompt: content, Agent: state.status.Agent, Model: state.status.Model, Name: state.status.Name}
-		turnCtx, cancel := context.WithCancel(context.Background())
-		turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), permit: permit, workerDone: workerDone}
-		state.turn, state.cancel = turn, cancel
+	releaseQuota, err := s.tryAcquireWorkerQuota()
+	if err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	if s.removed {
 		s.mu.Unlock()
-		go s.runChild(turn)
-		return nil
-	})
-	return "", err
+		releaseQuota()
+		return "", ErrAgentSessionRemoved
+	}
+	if s.shuttingDown {
+		s.mu.Unlock()
+		releaseQuota()
+		return "", ErrUserSessionClosed
+	}
+	state.status.Turn++
+	state.status.State, state.status.StartedAt, state.status.FinishedAt = StatusRunning, time.Now().UTC(), time.Time{}
+	state.status.Output, state.status.Error, state.status.Truncated = "", "", false
+	state.status.Usage, state.status.ToolUses = ChildUsage{}, 0
+	state.request = ChildRequest{Prompt: content, Agent: state.status.Agent, Model: state.status.Model, Name: state.status.Name}
+	turnCtx, cancel := context.WithCancel(context.Background())
+	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), releaseQuota: releaseQuota}
+	state.turn, state.cancel = turn, cancel
+	s.mu.Unlock()
+	go s.runChild(turn)
+	return "", nil
 }
 
 type childObserver struct{ turn *childTurnState }
@@ -435,32 +431,6 @@ func (s *agentSession) reportChildProgress(progress ChildProgress) {
 	s.mu.Unlock()
 	if s.onChildProgress != nil {
 		s.onChildProgress(task)
-	}
-}
-
-func (s *userSession) shutdownChildren(ctx context.Context) error {
-	s.childMu.Lock()
-	if !s.closed {
-		s.closed = true
-		for _, relation := range s.repository.children {
-			if child, ok := s.repository.Lookup(relation.SessionID); ok {
-				item := child.(*agentSession)
-				item.mu.Lock()
-				if item.child != nil && item.child.cancel != nil {
-					item.child.cancel()
-				}
-				item.mu.Unlock()
-			}
-		}
-	}
-	s.childMu.Unlock()
-	done := make(chan struct{})
-	go func() { s.workers.Wait(); close(done) }()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
 	}
 }
 

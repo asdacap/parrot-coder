@@ -58,7 +58,7 @@ type UserSession interface {
 	ClaimInteractive(context.Context, session.InteractiveOwner, session.CreateParams, session.Selection, bool, func(int) bool) (session.InteractiveClaim, error)
 	Shutdown(context.Context) error
 	CreateChild(context.Context, AgentSession, ChildRequest) (AgentSession, error)
-	startChildTurn(AgentSession, func(childPermit, func()) error) error
+	TryAcquireWorkerQuota() (func(), error)
 	forgetChild(*agentSession) error
 }
 
@@ -88,9 +88,9 @@ type userSession struct {
 	sessions   SessionRuntime
 	repository *agentSessionRepository
 	childTurns childTurnSemaphore
+	quotaMu    sync.Mutex
 	childMu    sync.Mutex
 	closed     bool
-	workers    sync.WaitGroup
 }
 
 var _ UserSession = (*userSession)(nil)
@@ -204,7 +204,38 @@ func (s *userSession) ClaimInteractive(ctx context.Context, owner session.Intera
 	return claim, nil
 }
 
-func (s *userSession) Shutdown(ctx context.Context) error { return s.shutdownChildren(ctx) }
+func (s *userSession) TryAcquireWorkerQuota() (func(), error) {
+	s.quotaMu.Lock()
+	defer s.quotaMu.Unlock()
+	if s.closed {
+		return nil, ErrUserSessionClosed
+	}
+	permit, ok := s.childTurns.tryAcquire()
+	if !ok {
+		return nil, ErrChildConcurrency
+	}
+	return permit.Release, nil
+}
+
+func (s *userSession) Shutdown(ctx context.Context) error {
+	s.quotaMu.Lock()
+	s.closed = true
+	s.quotaMu.Unlock()
+
+	sessions, err := s.repository.closeAndSnapshot(ctx)
+	if err != nil {
+		return err
+	}
+
+	errs := make(chan error, len(sessions))
+	for _, item := range sessions {
+		go func() { errs <- item.Shutdown(ctx) }()
+	}
+	for range sessions {
+		err = errors.Join(err, <-errs)
+	}
+	return err
+}
 
 // agentSessionRepository owns the one runtime AgentSession object associated
 // with each persisted session ID. Persistent state remains owned by userSession.
@@ -219,6 +250,7 @@ type agentSessionRepository struct {
 	dtos                    map[string]session.AgentSessionDto
 	children                map[string]ChildSession
 	maxConcurrentChildTurns int
+	closed                  bool
 }
 
 func newAgentSessionRepository(ctx context.Context, user *userSession, maxConcurrentChildTurns int, observers ...LifecycleObserver) (*agentSessionRepository, error) {
@@ -486,6 +518,21 @@ func (r *agentSessionRepository) Get(sessionID string) (AgentSession, error) {
 
 func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentSession, store session.AgentSessionStore, rollback func() error) (created AgentSession, err error) {
 	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		err = ErrUserSessionClosed
+		if rollback != nil {
+			if rollbackErr := rollback(); rollbackErr != nil {
+				err = errors.Join(err, rollbackErr)
+			} else {
+				r.mu.Lock()
+				delete(r.children, dto.ID)
+				delete(r.dtos, dto.ID)
+				r.mu.Unlock()
+			}
+		}
+		return nil, err
+	}
 	if existing := r.sessions[dto.ID]; existing != nil {
 		r.mu.Unlock()
 		return existing, nil
@@ -597,6 +644,33 @@ func (c agentToolChild) Send(ctx context.Context, message tool.AgentMessage) (to
 
 func toolAgentTask(status Status) tool.AgentTask {
 	return tool.AgentTask{SessionID: status.SessionID, Agent: status.Agent, Name: status.Name, Status: string(status.State), Turn: status.Turn, Depth: status.Depth, Output: status.Output, Error: status.Error}
+}
+
+func (r *agentSessionRepository) closeAndSnapshot(ctx context.Context) ([]*agentSession, error) {
+	for {
+		r.mu.Lock()
+		r.closed = true
+		pending := make([]<-chan struct{}, 0, len(r.bindings))
+		for _, binding := range r.bindings {
+			pending = append(pending, binding.done)
+		}
+		if len(pending) == 0 {
+			items := make([]*agentSession, 0, len(r.sessions))
+			for _, item := range r.sessions {
+				items = append(items, item)
+			}
+			r.mu.Unlock()
+			return items, nil
+		}
+		r.mu.Unlock()
+		for _, done := range pending {
+			select {
+			case <-done:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+	}
 }
 
 func (r *agentSessionRepository) Lookup(sessionID string) (AgentSession, bool) {

@@ -61,6 +61,7 @@ type AgentSession interface {
 	Wake()
 	Resume(context.Context) error
 	Interrupt(context.Context) error
+	Shutdown(context.Context) error
 	Details(context.Context) (session.AgentSessionDto, error)
 	UpdateSelection(context.Context, session.SelectionPatch, session.SelectionValidator) (session.AgentSessionDto, error)
 	ListMessages(context.Context) ([]session.Message, error)
@@ -251,6 +252,9 @@ func (s *agentSession) admitLocked(ctx context.Context, content string) (string,
 	if s.removed {
 		return "", ErrAgentSessionRemoved
 	}
+	if s.shuttingDown {
+		return "", ErrUserSessionClosed
+	}
 	messageID, err := id.New("msg")
 	if err != nil {
 		return "", err
@@ -264,7 +268,7 @@ func (s *agentSession) admitLocked(ctx context.Context, content string) (string,
 // Wake coalesces with an active drain and returns immediately.
 func (s *agentSession) Wake() {
 	s.mu.Lock()
-	if !s.removed {
+	if !s.removed && !s.shuttingDown {
 		s.startOrJoinLocked(true)
 	}
 	s.mu.Unlock()
@@ -276,6 +280,10 @@ func (s *agentSession) Resume(ctx context.Context) error {
 	if s.removed {
 		s.mu.Unlock()
 		return ErrAgentSessionRemoved
+	}
+	if s.shuttingDown {
+		s.mu.Unlock()
+		return ErrUserSessionClosed
 	}
 	state := s.startOrJoinLocked(false)
 	s.mu.Unlock()
@@ -309,6 +317,38 @@ func (s *agentSession) Interrupt(ctx context.Context) error {
 	}
 	s.mu.Unlock()
 	return s.interruptExecution(ctx)
+}
+
+func (s *agentSession) Shutdown(ctx context.Context) error {
+	s.mu.Lock()
+	s.shuttingDown = true
+	var childDone <-chan struct{}
+	if s.child != nil && s.child.turn != nil {
+		childDone = s.child.turn.done
+		if s.child.status.State == StatusRunning || s.child.status.State == StatusPending {
+			s.child.cancel()
+		}
+	}
+	var drainDone <-chan struct{}
+	if s.drain != nil {
+		s.drain.status = StatusInterrupting
+		s.drain.wake = false
+		s.drain.cancel()
+		drainDone = s.drain.done
+	}
+	s.mu.Unlock()
+
+	for _, done := range []<-chan struct{}{childDone, drainDone} {
+		if done == nil {
+			continue
+		}
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	return nil
 }
 
 func (s *agentSession) interruptExecution(ctx context.Context) error {
@@ -353,6 +393,9 @@ func (s *agentSession) reserveChildCreation() error {
 	defer s.mu.Unlock()
 	if s.removed {
 		return ErrAgentSessionRemoved
+	}
+	if s.shuttingDown {
+		return ErrUserSessionClosed
 	}
 	s.childCreations++
 	return nil
