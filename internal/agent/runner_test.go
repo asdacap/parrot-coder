@@ -700,7 +700,7 @@ func TestAgentSessionOwnsReusableChildLifecycle(t *testing.T) {
 	close(release)
 	completed, err := observation.Wait(context.Background())
 	status = child.Status()
-	if err != nil || completed.State != StatusSucceeded || completed.Output != "answer-steer" || status.State != StatusSucceeded || status.Output != completed.Output || status.SessionID != child.ID() || status.ParentSession != parent.ID() || status.RootSession != parent.ID() {
+	if err != nil || completed.State != StatusSucceeded || completed.Output != "answer-initial" || status.State != StatusSucceeded || status.Output != completed.Output || status.SessionID != child.ID() || status.ParentSession != parent.ID() || status.RootSession != parent.ID() {
 		t.Fatalf("first turn = %#v, status = %#v, %v", completed, status, err)
 	}
 
@@ -1372,12 +1372,20 @@ func TestAgentSessionSendStartsExecution(t *testing.T) {
 	waitForAgentSession(t, func() bool { return h.runner.executionStatus() == StatusIdle })
 }
 
-func TestPromptReturnsItsResponseBeforeMonitoredQueueResponse(t *testing.T) {
-	fake := &fakeProvider{stream: func(_ int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+func TestPromptReturnsTerminalResponseBeforeMonitoredQueueResponse(t *testing.T) {
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			call := protocol.ToolCall{ID: "call-1", Name: "inspect", Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}
 		last := request.Messages[len(request.Messages)-1]
-		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answer-" + last.Content[0].Text}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+		answer := "answer-direct"
+		if last.Role == protocol.RoleUser {
+			answer = "answer-queue"
+		}
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: answer}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
-	h := newRunnerHarness(t, fake, nil)
+	h := newRunnerHarness(t, fake, nil, &fakeTool{id: "inspect"})
 	if _, err := h.queues.Create(h.sessionID, "incoming-work-now", ""); err != nil {
 		t.Fatal(err)
 	}
@@ -1391,8 +1399,8 @@ func TestPromptReturnsItsResponseBeforeMonitoredQueueResponse(t *testing.T) {
 	if err != nil || answer != "answer-direct" {
 		t.Fatalf("Prompt() = %q, %v", answer, err)
 	}
-	if requests := fake.Requests(); len(requests) != 2 {
-		t.Fatalf("provider turns = %d, want 2", len(requests))
+	if requests := fake.Requests(); len(requests) != 3 {
+		t.Fatalf("provider turns = %d, want 3", len(requests))
 	}
 }
 

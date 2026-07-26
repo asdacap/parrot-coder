@@ -7,7 +7,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	petname "github.com/dustinkirkland/golang-petname"
@@ -27,7 +26,7 @@ type childTurnState struct {
 	result       Status
 	releaseQuota func()
 	drain        *drainState
-	cutoff       int64
+	messageID    string
 }
 
 func applyChildDefaults(config *UserSessionConfig) {
@@ -186,19 +185,9 @@ func (s *agentSession) runChild(turn *childTurnState) {
 	var output string
 	var runErr error
 	if turn.drain == nil {
-		messageID, err := id.New("msg")
-		if err != nil {
-			runErr = err
-		} else {
-			_, drain, cutoff, err := s.startPrompt(turn.ctx, messageID, state.request.Prompt)
-			if err != nil {
-				runErr = err
-			} else {
-				output, runErr = s.awaitPrompt(turn.ctx, drain, cutoff)
-			}
-		}
+		output, runErr = s.sendAndWait(turn.ctx, state.request.Prompt)
 	} else {
-		output, runErr = s.awaitPrompt(turn.ctx, turn.drain, turn.cutoff)
+		output, runErr = s.awaitMessage(turn.ctx, turn.drain, turn.messageID)
 	}
 	stop()
 	turn.cancel()
@@ -276,15 +265,6 @@ retry:
 	if err != nil {
 		return session.Admission{}, err
 	}
-	messages, err := s.store.ListMessages(ctx)
-	if err != nil {
-		releaseQuota()
-		return session.Admission{}, err
-	}
-	var cutoff int64
-	for _, message := range messages {
-		cutoff = max(cutoff, message.Sequence)
-	}
 	s.mu.Lock()
 	if s.removed {
 		s.mu.Unlock()
@@ -313,7 +293,7 @@ retry:
 	state.status.Usage, state.status.ToolUses = ChildUsage{}, 0
 	state.request = ChildRequest{Prompt: content, Agent: state.status.Agent, Model: state.status.Model, Name: state.status.Name}
 	turnCtx, cancel := context.WithCancel(context.Background())
-	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), releaseQuota: releaseQuota, cutoff: cutoff}
+	turn := &childTurnState{ctx: turnCtx, cancel: cancel, done: make(chan struct{}), releaseQuota: releaseQuota, messageID: admission.Input.MessageID}
 	state.turn, state.cancel = turn, cancel
 	turn.drain = s.startOrJoinLocked(true)
 	s.mu.Unlock()

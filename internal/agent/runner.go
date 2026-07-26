@@ -475,11 +475,10 @@ func (r *agentSession) publishMaxTurnsReached(maxTurns int) {
 // prepareQueueNotification delivers one monitored queue item only after a
 // successful drain. The queue keeps the item locked and durable until the
 // synthetic turn is accepted, so regular input wins without requiring rollback.
-func (r *agentSession) prepareQueueNotification(ctx context.Context) (bool, int64, error) {
+func (r *agentSession) prepareQueueNotification(ctx context.Context) (bool, error) {
 	if r.queueMonitor == nil {
-		return false, 0, nil
+		return false, nil
 	}
-	var sequence int64
 	var process bool
 	delivered, err := r.queueMonitor.DeliverMonitored(r.dto.ID, func(notification queue.Notification) (bool, error) {
 		message := fmt.Sprintf("Queue notification from %q:\n\n%s", notification.Name, notification.Item)
@@ -489,13 +488,10 @@ func (r *agentSession) prepareQueueNotification(ctx context.Context) (bool, int6
 		if err != nil {
 			return false, err
 		}
-		if appended {
-			sequence = appendedMessage.Sequence
-			process = true
-		}
+		process = appended
 		return appendedMessage.ID != "", nil
 	})
-	return delivered && process, sequence, err
+	return delivered && process, err
 }
 
 // PrepareContinuation persists a new synthetic user turn when an active goal

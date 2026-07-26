@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 )
 
@@ -40,9 +41,6 @@ type drainState struct {
 	wake   bool
 	status AgentStatus
 	err    error
-	// firstNotificationSequence bounds Prompt response selection when the same
-	// drain continues with synthetic monitored-queue turns.
-	firstNotificationSequence int64
 }
 
 // AgentSession is the runtime for one persisted agent session. It owns both
@@ -180,18 +178,10 @@ func (s *agentSession) ResolveChild(identifier string) (AgentSession, error) {
 	return nil, ErrChildNotFound
 }
 
-// Prompt admits input, runs the session to idle, and returns the assistant
-// message produced by that execution lifecycle.
+// Prompt sends input with a generated message ID and waits for that input's
+// terminal assistant response.
 func (s *agentSession) Prompt(ctx context.Context, content string) (string, error) {
-	messageID, err := id.New("msg")
-	if err != nil {
-		return "", err
-	}
-	_, state, cutoff, err := s.startPrompt(ctx, messageID, content)
-	if err != nil {
-		return "", err
-	}
-	return s.awaitPrompt(ctx, state, cutoff)
+	return s.sendAndWait(ctx, content)
 }
 
 // Send admits steer input with the caller's idempotency key and wakes the
@@ -208,20 +198,19 @@ func (s *agentSession) send(ctx context.Context, messageID, content, measuredCon
 	return admission, err
 }
 
-func (s *agentSession) startPrompt(ctx context.Context, messageID, content string) (session.Admission, *drainState, int64, error) {
-	messages, err := s.store.ListMessages(ctx)
+func (s *agentSession) sendAndWait(ctx context.Context, content string) (string, error) {
+	messageID, err := id.New("msg")
 	if err != nil {
-		return session.Admission{}, nil, 0, err
+		return "", err
 	}
-	var cutoff int64
-	for _, message := range messages {
-		cutoff = max(cutoff, message.Sequence)
+	_, state, err := s.admitAndStart(ctx, messageID, content)
+	if err != nil {
+		return "", err
 	}
-	admission, state, err := s.admitAndStart(ctx, messageID, content)
-	return admission, state, cutoff, err
+	return s.awaitMessage(ctx, state, messageID)
 }
 
-func (s *agentSession) awaitPrompt(ctx context.Context, state *drainState, cutoff int64) (string, error) {
+func (s *agentSession) awaitMessage(ctx context.Context, state *drainState, messageID string) (string, error) {
 	if err := s.wait(ctx, state); err != nil {
 		if ctx.Err() != nil {
 			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -234,9 +223,16 @@ func (s *agentSession) awaitPrompt(ctx context.Context, state *drainState, cutof
 	if err != nil {
 		return "", err
 	}
-	for i := len(messages) - 1; i >= 0; i-- {
-		message := messages[i]
-		if message.Role != "assistant" || message.Sequence <= cutoff || state.firstNotificationSequence != 0 && message.Sequence >= state.firstNotificationSequence {
+	found := false
+	for _, message := range messages {
+		if !found {
+			found = message.Role == "user" && message.ID == messageID
+			continue
+		}
+		if message.Role == "user" {
+			break
+		}
+		if message.Role != "assistant" || message.FinishReason == string(protocol.FinishToolCalls) {
 			continue
 		}
 		if message.Error != "" {
@@ -441,11 +437,7 @@ func (s *agentSession) run(ctx context.Context, state *drainState) {
 		}
 		if err == nil && ctx.Err() == nil {
 			var prepared bool
-			var sequence int64
-			prepared, sequence, err = s.prepareQueueNotification(ctx)
-			if sequence != 0 && state.firstNotificationSequence == 0 {
-				state.firstNotificationSequence = sequence
-			}
+			prepared, err = s.prepareQueueNotification(ctx)
 			if err == nil && prepared {
 				continue
 			}
