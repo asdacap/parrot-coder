@@ -95,8 +95,8 @@ sandbox_rules:
 web_fetch:
   allow_private: false
 subagents:
-  max_concurrent: 8
-  max_concurrent_per_parent: 4
+  max_concurrent: 64
+  max_concurrent_per_parent: 16
   max_depth: 4
 ```
 

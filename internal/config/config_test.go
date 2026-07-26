@@ -307,7 +307,7 @@ func TestLoadSubagentDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Config.Subagents.MaxConcurrent != 8 || result.Config.Subagents.MaxConcurrentPerParent != 4 || result.Config.Subagents.MaxDepth != 4 {
+	if result.Config.Subagents.MaxConcurrent != 64 || result.Config.Subagents.MaxConcurrentPerParent != 16 || result.Config.Subagents.MaxDepth != 4 {
 		t.Fatalf("Subagents = %#v", result.Config.Subagents)
 	}
 	if !result.Config.InlineDiff || result.Provenance["inline_diff"] != PredefinedFileName {

@@ -528,9 +528,9 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 # Child-agent concurrency and nesting limits. Defaults are defined in predefined_config.yaml.
 # subagents:
 #   # Maximum child-agent turns running across the process.
-#   max_concurrent: 8
+#   max_concurrent: 64
 #   # Maximum child-agent turns running for one parent session.
-#   max_concurrent_per_parent: 4
+#   max_concurrent_per_parent: 16
 #   # Maximum number of nested child-agent levels.
 #   max_depth: 4
 
