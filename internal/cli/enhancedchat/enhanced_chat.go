@@ -13,7 +13,6 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	"github.com/amirulashraf/parrot-coder/internal/client"
-	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -125,7 +124,7 @@ type queuedChatInput struct {
 
 type enhancedActivityItem struct {
 	id               string
-	taskID           string
+	processID        string
 	sessionID        string
 	parentSessionID  string
 	mainStatus       bool
@@ -566,7 +565,7 @@ func (r *enhancedChatRuntime) render() error {
 	}
 	frames := r.activityFrames(now, r.shell.renderer.Columns())
 	frames = append(frames, terminal.LiveFrame{
-		TaskID: managedtask.MainTaskID, MainStatus: true,
+		SessionID: r.shell.current.ID, MainStatus: true,
 		Stream: stream, PromptContext: r.modalContext(), Pending: pending,
 		InputLeft: r.inputModeLabel(), InputCenter: r.modelineActivity(now), InputRight: right,
 		Prompt: prompt, Busy: busy, Spinner: chatview.SpinnerFrames[r.spinner],

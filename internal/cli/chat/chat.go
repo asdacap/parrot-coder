@@ -626,18 +626,25 @@ type taskReport struct {
 // renderer. The tracker owns the parent-child relationships of every task on
 // the stream; this wrapper only owns which report is currently live.
 type taskStreamTracker struct {
-	tracker      *chatview.TaskTracker
-	presentation chatview.Presentations
-	live         *taskReport
+	tracker       *chatview.TaskTracker
+	presentation  chatview.Presentations
+	rootSessionID string
+	live          *taskReport
 }
 
-func newTaskStreamTracker(presentation chatview.Presentations) taskStreamTracker {
-	tracker := chatview.NewTaskTracker()
+func newTaskStreamTracker(presentation chatview.Presentations, rootSessionIDs ...string) taskStreamTracker {
+	rootSessionID := ""
+	if len(rootSessionIDs) != 0 {
+		rootSessionID = rootSessionIDs[0]
+	}
+	tracker := chatview.NewTaskTracker(rootSessionID)
 	tracker.Presentation = presentation
-	return taskStreamTracker{tracker: tracker, presentation: presentation}
+	return taskStreamTracker{tracker: tracker, presentation: presentation, rootSessionID: rootSessionID}
 }
 
-func isTaskEvent(item v1.Event) bool { return chatview.IsTaskEvent(item) }
+func isTaskEvent(item v1.Event, rootSessionID string) bool {
+	return chatview.IsTaskEvent(item, rootSessionID)
+}
 
 func (t *taskStreamTracker) Tracker() *chatview.TaskTracker {
 	return t.tracker
@@ -645,7 +652,7 @@ func (t *taskStreamTracker) Tracker() *chatview.TaskTracker {
 
 func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
 	if t.tracker == nil {
-		t.tracker = chatview.NewTaskTracker()
+		t.tracker = chatview.NewTaskTracker(t.rootSessionID)
 		t.tracker.Presentation = t.presentation
 	}
 	reports, err := t.tracker.Apply(item, thinking)
@@ -848,7 +855,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 	toolTracker := streamToolTracker{tracker: chatview.StreamToolTracker{Presentation: options.presentation}}
 	subagentTracker := options.tasks
 	if subagentTracker == nil {
-		fresh := newTaskStreamTracker(options.presentation)
+		fresh := newTaskStreamTracker(options.presentation, sessionID)
 		subagentTracker = &fresh
 	}
 	interrupts, _ := ctx.Value(interruptKey{}).(<-chan os.Signal)
@@ -915,7 +922,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					return streamResult{err: err}
 				}
 			}
-			if options.format != "jsonl" && isTaskEvent(item) {
+			if options.format != "jsonl" && isTaskEvent(item, sessionID) {
 				if err := writeStreamTaskEvent(options, subagentTracker, item); err != nil {
 					return streamResult{err: err}
 				}
@@ -1413,7 +1420,7 @@ type chatShell struct {
 // a fresh tree when the session changes.
 func (s *chatShell) taskTracker() *taskStreamTracker {
 	if s.tasks == nil || s.tasksSession != s.current.ID {
-		tracker := newTaskStreamTracker(s.presentation)
+		tracker := newTaskStreamTracker(s.presentation, s.current.ID)
 		s.tasks = &tracker
 		s.tasksSession = s.current.ID
 	}

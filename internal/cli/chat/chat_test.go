@@ -114,6 +114,7 @@ func TestEnhancedRenderFailureIsPrintedAndClassified(t *testing.T) {
 	shell := &chatShell{
 		ctx:      ctx,
 		stderr:   &stderr,
+		current:  v1.Session{ID: "session-main"},
 		editor:   terminal.NewEditorIO(strings.NewReader(""), io.Discard, terminal.WithEditorRenderer(nil)),
 		renderer: terminal.NewLiveRenderer(failingWriter{}, terminal.RendererConfig{TTY: true}),
 	}
@@ -973,51 +974,40 @@ func TestJSONLRedactorOnlyRedactsWriteStdinAndKeepsLateOutputPrivate(t *testing.
 	}
 }
 
-// taskStart builds the flat task.start event introducing one task into the
-// tracker's session tree. Every other event for the task arrives with only its
-// task_id; the start event is what links the owning session to its parent.
-func taskStart(taskID, parentTaskID, agent string) v1.Event {
-	parentSessionID := "session-" + parentTaskID
-	if parentTaskID == "task_main" {
-		parentSessionID = ""
-	}
-	return taskStartInSession(taskID, parentSessionID, agent)
+// agentStart builds the flat task.start event introducing one agent session
+// into the tracker's session tree. Other events identify their owner through
+// the envelope SessionID; the start event links that session to its parent.
+func agentStart(sessionID, parentSessionID, agent string) v1.Event {
+	data, _ := json.Marshal(v1.TaskEvent{SessionID: sessionID, ParentSessionID: parentSessionID, Kind: "agent", Agent: agent})
+	return v1.Event{Type: v1.EventTaskStart, SessionID: sessionID, Data: data}
 }
 
-func taskStartInSession(taskID, parentSessionID, agent string) v1.Event {
-	data, _ := json.Marshal(v1.TaskEvent{TaskID: taskID, SessionID: "session-" + taskID, ParentSessionID: parentSessionID, Kind: "agent", Agent: agent})
-	return v1.Event{Type: v1.EventTaskStart, TaskID: taskID, Data: data}
-}
-
-func taskContent(taskID string, eventType string, data json.RawMessage) v1.Event {
-	return v1.Event{Type: eventType, TaskID: taskID, Data: data}
+func sessionEvent(sessionID string, eventType string, data json.RawMessage) v1.Event {
+	return v1.Event{Type: eventType, SessionID: sessionID, Data: data}
 }
 
 func TestStreamTaskEventPrefixesCompletedResponseByDepth(t *testing.T) {
 	var output bytes.Buffer
 	options := streamOptions{stderr: &output}
-	tracker := newTaskStreamTracker(chatview.Presentations{})
-	// A grandchild task renders two levels deep because the tracker walks its
+	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	// A grandchild session renders two levels deep because the tracker walks its
 	// parent chain, not because the event carries a depth.
-	if err := writeStreamTaskEvent(options, &tracker, taskStartInSession("task_main", "", "")); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, agentStart("session-parent", "session-main", "build")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStreamTaskEvent(options, &tracker, taskStartInSession("task-parent", "session-task_main", "build")); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-review", "task-parent", "review")); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, agentStart("session-review", "session-parent", "review")); err != nil {
 		t.Fatal(err)
 	}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "review result\nmore detail"})
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", v1.EventMessagePartDelta, delta)); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-review", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", "session.assistant.complete", complete)); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-review", "session.assistant.complete", complete)); err != nil {
 		t.Fatal(err)
 	}
 	if got := output.String(); got != "    ○ [review] response: review result\n    [review] more detail\n" {
-		t.Fatalf("task output = %q", got)
+		t.Fatalf("session output = %q", got)
 	}
 }
 
@@ -1049,17 +1039,17 @@ func TestStreamCodeDisplayOutput(t *testing.T) {
 
 func TestStreamTaskEventSkipsEmptyCompletedResponse(t *testing.T) {
 	var output bytes.Buffer
-	tracker := newTaskStreamTracker(chatview.Presentations{})
+	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
 	options := streamOptions{stderr: &output}
 	started, _ := json.Marshal(map[string]string{"message_id": "child-message"})
 	complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-review", "task_main", "review")); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, agentStart("session-review", "session-main", "review")); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", "session.assistant.started", started)); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-review", "session.assistant.started", started)); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-review", "session.assistant.complete", complete)); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-review", "session.assistant.complete", complete)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != 0 {
@@ -1071,14 +1061,14 @@ func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
 	options := streamOptions{stderr: io.Discard, renderer: renderer}
-	tracker := newTaskStreamTracker(chatview.Presentations{})
-	if err := writeStreamTaskEvent(options, &tracker, taskStart("task-explore", "task_main", "explore")); err != nil {
+	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	if err := writeStreamTaskEvent(options, &tracker, agentStart("session-explore", "session-main", "explore")); err != nil {
 		t.Fatal(err)
 	}
 	for _, status := range []string{"running", "succeeded"} {
-		data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-explore", Agent: "explore", Status: status})
+		data, _ := json.Marshal(v1.TaskProgress{SessionID: "session-explore", Agent: "explore", Status: status})
 		before := output.Len()
-		if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
+		if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventTaskProgress, data)); err != nil {
 			t.Fatal(err)
 		}
 		if output.Len() == before {
@@ -1086,19 +1076,19 @@ func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 		}
 	}
 	before := output.Len()
-	data, _ := json.Marshal(v1.TaskProgress{TaskID: "task-explore", Agent: "explore", Status: "running"})
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
+	data, _ := json.Marshal(v1.TaskProgress{SessionID: "session-explore", Agent: "explore", Status: "running"})
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() != before {
 		t.Fatal("late task progress repainted renderer")
 	}
-	working, _ := json.Marshal(v1.TaskEvent{TaskID: "task-explore"})
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskWorking, working)); err != nil {
+	working, _ := json.Marshal(v1.TaskEvent{SessionID: "session-explore"})
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventTaskWorking, working)); err != nil {
 		t.Fatal(err)
 	}
-	data, _ = json.Marshal(v1.TaskProgress{TaskID: "task-explore", Agent: "explore", Status: "running"})
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-explore", v1.EventTaskProgress, data)); err != nil {
+	data, _ = json.Marshal(v1.TaskProgress{SessionID: "session-explore", Agent: "explore", Status: "running"})
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-explore", v1.EventTaskProgress, data)); err != nil {
 		t.Fatal(err)
 	}
 	if output.Len() == before {
@@ -1106,21 +1096,21 @@ func TestStreamTaskTerminalProgressClearsLiveRow(t *testing.T) {
 	}
 }
 
-func TestTaskEventWithoutKnownIDReportsUnknownTask(t *testing.T) {
+func TestSessionEventWithoutKnownOriginReportsUnknownOrigin(t *testing.T) {
 	var output bytes.Buffer
-	tracker := newTaskStreamTracker(chatview.Presentations{})
+	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
 	options := streamOptions{stderr: &output}
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "orphan"})
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-ghost", v1.EventMessagePartDelta, delta)); err != nil {
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-ghost", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
-	// The unknown task error is shown once; repeated unknown ids do not flood
-	// the transcript.
-	if err := writeStreamTaskEvent(options, &tracker, taskContent("task-ghost", v1.EventMessagePartDelta, delta)); err != nil {
+	// The unknown-origin error is shown once; repeated unknown origins do not
+	// flood the transcript.
+	if err := writeStreamTaskEvent(options, &tracker, sessionEvent("session-ghost", v1.EventMessagePartDelta, delta)); err != nil {
 		t.Fatal(err)
 	}
-	if got := output.String(); got != "✗ unknown task task-ghost (message.part.delta)\n" {
-		t.Fatalf("unknown task output = %q", got)
+	if got := output.String(); got != "✗ unknown event origin session-ghost (message.part.delta)\n" {
+		t.Fatalf("unknown-origin output = %q", got)
 	}
 }
 
@@ -1133,8 +1123,8 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 		{kind: "reasoning_summary", want: "  · [review] Thought: Checking the change"},
 	} {
 		t.Run(test.kind, func(t *testing.T) {
-			tracker := newTaskStreamTracker(chatview.Presentations{})
-			if _, err := tracker.describe(taskStart("task-review", "task_main", "review"), true); err != nil {
+			tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+			if _, err := tracker.describe(agentStart("session-review", "session-main", "review"), true); err != nil {
 				t.Fatal(err)
 			}
 			for _, delta := range []v1.MessagePartDelta{
@@ -1142,12 +1132,12 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 				{MessageID: "child-message", Kind: test.kind, Delta: "Checking the change"},
 			} {
 				data, _ := json.Marshal(delta)
-				if _, err := tracker.describe(taskContent("task-review", v1.EventMessagePartDelta, data), true); err != nil {
+				if _, err := tracker.describe(sessionEvent("session-review", v1.EventMessagePartDelta, data), true); err != nil {
 					t.Fatal(err)
 				}
 			}
 			complete, _ := json.Marshal(map[string]string{"message_id": "child-message"})
-			reports, err := tracker.describe(taskContent("task-review", "session.assistant.complete", complete), true)
+			reports, err := tracker.describe(sessionEvent("session-review", "session.assistant.complete", complete), true)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1159,8 +1149,8 @@ func TestSubagentEmptyCompletionSettlesReasoningWithoutResponseLog(t *testing.T)
 }
 
 func TestSubagentDeltaPresentation(t *testing.T) {
-	tracker := newTaskStreamTracker(chatview.Presentations{})
-	if _, err := tracker.describe(taskStart("task-explore", "task_main", "explore"), false); err != nil {
+	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	if _, err := tracker.describe(agentStart("session-explore", "session-main", "explore"), false); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1170,7 +1160,7 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 		{MessageID: "child-message", Kind: "reasoning_summary", Done: true},
 	} {
 		data, _ := json.Marshal(delta)
-		reports, err := tracker.describe(taskContent("task-explore", v1.EventMessagePartDelta, data), false)
+		reports, err := tracker.describe(sessionEvent("session-explore", v1.EventMessagePartDelta, data), false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1192,12 +1182,12 @@ func TestSubagentDeltaPresentation(t *testing.T) {
 }
 
 func TestSubagentRunningStatusIsNotReported(t *testing.T) {
-	tracker := newTaskStreamTracker(chatview.Presentations{})
-	if _, err := tracker.describe(taskStart("task-review", "task_main", "review"), false); err != nil {
+	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	if _, err := tracker.describe(agentStart("session-review", "session-main", "review"), false); err != nil {
 		t.Fatal(err)
 	}
 	status, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
-	reports, err := tracker.describe(taskContent("task-review", v1.EventSessionStatus, status), false)
+	reports, err := tracker.describe(sessionEvent("session-review", v1.EventSessionStatus, status), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1207,19 +1197,19 @@ func TestSubagentRunningStatusIsNotReported(t *testing.T) {
 }
 
 func TestStreamSubagentToolEventPrefixesEveryBlockLine(t *testing.T) {
-	tracker := newTaskStreamTracker(chatview.Presentations{})
-	if _, err := tracker.describe(taskStart("task-explore", "task_main", "explore"), false); err != nil {
+	tracker := newTaskStreamTracker(chatview.Presentations{}, "session-main")
+	if _, err := tracker.describe(agentStart("session-explore", "session-main", "explore"), false); err != nil {
 		t.Fatal(err)
 	}
 	pending := json.RawMessage(`{"call_id":"shell-call","name":"exec_command","input":{"cmd":"exit 1"}}`)
-	reports, err := tracker.describe(taskContent("task-explore", "session.tool.pending", pending), false)
+	reports, err := tracker.describe(sessionEvent("session-explore", "session.tool.pending", pending), false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(reports) != 1 || reports[0].line != "  ○ [explore] Queued exec_command · exit 1" {
 		t.Fatalf("pending tool report = %#v", reports)
 	}
-	reports, err = tracker.describe(taskContent("task-explore", "session.tool.failure", json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)), false)
+	reports, err = tracker.describe(sessionEvent("session-explore", "session.tool.failure", json.RawMessage(`{"call_id":"shell-call","error":"exit status 1"}`)), false)
 	if err != nil {
 		t.Fatal(err)
 	}

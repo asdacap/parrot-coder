@@ -435,7 +435,7 @@ func ToolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "name"))
 		add(firstString(input, "cmd"))
 	case "write_stdin":
-		add(firstString(input, "task_id"))
+		add(firstString(input, "process_id"))
 		add(firstString(input, "chars"))
 	case "todowrite", "todo_write":
 		if todos, ok := input["todos"].([]any); ok {
@@ -461,7 +461,7 @@ func ToolActivityLabel(name string, input map[string]any) string {
 		add(firstString(input, "session_id"))
 		add(firstString(input, "message"))
 	case "task_interrupt":
-		add(firstString(input, "task_id"))
+		add(firstString(input, "session_id", "process_id"))
 	case "wait_agent":
 		add(firstString(input, "session_id"))
 	default:
@@ -624,13 +624,13 @@ type taskMessageState struct {
 	reasoningDone    bool
 }
 
-// TaskReport is one renderable unit derived from a flat task event. TaskID
-// groups frames, while SessionID and ParentSessionID locate them in the session
-// hierarchy. MainStatus marks the report as primary status.
+// TaskReport is one renderable unit derived from a flat lifecycle event.
+// SessionID and optional ProcessID group frames, while ParentSessionID locates
+// child sessions in the hierarchy. MainStatus marks the primary status.
 type TaskReport struct {
 	ID              string
-	TaskID          string
 	SessionID       string
+	ProcessID       string
 	ParentSessionID string
 	Line            string
 	Block           string
@@ -643,12 +643,11 @@ type TaskReport struct {
 	Style           terminal.TextStyle
 }
 
-// TaskInfo is the read-only public projection of one task tracked from the
-// event stream. It intentionally contains values rather than tracker-owned
-// state so callers cannot mutate the tree.
+// TaskInfo is the read-only public projection of one session or process tracked
+// from the event stream. It contains values so callers cannot mutate the tree.
 type TaskInfo struct {
-	TaskID          string
 	SessionID       string
+	ProcessID       string
 	ParentSessionID string
 	Kind            string
 	Agent           string
@@ -656,10 +655,12 @@ type TaskInfo struct {
 	Status          string
 }
 
-// taskNode is one task in the tracker. Session ancestry determines hierarchy.
+// taskNode is one session or process in the tracker. Session ancestry determines
+// hierarchy; processID is empty for a session node.
 type taskNode struct {
 	id              string
 	sessionID       string
+	processID       string
 	parentSessionID string
 	kind            string
 	agent           string
@@ -682,22 +683,28 @@ type taskNode struct {
 	direct TaskUsage
 }
 
-// TaskTracker rebuilds the task tree from flat task events and renders task
-// activity. The tracker derives hierarchy from the session_id and
-// parent_session_id carried by task.start. Any event for a task the tracker has
-// never seen produces an unknown-task error.
+// TaskTracker rebuilds the session/process tree from flat lifecycle events and
+// renders child activity. Hierarchy comes from session_id and parent_session_id;
+// process_id distinguishes shell processes within a session.
 type TaskTracker struct {
 	// Presentation is forwarded to every per-task tool tracker. Its zero value
 	// describes nothing, so an unset tracker renders through the fallbacks.
 	Presentation    Presentations
+	rootSessionID   string
 	tasks           map[string]*taskNode
 	sessions        map[string]*taskNode
 	unknownReported map[string]bool
 }
 
-func NewTaskTracker() *TaskTracker {
-	tracker := &TaskTracker{tasks: make(map[string]*taskNode), sessions: make(map[string]*taskNode)}
-	tracker.tasks[managedtask.MainTaskID] = &taskNode{id: managedtask.MainTaskID, kind: string(managedtask.KindMain)}
+func processKey(sessionID, processID string) string { return sessionID + "\x00" + processID }
+
+func NewTaskTracker(rootSessionID string) *TaskTracker {
+	tracker := &TaskTracker{rootSessionID: rootSessionID, tasks: make(map[string]*taskNode), sessions: make(map[string]*taskNode)}
+	if rootSessionID != "" {
+		root := &taskNode{id: processKey(rootSessionID, ""), sessionID: rootSessionID, kind: string(managedtask.KindMain)}
+		tracker.tasks[root.id] = root
+		tracker.sessions[rootSessionID] = root
+	}
 	return tracker
 }
 
@@ -714,7 +721,7 @@ func taskAgentLabel(agent, name string) string {
 }
 
 // EventLine renders agent and subagent events with one layout. Indent is the
-// task depth and agent is the optional label shown in brackets. The event owns
+// session depth and agent is the optional label shown in brackets. The event owns
 // its leading icon; a generic activity icon is added if it does not supply one.
 func EventLine(indent int, agent, event string) string {
 	if indent < 0 {
@@ -762,12 +769,12 @@ func splitEventIcon(event string) (string, string) {
 	return "", event
 }
 
-// depth resolves a task's indentation by walking the parent chain to the main
-// task. Orphaned tasks, whose ancestry is unknown, render at depth one.
+// depth resolves indentation by walking the parent-session chain to the root.
+// Orphaned nodes, whose ancestry is unknown, render at depth one.
 func (t *TaskTracker) depth(node *taskNode) int {
 	depth := 0
 	for current := node; current != nil; {
-		if current.id == managedtask.MainTaskID || current.parentSessionID == "" {
+		if current.sessionID == t.rootSessionID && current.processID == "" || current.parentSessionID == "" {
 			return depth
 		}
 		parent := t.sessions[current.parentSessionID]
@@ -793,30 +800,33 @@ func (t *TaskTracker) eventLine(node *taskNode, event string) string {
 	return EventLine(max(1, t.depth(node)), label, event)
 }
 
-// unknownTask reports an event for a task the tracker never registered. The
-// error is emitted once per unknown task; later events for the same unknown
-// task are dropped so one bad id cannot flood the transcript.
-func (t *TaskTracker) unknownTask(taskID, eventType string) []TaskReport {
+// unknownOrigin reports an event whose session/process pair was never
+// registered. The error is emitted once per pair to avoid flooding output.
+func (t *TaskTracker) unknownOrigin(sessionID, processID, eventType string) []TaskReport {
+	origin := sessionID
+	if processID != "" {
+		origin += "/" + processID
+	}
 	if t.unknownReported == nil {
 		t.unknownReported = make(map[string]bool)
 	}
-	if t.unknownReported[taskID] {
+	if t.unknownReported[origin] {
 		return nil
 	}
-	t.unknownReported[taskID] = true
-	return []TaskReport{{ID: "unknown-task:" + taskID, Line: "✗ unknown task " + taskID + " (" + eventType + ")", Terminal: true, EmitPlain: true, Style: terminal.TextStyleDefault}}
+	t.unknownReported[origin] = true
+	return []TaskReport{{ID: "unknown-origin:" + origin, Line: "✗ unknown event origin " + origin + " (" + eventType + ")", Terminal: true, EmitPlain: true, Style: terminal.TextStyleDefault}}
 }
 
-func (t *TaskTracker) known(id string) *taskNode {
-	if id == "" {
+func (t *TaskTracker) known(sessionID, processID string) *taskNode {
+	if sessionID == "" {
 		return nil
 	}
-	return t.tasks[id]
+	return t.tasks[processKey(sessionID, processID)]
 }
 
-// Tasks returns a deterministic snapshot of the tracked task tree. Parents
-// precede their children and siblings are ordered by task id. A task whose
-// parent is absent is treated as an additional root.
+// Tasks returns a deterministic snapshot of the tracked session/process tree.
+// Parents precede their children, and siblings are ordered by identity. An item
+// whose parent is absent is treated as an additional root.
 func (t *TaskTracker) Tasks() []TaskInfo {
 	children := make(map[string][]*taskNode)
 	roots := make([]*taskNode, 0)
@@ -843,9 +853,11 @@ func (t *TaskTracker) Tasks() []TaskInfo {
 			return
 		}
 		seen[node.id] = true
-		result = append(result, TaskInfo{TaskID: node.id, SessionID: node.sessionID, ParentSessionID: node.parentSessionID, Kind: node.kind, Agent: node.agent, Name: node.name, Status: node.status})
-		for _, child := range children[node.sessionID] {
-			appendTree(child)
+		result = append(result, TaskInfo{SessionID: node.sessionID, ProcessID: node.processID, ParentSessionID: node.parentSessionID, Kind: node.kind, Agent: node.agent, Name: node.name, Status: node.status})
+		if node.processID == "" {
+			for _, child := range children[node.sessionID] {
+				appendTree(child)
+			}
 		}
 	}
 	for _, root := range roots {
@@ -866,7 +878,7 @@ func (t *TaskTracker) Tasks() []TaskInfo {
 	return result
 }
 
-// TaskUsage is what one task spent. Cost is the runner's price for the tokens,
+// TaskUsage is what one session spent. Cost is the runner's price for the tokens,
 // so it is reported alongside them rather than accounted separately.
 type TaskUsage struct {
 	InputTokens  int
@@ -882,29 +894,27 @@ func (u *TaskUsage) add(other TaskUsage) {
 	u.Cost += other.Cost
 }
 
-// AddUsage folds one turn of provider usage into the task that spent it. Every
-// session on the stream reports usage the same way — the main session under the
-// main task id, each subagent under its own — so the tree is the single owner
-// of what has been spent and the main task is nothing but its root. An event
-// without a task id belongs to the main task; usage for a task the tree has
-// never seen is dropped rather than counted against the wrong one. Counts
-// accumulate because a usage event reports only its own turn.
-func (t *TaskTracker) AddUsage(taskID string, usage v1.Usage) {
-	if taskID == "" {
-		taskID = managedtask.MainTaskID
+// AddUsage folds one turn of provider usage into the session or process that
+// spent it. Usage for an origin the tree has never seen is dropped rather than
+// counted against the wrong session. Counts accumulate because each usage event
+// reports only its own turn.
+func (t *TaskTracker) AddUsage(sessionID, processID string, usage v1.Usage) {
+	if sessionID == "" {
+		sessionID = t.rootSessionID
 	}
-	node := t.tasks[taskID]
+	node := t.known(sessionID, processID)
 	if node == nil {
 		return
 	}
 	node.direct.add(TaskUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedTokens: usage.CachedInputTokens, Cost: usage.InputCost + usage.OutputCost})
 }
 
-// CumulativeUsage returns what the task and all its descendants spent. This
-// walks the tree once per call — safe for small task counts (<100). Malformed
-// cyclic ancestry counts each reachable task once instead of recursing forever.
-func (t *TaskTracker) CumulativeUsage(taskID string) TaskUsage {
-	node := t.tasks[taskID]
+// CumulativeUsage returns what a session or process and all its descendants
+// spent. This walks the tree once per call — safe for small trees (<100 nodes).
+// Malformed cyclic ancestry counts each reachable node once instead of
+// recursing forever.
+func (t *TaskTracker) CumulativeUsage(sessionID, processID string) TaskUsage {
+	node := t.known(sessionID, processID)
 	if node == nil {
 		return TaskUsage{}
 	}
@@ -917,6 +927,9 @@ func (t *TaskTracker) nodeCumulativeUsage(node *taskNode, seen map[*taskNode]boo
 	}
 	seen[node] = true
 	total := node.direct
+	if node.processID != "" {
+		return total
+	}
 	for _, child := range t.tasks {
 		if child != node && child.parentSessionID == node.sessionID {
 			total.add(t.nodeCumulativeUsage(child, seen))
@@ -943,17 +956,33 @@ func CodeDisplayStatus(display v1.CodeDisplay) string {
 	return "↳ Code · " + location
 }
 
-// IsTaskEvent reports whether an event belongs to the task tree rather than to
-// the main transcript: task lifecycle events always do, and any event
-// attributed to a task other than the session's main task does. Every renderer
-// splits the stream with this one predicate, so the main task cannot be a task
-// to one of them and not to another.
-func IsTaskEvent(item v1.Event) bool {
+// IsTaskEvent reports whether an event belongs to child-session or process
+// activity rather than the foreground transcript. Lifecycle events always do;
+// other events do when their origin differs from the foreground session or
+// carries a process ID.
+func IsTaskEvent(item v1.Event, rootSessionID string) bool {
 	switch item.Type {
 	case v1.EventTaskStart, v1.EventTaskWorking, v1.EventTaskIdle, v1.EventTaskFinished:
 		return true
 	}
-	return item.TaskID != "" && item.TaskID != managedtask.MainTaskID
+	return item.SessionID != "" && item.SessionID != rootSessionID
+}
+
+func (t *TaskTracker) eventOrigin(item v1.Event) (string, string) {
+	sessionID := item.SessionID
+	if sessionID == "" {
+		sessionID = t.rootSessionID
+	}
+	if item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
+		if payload, err := v1.DecodeEventData(item); err == nil {
+			event := payload.(*v1.TaskEvent)
+			if event.SessionID != "" {
+				sessionID = event.SessionID
+			}
+			return sessionID, event.ProcessID
+		}
+	}
+	return sessionID, ""
 }
 
 // Apply folds one flat event into the task tree and returns what to render.
@@ -964,15 +993,12 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	if err != nil {
 		return nil, err
 	}
-	ownerID := item.TaskID
-	if ownerID == "" {
-		ownerID = managedtask.MainTaskID
-	}
-	owner := t.tasks[ownerID]
+	ownerSessionID, ownerProcessID := t.eventOrigin(item)
+	owner := t.known(ownerSessionID, ownerProcessID)
 	for i := range reports {
-		reports[i].TaskID = ownerID
+		reports[i].SessionID = ownerSessionID
+		reports[i].ProcessID = ownerProcessID
 		if owner != nil {
-			reports[i].SessionID = owner.sessionID
 			reports[i].ParentSessionID = owner.parentSessionID
 		}
 		reports[i].MainStatus = item.Type == v1.EventTaskFinished
@@ -982,7 +1008,7 @@ func (t *TaskTracker) Apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 		return reports, nil
 	}
 	if item.Type == v1.EventTaskProgress || item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
-		reports = append(reports, t.taskStatusReports(item.TaskID)...)
+		reports = append(reports, t.taskStatusReports(ownerSessionID, ownerProcessID)...)
 	}
 	return reports, nil
 }
@@ -1024,10 +1050,10 @@ func (t *TaskTracker) activeChildCount(node *taskNode) int {
 	return count
 }
 
-func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
+func (t *TaskTracker) taskStatusReports(sessionID, processID string) []TaskReport {
 	var reports []TaskReport
 	seen := make(map[*taskNode]bool, len(t.tasks))
-	for node := t.tasks[taskID]; node != nil && node.id != managedtask.MainTaskID && !seen[node]; node = t.sessions[node.parentSessionID] {
+	for node := t.known(sessionID, processID); node != nil && !(node.sessionID == t.rootSessionID && node.processID == "") && !seen[node]; node = t.sessions[node.parentSessionID] {
 		seen[node] = true
 		// Shell lifecycle has its own stable live row. Unlike agent progress it
 		// settles directly on task.finished and has no later progress event.
@@ -1048,7 +1074,7 @@ func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 			}
 			node.lifecycleFlushed = true
 			reports = append(reports, TaskReport{
-				ID: node.id + ":lifecycle", TaskID: node.id, SessionID: node.sessionID, ParentSessionID: node.parentSessionID,
+				ID: node.id + ":lifecycle", SessionID: node.sessionID, ProcessID: node.processID, ParentSessionID: node.parentSessionID,
 				Line: t.eventLine(node, icon+" "+body), Terminal: true,
 				EmitPlain: true, MainStatus: true, Style: style,
 			})
@@ -1078,7 +1104,7 @@ func (t *TaskTracker) taskStatusReports(taskID string) []TaskReport {
 			node.progressFlushed = true
 		}
 		reports = append(reports, TaskReport{
-			ID: node.id + ":task:" + node.id, TaskID: node.id, SessionID: node.sessionID, ParentSessionID: node.parentSessionID,
+			ID: node.id + ":status", SessionID: node.sessionID, ProcessID: node.processID, ParentSessionID: node.parentSessionID,
 			Line: t.eventLine(node, icon+" "+body), Terminal: terminalEvent,
 			EmitPlain: terminalEvent, MainStatus: true, Style: terminal.TextStyleMuted,
 		})
@@ -1090,15 +1116,12 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	if item.Type == v1.EventTaskStart || item.Type == v1.EventTaskWorking || item.Type == v1.EventTaskIdle || item.Type == v1.EventTaskFinished {
 		return t.applyLifecycle(item)
 	}
-	taskID := item.TaskID
-	if taskID == "" {
-		taskID = managedtask.MainTaskID
-	}
-	node := t.known(taskID)
+	sessionID, processID := t.eventOrigin(item)
+	node := t.known(sessionID, processID)
 	if node == nil {
-		return t.unknownTask(taskID, item.Type), nil
+		return t.unknownOrigin(sessionID, processID, item.Type), nil
 	}
-	if taskID == managedtask.MainTaskID {
+	if sessionID == t.rootSessionID && processID == "" {
 		return nil, nil
 	}
 	if !v1.KnownEvent(item.Type) {
@@ -1337,24 +1360,25 @@ func (t *TaskTracker) apply(item v1.Event, thinking bool) ([]TaskReport, error) 
 	}
 }
 
-// applyLifecycle folds one task lifecycle event into the tree. task.start is
-// the only event which introduces a task; every other lifecycle event for an
-// unregistered task is an unknown-task error.
+// applyLifecycle folds one flat lifecycle event into the tree. task.start is
+// the only event which introduces a session/process pair; every other lifecycle
+// event for an unregistered origin is reported as a tracking gap.
 func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 	payload, err := v1.DecodeEventData(item)
 	if err != nil {
 		return nil, err
 	}
 	event := payload.(*v1.TaskEvent)
-	if event.TaskID == "" {
+	if event.SessionID == "" {
 		return nil, nil
 	}
+	key := processKey(event.SessionID, event.ProcessID)
 	switch item.Type {
 	case v1.EventTaskStart:
-		node := t.tasks[event.TaskID]
+		node := t.tasks[key]
 		if node == nil {
-			node = &taskNode{id: event.TaskID}
-			t.tasks[event.TaskID] = node
+			node = &taskNode{id: key, sessionID: event.SessionID, processID: event.ProcessID}
+			t.tasks[key] = node
 		}
 		node.kind = event.Kind
 		if event.Agent != "" {
@@ -1365,36 +1389,35 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 			if t.Presentation.taskNames == nil {
 				t.Presentation.taskNames = make(map[string]string)
 			}
-			t.Presentation.taskNames[event.TaskID] = event.Name
+			nameKey := event.SessionID
+			if event.ProcessID != "" {
+				nameKey = event.ProcessID
+			}
+			t.Presentation.taskNames[nameKey] = event.Name
 		}
 		node.status = "working"
 		node.progressOpen = true
-		node.sessionID = event.SessionID
 		node.parentSessionID = event.ParentSessionID
-		if node.kind == string(managedtask.KindShell) && node.parentSessionID == "" && t.sessions[event.SessionID] != nil {
+		if node.kind == string(managedtask.KindShell) && node.parentSessionID == "" {
 			node.parentSessionID = event.SessionID
 		}
-		// An agent task owns its session, while a shell task merely runs within
-		// the owning agent session. Multiple shells can therefore carry the same
-		// SessionID and must not replace that session's ancestry node.
-		if event.SessionID != "" && node.kind != string(managedtask.KindShell) {
+		// A session node owns ancestry. Shell processes run inside it and do not
+		// replace the session's ancestry entry.
+		if event.ProcessID == "" {
 			t.sessions[event.SessionID] = node
 		}
 		if event.ParentSessionID != "" && t.sessions[event.ParentSessionID] == nil {
 			node.orphan = true
-			return t.unknownTask(event.ParentSessionID, "parent session of "+event.SessionID), nil
+			return t.unknownOrigin(event.ParentSessionID, "", "parent session of "+event.SessionID), nil
 		}
 		if node.kind == string(managedtask.KindShell) {
-			return []TaskReport{{
-				ID: node.id + ":lifecycle", Line: t.eventLine(node, SpinnerFrames[0]+" running"),
-				Style: terminal.TextStyleMuted,
-			}}, nil
+			return []TaskReport{{ID: node.id + ":lifecycle", Line: t.eventLine(node, SpinnerFrames[0]+" running"), Style: terminal.TextStyleMuted}}, nil
 		}
 		return nil, nil
 	case v1.EventTaskWorking:
-		node := t.known(event.TaskID)
+		node := t.known(event.SessionID, event.ProcessID)
 		if node == nil {
-			return t.unknownTask(event.TaskID, item.Type), nil
+			return t.unknownOrigin(event.SessionID, event.ProcessID, item.Type), nil
 		}
 		node.status = "working"
 		node.error = ""
@@ -1403,16 +1426,16 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 		node.progressDone, node.progressFlushed, node.finished, node.lifecycleFlushed = false, false, false, false
 		return nil, nil
 	case v1.EventTaskIdle:
-		node := t.known(event.TaskID)
+		node := t.known(event.SessionID, event.ProcessID)
 		if node == nil {
-			return t.unknownTask(event.TaskID, item.Type), nil
+			return t.unknownOrigin(event.SessionID, event.ProcessID, item.Type), nil
 		}
 		node.status = "idle"
 		return nil, nil
 	case v1.EventTaskFinished:
-		node := t.known(event.TaskID)
+		node := t.known(event.SessionID, event.ProcessID)
 		if node == nil {
-			return t.unknownTask(event.TaskID, item.Type), nil
+			return t.unknownOrigin(event.SessionID, event.ProcessID, item.Type), nil
 		}
 		node.status = event.Status
 		node.error = event.Error
@@ -1429,15 +1452,9 @@ func (t *TaskTracker) applyLifecycle(item v1.Event) ([]TaskReport, error) {
 				}
 			}
 			node.lifecycleFlushed = true
-			return []TaskReport{{
-				ID: node.id + ":lifecycle", Line: t.eventLine(node, icon+" "+body),
-				Terminal: true, EmitPlain: true, Style: style,
-			}}, nil
+			return []TaskReport{{ID: node.id + ":lifecycle", Line: t.eventLine(node, icon+" "+body), Terminal: true, EmitPlain: true, Style: style}}, nil
 		}
 		node.lifecycleFlushed = false
-		if node.id == managedtask.MainTaskID {
-			return nil, nil
-		}
 		return nil, nil
 	default:
 		return nil, nil

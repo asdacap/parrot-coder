@@ -28,9 +28,9 @@ var (
 	errStreamMessageConflict = errors.New("terminal: another assistant message is still streaming")
 	errStreamPrefixChanged   = errors.New("terminal: stream message prefix changed")
 	errStreamTextChanged     = errors.New("terminal: streamed assistant text changed")
-	errFrameTaskIDEmpty      = errors.New("terminal: live frame task ID is empty")
-	errFrameTaskCycle        = errors.New("terminal: live frame task hierarchy contains a cycle")
-	errFrameStatusConflict   = errors.New("terminal: task has multiple main status frames")
+	errFrameSessionIDEmpty   = errors.New("terminal: live frame session ID is empty")
+	errFrameSessionCycle     = errors.New("terminal: live frame session hierarchy contains a cycle")
+	errFrameStatusConflict   = errors.New("terminal: session or process has multiple main status frames")
 )
 
 // RenderErrorClass returns a content-free classification for renderer-owned
@@ -48,10 +48,10 @@ func RenderErrorClass(err error) string {
 		return "stream_prefix_changed"
 	case errors.Is(err, errStreamTextChanged):
 		return "stream_text_changed"
-	case errors.Is(err, errFrameTaskIDEmpty):
-		return "frame_task_id_empty"
-	case errors.Is(err, errFrameTaskCycle):
-		return "frame_task_cycle"
+	case errors.Is(err, errFrameSessionIDEmpty):
+		return "frame_session_id_empty"
+	case errors.Is(err, errFrameSessionCycle):
+		return "frame_session_cycle"
 	case errors.Is(err, errFrameStatusConflict):
 		return "frame_status_conflict"
 	default:
@@ -120,15 +120,16 @@ func MutedText(text string) StyledText {
 	return StyledText{Text: text, Style: TextStyleMuted}
 }
 
-// LiveFrame describes one task-scoped portion of the redrawable region.
-// SessionID and ParentSessionID form a flat session tree when passed to Frames;
-// TaskID remains the frame grouping key.
-// MainStatus marks the frame that contains the task's primary status; child
-// tasks are rendered before that frame. Frame accepts the zero-value metadata
-// for compatibility with callers rendering one isolated composite frame.
+// LiveFrame describes one session- or process-scoped portion of the redrawable
+// region. SessionID and ParentSessionID form a flat session tree when passed to
+// Frames. ProcessID distinguishes concurrent shell processes in one session;
+// an empty ProcessID identifies the session itself.
+// MainStatus marks the frame that contains the session or process's primary
+// status; child sessions are rendered before that frame. Frame accepts
+// zero-value identity metadata for callers rendering one isolated frame.
 type LiveFrame struct {
-	TaskID          string
 	SessionID       string
+	ProcessID       string
 	ParentSessionID string
 	MainStatus      bool
 	MessagePrefix   string
@@ -350,9 +351,10 @@ func (r *LiveRenderer) Frame(frame LiveFrame) error {
 	return r.frame(frame)
 }
 
-// Frames redraws task-scoped frames in post-order: a task's descendants appear
-// before its MainStatus frame. Sibling order follows first appearance in the
-// input, and frames whose parent is absent are rendered as independent roots.
+// Frames redraws session- and process-scoped frames in post-order: a session's
+// descendants appear before its MainStatus frame. Sibling order follows first
+// appearance in the input, and frames whose parent is absent are independent
+// roots.
 func (r *LiveRenderer) Frames(frames []LiveFrame) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -364,104 +366,102 @@ func (r *LiveRenderer) Frames(frames []LiveFrame) error {
 }
 
 func orderLiveFrames(frames []LiveFrame) ([]LiveFrame, error) {
-	type taskFrames struct {
-		session  string
+	type frameKey struct {
+		session string
+		process string
+	}
+	type processFrames struct {
 		parent   string
 		ordinary []LiveFrame
 		status   *LiveFrame
 	}
-	tasks := make(map[string]*taskFrames)
-	order := make([]string, 0)
+	processes := make(map[frameKey]*processFrames)
+	order := make([]frameKey, 0)
 	for i := range frames {
 		frame := frames[i]
-		if frame.TaskID == "" {
-			return nil, errFrameTaskIDEmpty
+		if frame.SessionID == "" {
+			return nil, errFrameSessionIDEmpty
 		}
-		key := frame.TaskID
-		task := tasks[key]
-		if task == nil {
-			task = &taskFrames{session: frame.SessionID, parent: frame.ParentSessionID}
-			tasks[key] = task
+		key := frameKey{session: frame.SessionID, process: frame.ProcessID}
+		process := processes[key]
+		if process == nil {
+			process = &processFrames{parent: frame.ParentSessionID}
+			processes[key] = process
 			order = append(order, key)
-		} else {
-			if task.session == "" {
-				task.session = frame.SessionID
-			}
-			if task.parent == "" {
-				task.parent = frame.ParentSessionID
-			}
+		} else if process.parent == "" {
+			process.parent = frame.ParentSessionID
 		}
 		if frame.MainStatus {
-			if task.status != nil {
+			if process.status != nil {
 				return nil, errFrameStatusConflict
 			}
-			task.status = &frame
+			process.status = &frame
 		} else {
-			task.ordinary = append(task.ordinary, frame)
+			process.ordinary = append(process.ordinary, frame)
 		}
 	}
-	// A shell task runs within its owning agent's session and therefore has the
-	// same SessionID and ParentSessionID. Prefer the non-self-parented task as
-	// that session's ancestry node, regardless of frame arrival order.
-	sessionOwners := make(map[string]string)
-	for _, id := range order {
-		task := tasks[id]
-		if task.session == "" {
-			continue
-		}
-		owner := sessionOwners[task.session]
-		if owner == "" || tasks[owner].parent == task.session && task.parent != task.session {
-			sessionOwners[task.session] = id
+	// The session frame (empty ProcessID) owns ancestry. Shell processes run
+	// within that session and are its children rather than alternative owners.
+	sessionOwners := make(map[string]frameKey)
+	for _, key := range order {
+		if key.process == "" {
+			sessionOwners[key.session] = key
 		}
 	}
-	children := make(map[string][]string)
-	for _, id := range order {
-		parent := sessionOwners[tasks[id].parent]
-		if parent != "" && parent != id {
-			children[parent] = append(children[parent], id)
+	children := make(map[frameKey][]frameKey)
+	for _, key := range order {
+		parent := sessionOwners[processes[key].parent]
+		if key.process != "" && processes[key].parent == "" {
+			parent = sessionOwners[key.session]
+		}
+		if parent != (frameKey{}) && parent != key {
+			children[parent] = append(children[parent], key)
 		}
 	}
-	state := make(map[string]uint8)
+	state := make(map[frameKey]uint8)
 	ordered := make([]LiveFrame, 0, len(frames))
-	var visit func(string) error
-	visit = func(id string) error {
-		switch state[id] {
+	var visit func(frameKey) error
+	visit = func(key frameKey) error {
+		switch state[key] {
 		case 1:
-			return errFrameTaskCycle
+			return errFrameSessionCycle
 		case 2:
 			return nil
 		}
-		state[id] = 1
-		task := tasks[id]
-		for _, child := range children[id] {
+		state[key] = 1
+		process := processes[key]
+		for _, child := range children[key] {
 			if err := visit(child); err != nil {
 				return err
 			}
 		}
-		ordered = append(ordered, task.ordinary...)
-		if task.status != nil {
-			ordered = append(ordered, *task.status)
+		ordered = append(ordered, process.ordinary...)
+		if process.status != nil {
+			ordered = append(ordered, *process.status)
 		}
-		state[id] = 2
+		state[key] = 2
 		return nil
 	}
-	for _, id := range order {
-		parent := sessionOwners[tasks[id].parent]
-		if parent == "" || parent == id {
-			if err := visit(id); err != nil {
+	for _, key := range order {
+		parent := sessionOwners[processes[key].parent]
+		if key.process != "" && processes[key].parent == "" {
+			parent = sessionOwners[key.session]
+		}
+		if parent == (frameKey{}) || parent == key {
+			if err := visit(key); err != nil {
 				return nil, err
 			}
 		}
 	}
-	for _, id := range order {
-		if err := visit(id); err != nil {
+	for _, key := range order {
+		if err := visit(key); err != nil {
 			return nil, err
 		}
 	}
 	return ordered, nil
 }
 
-// mergeLiveFrames combines already ordered task portions into the composite
+// mergeLiveFrames combines already ordered process portions into the composite
 // representation used by the terminal layout engine. The final status frame
 // owns the shared stream, modeline, pending queue, and editor chrome.
 func mergeLiveFrames(frames []LiveFrame) LiveFrame {
@@ -486,8 +486,8 @@ func mergeLiveFrames(frames []LiveFrame) LiveFrame {
 		return merged
 	}
 	frame := frames[chrome]
-	merged.TaskID = frame.TaskID
 	merged.SessionID = frame.SessionID
+	merged.ProcessID = frame.ProcessID
 	merged.ParentSessionID = frame.ParentSessionID
 	merged.MainStatus = true
 	merged.PromptContext = frame.PromptContext

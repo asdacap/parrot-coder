@@ -60,7 +60,7 @@ Each event carries its ID in both the SSE field and JSON envelope:
 ```text
 id: evt_...
 event: message.part.delta
-data: {"id":"evt_...","type":"message.part.delta","sequence":42,"data":{}}
+data: {"id":"evt_...","type":"message.part.delta","session_id":"ses_...","sequence":42,"data":{}}
 
 ```
 
@@ -72,20 +72,21 @@ token deltas are not authoritative.
 The event manifest is the source of truth for event names, payload codecs,
 OpenAPI schemas, and client dispatch.
 
-## Tasks
+## Task lifecycle
 
-Every session has a main task, and tasks start other tasks: agent tasks via
-`agent_spawn` and shell tasks via backgrounded shell processes. A child session
-ID is the canonical ID of its agent task; shell tasks use their process IDs.
-Task lifecycle events — `task.start`, `task.working`, `task.idle`,
-`task.finished` — are flat: they are never nested inside a parent task's event.
-Each event envelope carries the `task_id` of the task which produced it
-alongside the `session_id`, and `task.start` carries the `parent_task_id`. For
-all child-session events, `TaskID` (encoded as `task_id`) is the child session
-ID. These events are also published on the parent's stream, so clients subscribe
-to one session and rebuild the task tree themselves from `parent_task_id`.
-Events referencing an unknown `task_id` indicate a client-side tracking gap
-and are reported as unknown-task errors.
+Sessions start child-agent sessions via `agent_spawn` and shell processes via
+backgrounded `exec_command` calls. Agents are identified by `session_id`; shell
+lifecycle and process tools use `process_id`.
+
+Lifecycle events — `task.start`, `task.working`, `task.idle`, and
+`task.finished` — are flat: they are never nested inside a parent's event. Each
+event identifies its producer by `session_id`. Agent `task.start` events carry
+`parent_session_id`, allowing clients to rebuild the agent-session hierarchy.
+Shell lifecycle events carry `process_id` in addition to the owning
+`session_id`. Child-session events are also published on the parent's stream,
+so clients subscribe to one session while retaining the original producer
+attribution. Events referencing an unknown `session_id` indicate a client-side
+tracking gap and are reported as unknown-session errors.
 
 ## Local Transport
 

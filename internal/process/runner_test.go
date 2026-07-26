@@ -655,7 +655,7 @@ func TestPersistentObserverWaitsWithoutConsumingOrControllingProcess(t *testing.
 	}
 }
 
-func TestPersistentIDsActiveListingAndTargetedInterruptionAreOwnerScoped(t *testing.T) {
+func TestPersistentProcessIDsActiveListingAndTargetedInterruptionAreOwnerScoped(t *testing.T) {
 	runner := testRunner(t, Config{TerminationGrace: 50 * time.Millisecond})
 	t.Cleanup(func() { _ = runner.Close() })
 	startedAfter := time.Now()
@@ -675,32 +675,32 @@ func TestPersistentIDsActiveListingAndTargetedInterruptionAreOwnerScoped(t *test
 
 	owned := runner.ListActivePersistent("owner")
 	other := runner.ListActivePersistent("other")
-	if len(owned) != 2 || owned[0].ID != *results[0].ProcessID || owned[1].ID != *results[1].ProcessID ||
+	if len(owned) != 2 || owned[0].ProcessID != *results[0].ProcessID || owned[1].ProcessID != *results[1].ProcessID ||
 		owned[0].SessionID != "owner" || owned[1].SessionID != "owner" ||
 		owned[0].StartedAt.Before(startedAfter) || owned[1].StartedAt.Before(owned[0].StartedAt) ||
-		len(other) != 1 || other[0].ID != *results[2].ProcessID || other[0].SessionID != "other" || len(runner.ListActivePersistent("unknown")) != 0 {
-		t.Fatalf("active tasks: owner=%#v other=%#v", owned, other)
+		len(other) != 1 || other[0].ProcessID != *results[2].ProcessID || other[0].SessionID != "other" || len(runner.ListActivePersistent("unknown")) != 0 {
+		t.Fatalf("active processes: owner=%#v other=%#v", owned, other)
 	}
-	if _, err := runner.InterruptPersistent("other", owned[0].ID); err == nil || !strings.Contains(err.Error(), "unknown process") {
+	if _, err := runner.InterruptPersistent("other", owned[0].ProcessID); err == nil || !strings.Contains(err.Error(), "unknown process") {
 		t.Fatalf("cross-owner interrupt error = %v", err)
 	}
 	if active := runner.ListActivePersistent("owner"); len(active) != 2 {
 		t.Fatalf("cross-owner interrupt changed active tasks: %#v", active)
 	}
-	interrupted, err := runner.InterruptPersistent("owner", owned[0].ID)
+	interrupted, err := runner.InterruptPersistent("owner", owned[0].ProcessID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if interrupted != owned[0] {
 		t.Fatalf("interrupted task = %#v, want %#v", interrupted, owned[0])
 	}
-	if active := runner.ListActivePersistent("owner"); len(active) != 1 || active[0].ID != owned[1].ID {
-		t.Fatalf("active tasks after targeted interrupt = %#v", active)
+	if active := runner.ListActivePersistent("owner"); len(active) != 1 || active[0].ProcessID != owned[1].ProcessID {
+		t.Fatalf("active processes after targeted interrupt = %#v", active)
 	}
-	if active := runner.ListActivePersistent("other"); len(active) != 1 || active[0].ID != other[0].ID {
+	if active := runner.ListActivePersistent("other"); len(active) != 1 || active[0].ProcessID != other[0].ProcessID {
 		t.Fatalf("targeted interrupt affected other owner: %#v", active)
 	}
-	if _, err := runner.InterruptPersistent("owner", owned[0].ID); err == nil || !strings.Contains(err.Error(), "unknown process") {
+	if _, err := runner.InterruptPersistent("owner", owned[0].ProcessID); err == nil || !strings.Contains(err.Error(), "unknown process") {
 		t.Fatalf("repeated interrupt error = %v", err)
 	}
 }

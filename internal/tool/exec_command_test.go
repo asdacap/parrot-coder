@@ -23,7 +23,7 @@ func TestFormatPersistentResult(t *testing.T) {
 				ChunkID: "abcdef", Name: "project-tests", WallTime: 2 * time.Second,
 				Output: "hidden output", ProcessID: &processID, OriginalTokenCount: 3,
 			},
-			want: "Waiting for process project-tests yielded.",
+			want: "Waiting for process project-tests (proc_internal) yielded.",
 		},
 		{
 			name: "completed",

@@ -86,7 +86,7 @@ func (n *CompletionNotifier) Notify(task Status) {
 		}()
 		session, ok := lookup(task.ParentSession)
 		if !ok || session == nil {
-			diagnostics.Warn("agent_task_notification_unavailable", "session_id", task.ParentSession, "task_id", task.SessionID)
+			diagnostics.Warn("agent_task_notification_unavailable", "session_id", task.ParentSession, "child_session_id", task.SessionID)
 			return
 		}
 		sendCtx, sendCancel := context.WithTimeout(ctx, 5*time.Second)
@@ -96,7 +96,7 @@ func (n *CompletionNotifier) Notify(task Status) {
 			_, err = session.Send(sendCtx, messageID, completionNotification(task))
 		}
 		if err != nil && !errors.Is(err, context.Canceled) {
-			diagnostics.Error("agent_task_notification_failed", "session_id", task.ParentSession, "task_id", task.SessionID, "error_type", diagnostics.ErrorType(err))
+			diagnostics.Error("agent_task_notification_failed", "session_id", task.ParentSession, "child_session_id", task.SessionID, "error_type", diagnostics.ErrorType(err))
 		}
 	}()
 }

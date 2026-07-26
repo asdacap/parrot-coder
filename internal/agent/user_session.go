@@ -93,7 +93,6 @@ type userSession struct {
 	workspace          *workspace.Workspace
 	outputs            *tool.OutputStore
 	processes          *process.Runner
-	taskIDFor          func(string) string
 	live               LivePublisher
 	compactor          Compactor
 	goals              *session.GoalService
@@ -119,7 +118,7 @@ func NewUserSession(
 	ctx context.Context, sessions SessionRuntime, systemContext SystemContextPrompt, queueMonitor QueueMonitor, config UserSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
-	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner, taskIDFor func(string) string,
+	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
 	live LivePublisher, events event.EventBroker, compactor Compactor, goals *session.GoalService, status StatusObserver,
 	toolPanicLogger func(context.Context, string, string, any, []byte), childTasks *managedtask.Manager,
 	childAgentIdentity func(string) string, childAgentRecursionLimit func(string) int, childNameGenerator func() string,
@@ -141,9 +140,6 @@ func NewUserSession(
 	if live == nil {
 		live = noopLivePublisher{}
 	}
-	if taskIDFor == nil {
-		taskIDFor = func(string) string { return "" }
-	}
 	if events == nil {
 		events = event.NoopBroker{}
 	}
@@ -153,13 +149,13 @@ func NewUserSession(
 	created := &userSession{config: config, sessions: sessions, systemContext: systemContext, queueMonitor: queueMonitor,
 		stateDirectories: stateDirectories, profiles: profiles, providers: providers, toolProviders: toolProviders,
 		toolAuthorizer: toolAuthorizer, toolErrorAdvisor: toolErrorAdvisor, workspace: workspace, outputs: outputs,
-		processes: processes, taskIDFor: taskIDFor, live: live, compactor: compactor, goals: goals, statusObserver: status,
+		processes: processes, live: live, compactor: compactor, goals: goals, statusObserver: status,
 		toolPanicLogger: toolPanicLogger, identityFor: childAgentIdentity, recursionLimitFor: childAgentRecursionLimit, childNameGenerator: childNameGenerator,
 		childTasks: childTasks, events: events, onChildDiscard: onChildDiscard, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
 	applyChildDefaults(&created.config)
 	applyChildCollaboratorDefaults(created)
 	repository, err := newAgentSessionRepository(ctx, created, config.AgentSession, created.stateDirectories, created.profiles, created.providers, created.toolProviders, created.toolAuthorizer, created.toolErrorAdvisor,
-		created.workspace, created.outputs, created.processes, created.taskIDFor, created.live, created.events, created.compactor, created.goals, created.statusObserver, created.toolPanicLogger, config.MaxConcurrentChildTurnsPerParent, observers...)
+		created.workspace, created.outputs, created.processes, created.live, created.events, created.compactor, created.goals, created.statusObserver, created.toolPanicLogger, config.MaxConcurrentChildTurnsPerParent, observers...)
 	if err != nil {
 		return nil, err
 	}
@@ -318,7 +314,6 @@ type agentSessionRepository struct {
 	workspace               *workspace.Workspace
 	outputs                 *tool.OutputStore
 	processes               *process.Runner
-	taskIDFor               func(string) string
 	live                    LivePublisher
 	events                  event.EventBroker
 	compactor               Compactor
@@ -339,7 +334,7 @@ func newAgentSessionRepository(
 	ctx context.Context, user *userSession, config AgentSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
-	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner, taskIDFor func(string) string,
+	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
 	live LivePublisher, events event.EventBroker, compactor Compactor, goals *session.GoalService, status StatusObserver,
 	toolPanicLogger func(context.Context, string, string, any, []byte), maxConcurrentChildTurns int, observers ...LifecycleObserver,
 ) (*agentSessionRepository, error) {
@@ -350,7 +345,7 @@ func newAgentSessionRepository(
 	repository := &agentSessionRepository{
 		user: user, config: config, stateDirectories: stateDirectories, profiles: profiles, providers: providers,
 		toolProviders: toolProviders, toolAuthorizer: toolAuthorizer, toolErrorAdvisor: toolErrorAdvisor,
-		workspace: workspace, outputs: outputs, processes: processes, taskIDFor: taskIDFor, live: live, events: events, compactor: compactor,
+		workspace: workspace, outputs: outputs, processes: processes, live: live, events: events, compactor: compactor,
 		goals: goals, status: status, toolPanicLogger: toolPanicLogger, observers: observers, maxConcurrentChildTurns: maxConcurrentChildTurns,
 		sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession),
 	}
@@ -661,7 +656,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	}
 	candidate := newAgentSession(
 		dto, parent, user, r, store, systemContext, queueMonitor, r.config,
-		r.stateDirectories, r.profiles, r.providers, r.workspace, r.outputs, r.processes, r.taskIDFor,
+		r.stateDirectories, r.profiles, r.providers, r.workspace, r.outputs, r.processes,
 		r.live, r.compactor, r.goals, r.status, r.toolPanicLogger,
 		r.maxConcurrentChildTurns, r.observers, maxChildPromptBytes, maxChildResultBytes, r.events,
 	)
@@ -1073,7 +1068,7 @@ func (t managedChildTurn) Interrupt(ctx context.Context) (managedtask.Snapshot, 
 }
 
 func childSnapshot(item Status) managedtask.Snapshot {
-	return managedtask.Snapshot{ID: item.SessionID, Name: item.Name, SessionID: item.SessionID, Kind: managedtask.KindAgent, Status: string(item.State), StartedAt: item.StartedAt, Agent: item.Agent, Turn: item.Turn, Depth: item.Depth}
+	return managedtask.Snapshot{Name: item.Name, SessionID: item.SessionID, Kind: managedtask.KindAgent, Status: string(item.State), StartedAt: item.StartedAt, Agent: item.Agent, Turn: item.Turn, Depth: item.Depth}
 }
 func cloneStatus(task Status) Status {
 	task.Lineage = append([]string(nil), task.Lineage...)

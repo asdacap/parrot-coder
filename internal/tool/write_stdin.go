@@ -10,7 +10,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/process"
 )
 
-const writeStdinSchema = `{"type":"object","properties":{"task_id":{"type":"string","description":"Canonical process ID or friendly name of the running shell task."},"chars":{"type":"string","description":"Bytes to write to stdin. Defaults to empty, which polls without writing."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. The result will automatically be sent once done after the yield."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}},"required":["task_id"],"additionalProperties":false}`
+const writeStdinSchema = `{"type":"object","properties":{"process_id":{"type":"string","description":"Canonical process ID or friendly name of the running shell process."},"chars":{"type":"string","description":"Bytes to write to stdin. Defaults to empty, which polls without writing."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default. The result will automatically be sent once done after the yield."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."}},"required":["process_id"],"additionalProperties":false}`
 
 type WriteStdinTool struct {
 	BasePresentation
@@ -18,7 +18,7 @@ type WriteStdinTool struct {
 }
 
 type writeStdinInput struct {
-	TaskID          string `json:"task_id"`
+	ProcessID       string `json:"process_id"`
 	Chars           string `json:"chars"`
 	YieldTimeMS     uint64 `json:"yield_time_ms"`
 	MaxOutputTokens *int   `json:"max_output_tokens"`
@@ -35,7 +35,7 @@ func (*WriteStdinTool) Presentation() Presentation {
 		Output:            OutputNone,
 		LabelInPermission: true,
 		Label: LabelSpec{Fields: []LabelField{
-			{Names: []string{"task_id"}, TaskName: true},
+			{Names: []string{"process_id"}, TaskName: true},
 			{Names: []string{"chars"}},
 		}},
 	}
@@ -44,7 +44,7 @@ func (*WriteStdinTool) Presentation() Presentation {
 func (t *WriteStdinTool) Descriptor() Descriptor {
 	return Descriptor{
 		ID:           t.ID(),
-		Description:  "Writes characters to a running shell task and returns recent output.",
+		Description:  "Writes characters to a running shell process and returns recent output.",
 		Schema:       t.JSONSchema(),
 		Presentation: t.Presentation(),
 	}
@@ -57,7 +57,7 @@ func (*WriteStdinTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Write %d characters to task %s", len([]rune(input.Chars)), input.TaskID), nil
+	return fmt.Sprintf("Write %d characters to process %s", len([]rune(input.Chars)), input.ProcessID), nil
 }
 
 func (t *WriteStdinTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
@@ -65,8 +65,8 @@ func (t *WriteStdinTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	if input.TaskID == "" {
-		return Plan{}, errors.New("write_stdin: task_id is required")
+	if input.ProcessID == "" {
+		return Plan{}, errors.New("write_stdin: process_id is required")
 	}
 	if input.YieldTimeMS == 0 {
 		input.YieldTimeMS = uint64(process.DefaultWriteYieldTime / time.Millisecond)
@@ -75,7 +75,7 @@ func (t *WriteStdinTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 		return Plan{}, errors.New("write_stdin: max_output_tokens must be nonnegative")
 	}
 	review, _ := json.Marshal(map[string]any{
-		"task_id": input.TaskID, "character_count": len([]rune(input.Chars)),
+		"process_id": input.ProcessID, "character_count": len([]rune(input.Chars)),
 		"yield_time_ms": input.YieldTimeMS, "max_output_tokens": input.MaxOutputTokens,
 	})
 	return NewPlan(t.ID(), raw, nil, review, input)
@@ -91,7 +91,7 @@ func (t *WriteStdinTool) Execute(ctx context.Context, plan Plan, call CallContex
 	}
 	input := plan.Data.(writeStdinInput)
 	result, err := runner.WritePersistent(ctx, process.PersistentWriteRequest{
-		SessionID: call.SessionID, ProcessID: input.TaskID, Chars: input.Chars,
+		SessionID: call.SessionID, ProcessID: input.ProcessID, Chars: input.Chars,
 		Yield:           time.Duration(input.YieldTimeMS) * time.Millisecond,
 		MaxOutputTokens: input.MaxOutputTokens, Output: call.Output,
 	})

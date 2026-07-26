@@ -55,7 +55,7 @@ func (*ExecCommandTool) Presentation() Presentation {
 func (t *ExecCommandTool) Descriptor() Descriptor {
 	return Descriptor{
 		ID:                   t.ID(),
-		Description:          "Runs a command in a PTY, returning output or a task ID for ongoing interaction.",
+		Description:          "Runs a command in a PTY, returning output or a process ID for ongoing interaction.",
 		Schema:               t.JSONSchema(),
 		Presentation:         t.Presentation(),
 		SystemPromptGuidance: `exec_command runs in a sandbox by default (current_security_context). Directories outside the workspace that lack write permission appear as if they are mounted read-only — the sandbox intercepts writes and returns "Read-only file system" even though the underlying mount is writable. Use request_write_permission to grant session-scoped write access to a specific path, or set sandbox_permissions to "disable_sandbox" (requires justification and user approval) to bypass the sandbox entirely.`,
@@ -187,7 +187,11 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 		return Result{}, err
 	}
 	text := formatPersistentResult(result)
-	return Result{Text: text, ModelText: modelText(text), Metadata: map[string]any{"output_tail": execCommandOutputTail(result.Output)}}, nil
+	metadata := map[string]any{"output_tail": execCommandOutputTail(result.Output)}
+	if result.ProcessID != nil {
+		metadata["process_id"] = *result.ProcessID
+	}
+	return Result{Text: text, ModelText: modelText(text), Metadata: metadata}, nil
 }
 
 func execCommandOutputTail(output string) string {
@@ -233,7 +237,7 @@ func execCommandOutputTail(output string) string {
 
 func formatPersistentResult(result process.PersistentResult) string {
 	if result.ProcessID != nil {
-		return fmt.Sprintf("Waiting for process %s yielded.", result.Name)
+		return fmt.Sprintf("Waiting for process %s (%s) yielded.", result.Name, *result.ProcessID)
 	}
 	text := fmt.Sprintf("Chunk ID: %s\nWall time: %.4f seconds", result.ChunkID, result.WallTime.Seconds())
 	if result.ExitCode != nil {

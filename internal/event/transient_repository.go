@@ -15,29 +15,10 @@ type TransientRepository struct {
 	mu        sync.Mutex
 	next      uint64
 	listeners map[string]map[uint64]chan v1.Event
-	taskIDFor func(string) string
 }
 
 func NewTransientRepository() *TransientRepository {
 	return &TransientRepository{listeners: make(map[string]map[uint64]chan v1.Event)}
-}
-
-// SetTaskIDFor installs the resolver attributing locally produced session
-// events to their main task. It must be set before the first drain publishes.
-func (b *TransientRepository) SetTaskIDFor(resolver func(sessionID string) string) {
-	b.mu.Lock()
-	b.taskIDFor = resolver
-	b.mu.Unlock()
-}
-
-func (b *TransientRepository) taskID(sessionID string) string {
-	b.mu.Lock()
-	resolver := b.taskIDFor
-	b.mu.Unlock()
-	if resolver == nil {
-		return ""
-	}
-	return resolver(sessionID)
 }
 
 func (b *TransientRepository) Subscribe(sessionID string, capacity int) (<-chan v1.Event, func()) {
@@ -73,7 +54,6 @@ func (b *TransientRepository) Subscribe(sessionID string, capacity int) (<-chan 
 func (b *TransientRepository) PublishProtocol(sessionID string, item protocol.Event) {
 	event, ok := protocolEvent(sessionID, item)
 	if ok {
-		event.TaskID = b.taskID(sessionID)
 		b.PublishEvent(event)
 	}
 }
@@ -146,7 +126,13 @@ func protocolEvent(sessionID string, item protocol.Event) (v1.Event, bool) {
 // PublishEvent never blocks a producer. Overflow closes only the slow
 // subscriber. Callers publish only after the represented state is visible.
 func (b *TransientRepository) PublishEvent(event v1.Event) {
-	if b == nil || event.SessionID == "" || !v1.KnownEvent(event.Type) || len(event.Data) == 0 || !json.Valid(event.Data) {
+	b.publishTo(event.SessionID, event)
+}
+
+// publishTo routes an event to a subscription key without changing the
+// producing session recorded in the public event envelope.
+func (b *TransientRepository) publishTo(routeSessionID string, event v1.Event) {
+	if b == nil || routeSessionID == "" || event.SessionID == "" || !v1.KnownEvent(event.Type) || len(event.Data) == 0 || !json.Valid(event.Data) {
 		return
 	}
 	if event.ID == "" {
@@ -157,7 +143,7 @@ func (b *TransientRepository) PublishEvent(event v1.Event) {
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	for id, listener := range b.listeners[event.SessionID] {
+	for id, listener := range b.listeners[routeSessionID] {
 		select {
 		case listener <- event:
 		default:
@@ -174,11 +160,11 @@ func (b *TransientRepository) PublishEvent(event v1.Event) {
 			default:
 			}
 			close(listener)
-			delete(b.listeners[event.SessionID], id)
+			delete(b.listeners[routeSessionID], id)
 		}
 	}
-	if len(b.listeners[event.SessionID]) == 0 {
-		delete(b.listeners, event.SessionID)
+	if len(b.listeners[routeSessionID]) == 0 {
+		delete(b.listeners, routeSessionID)
 	}
 }
 

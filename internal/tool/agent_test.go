@@ -150,7 +150,7 @@ func TestAgentToolsContract(t *testing.T) {
 	}
 
 	spawned := execute(agentSpawnID, `{"prompt":"inspect","agent":"explorer","model":"fast","name":"code-review"}`)
-	if spawned.Metadata["session_id"] != "session-child" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["task_id"] != nil || spawned.Metadata["status"] != "blocked" || spawned.Metadata["turn"] != 1 {
+	if spawned.Metadata["session_id"] != "session-child" || spawned.Metadata["name"] != "code-review" || spawned.Metadata["status"] != "blocked" || spawned.Metadata["turn"] != 1 {
 		t.Fatalf("spawned = %#v", spawned)
 	}
 	if session.created.callerAgent != "build" || session.created.prompt != "inspect" || session.created.agent != "explorer" || session.created.model != "fast" || session.created.name != "code-review" {
@@ -162,14 +162,11 @@ func TestAgentToolsContract(t *testing.T) {
 	}
 
 	send := tools[agentSendID]
-	if _, err := send.Plan(context.Background(), json.RawMessage(`{"task_id":"session-child","message":"legacy"}`), call); err == nil {
-		t.Fatal("agent_send accepted task_id")
-	}
 	presentation := send.Presentation()
 	if len(presentation.Label.Fields) != 2 || presentation.Label.Fields[0].Names[0] != "session_id" || !presentation.Label.Fields[0].TaskName {
 		t.Fatalf("agent_send presentation = %#v", presentation)
 	}
-	if schema := string(send.JSONSchema()); !strings.Contains(schema, `"session_id"`) || !strings.Contains(schema, "friendly name") || strings.Contains(schema, `"task_id"`) {
+	if schema := string(send.JSONSchema()); !strings.Contains(schema, `"session_id"`) || !strings.Contains(schema, "friendly name") {
 		t.Fatalf("agent_send schema = %s", schema)
 	}
 	if description := send.Descriptor().Description; !strings.Contains(description, "direct parent or descendant") || !strings.Contains(description, "friendly name") {

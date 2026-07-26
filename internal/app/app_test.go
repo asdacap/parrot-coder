@@ -26,6 +26,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
+	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
@@ -46,15 +47,15 @@ func (t waitingManagedTask) Interrupt(context.Context) (managedtask.Snapshot, er
 
 func TestManagedTaskControllerPreservesTaskStateWhenWaitIsCanceled(t *testing.T) {
 	tasks := managedtask.NewManager()
-	snapshot := managedtask.Snapshot{ID: "task_agent", SessionID: "session", Kind: managedtask.KindAgent, Status: "running"}
-	if err := tasks.Register(waitingManagedTask{snapshot: snapshot}, func(caller string) bool { return caller == "session" }); err != nil {
+	snapshot := managedtask.Snapshot{SessionID: "child", Kind: managedtask.KindAgent, Status: "running"}
+	if err := tasks.Register(waitingManagedTask{snapshot: snapshot}, func(caller string) bool { return caller == "parent" }); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	result, err := (&managedTaskController{tasks: tasks}).Wait(ctx, "session", snapshot.ID)
-	if !errors.Is(err, context.Canceled) || result.ID != snapshot.ID || result.Kind != snapshot.Kind || result.Status != snapshot.Status {
-		t.Fatalf("Wait() = %#v, %v", result, err)
+	result, err := (&managedTaskController{tasks: tasks}).WaitKind(ctx, "parent", snapshot.SessionID, managedtask.KindAgent)
+	if !errors.Is(err, context.Canceled) || result.SessionID != snapshot.SessionID || result.Kind != snapshot.Kind || result.Status != snapshot.Status {
+		t.Fatalf("WaitKind() = %#v, %v", result, err)
 	}
 }
 
@@ -1110,7 +1111,7 @@ func (h testSessionHierarchy) ChildRelation(sessionID string) (string, bool) {
 	return relation.ParentSessionID, ok
 }
 
-func TestBrokerFlattensTaskAttribution(t *testing.T) {
+func TestBrokerPreservesOriginSessionWhenRouting(t *testing.T) {
 	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent"}})
 	parentEvents, unsubscribe := live.Subscribe("parent", 4)
 	defer unsubscribe()
@@ -1118,14 +1119,26 @@ func TestBrokerFlattensTaskAttribution(t *testing.T) {
 	delta, _ := json.Marshal(v1.MessagePartDelta{MessageID: "child-message", Kind: "text", Delta: "working"})
 	live.PublishEvent(v1.Event{Type: v1.EventMessagePartDelta, SessionID: "child", Data: delta})
 	direct := <-parentEvents
-	if direct.Type != v1.EventMessagePartDelta || direct.SessionID != "parent" || direct.TaskID != "child" || direct.Sequence != nil {
+	if direct.Type != v1.EventMessagePartDelta || direct.SessionID != "child" || direct.Sequence != nil || direct.CreatedAt != nil {
 		t.Fatalf("direct projection = %#v", direct)
 	}
+}
 
-	live.PublishEvent(v1.Event{Type: v1.EventMessagePartDelta, SessionID: "child", TaskID: "inner-task", Data: delta})
-	nested := <-parentEvents
-	if nested.TaskID != "inner-task" || nested.SessionID != "parent" {
-		t.Fatalf("nested projection = %#v", nested)
+func TestPublishPersistentProcessEventUsesProcessIdentity(t *testing.T) {
+	live := event.NewBroker(nil, nil)
+	events, unsubscribe := live.Subscribe("session", 2)
+	defer unsubscribe()
+	exitCode := 7
+
+	publishPersistentProcessEvent(live, process.PersistentEvent{Kind: process.PersistentEventStart, SessionID: "session", ProcessID: "proc_1", Name: "server"})
+	publishPersistentProcessEvent(live, process.PersistentEvent{Kind: process.PersistentEventFinished, SessionID: "session", ProcessID: "proc_1", Name: "server", ExitCode: &exitCode})
+
+	started, finished := decodeTaskEvent(t, <-events), decodeTaskEvent(t, <-events)
+	if started.SessionID != "session" || started.ProcessID != "proc_1" || started.Name != "server" || started.Kind != "shell" || started.Status != "" {
+		t.Fatalf("start = %#v", started)
+	}
+	if finished.SessionID != "session" || finished.ProcessID != "proc_1" || finished.Kind != "shell" || finished.Status != "failed" {
+		t.Fatalf("finished = %#v", finished)
 	}
 }
 
@@ -1139,20 +1152,32 @@ func TestPublishTurnLifecycleEmitsFlatTaskEvents(t *testing.T) {
 		{name: "child", status: agent.Status{SessionID: "child", ParentSession: "parent", Agent: "explore"}, stream: "parent"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			live := event.NewBroker(nil, nil)
+			live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent"}})
 			events, unsubscribe := live.Subscribe(test.stream, 4)
 			defer unsubscribe()
 
 			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleStart, Task: test.status})
 			started := decodeTaskEvent(t, <-events)
-			if started.TaskID != test.status.SessionID || started.SessionID != test.status.SessionID || started.ParentSessionID != test.status.ParentSession || started.Kind != "agent" || started.Agent != test.status.Agent {
+			if started.SessionID != test.status.SessionID || started.ParentSessionID != test.status.ParentSession || started.Kind != "agent" || started.Agent != test.status.Agent {
 				t.Fatalf("start = %#v", started)
+			}
+
+			test.status.State, test.status.ToolUses = agent.StatusRunning, 3
+			publishTurnProgress(live, test.status)
+			progressItem := <-events
+			progressPayload, err := v1.DecodeEventData(progressItem)
+			if err != nil {
+				t.Fatal(err)
+			}
+			progress := progressPayload.(*v1.TaskProgress)
+			if progressItem.SessionID != test.status.SessionID || progress.SessionID != test.status.SessionID || progress.Status != "running" || progress.ToolUses != 3 {
+				t.Fatalf("progress event = %#v, payload = %#v", progressItem, progress)
 			}
 
 			test.status.State, test.status.Error = agent.StatusFailed, "boom"
 			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleFinished, Task: test.status})
 			finished := decodeTaskEvent(t, <-events)
-			if finished.TaskID != test.status.SessionID || finished.SessionID != test.status.SessionID || finished.Status != "failed" || finished.Error != "boom" {
+			if finished.SessionID != test.status.SessionID || finished.Status != "failed" || finished.Error != "boom" {
 				t.Fatalf("finished = %#v", finished)
 			}
 		})
@@ -1185,7 +1210,7 @@ func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
 	usage, _ := json.Marshal(v1.SessionStatus{MessageID: "child-message", Kind: "usage", Usage: &v1.Usage{TotalTokens: 42}})
 	live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "child", Data: usage})
 	item := <-parentEvents
-	if item.Type != v1.EventSessionStatus || item.SessionID != "parent" || item.TaskID != "child" {
+	if item.Type != v1.EventSessionStatus || item.SessionID != "child" {
 		t.Fatalf("projection = %#v", item)
 	}
 	if len(progress) != 1 || progress[0].Usage.TotalTokens != 42 {

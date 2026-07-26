@@ -86,7 +86,7 @@ type LabelField struct {
 	Array    bool     `json:"array,omitempty"`
 	Item     []string `json:"item,omitempty"`
 	Overflow bool     `json:"overflow,omitempty"`
-	// TaskName resolves a task ID to its human-facing name when one is known.
+	// TaskName resolves a session or process ID to its human-facing name when one is known.
 	TaskName bool `json:"task_name,omitempty"`
 }
 

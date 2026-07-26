@@ -325,7 +325,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	// function of the canonical working directory, so every host recomputes it instead.
 	repository := event.NewRepository(sessionStore)
 	live := event.NewBroker(repository, event.NewTransientRepository())
-	live.SetTaskIDFor(func(string) string { return managedtask.MainTaskID })
 	sessions := session.NewService(sessionStore, repository)
 	configuredVariant := loaded.Config.DefaultVariant
 	if options.Variant != "" {
@@ -422,22 +421,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	notifications := agent.NewCompletionNotifier()
 	result.notifications = notifications
 	live.SetEventHandler(func(item event.BrokerEvent) func() { return publishAgentTurnEvent(live, notifications, item) })
-	processes.SetPersistentEventHandler(func(item process.PersistentEvent) {
-		payload := v1.TaskEvent{TaskID: item.TaskID, SessionID: item.SessionID, Name: item.Name, Kind: string(managedtask.KindShell), Error: item.Error}
-		eventType := managedtask.EventStart
-		if item.Kind == process.PersistentEventFinished {
-			eventType = managedtask.EventFinished
-			payload.Status = "succeeded"
-			if item.ExitCode != nil && *item.ExitCode != 0 {
-				payload.Status = "failed"
-			}
-			if item.Error != "" {
-				payload.Status = "failed"
-			}
-		}
-		data, _ := json.Marshal(payload)
-		live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, TaskID: item.TaskID, Data: data})
-	})
+	processes.SetPersistentEventHandler(func(item process.PersistentEvent) { publishPersistentProcessEvent(live, item) })
 	queues := queue.New(paths.State)
 	statusRegistry, err := statusinfo.NewRegistry(statusinfo.Selection{}, statusinfo.NewActiveTasks(tasks), statusinfo.NewQueues(queues))
 	if err != nil {
@@ -496,8 +480,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		MaxConcurrentChildTurnsPerParent: loaded.Config.Subagents.MaxConcurrentPerParent,
 		MaxChildDepth:                    loaded.Config.Subagents.MaxDepth, ProjectID: info.ID, DefaultSelection: defaultSelection,
 	}, stateDirectories, profileResolver, providerRegistry, toolProviders, permissions, pathErrorAdvisor,
-		ws, outputs, processes, func(sessionID string) string { return live.TaskIDFor(sessionID, managedtask.MainTaskID) },
-		live, live, compactionService, goals, statusRegistry, toolPanicLogger(), tasks,
+		ws, outputs, processes, live, live, compactionService, goals, statusRegistry, toolPanicLogger(), tasks,
 		func(id string) string {
 			profile, resolveErr := profileResolver.GetProfile(id)
 			if resolveErr != nil {
@@ -819,11 +802,11 @@ func (d statusReporter) mainTaskStarted(sessionID string) {
 		first = !seen
 	}
 	if first {
-		data, _ := json.Marshal(v1.TaskEvent{TaskID: managedtask.MainTaskID, SessionID: sessionID, Kind: string(managedtask.KindMain)})
-		d.live.PublishEvent(v1.Event{Type: managedtask.EventStart, SessionID: sessionID, TaskID: managedtask.MainTaskID, Data: data})
+		data, _ := json.Marshal(v1.TaskEvent{SessionID: sessionID, Kind: string(managedtask.KindMain)})
+		d.live.PublishEvent(v1.Event{Type: managedtask.EventStart, SessionID: sessionID, Data: data})
 	}
-	data, _ := json.Marshal(v1.TaskEvent{TaskID: managedtask.MainTaskID, SessionID: sessionID, Kind: string(managedtask.KindMain)})
-	d.live.PublishEvent(v1.Event{Type: managedtask.EventWorking, SessionID: sessionID, TaskID: managedtask.MainTaskID, Data: data})
+	data, _ := json.Marshal(v1.TaskEvent{SessionID: sessionID, Kind: string(managedtask.KindMain)})
+	d.live.PublishEvent(v1.Event{Type: managedtask.EventWorking, SessionID: sessionID, Data: data})
 }
 
 // mainTaskIdle emits the main task's flat idle event when a drain completes.
@@ -832,12 +815,12 @@ func (d statusReporter) mainTaskIdle(sessionID string, err error) {
 	if !d.mainTaskOwns(sessionID) {
 		return
 	}
-	payload := v1.TaskEvent{TaskID: managedtask.MainTaskID, SessionID: sessionID, Kind: string(managedtask.KindMain)}
+	payload := v1.TaskEvent{SessionID: sessionID, Kind: string(managedtask.KindMain)}
 	if err != nil && err != context.Canceled {
 		payload.Status = "error"
 	}
 	data, _ := json.Marshal(payload)
-	d.live.PublishEvent(v1.Event{Type: managedtask.EventIdle, SessionID: sessionID, TaskID: managedtask.MainTaskID, Data: data})
+	d.live.PublishEvent(v1.Event{Type: managedtask.EventIdle, SessionID: sessionID, Data: data})
 }
 
 type questionPrompter struct{}
@@ -1211,24 +1194,32 @@ func (o childSessionObserver) ChildCreated(child agent.ChildSession) {
 	o.events.ObserveSession(child.SessionID)
 }
 
-// publishTurnLifecycle publishes one flat task lifecycle event for an agent
-// task on its parent session's stream.
 type managedTaskController struct{ tasks *managedtask.Manager }
 
-func (c *managedTaskController) Interrupt(ctx context.Context, callerSession, id string) (managedtask.Active, error) {
-	return c.tasks.Interrupt(ctx, callerSession, id)
+func (c *managedTaskController) InterruptKind(ctx context.Context, callerSession, identifier string, kind managedtask.Kind) (managedtask.Active, error) {
+	return c.tasks.InterruptKind(ctx, callerSession, identifier, kind)
 }
 
 func (c *managedTaskController) ListActive(callerSession string) []managedtask.Active {
 	return c.tasks.ListActive(callerSession)
 }
 
-func (c *managedTaskController) Wait(ctx context.Context, callerSession, id string) (managedtask.Result, error) {
-	return c.tasks.Wait(ctx, callerSession, id)
+func (c *managedTaskController) WaitKind(ctx context.Context, callerSession, identifier string, kind managedtask.Kind) (managedtask.Result, error) {
+	return c.tasks.WaitKind(ctx, callerSession, identifier, kind)
 }
 
-func (c *managedTaskController) WaitKind(ctx context.Context, callerSession, id string, kind managedtask.Kind) (managedtask.Result, error) {
-	return c.tasks.WaitKind(ctx, callerSession, id, kind)
+func publishPersistentProcessEvent(live *event.Broker, item process.PersistentEvent) {
+	payload := v1.TaskEvent{SessionID: item.SessionID, ProcessID: item.ProcessID, Name: item.Name, Kind: string(managedtask.KindShell), Error: item.Error}
+	eventType := managedtask.EventStart
+	if item.Kind == process.PersistentEventFinished {
+		eventType = managedtask.EventFinished
+		payload.Status = "succeeded"
+		if item.ExitCode != nil && *item.ExitCode != 0 || item.Error != "" {
+			payload.Status = "failed"
+		}
+	}
+	data, _ := json.Marshal(payload)
+	live.PublishEvent(v1.Event{Type: eventType, SessionID: item.SessionID, Data: data})
 }
 
 func publishAgentTurnEvent(live *event.Broker, notifications *agent.CompletionNotifier, item event.BrokerEvent) func() {
@@ -1261,20 +1252,13 @@ func publishAgentTurnEvent(live *event.Broker, notifications *agent.CompletionNo
 }
 
 func publishTurnProgress(live *event.Broker, task agent.Status) {
-	data, _ := json.Marshal(v1.TaskProgress{TaskID: task.SessionID, SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
-	live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: turnEventSession(task), TaskID: task.SessionID, Data: data})
-}
-
-func turnEventSession(task agent.Status) string {
-	if task.ParentSession != "" {
-		return task.ParentSession
-	}
-	return task.SessionID
+	data, _ := json.Marshal(v1.TaskProgress{SessionID: task.SessionID, Agent: task.Agent, Status: string(task.State), Usage: v1.Usage{InputTokens: task.Usage.InputTokens, OutputTokens: task.Usage.OutputTokens, TotalTokens: task.Usage.TotalTokens, ReasoningTokens: task.Usage.ReasoningTokens, CachedInputTokens: task.Usage.CachedInputTokens}, ToolUses: task.ToolUses})
+	live.PublishEvent(v1.Event{Type: v1.EventTaskProgress, SessionID: task.SessionID, Data: data})
 }
 
 func publishTurnLifecycle(live *event.Broker, item agent.TurnLifecycleEvent) {
 	task := item.Task
-	payload := v1.TaskEvent{TaskID: task.SessionID, SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
+	payload := v1.TaskEvent{SessionID: task.SessionID, ParentSessionID: task.ParentSession, Agent: task.Agent, Name: task.Name, Kind: string(managedtask.KindAgent)}
 	eventType := ""
 	switch item.Kind {
 	case agent.TurnLifecycleStart:
@@ -1291,7 +1275,7 @@ func publishTurnLifecycle(live *event.Broker, item agent.TurnLifecycleEvent) {
 		return
 	}
 	data, _ := json.Marshal(payload)
-	live.PublishEvent(v1.Event{Type: eventType, SessionID: turnEventSession(task), TaskID: task.SessionID, Data: data})
+	live.PublishEvent(v1.Event{Type: eventType, SessionID: task.SessionID, Data: data})
 }
 
 func reportChildEvent(report func(agent.ChildProgress), item v1.Event) {

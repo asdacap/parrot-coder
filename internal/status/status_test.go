@@ -73,10 +73,10 @@ func TestActiveTasksStatus(t *testing.T) {
 		{
 			name: "stable concise list",
 			active: []task.Active{
-				{ID: "task_z", SessionID: "other-session", Kind: task.KindAgent, Status: "pending", StartedAt: startedAt, Agent: "worker", Turn: 3, Depth: 2},
-				{ID: "proc_a", SessionID: "other-session", Kind: task.KindShell, Status: "running", StartedAt: startedAt},
+				{SessionID: "ses_z", Kind: task.KindAgent, Status: "pending", StartedAt: startedAt, Agent: "worker", Turn: 3, Depth: 2},
+				{ProcessID: "proc_a", SessionID: "other-session", Kind: task.KindShell, Status: "running", StartedAt: startedAt},
 			},
-			want: "Active tasks:\n- proc_a (shell, running)\n- task_z (agent, pending, agent: worker, turn: 3, depth: 2)",
+			want: "Active tasks:\n- proc_a (shell, running)\n- ses_z (agent, pending, agent: worker, turn: 3, depth: 2)",
 		},
 	}
 	for _, test := range tests {

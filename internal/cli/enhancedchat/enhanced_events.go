@@ -10,7 +10,6 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
-	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -34,8 +33,8 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		r.contextTokens = 0
 		r.lastCompleteID = ""
 		r.turnCompleteID = ""
-		// Task ids are unique per tree, but the old session's task tree is
-		// meaningless to the new one. Rebuild it rather than carry stale nodes.
+		// Activity identities are unique per tree, but the old session's activity
+		// tree is meaningless to the new one. Rebuild it rather than carry stale nodes.
 		r.resetTaskTracker()
 		r.knownMessages = make(map[string]bool, len(messages.Items))
 		r.unsyncedMessages = make(map[string]bool)
@@ -118,7 +117,7 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 // resetTaskTracker keeps the connected server's shared presentation state so
 // task names learned by a new tree are also available to tool activity labels.
 func (r *enhancedChatRuntime) resetTaskTracker() {
-	r.subagents = taskStreamTracker{presentation: r.presentation()}
+	r.subagents = taskStreamTracker{presentation: r.presentation(), rootSessionID: r.shell.current.ID}
 }
 
 func (r *enhancedChatRuntime) markActiveAssistantsUnsynced(messages v1.MessageList) {
@@ -210,7 +209,7 @@ func (r *enhancedChatRuntime) recordUsage(item v1.Event) {
 	if status.Kind != "usage" || status.Usage == nil {
 		return
 	}
-	r.subagents.addUsage(item.TaskID, *status.Usage)
+	r.subagents.addUsage(r.shell.current.ID, item.SessionID, *status.Usage)
 	r.refreshMainTaskUsage()
 }
 
@@ -218,7 +217,7 @@ func (r *enhancedChatRuntime) recordUsage(item v1.Event) {
 // usage plus every subagent descended from the main task.
 func (r *enhancedChatRuntime) refreshMainTaskUsage() {
 	if tracker := r.subagents.Tracker(); tracker != nil {
-		r.mainTaskUsage = tracker.CumulativeUsage(managedtask.MainTaskID)
+		r.mainTaskUsage = tracker.CumulativeUsage(r.shell.current.ID, "")
 	}
 }
 
@@ -239,7 +238,7 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 			if progress.Usage.TotalTokens > 0 {
 				// The tree's total covers the agent's own subagents too; its progress
 				// report covers only itself and stands in until usage is recorded.
-				usage := r.subagents.Tracker().CumulativeUsage(item.TaskID)
+				usage := r.subagents.Tracker().CumulativeUsage(item.SessionID, "")
 				if usage.InputTokens == 0 && usage.OutputTokens == 0 {
 					usage = chatview.TaskUsage{InputTokens: progress.Usage.InputTokens, OutputTokens: progress.Usage.OutputTokens, CachedTokens: progress.Usage.CachedInputTokens}
 				}
@@ -302,7 +301,7 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 			if r.activity[i].id != report.id {
 				continue
 			}
-			r.activity[i].taskID = report.taskID
+			r.activity[i].processID = report.processID
 			r.activity[i].sessionID = report.sessionID
 			r.activity[i].parentSessionID = report.parentSessionID
 			r.activity[i].mainStatus = report.mainStatus
@@ -312,7 +311,7 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 			break
 		}
 		if !found {
-			r.activity = append(r.activity, enhancedActivityItem{id: report.id, taskID: report.taskID, sessionID: report.sessionID, parentSessionID: report.parentSessionID, mainStatus: report.mainStatus, rendered: text, style: report.style, status: "running", started: time.Now()})
+			r.activity = append(r.activity, enhancedActivityItem{id: report.id, processID: report.processID, sessionID: report.sessionID, parentSessionID: report.parentSessionID, mainStatus: report.mainStatus, rendered: text, style: report.style, status: "running", started: time.Now()})
 		}
 	}
 	return nil
@@ -320,7 +319,7 @@ func (r *enhancedChatRuntime) handleTaskEvent(item v1.Event) error {
 
 func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 	r.recordUsage(item)
-	if isTaskEvent(item) {
+	if isTaskEvent(item, r.shell.current.ID) {
 		return r.handleTaskEvent(item)
 	}
 	switch item.Type {

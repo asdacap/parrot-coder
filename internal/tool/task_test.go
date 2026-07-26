@@ -16,24 +16,24 @@ type recordingTaskController struct {
 	wait        func(context.Context, string, string, managedtask.Kind) (managedtask.Result, error)
 }
 
-func (c *recordingTaskController) Interrupt(context.Context, string, string) (managedtask.Active, error) {
+func (c *recordingTaskController) InterruptKind(context.Context, string, string, managedtask.Kind) (managedtask.Active, error) {
 	return c.interrupted, nil
 }
 
 func (c *recordingTaskController) ListActive(string) []managedtask.Active { return c.items }
-func (c *recordingTaskController) WaitKind(ctx context.Context, sessionID, taskID string, kind managedtask.Kind) (managedtask.Result, error) {
-	return c.wait(ctx, sessionID, taskID, kind)
+func (c *recordingTaskController) WaitKind(ctx context.Context, sessionID, identifier string, kind managedtask.Kind) (managedtask.Result, error) {
+	return c.wait(ctx, sessionID, identifier, kind)
 }
 
 func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
-	controller := &recordingTaskController{wait: func(_ context.Context, sessionID, taskID string, kind managedtask.Kind) (managedtask.Result, error) {
-		if sessionID != "session" || taskID != "task_agent" || kind != managedtask.KindAgent {
-			t.Fatalf("wait = %q, %q, %q", sessionID, taskID, kind)
+	controller := &recordingTaskController{wait: func(_ context.Context, sessionID, childSessionID string, kind managedtask.Kind) (managedtask.Result, error) {
+		if sessionID != "session" || childSessionID != "session-agent" || kind != managedtask.KindAgent {
+			t.Fatalf("wait = %q, %q, %q", sessionID, childSessionID, kind)
 		}
-		return managedtask.Result{ID: taskID, Kind: managedtask.KindAgent, Status: "succeeded", Output: "done"}, nil
+		return managedtask.Result{SessionID: childSessionID, Kind: managedtask.KindAgent, Status: "succeeded", Output: "done"}, nil
 	}}
 	item := &WaitTool{Kind: managedtask.KindAgent, Controller: controller}
-	plan, err := item.Plan(context.Background(), json.RawMessage(`{"session_id":"task_agent"}`), CallContext{SessionID: "session"})
+	plan, err := item.Plan(context.Background(), json.RawMessage(`{"session_id":"session-agent"}`), CallContext{SessionID: "session"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,18 +41,18 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Metadata["task_id"] != "task_agent" || result.Metadata["kind"] != "agent" || result.Metadata["status"] != "succeeded" || result.Metadata["output"] != "done" {
+	if result.Metadata["session_id"] != "session-agent" || result.Metadata["kind"] != "agent" || result.Metadata["status"] != "succeeded" || result.Metadata["output"] != "done" {
 		t.Fatalf("completion = %s", result.Text)
 	}
 	if _, ok := result.Metadata["elapsed_ms"].(float64); !ok || result.Metadata["yielded"] != nil {
 		t.Fatalf("completion metadata = %#v", result.Metadata)
 	}
 
-	controller.wait = func(ctx context.Context, _, taskID string, _ managedtask.Kind) (managedtask.Result, error) {
+	controller.wait = func(ctx context.Context, _, childSessionID string, _ managedtask.Kind) (managedtask.Result, error) {
 		<-ctx.Done()
-		return managedtask.Result{ID: taskID, Kind: managedtask.KindAgent, Status: "running"}, ctx.Err()
+		return managedtask.Result{SessionID: childSessionID, Kind: managedtask.KindAgent, Status: "running"}, ctx.Err()
 	}
-	plan, err = item.Plan(context.Background(), json.RawMessage(`{"session_id":"task_agent","yield_after_ms":1}`), CallContext{SessionID: "session"})
+	plan, err = item.Plan(context.Background(), json.RawMessage(`{"session_id":"session-agent","yield_after_ms":1}`), CallContext{SessionID: "session"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,13 +60,13 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Metadata["task_id"] != "task_agent" || result.Metadata["kind"] != "agent" || result.Metadata["status"] != "running" || result.Metadata["yielded"] != true {
+	if result.Metadata["session_id"] != "session-agent" || result.Metadata["kind"] != "agent" || result.Metadata["status"] != "running" || result.Metadata["yielded"] != true {
 		t.Fatalf("yield = %s", result.Text)
 	}
 	if elapsed, ok := result.Metadata["elapsed_ms"].(float64); !ok || elapsed < 1 {
 		t.Fatalf("elapsed_ms = %#v", result.Metadata["elapsed_ms"])
 	}
-	if described, err := item.DescribeRequest(plan.CanonicalInput); err != nil || described != "Wait for agent task_agent" {
+	if described, err := item.DescribeRequest(plan.CanonicalInput); err != nil || described != "Wait for agent session-agent" {
 		t.Fatalf("description = %q, %v", described, err)
 	}
 }
@@ -82,10 +82,16 @@ func TestWaitTaskYieldsForNewAndPendingSteer(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			started := make(chan struct{}, 1)
-			controller := &recordingTaskController{wait: func(ctx context.Context, _, taskID string, kind managedtask.Kind) (managedtask.Result, error) {
+			controller := &recordingTaskController{wait: func(ctx context.Context, _, identifier string, kind managedtask.Kind) (managedtask.Result, error) {
 				started <- struct{}{}
 				<-ctx.Done()
-				return managedtask.Result{ID: taskID, Kind: kind, Status: "running"}, ctx.Err()
+				result := managedtask.Result{Kind: kind, Status: "running"}
+				if kind == managedtask.KindShell {
+					result.ProcessID = identifier
+				} else {
+					result.SessionID = identifier
+				}
+				return result, ctx.Err()
 			}}
 			item := &WaitTool{Kind: test.kind, Controller: controller}
 			plan, err := item.Plan(context.Background(), json.RawMessage(test.raw), CallContext{SessionID: "session"})
@@ -160,7 +166,7 @@ func TestWaitTaskRejectsInvalidRequestsAndPropagatesCancellation(t *testing.T) {
 func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	started := time.Date(2026, time.July, 19, 1, 2, 3, 0, time.UTC)
 	controller := &recordingTaskController{interrupted: managedtask.Active{
-		ID: "proc_test", SessionID: "session", Kind: managedtask.KindShell, Status: "canceled", StartedAt: started,
+		ProcessID: "proc_test", SessionID: "session", Kind: managedtask.KindShell, Status: "canceled", StartedAt: started,
 	}}
 	list := &TaskTool{Kind: "task_list_active", Controller: controller}
 	plan, err := list.Plan(context.Background(), json.RawMessage(`{}`), CallContext{SessionID: "session"})
@@ -176,7 +182,7 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	}
 
 	interrupt := &TaskTool{Kind: "task_interrupt", Controller: controller}
-	plan, err = interrupt.Plan(context.Background(), json.RawMessage(`{"task_id":"proc_test"}`), CallContext{SessionID: "session"})
+	plan, err = interrupt.Plan(context.Background(), json.RawMessage(`{"process_id":"proc_test"}`), CallContext{SessionID: "session"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +190,7 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Text != `{"task_id":"proc_test","session_id":"session","kind":"shell","status":"canceled","started_at":"2026-07-19T01:02:03Z"}` {
+	if result.Text != `{"session_id":"session","process_id":"proc_test","kind":"shell","status":"canceled","started_at":"2026-07-19T01:02:03Z"}` {
 		t.Fatalf("interrupt = %s", result.Text)
 	}
 

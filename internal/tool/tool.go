@@ -45,7 +45,6 @@ type CallContext struct {
 	Workspace       *workspace.Workspace
 	Outputs         *OutputStore
 	SessionID       string
-	TaskID          string
 	Changes         *change.Service
 	Processes       *process.Runner
 	Todos           *session.TodoService

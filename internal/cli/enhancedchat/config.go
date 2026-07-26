@@ -309,17 +309,18 @@ func (s *chatShell) slash(name, arguments string) (bool, int) {
 }
 
 type taskReport struct {
-	id, taskID, sessionID, parentSessionID, line, block, blockKind, blockLanguage string
-	terminal, emitPlain, skip, mainStatus                                         bool
-	style                                                                         terminal.TextStyle
+	id, processID, sessionID, parentSessionID, line, block, blockKind, blockLanguage string
+	terminal, emitPlain, skip, mainStatus                                            bool
+	style                                                                            terminal.TextStyle
 }
 
 // taskStreamTracker adapts the shared task tree tracker to the enhanced chat
 // activity list. The tracker owns every parent-child task relationship; the
 // enhanced runtime only renders the reports it returns.
 type taskStreamTracker struct {
-	tracker      *chatview.TaskTracker
-	presentation chatview.Presentations
+	tracker       *chatview.TaskTracker
+	presentation  chatview.Presentations
+	rootSessionID string
 }
 
 func (t *taskStreamTracker) Tracker() *chatview.TaskTracker {
@@ -328,31 +329,36 @@ func (t *taskStreamTracker) Tracker() *chatview.TaskTracker {
 
 // ensure builds the tracker on first use. The main task's usage is recorded
 // before any task event may have arrived, so creation cannot wait for describe.
-func (t *taskStreamTracker) ensure() *chatview.TaskTracker {
+func (t *taskStreamTracker) ensure(rootSessionID string) *chatview.TaskTracker {
+	if rootSessionID != "" {
+		t.rootSessionID = rootSessionID
+	}
 	if t.tracker == nil {
-		t.tracker = chatview.NewTaskTracker()
+		t.tracker = chatview.NewTaskTracker(t.rootSessionID)
 		t.tracker.Presentation = t.presentation
 	}
 	return t.tracker
 }
 
-func (t *taskStreamTracker) addUsage(taskID string, usage v1.Usage) {
-	t.ensure().AddUsage(taskID, usage)
+func (t *taskStreamTracker) addUsage(rootSessionID, sessionID string, usage v1.Usage) {
+	t.ensure(rootSessionID).AddUsage(sessionID, "", usage)
 }
 
 func (t *taskStreamTracker) describe(item v1.Event, thinking bool) ([]taskReport, error) {
-	reports, err := t.ensure().Apply(item, thinking)
+	reports, err := t.ensure(t.rootSessionID).Apply(item, thinking)
 	if err != nil {
 		return nil, err
 	}
 	result := make([]taskReport, len(reports))
 	for i, report := range reports {
-		result[i] = taskReport{id: report.ID, taskID: report.TaskID, sessionID: report.SessionID, parentSessionID: report.ParentSessionID, line: report.Line, block: report.Block, blockKind: report.BlockKind, blockLanguage: report.BlockLanguage, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, mainStatus: report.MainStatus, style: report.Style}
+		result[i] = taskReport{id: report.ID, processID: report.ProcessID, sessionID: report.SessionID, parentSessionID: report.ParentSessionID, line: report.Line, block: report.Block, blockKind: report.BlockKind, blockLanguage: report.BlockLanguage, terminal: report.Terminal, emitPlain: report.EmitPlain, skip: report.Skip, mainStatus: report.MainStatus, style: report.Style}
 	}
 	return result, nil
 }
 
-func isTaskEvent(item v1.Event) bool { return chatview.IsTaskEvent(item) }
+func isTaskEvent(item v1.Event, rootSessionID string) bool {
+	return chatview.IsTaskEvent(item, rootSessionID)
+}
 
 func chatExitReason(code int) string {
 	if code == exitInterrupt {

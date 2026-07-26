@@ -40,7 +40,7 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 	input := map[string]any{
 		"path": "src/main.go", "file": "src/main.go", "pattern": "needle", "id": "out_1",
 		"patchText": "", "command": "go build ./...", "cmd": "go test ./...",
-		"task_id": "proc_1", "chars": "hello", "name": "deploy", "url": "https://example.com",
+		"process_id": "proc_1", "chars": "hello", "name": "deploy", "url": "https://example.com",
 		"todos":     []any{map[string]any{"content": "a"}, map[string]any{"content": "b"}},
 		"questions": []any{map[string]any{"header": "Pick"}, map[string]any{"header": "Other"}},
 	}

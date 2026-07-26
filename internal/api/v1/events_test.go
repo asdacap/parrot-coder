@@ -37,8 +37,8 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 		},
 		{
 			name:  "task progress",
-			event: v1.Event{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","agent":"explore","status":"running","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"reasoning_tokens":1,"cached_input_tokens":3},"tool_uses":4}`)},
-			want:  &v1.TaskProgress{TaskID: "task_1", Agent: "explore", Status: "running", Usage: v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}, ToolUses: 4},
+			event: v1.Event{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"session_id":"ses_child","agent":"explore","status":"running","usage":{"input_tokens":10,"output_tokens":2,"total_tokens":12,"reasoning_tokens":1,"cached_input_tokens":3},"tool_uses":4}`)},
+			want:  &v1.TaskProgress{SessionID: "ses_child", Agent: "explore", Status: "running", Usage: v1.Usage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}, ToolUses: 4},
 		},
 		{
 			name:  "message part delta",
@@ -57,13 +57,13 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 		},
 		{
 			name:  "task start",
-			event: v1.Event{Type: v1.EventTaskStart, TaskID: "task_1", Data: json.RawMessage(`{"task_id":"task_1","session_id":"ses_child","parent_session_id":"ses_parent","kind":"agent","agent":"explore","name":"explore-happy-otter"}`)},
-			want:  &v1.TaskEvent{TaskID: "task_1", SessionID: "ses_child", ParentSessionID: "ses_parent", Kind: "agent", Agent: "explore", Name: "explore-happy-otter"},
+			event: v1.Event{Type: v1.EventTaskStart, Data: json.RawMessage(`{"session_id":"ses_child","parent_session_id":"ses_parent","kind":"agent","agent":"explore","name":"explore-happy-otter"}`)},
+			want:  &v1.TaskEvent{SessionID: "ses_child", ParentSessionID: "ses_parent", Kind: "agent", Agent: "explore", Name: "explore-happy-otter"},
 		},
 		{
 			name:  "task finished",
-			event: v1.Event{Type: v1.EventTaskFinished, TaskID: "task_1", Data: json.RawMessage(`{"task_id":"task_1","session_id":"ses_child","kind":"agent","status":"failed","error":"boom"}`)},
-			want:  &v1.TaskEvent{TaskID: "task_1", SessionID: "ses_child", Kind: "agent", Status: "failed", Error: "boom"},
+			event: v1.Event{Type: v1.EventTaskFinished, Data: json.RawMessage(`{"session_id":"ses_parent","process_id":"proc_1","kind":"shell","status":"failed","error":"boom"}`)},
+			want:  &v1.TaskEvent{SessionID: "ses_parent", ProcessID: "proc_1", Kind: "shell", Status: "failed", Error: "boom"},
 		},
 	}
 
@@ -84,8 +84,10 @@ func TestDecodeSessionInputEventDataRejectsUnknownFields(t *testing.T) {
 	for _, event := range []v1.Event{
 		{Type: v1.EventSessionInputAdmitted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","content":"hello","delivery":"steer","extra":true}`)},
 		{Type: v1.EventSessionInputPromoted, Data: json.RawMessage(`{"input_id":"inp_1","message_id":"msg_1","extra":true}`)},
-		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task_id":"task_1","agent":"explore","status":"running","usage":{},"tool_uses":0,"extra":true}`)},
-		{Type: v1.EventTaskStart, Data: json.RawMessage(`{"task_id":"task_1","kind":"agent","extra":true}`)},
+		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"session_id":"ses_child","agent":"explore","status":"running","usage":{},"tool_uses":0,"extra":true}`)},
+		{Type: v1.EventTaskStart, Data: json.RawMessage(`{"session_id":"ses_child","kind":"agent","extra":true}`)},
+		{Type: v1.EventTaskProgress, Data: json.RawMessage(`{"task` + `_id":"task_1","session_id":"ses_child","agent":"explore","status":"running","usage":{},"tool_uses":0}`)},
+		{Type: v1.EventTaskStart, Data: json.RawMessage(`{"task` + `_id":"task_1","session_id":"ses_child","kind":"agent"}`)},
 		{Type: v1.EventCodeDisplay, Data: json.RawMessage(`{"tool_call_id":"call_1","source":"x","extra":true}`)},
 	} {
 		if _, err := v1.DecodeEventData(event); err == nil {

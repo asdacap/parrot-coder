@@ -87,7 +87,7 @@ type PersistentCompletion struct {
 // PersistentTask identifies an active managed process, its owning session, and
 // when it started.
 type PersistentTask struct {
-	ID        string
+	ProcessID string
 	Name      string
 	SessionID string
 	StartedAt time.Time
@@ -375,7 +375,7 @@ func (r *Runner) announcePersistent(item *persistentProcess) {
 	item.announced = true
 	started := item.started
 	item.mu.Unlock()
-	r.emitPersistent(PersistentEvent{Kind: PersistentEventStart, SessionID: item.sessionID, TaskID: item.id, Name: item.name, StartedAt: started})
+	r.emitPersistent(PersistentEvent{Kind: PersistentEventStart, SessionID: item.sessionID, ProcessID: item.id, Name: item.name, StartedAt: started})
 	select {
 	case <-item.finished:
 		item.mu.Lock()
@@ -392,7 +392,7 @@ func (r *Runner) announcePersistent(item *persistentProcess) {
 }
 
 func finishedPersistentEvent(item *persistentProcess, exitCode *int, waitErr error) PersistentEvent {
-	event := PersistentEvent{Kind: PersistentEventFinished, SessionID: item.sessionID, TaskID: item.id, Name: item.name, StartedAt: item.started, ExitCode: exitCode}
+	event := PersistentEvent{Kind: PersistentEventFinished, SessionID: item.sessionID, ProcessID: item.id, Name: item.name, StartedAt: item.started, ExitCode: exitCode}
 	if waitErr != nil {
 		event.Error = waitErr.Error()
 	}
@@ -964,7 +964,7 @@ func (r *Runner) removePersistent(item *persistentProcess) {
 	}
 	r.mu.Unlock()
 	if r.config.Tasks != nil {
-		r.config.Tasks.Unregister(item.id)
+		r.config.Tasks.Unregister(managedtask.Snapshot{SessionID: item.sessionID, ProcessID: item.id, Kind: managedtask.KindShell})
 	}
 }
 
@@ -1004,13 +1004,13 @@ func (r *Runner) ListActivePersistent(sessionID string) []PersistentTask {
 		case <-item.finished:
 			continue
 		default:
-			tasks = append(tasks, PersistentTask{ID: item.id, Name: item.name, SessionID: item.sessionID, StartedAt: item.started})
+			tasks = append(tasks, PersistentTask{ProcessID: item.id, Name: item.name, SessionID: item.sessionID, StartedAt: item.started})
 		}
 	}
 	r.mu.RUnlock()
 	sort.Slice(tasks, func(i, j int) bool {
 		if tasks[i].StartedAt.Equal(tasks[j].StartedAt) {
-			return tasks[i].ID < tasks[j].ID
+			return tasks[i].ProcessID < tasks[j].ProcessID
 		}
 		return tasks[i].StartedAt.Before(tasks[j].StartedAt)
 	})
@@ -1046,10 +1046,10 @@ func (r *Runner) InterruptPersistent(sessionID, processID string) (PersistentTas
 	delete(r.reservedNames, item.id)
 	r.mu.Unlock()
 	if r.config.Tasks != nil {
-		r.config.Tasks.Unregister(item.id)
+		r.config.Tasks.Unregister(managedtask.Snapshot{SessionID: item.sessionID, ProcessID: item.id, Kind: managedtask.KindShell})
 	}
 	r.terminatePersistent(item)
-	return PersistentTask{ID: item.id, Name: item.name, SessionID: item.sessionID, StartedAt: item.started}, nil
+	return PersistentTask{ProcessID: item.id, Name: item.name, SessionID: item.sessionID, StartedAt: item.started}, nil
 }
 
 type managedShellTask struct {
@@ -1068,7 +1068,7 @@ func (t *managedShellTask) Snapshot() managedtask.Snapshot {
 		}
 	default:
 	}
-	snapshot := managedtask.Snapshot{ID: t.process.id, Name: t.process.name, SessionID: t.process.sessionID, Kind: managedtask.KindShell, Status: status, StartedAt: t.process.started}
+	snapshot := managedtask.Snapshot{ProcessID: t.process.id, Name: t.process.name, SessionID: t.process.sessionID, Kind: managedtask.KindShell, Status: status, StartedAt: t.process.started}
 	t.process.mu.Unlock()
 	return snapshot
 }
@@ -1095,7 +1095,7 @@ func (t *managedShellTask) Interrupt(ctx context.Context) (managedtask.Snapshot,
 	case <-ctx.Done():
 		return managedtask.Snapshot{}, ctx.Err()
 	}
-	return managedtask.Snapshot{ID: item.ID, Name: item.Name, SessionID: item.SessionID, Kind: managedtask.KindShell, Status: "canceled", StartedAt: item.StartedAt}, nil
+	return managedtask.Snapshot{ProcessID: item.ProcessID, Name: item.Name, SessionID: item.SessionID, Kind: managedtask.KindShell, Status: "canceled", StartedAt: item.StartedAt}, nil
 }
 
 // SuspendSession prevents new shell-task notifications for one session,
@@ -1135,7 +1135,7 @@ func (r *Runner) InterruptSession(sessionID string) error {
 	items := r.takeSessionProcesses(sessionID, false)
 	for _, item := range items {
 		if r.config.Tasks != nil {
-			r.config.Tasks.Unregister(item.id)
+			r.config.Tasks.Unregister(managedtask.Snapshot{SessionID: item.sessionID, ProcessID: item.id, Kind: managedtask.KindShell})
 		}
 		r.terminatePersistent(item)
 	}
@@ -1153,7 +1153,7 @@ func (r *Runner) DeleteSession(sessionID string) error {
 	items := r.takeSessionProcesses(sessionID, true)
 	for _, item := range items {
 		if r.config.Tasks != nil {
-			r.config.Tasks.Unregister(item.id)
+			r.config.Tasks.Unregister(managedtask.Snapshot{SessionID: item.sessionID, ProcessID: item.id, Kind: managedtask.KindShell})
 		}
 		r.terminatePersistent(item)
 	}
@@ -1236,7 +1236,7 @@ func (r *Runner) Close() error {
 	r.mu.Unlock()
 	for _, item := range items {
 		if r.config.Tasks != nil {
-			r.config.Tasks.Unregister(item.id)
+			r.config.Tasks.Unregister(managedtask.Snapshot{SessionID: item.sessionID, ProcessID: item.id, Kind: managedtask.KindShell})
 		}
 		r.terminatePersistent(item)
 	}

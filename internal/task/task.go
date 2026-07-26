@@ -17,10 +17,6 @@ const (
 	KindShell Kind = "shell"
 )
 
-// MainTaskID identifies the main task every session starts with. Agent tasks
-// use their child session ID, while shell tasks use their process ID.
-const MainTaskID = "task_main"
-
 // Lifecycle statuses emitted as flat task events on a session's event stream.
 const (
 	EventStart    = "task.start"
@@ -30,9 +26,9 @@ const (
 )
 
 type Snapshot struct {
-	ID        string    `json:"task_id"`
 	Name      string    `json:"name,omitempty"`
-	SessionID string    `json:"session_id"`
+	SessionID string    `json:"session_id,omitempty"`
+	ProcessID string    `json:"process_id,omitempty"`
 	Kind      Kind      `json:"kind"`
 	Status    string    `json:"status"`
 	StartedAt time.Time `json:"started_at,omitempty"`
@@ -67,7 +63,7 @@ type ObserverFactory interface {
 
 var (
 	ErrNotFound      = errors.New("task: not found")
-	ErrDuplicate     = errors.New("task: duplicate ID")
+	ErrDuplicate     = errors.New("task: duplicate identity")
 	ErrWrongKind     = errors.New("task: wrong kind")
 	ErrAmbiguousName = errors.New("task: ambiguous name")
 )
@@ -80,83 +76,66 @@ type entry struct {
 	visible Visibility
 }
 
+type domainKey struct {
+	kind      Kind
+	sessionID string
+	processID string
+}
+
 // Manager is the session-scoped index of all managed shell and agent tasks.
 // Execution remains owned by each Task implementation.
 type Manager struct {
 	mu    sync.RWMutex
-	tasks map[string]entry
+	tasks map[domainKey]entry
 }
 
-func NewManager() *Manager { return &Manager{tasks: make(map[string]entry)} }
+func NewManager() *Manager { return &Manager{tasks: make(map[domainKey]entry)} }
 
 func (m *Manager) Register(item Task, visible Visibility) error {
 	if m == nil || item == nil || visible == nil {
 		return errors.New("task: task and visibility are required")
 	}
-	snapshot := item.Snapshot()
-	if snapshot.ID == "" || snapshot.SessionID == "" {
-		return errors.New("task: task ID and session ID are required")
+	key, err := domainKeyFor(item.Snapshot())
+	if err != nil {
+		return err
 	}
-	id := snapshot.ID
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.tasks[id]; ok {
+	if _, ok := m.tasks[key]; ok {
 		return ErrDuplicate
 	}
-	m.tasks[id] = entry{task: item, visible: visible}
+	m.tasks[key] = entry{task: item, visible: visible}
 	return nil
 }
 
-func (m *Manager) Unregister(id string) {
+func (m *Manager) Unregister(snapshot Snapshot) {
 	if m == nil {
 		return
 	}
+	key, err := domainKeyFor(snapshot)
+	if err != nil {
+		return
+	}
 	m.mu.Lock()
-	delete(m.tasks, id)
+	delete(m.tasks, key)
 	m.mu.Unlock()
-}
-
-func (m *Manager) Get(callerSession, id string) (Task, error) {
-	if m == nil || callerSession == "" || id == "" {
-		return nil, ErrNotFound
-	}
-	m.mu.RLock()
-	item, ok := m.tasks[id]
-	m.mu.RUnlock()
-	if !ok || !item.visible(callerSession) {
-		return nil, ErrNotFound
-	}
-	if observer, ok := item.task.(ObserverFactory); ok {
-		return observer.Observe(), nil
-	}
-	return item.task, nil
 }
 
 // Resolve returns a caller-visible task of the expected kind. Exact canonical
 // IDs take precedence over friendly-name lookup.
 func (m *Manager) Resolve(callerSession, identifier string, kind Kind) (Task, error) {
-	item, err := m.resolve(callerSession, identifier, kind, true)
+	item, err := m.resolve(callerSession, identifier, kind)
 	if err != nil {
 		return nil, err
 	}
 	return observedTask(item), nil
 }
 
-// ResolveAny returns a caller-visible task by canonical ID or friendly name.
-func (m *Manager) ResolveAny(callerSession, identifier string) (Task, error) {
-	item, err := m.resolve(callerSession, identifier, "", false)
-	if err != nil {
-		return nil, err
-	}
-	return observedTask(item), nil
-}
-
-func (m *Manager) resolve(callerSession, identifier string, kind Kind, enforceKind bool) (Task, error) {
+func (m *Manager) resolve(callerSession, identifier string, kind Kind) (Task, error) {
 	if m == nil || callerSession == "" || identifier == "" {
 		return nil, ErrNotFound
 	}
 	m.mu.RLock()
-	exact, exactFound := m.tasks[identifier]
 	items := make([]entry, 0, len(m.tasks))
 	for _, item := range m.tasks {
 		items = append(items, item)
@@ -164,20 +143,28 @@ func (m *Manager) resolve(callerSession, identifier string, kind Kind, enforceKi
 	m.mu.RUnlock()
 	// Visibility callbacks can consult their owning managers, so invoke them
 	// without holding the task index lock.
-	if exactFound && exact.visible(callerSession) {
-		if enforceKind && exact.task.Snapshot().Kind != kind {
-			return nil, ErrWrongKind
+	wrongKind := false
+	for _, item := range items {
+		snapshot := item.task.Snapshot()
+		if !item.visible(callerSession) || domainIdentifier(snapshot) != identifier {
+			continue
 		}
-		return exact.task, nil
+		if snapshot.Kind != kind {
+			wrongKind = true
+			continue
+		}
+		return item.task, nil
+	}
+	if wrongKind {
+		return nil, ErrWrongKind
 	}
 	var found Task
-	wrongKind := false
 	for _, item := range items {
 		snapshot := item.task.Snapshot()
 		if !item.visible(callerSession) || snapshot.Name != identifier {
 			continue
 		}
-		if enforceKind && snapshot.Kind != kind {
+		if snapshot.Kind != kind {
 			wrongKind = true
 			continue
 		}
@@ -219,27 +206,18 @@ func (m *Manager) ListActive(callerSession string) []Snapshot {
 			result = append(result, snapshot)
 		}
 	}
-	sort.Slice(result, func(i, j int) bool { return result[i].ID < result[j].ID })
+	sort.Slice(result, func(i, j int) bool { return domainIdentifier(result[i]) < domainIdentifier(result[j]) })
 	return result
 }
 
-// Interrupt stops a caller-visible task and returns its latest snapshot.
-func (m *Manager) Interrupt(ctx context.Context, callerSession, id string) (Snapshot, error) {
-	item, err := m.ResolveAny(callerSession, id)
+// InterruptKind stops a caller-visible task resolved by its domain identity or
+// friendly name and returns its latest snapshot.
+func (m *Manager) InterruptKind(ctx context.Context, callerSession, identifier string, kind Kind) (Snapshot, error) {
+	item, err := m.Resolve(callerSession, identifier, kind)
 	if err != nil {
 		return Snapshot{}, err
 	}
 	return item.Interrupt(ctx)
-}
-
-// Wait observes a caller-visible task without affecting its execution. If the
-// wait context expires, the latest snapshot is returned with the context error.
-func (m *Manager) Wait(ctx context.Context, callerSession, id string) (Result, error) {
-	item, err := m.Get(callerSession, id)
-	if err != nil {
-		return Result{}, err
-	}
-	return waitTask(ctx, item)
 }
 
 // WaitKind waits for a task resolved by canonical ID or friendly name and
@@ -257,17 +235,24 @@ func waitTask(ctx context.Context, item Task) (Result, error) {
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			snapshot := item.Snapshot()
-			return Result{ID: snapshot.ID, Name: snapshot.Name, Kind: snapshot.Kind, Status: snapshot.Status}, err
+			return resultFromSnapshot(snapshot), err
 		}
 		return Result{}, err
 	}
-	return Result{ID: completion.Task.ID, Name: completion.Task.Name, Kind: completion.Task.Kind, Status: completion.Task.Status, ExitCode: completion.ExitCode, Output: completion.Output, Error: completion.Error}, nil
+	result := resultFromSnapshot(completion.Task)
+	result.ExitCode, result.Output, result.Error = completion.ExitCode, completion.Output, completion.Error
+	return result, nil
+}
+
+func resultFromSnapshot(snapshot Snapshot) Result {
+	return Result{SessionID: snapshot.SessionID, ProcessID: snapshot.ProcessID, Name: snapshot.Name, Kind: snapshot.Kind, Status: snapshot.Status}
 }
 
 // Result describes the state observed by a task wait. Output is populated for
 // agent tasks; shell output remains available through the process tools.
 type Result struct {
-	ID        string `json:"task_id"`
+	SessionID string `json:"session_id,omitempty"`
+	ProcessID string `json:"process_id,omitempty"`
 	Name      string `json:"name,omitempty"`
 	Kind      Kind   `json:"kind"`
 	Status    string `json:"status"`
@@ -276,4 +261,31 @@ type Result struct {
 	ExitCode  *int   `json:"exit_code,omitempty"`
 	Output    string `json:"output,omitempty"`
 	Error     string `json:"error,omitempty"`
+}
+
+func domainKeyFor(snapshot Snapshot) (domainKey, error) {
+	if snapshot.SessionID == "" {
+		return domainKey{}, errors.New("task: session ID is required")
+	}
+	key := domainKey{kind: snapshot.Kind, sessionID: snapshot.SessionID, processID: snapshot.ProcessID}
+	switch snapshot.Kind {
+	case KindAgent:
+		if snapshot.ProcessID != "" {
+			return domainKey{}, errors.New("task: agent cannot have a process ID")
+		}
+	case KindShell:
+		if snapshot.ProcessID == "" {
+			return domainKey{}, errors.New("task: shell process ID is required")
+		}
+	default:
+		return domainKey{}, errors.New("task: unsupported kind")
+	}
+	return key, nil
+}
+
+func domainIdentifier(snapshot Snapshot) string {
+	if snapshot.Kind == KindShell {
+		return snapshot.ProcessID
+	}
+	return snapshot.SessionID
 }

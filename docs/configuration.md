@@ -333,21 +333,21 @@ optional. Names contain only ASCII letters, digits, `_`, or `-`.
 
 Parrot includes the reusable child-agent profiles `explorer`, `worker`, and
 `review`. Start them with `agent_spawn`, which returns the child `session_id`.
-That child session ID is also the agent task's canonical ID. `agent_send`
-accepts either that ID or the friendly name assigned by `agent_spawn` as its
-`session_id`. Delivered content is prefixed with the sender's trusted friendly
-name, falling back to its canonical session ID when no name is available. A
-child may also use `agent_send` with its direct parent's canonical ID or
+`agent_send` accepts either that `session_id` or the friendly name assigned by
+`agent_spawn`. Delivered content is prefixed with the sender's trusted friendly
+name, falling back to its canonical `session_id` when no name is available. A
+child may also use `agent_send` with its direct parent's `session_id` or
 non-empty friendly name; siblings and other ancestors are not accessible.
 Completion notifications to the direct parent remain automatic. If either the
 user-wide or direct-parent child concurrency limit is full, `agent_spawn` still
 returns the admitted child session immediately with `status: "blocked"`. The
 child starts when both limits have capacity. A blocked child is a normal active
-task: use `wait_agent` to wait for it or `task_interrupt` to cancel it before it
-starts.
-Shell tasks use process IDs with `wait_process`, `write_stdin`, and
+agent session: use `wait_agent` to wait for it or `task_interrupt` to cancel it
+before it starts.
+Shell processes use `process_id` with `wait_process`, `write_stdin`, and
 `task_interrupt`, and automatically notify their owning session on completion.
-`task_list_active` discovers both kinds using those same identities. Use
+`task_list_active` discovers agents by `session_id` and shell processes by
+`process_id`. Use
 `explorer` for specific, well-scoped codebase
 questions; it is runtime-enforced read-only. Use `worker` for implementation
 and production work; it can modify files and run commands within the authorized

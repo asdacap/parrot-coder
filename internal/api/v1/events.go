@@ -30,16 +30,14 @@ const (
 	EventCodeDisplay          = "tool.code.display"
 )
 
-// Event is used for both durable and disposable live events. Sequence and
-// CreatedAt are present only for durable session events. TaskID identifies the
-// task which produced the event; child-session activity uses the child session
-// ID as its task ID. Task events are flat: a subtask's events are never nested
-// inside a parent task's event, they carry their own task_id and session_id.
+// Event is used for both durable and disposable live events. SessionID always
+// identifies the session which produced the event, including when the broker
+// routes descendant activity to an ancestor subscription. Sequence and
+// CreatedAt are present only for durable session events.
 type Event struct {
 	ID        string          `json:"id"`
 	Type      string          `json:"type"`
 	SessionID string          `json:"session_id,omitempty"`
-	TaskID    string          `json:"task_id,omitempty"`
 	Sequence  *int64          `json:"sequence,omitempty"`
 	Data      json.RawMessage `json:"data"`
 	CreatedAt *time.Time      `json:"created_at,omitempty"`
@@ -66,7 +64,6 @@ type Usage struct {
 }
 
 type TaskProgress struct {
-	TaskID    string `json:"task_id"`
 	SessionID string `json:"session_id,omitempty"`
 	Agent     string `json:"agent"`
 	Status    string `json:"status"`
@@ -88,15 +85,14 @@ type CodeDisplay struct {
 	StartLine  int    `json:"start_line,omitempty"`
 }
 
-// TaskEvent is the flat lifecycle record every task emits. Every task belongs
-// directly to SessionID; ParentSessionID links that session into the hierarchy.
-// The event envelope may name an ancestor stream when descendant activity is
-// forwarded, while these fields retain the task's actual ownership. Status and
-// Error are set on task.finished.
+// TaskEvent is the flat lifecycle record every task emits. SessionID identifies
+// the owning session and ParentSessionID links agent sessions into the
+// hierarchy. ProcessID identifies shell tasks. Status and Error are set on
+// task.finished.
 type TaskEvent struct {
-	TaskID          string `json:"task_id"`
 	SessionID       string `json:"session_id"`
 	ParentSessionID string `json:"parent_session_id,omitempty"`
+	ProcessID       string `json:"process_id,omitempty"`
 	Kind            string `json:"kind"`
 	Agent           string `json:"agent,omitempty"`
 	Name            string `json:"name,omitempty"`

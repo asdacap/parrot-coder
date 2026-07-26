@@ -61,7 +61,7 @@ func (p ActiveTasks) Observe(_ context.Context, query Query) (Observation, error
 		return Observation{Available: true, Text: "Active tasks: none"}, nil
 	}
 	active := append([]task.Active(nil), p.tasks.ListActive(query.SessionID)...)
-	sort.Slice(active, func(i, j int) bool { return active[i].ID < active[j].ID })
+	sort.Slice(active, func(i, j int) bool { return activeIdentifier(active[i]) < activeIdentifier(active[j]) })
 	if len(active) == 0 {
 		return Observation{Available: true, Text: "Active tasks: none"}, nil
 	}
@@ -75,9 +75,16 @@ func (p ActiveTasks) Observe(_ context.Context, query Query) (Observation, error
 			}
 			details = append(details, fmt.Sprintf("turn: %d", item.Turn), fmt.Sprintf("depth: %d", item.Depth))
 		}
-		lines = append(lines, fmt.Sprintf("- %s (%s)", item.ID, strings.Join(details, ", ")))
+		lines = append(lines, fmt.Sprintf("- %s (%s)", activeIdentifier(item), strings.Join(details, ", ")))
 	}
 	return Observation{Available: true, Text: strings.Join(lines, "\n")}, nil
+}
+
+func activeIdentifier(item task.Active) string {
+	if item.Kind == task.KindShell {
+		return item.ProcessID
+	}
+	return item.SessionID
 }
 
 type queueLister interface {

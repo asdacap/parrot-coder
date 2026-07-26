@@ -17,7 +17,7 @@ func TestManagerListsBlockedRunningAndPendingTasksAsActive(t *testing.T) {
 	t.Parallel()
 	manager := NewManager()
 	for _, status := range []string{"blocked", "running", "pending", "succeeded"} {
-		err := manager.Register(testTask{snapshot: Snapshot{ID: "task-" + status, SessionID: "session", Kind: KindAgent, Status: status}}, func(string) bool { return true })
+		err := manager.Register(testTask{snapshot: Snapshot{SessionID: "session-" + status, Kind: KindAgent, Status: status}}, func(string) bool { return true })
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -28,7 +28,7 @@ func TestManagerListsBlockedRunningAndPendingTasksAsActive(t *testing.T) {
 	}
 }
 
-func TestManagerRegisterRequiresTaskAndSessionIDs(t *testing.T) {
+func TestManagerRegisterRequiresDomainIdentity(t *testing.T) {
 	t.Parallel()
 
 	for _, test := range []struct {
@@ -36,9 +36,12 @@ func TestManagerRegisterRequiresTaskAndSessionIDs(t *testing.T) {
 		snapshot Snapshot
 		wantErr  bool
 	}{
-		{name: "missing task ID", snapshot: Snapshot{SessionID: "session"}, wantErr: true},
-		{name: "missing session ID", snapshot: Snapshot{ID: "task"}, wantErr: true},
-		{name: "complete owner", snapshot: Snapshot{ID: "task", SessionID: "session"}},
+		{name: "missing session", snapshot: Snapshot{Kind: KindAgent}, wantErr: true},
+		{name: "agent with process", snapshot: Snapshot{SessionID: "session", ProcessID: "process", Kind: KindAgent}, wantErr: true},
+		{name: "shell without process", snapshot: Snapshot{SessionID: "session", Kind: KindShell}, wantErr: true},
+		{name: "unsupported kind", snapshot: Snapshot{SessionID: "session"}, wantErr: true},
+		{name: "agent", snapshot: Snapshot{SessionID: "session", Kind: KindAgent}},
+		{name: "shell", snapshot: Snapshot{SessionID: "session", ProcessID: "process", Kind: KindShell}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			manager := NewManager()

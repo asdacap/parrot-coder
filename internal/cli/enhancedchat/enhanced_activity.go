@@ -8,7 +8,6 @@ import (
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
-	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
 
@@ -28,27 +27,28 @@ func (r *enhancedChatRuntime) activityRows(now time.Time, columns int) []string 
 func (r *enhancedChatRuntime) activityFrames(now time.Time, columns int) []terminal.LiveFrame {
 	var frames []terminal.LiveFrame
 	if tracker := r.subagents.Tracker(); tracker != nil {
-		for _, task := range tracker.Tasks() {
-			frames = append(frames, terminal.LiveFrame{TaskID: task.TaskID, SessionID: task.SessionID, ParentSessionID: task.ParentSessionID})
+		for _, item := range tracker.Tasks() {
+			frames = append(frames, terminal.LiveFrame{SessionID: item.SessionID, ProcessID: item.ProcessID, ParentSessionID: item.ParentSessionID})
 		}
 	}
-	statusByTask := make(map[string]int)
+	statusByOrigin := make(map[string]int)
 	for _, item := range r.visibleActivity() {
-		taskID := item.taskID
-		if taskID == "" {
-			taskID = managedtask.MainTaskID
+		sessionID := item.sessionID
+		if sessionID == "" {
+			sessionID = r.shell.current.ID
 		}
-		// render appends the main task's own status frame, so an activity row that
-		// resolves to the main task must never claim that role as well.
-		mainStatus := item.mainStatus && taskID != managedtask.MainTaskID
+		key := sessionID + "\x00" + item.processID
+		// render appends the main session's own status frame, so an activity row
+		// for that session must never claim the role as well.
+		mainStatus := item.mainStatus && (sessionID != r.shell.current.ID || item.processID != "")
 		if mainStatus {
-			if previous, ok := statusByTask[taskID]; ok {
+			if previous, ok := statusByOrigin[key]; ok {
 				frames[previous].MainStatus = false
 			}
-			statusByTask[taskID] = len(frames)
+			statusByOrigin[key] = len(frames)
 		}
 		frames = append(frames, terminal.LiveFrame{
-			TaskID: taskID, SessionID: item.sessionID, ParentSessionID: item.parentSessionID, MainStatus: mainStatus,
+			SessionID: sessionID, ProcessID: item.processID, ParentSessionID: item.parentSessionID, MainStatus: mainStatus,
 			StyledActivity: []terminal.StyledText{styledActivity(item, now, columns)},
 		})
 	}
@@ -157,7 +157,7 @@ func (r *enhancedChatRuntime) isModelineActivity(item enhancedActivityItem) bool
 	if item.status == "thinking" && !item.terminal && !item.reasoning {
 		return true
 	}
-	return item.taskID == "" && item.status == "running" && !item.terminal && r.presentation().Modeline(item.toolName)
+	return item.sessionID == "" && item.processID == "" && item.status == "running" && !item.terminal && r.presentation().Modeline(item.toolName)
 }
 
 func formatReasoningActivity(item enhancedActivityItem, now time.Time, columns int) string {

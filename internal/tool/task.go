@@ -11,7 +11,7 @@ import (
 )
 
 type TaskController interface {
-	Interrupt(context.Context, string, string) (managedtask.Active, error)
+	InterruptKind(context.Context, string, string, managedtask.Kind) (managedtask.Active, error)
 	ListActive(string) []managedtask.Active
 	WaitKind(context.Context, string, string, managedtask.Kind) (managedtask.Result, error)
 }
@@ -35,14 +35,14 @@ func (t *TaskTool) ID() string { return t.Kind }
 
 func (t *TaskTool) Presentation() Presentation {
 	if t.Kind == "task_interrupt" {
-		return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"task_id"}, TaskName: true}}}}
+		return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"session_id", "process_id"}, TaskName: true}}}}
 	}
 	return Presentation{}
 }
 func (t *TaskTool) Descriptor() Descriptor {
-	description := "List active shell processes and child agent sessions visible to the current session. Returned task_id values are process IDs for shells and child session IDs for agents."
+	description := "List active shell processes and child agent sessions visible to the current session. Returned items identify agents by session_id and shells by process_id."
 	if t.Kind == "task_interrupt" {
-		description = "Interrupt a running shell process or child agent session by canonical ID or friendly name. Agent sessions are retained for follow-up messages."
+		description = "Interrupt a running shell process or child agent session by process_id or session_id. Friendly names are also accepted. Agent sessions are retained for follow-up messages."
 	}
 	return Descriptor{ID: t.ID(), Description: description, Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
@@ -55,18 +55,36 @@ func (t *TaskTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Interrupt task %s", input.TaskID), nil
+	_, identifier, err := input.identity()
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Interrupt %s", identifier), nil
 }
 
 func (t *TaskTool) JSONSchema() json.RawMessage {
 	if t.Kind == "task_interrupt" {
-		return json.RawMessage(`{"type":"object","properties":{"task_id":{"type":"string","minLength":1,"description":"Canonical process or child session ID, or friendly task name."}},"required":["task_id"],"additionalProperties":false}`)
+		return json.RawMessage(`{"type":"object","properties":{"session_id":{"type":"string","minLength":1,"description":"Canonical child agent session ID or friendly name."},"process_id":{"type":"string","minLength":1,"description":"Canonical shell process ID or friendly name."}},"oneOf":[{"required":["session_id"]},{"required":["process_id"]}],"additionalProperties":false}`)
 	}
 	return json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`)
 }
 
 type taskInput struct {
-	TaskID string `json:"task_id"`
+	SessionID string `json:"session_id"`
+	ProcessID string `json:"process_id"`
+}
+
+func (i taskInput) identity() (managedtask.Kind, string, error) {
+	switch {
+	case i.SessionID != "" && i.ProcessID != "":
+		return "", "", errors.New("task_interrupt: exactly one of session_id or process_id is required")
+	case i.SessionID != "":
+		return managedtask.KindAgent, i.SessionID, nil
+	case i.ProcessID != "":
+		return managedtask.KindShell, i.ProcessID, nil
+	default:
+		return "", "", errors.New("task_interrupt: session_id or process_id is required")
+	}
 }
 
 func (t *TaskTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
@@ -77,8 +95,10 @@ func (t *TaskTool) Plan(_ context.Context, raw json.RawMessage, call CallContext
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	if t.Kind == "task_interrupt" && input.TaskID == "" {
-		return Plan{}, errors.New("task_interrupt: task_id is required")
+	if t.Kind == "task_interrupt" {
+		if _, _, err := input.identity(); err != nil {
+			return Plan{}, err
+		}
 	}
 	if t.Kind != "task_interrupt" && t.Kind != "task_list_active" {
 		return Plan{}, errors.New("task: unknown operation")
@@ -93,7 +113,11 @@ func (t *TaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		return Result{}, errors.New("task: incompatible plan")
 	}
 	if t.Kind == "task_interrupt" {
-		item, err := t.Controller.Interrupt(ctx, call.SessionID, input.TaskID)
+		kind, identifier, err := input.identity()
+		if err != nil {
+			return Result{}, err
+		}
+		item, err := t.Controller.InterruptKind(ctx, call.SessionID, identifier, kind)
 		if err != nil {
 			return Result{}, err
 		}

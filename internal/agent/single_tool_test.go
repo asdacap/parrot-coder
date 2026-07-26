@@ -170,7 +170,7 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
 	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4},
-		testSessionStateDirectories(t), agents, providers, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, nil, goals, nil, nil, nil,
+		testSessionStateDirectories(t), agents, providers, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, goals, nil, nil, nil,
 		nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)

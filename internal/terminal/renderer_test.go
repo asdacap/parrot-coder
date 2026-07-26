@@ -69,7 +69,7 @@ func TestLiveRendererColorsLiveSurface(t *testing.T) {
 	}
 }
 
-func TestLiveRendererOrdersTaskFramesPostOrder(t *testing.T) {
+func TestLiveRendererOrdersSessionAndProcessFramesPostOrder(t *testing.T) {
 	tests := []struct {
 		name   string
 		frames []LiveFrame
@@ -79,41 +79,41 @@ func TestLiveRendererOrdersTaskFramesPostOrder(t *testing.T) {
 		{
 			name: "nested children before statuses",
 			frames: []LiveFrame{
-				{TaskID: "root", SessionID: "session-root", MainStatus: true, StyledActivity: []StyledText{{Text: "root status"}}, Prompt: PromptState{Prefix: "$ "}},
-				{TaskID: "child", SessionID: "session-child", ParentSessionID: "session-root", MainStatus: true, StyledActivity: []StyledText{{Text: "child status"}}},
-				{TaskID: "grandchild", SessionID: "session-grandchild", ParentSessionID: "session-child", StyledActivity: []StyledText{{Text: "grandchild work"}}},
+				{SessionID: "session-root", MainStatus: true, StyledActivity: []StyledText{{Text: "root status"}}, Prompt: PromptState{Prefix: "$ "}},
+				{SessionID: "session-child", ParentSessionID: "session-root", MainStatus: true, StyledActivity: []StyledText{{Text: "child status"}}},
+				{SessionID: "session-grandchild", ParentSessionID: "session-child", StyledActivity: []StyledText{{Text: "grandchild work"}}},
 			},
 			want: "grandchild work\nchild status\nroot status\n$ \n",
 		},
 		{
 			name: "orphan remains visible",
 			frames: []LiveFrame{
-				{TaskID: "orphan", SessionID: "session-orphan", ParentSessionID: "session-missing", StyledActivity: []StyledText{{Text: "orphan work"}}},
-				{TaskID: "root", SessionID: "session-root", MainStatus: true, Prompt: PromptState{Prefix: "$ "}},
+				{SessionID: "session-orphan", ParentSessionID: "session-missing", StyledActivity: []StyledText{{Text: "orphan work"}}},
+				{SessionID: "session-root", MainStatus: true, Prompt: PromptState{Prefix: "$ "}},
 			},
 			want: "orphan work\n$ \n",
 		},
 		{
-			name: "tasks sharing a session remain distinct",
+			name: "process and owning session remain distinct",
 			frames: []LiveFrame{
-				{TaskID: "shell", SessionID: "session-agent", ParentSessionID: "session-agent", StyledActivity: []StyledText{{Text: "shell work"}}},
-				{TaskID: "agent", SessionID: "session-agent", ParentSessionID: "session-main", MainStatus: true, StyledActivity: []StyledText{{Text: "agent status"}}, Prompt: PromptState{Prefix: "$ "}},
+				{SessionID: "session-agent", ProcessID: "process-shell", StyledActivity: []StyledText{{Text: "shell work"}}},
+				{SessionID: "session-agent", ParentSessionID: "session-main", MainStatus: true, StyledActivity: []StyledText{{Text: "agent status"}}, Prompt: PromptState{Prefix: "$ "}},
 			},
 			want: "shell work\nagent status\n$ \n",
 		},
 		{
 			name: "cycle rejected",
 			frames: []LiveFrame{
-				{TaskID: "one", SessionID: "session-one", ParentSessionID: "session-two"},
-				{TaskID: "two", SessionID: "session-two", ParentSessionID: "session-one"},
+				{SessionID: "session-one", ParentSessionID: "session-two"},
+				{SessionID: "session-two", ParentSessionID: "session-one"},
 			},
-			class: "frame_task_cycle",
+			class: "frame_session_cycle",
 		},
 		{
 			name: "duplicate status rejected",
 			frames: []LiveFrame{
-				{TaskID: "root", SessionID: "session-root", MainStatus: true},
-				{TaskID: "root", SessionID: "session-root", MainStatus: true},
+				{SessionID: "session-root", MainStatus: true},
+				{SessionID: "session-root", MainStatus: true},
 			},
 			class: "frame_status_conflict",
 		},

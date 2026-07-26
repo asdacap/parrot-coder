@@ -70,9 +70,10 @@ listed in agent context without warnings for tools that are absent.
 sandbox is the boundary, so confined work is not asked about. Setting
 `sandbox_permissions` to `disable_sandbox` always requires permission and runs
 with the invoking user's local authority. When a command outlives
-`exec_command`'s yield window, it remains available as a shell task and sends a
-completion message to the session that started it. Use the returned task ID
-with `write_stdin`, `wait_process`, or `task_interrupt` to interact with it.
+`exec_command`'s yield window, it remains available as a shell process and sends
+a completion message to the session that started it. Use the returned
+`process_id` with `write_stdin`, `wait_process`, or `task_interrupt` to interact
+with it.
 Linux requires Bubblewrap and
 unprivileged user namespaces; the Nix package and development shell include
 Bubblewrap. macOS uses the system Seatbelt executable. The host filesystem is

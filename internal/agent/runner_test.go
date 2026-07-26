@@ -144,7 +144,7 @@ func newUserSessionFromHarness(ctx context.Context, sessions SessionRuntime, h *
 	s := h.agentSessions
 	return NewUserSession(ctx, sessions, s.systemContext, s.queueMonitor, config,
 		r.stateDirectories, r.profiles, r.providers, r.toolProviders, r.toolAuthorizer, r.toolErrorAdvisor,
-		r.workspace, r.outputs, r.processes, r.taskIDFor, r.live, r.events, r.compactor, r.goals, r.status, r.toolPanicLogger,
+		r.workspace, r.outputs, r.processes, r.live, r.events, r.compactor, r.goals, r.status, r.toolPanicLogger,
 		s.childTasks, s.identityFor, s.recursionLimitFor, s.childNameGenerator, s.onChildDiscard)
 }
 
@@ -453,17 +453,23 @@ type blockingTaskController struct {
 	interrupts atomic.Int32
 }
 
-func (c *blockingTaskController) Interrupt(context.Context, string, string) (managedtask.Active, error) {
+func (c *blockingTaskController) InterruptKind(context.Context, string, string, managedtask.Kind) (managedtask.Active, error) {
 	c.interrupts.Add(1)
 	return managedtask.Active{}, nil
 }
 
 func (*blockingTaskController) ListActive(string) []managedtask.Active { return nil }
 
-func (c *blockingTaskController) WaitKind(ctx context.Context, _, taskID string, kind managedtask.Kind) (managedtask.Result, error) {
+func (c *blockingTaskController) WaitKind(ctx context.Context, _, identifier string, kind managedtask.Kind) (managedtask.Result, error) {
 	close(c.started)
 	<-ctx.Done()
-	return managedtask.Result{ID: taskID, Kind: kind, Status: "running"}, ctx.Err()
+	result := managedtask.Result{Kind: kind, Status: "running"}
+	if kind == managedtask.KindShell {
+		result.ProcessID = identifier
+	} else {
+		result.SessionID = identifier
+	}
+	return result, ctx.Err()
 }
 
 type fakeTool struct {
@@ -576,7 +582,7 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 		MaxConcurrentTools: 2,
 		CleanupTimeout:     time.Second,
 	}, MaxConcurrentChildTurns: 8, MaxConcurrentChildTurnsPerParent: 4},
-		stateDirectories, agents, providers, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, nil, goals, nil, nil, nil,
+		stateDirectories, agents, providers, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, goals, nil, nil, nil,
 		nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -1703,7 +1709,7 @@ func TestAgentSessionRepositoryRestoresPersistedChildHierarchy(t *testing.T) {
 	}
 	select {
 	case item := <-parentEvents:
-		if item.Type != v1.EventSessionStatus || item.SessionID != parent.ID || item.TaskID != nested.ID || string(item.Data) != string(data) {
+		if item.Type != v1.EventSessionStatus || item.SessionID != nested.ID || string(item.Data) != string(data) {
 			t.Fatalf("restored durable projection = %#v", item)
 		}
 	case <-time.After(time.Second):

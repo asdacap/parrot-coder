@@ -20,12 +20,11 @@ type Broker struct {
 	transient *TransientRepository
 	hierarchy SessionHierarchy
 
-	mu        sync.RWMutex
-	watching  map[string]*Subscription
-	observer  map[string]map[uint64]func(v1.Event)
-	taskIDFor func(string) string
-	next      uint64
-	handler   func(BrokerEvent) func()
+	mu       sync.RWMutex
+	watching map[string]*Subscription
+	observer map[string]map[uint64]func(v1.Event)
+	next     uint64
+	handler  func(BrokerEvent) func()
 }
 
 func NewBroker(durable *Repository, transient *TransientRepository, hierarchy ...SessionHierarchy) *Broker {
@@ -77,8 +76,7 @@ func (b *Broker) ForgetSession(sessionID string) {
 func (b *Broker) forwardDurable(sessionID string, subscription *Subscription) {
 	for item := range subscription.Events {
 		event := v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, Data: item.Data}
-		event.TaskID = b.TaskIDFor(event.SessionID, "")
-		b.notify(sessionID, event)
+		b.notify(event.SessionID, event)
 		b.project(event)
 	}
 }
@@ -87,31 +85,6 @@ func (b *Broker) SetSessionHierarchy(hierarchy SessionHierarchy) {
 	b.mu.Lock()
 	b.hierarchy = hierarchy
 	b.mu.Unlock()
-}
-
-// SetTaskIDFor installs the fallback resolver for ordinary sessions.
-func (b *Broker) SetTaskIDFor(resolver func(string) string) {
-	b.mu.Lock()
-	b.taskIDFor = resolver
-	b.mu.Unlock()
-}
-
-// TaskIDFor returns the task owning a session, or fallback for an ordinary
-// session. It is suitable for agent runner task attribution.
-func (b *Broker) TaskIDFor(sessionID, fallback string) string {
-	b.mu.RLock()
-	hierarchy := b.hierarchy
-	resolver := b.taskIDFor
-	b.mu.RUnlock()
-	if hierarchy != nil {
-		if _, ok := hierarchy.ChildRelation(sessionID); ok {
-			return sessionID
-		}
-	}
-	if resolver != nil {
-		return resolver(sessionID)
-	}
-	return fallback
 }
 
 // ObserveTransient receives transient events produced directly by sessionID.
@@ -200,9 +173,6 @@ func (b *Broker) PublishEvent(item v1.Event) {
 	if b == nil {
 		return
 	}
-	if item.TaskID == "" {
-		item.TaskID = b.TaskIDFor(item.SessionID, "")
-	}
 	b.notify(item.SessionID, item)
 	b.transient.PublishEvent(item)
 	b.project(item)
@@ -210,7 +180,7 @@ func (b *Broker) PublishEvent(item v1.Event) {
 
 func (b *Broker) project(item v1.Event) {
 	origin := item.SessionID
-	taskID := item.TaskID
+	route := origin
 	seen := map[string]bool{origin: true}
 	for {
 		b.mu.RLock()
@@ -219,22 +189,17 @@ func (b *Broker) project(item v1.Event) {
 		if hierarchy == nil {
 			return
 		}
-		parent, ok := hierarchy.ChildRelation(origin)
+		parent, ok := hierarchy.ChildRelation(route)
 		if !ok || parent == "" || seen[parent] {
 			return
-		}
-		if taskID == "" {
-			taskID = origin
 		}
 		seen[parent] = true
 		projected := item
 		projected.ID = ""
-		projected.SessionID = parent
-		projected.TaskID = taskID
 		projected.Sequence = nil
 		projected.CreatedAt = nil
-		b.transient.PublishEvent(projected)
-		origin = parent
+		b.transient.publishTo(parent, projected)
+		route = parent
 	}
 }
 
@@ -296,5 +261,5 @@ func (b *Broker) ReplayAndSubscribe(ctx context.Context, sessionID string, after
 
 func (b *Broker) durableEvent(item Event) v1.Event {
 	sequence, createdAt := item.Sequence, item.CreatedAt
-	return v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, TaskID: b.TaskIDFor(item.SessionID, ""), Sequence: &sequence, Data: item.Data, CreatedAt: &createdAt}
+	return v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, Sequence: &sequence, Data: item.Data, CreatedAt: &createdAt}
 }

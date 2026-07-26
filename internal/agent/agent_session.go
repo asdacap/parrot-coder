@@ -39,7 +39,6 @@ type agentSession struct {
 	workspace              *workspace.Workspace
 	outputs                *tool.OutputStore
 	processes              *process.Runner
-	taskIDFor              func(string) string
 	live                   LivePublisher
 	compactor              Compactor
 	goals                  *session.GoalService
@@ -822,7 +821,7 @@ func newAgentSession(
 	queueMonitor QueueMonitor,
 	config AgentSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
-	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner, taskIDFor func(string) string,
+	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
 	live LivePublisher, compactor Compactor, goals *session.GoalService, statusObserver StatusObserver,
 	toolPanicLogger func(context.Context, string, string, any, []byte),
 	maxConcurrentChildTurns int,
@@ -841,7 +840,7 @@ func newAgentSession(
 	return &agentSession{
 		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, queueMonitor: queueMonitor, config: config,
 		stateDirectories: stateDirectories, profiles: profiles, providers: providers,
-		workspace: workspace, outputs: outputs, processes: processes, taskIDFor: taskIDFor,
+		workspace: workspace, outputs: outputs, processes: processes,
 		live: live, compactor: compactor, goals: goals, statusObserver: statusObserver, toolPanicLogger: toolPanicLogger,
 		status: status, events: events, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
 		maxChildPromptBytes: maxChildPromptBytes, maxChildResultBytes: maxChildResultBytes,
@@ -1347,11 +1346,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 					logger(ctx, r.dto.ID, call.call.Name, recovered, stack)
 				}
 			}
-			taskID := ""
-			if r.taskIDFor != nil {
-				taskID = r.taskIDFor(r.dto.ID)
-			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.workspace, Outputs: r.outputs, SessionID: r.dto.ID, TaskID: taskID, Processes: r.processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile), Steer: r.steerSignal()}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.workspace, Outputs: r.outputs, SessionID: r.dto.ID, Processes: r.processes, Agent: profile.ID, ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileStatus(profile), Steer: r.steerSignal()}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

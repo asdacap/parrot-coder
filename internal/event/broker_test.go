@@ -52,28 +52,6 @@ func TestBrokerPublishesPredefinedEventsSynchronously(t *testing.T) {
 	noopStop()
 }
 
-func TestBrokerAttributesOrdinaryAndChildSessions(t *testing.T) {
-	hierarchy := fakeHierarchy{"child": "parent"}
-	broker := event.NewBroker(nil, nil, hierarchy)
-	broker.SetTaskIDFor(func(string) string { return "main" })
-	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
-
-	for _, test := range []struct {
-		sessionID string
-		want      string
-	}{
-		{sessionID: "ordinary", want: "main"},
-		{sessionID: "child", want: "child"},
-	} {
-		events, closeSubscription := broker.Subscribe(test.sessionID, 1)
-		broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: test.sessionID, Data: data})
-		if item := <-events; item.TaskID != test.want {
-			t.Fatalf("%s task = %q, want %q", test.sessionID, item.TaskID, test.want)
-		}
-		closeSubscription()
-	}
-}
-
 func TestBrokerProjectsDescendantsToEveryAncestor(t *testing.T) {
 	hierarchy := fakeHierarchy{
 		"child":      "parent",
@@ -88,14 +66,9 @@ func TestBrokerProjectsDescendantsToEveryAncestor(t *testing.T) {
 
 	broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "grandchild", Data: data})
 	for name, item := range map[string]v1.Event{"parent": <-parent, "child": <-child} {
-		if item.SessionID != name || item.TaskID != "grandchild" || item.Sequence != nil || item.CreatedAt != nil {
+		if item.SessionID != "grandchild" || item.Sequence != nil || item.CreatedAt != nil {
 			t.Fatalf("%s projection = %#v", name, item)
 		}
-	}
-
-	broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "grandchild", TaskID: "nested", Data: data})
-	if item := <-parent; item.TaskID != "nested" {
-		t.Fatalf("explicit task attribution = %#v", item)
 	}
 }
 
@@ -115,7 +88,7 @@ func TestBrokerObserveSessionProjectsDurableEvents(t *testing.T) {
 	}
 	select {
 	case item := <-parent:
-		if item.ID == "" || item.SessionID != "parent" || item.TaskID != childSessionID || item.Type != v1.EventSessionStatus || string(item.Data) != string(data) {
+		if item.ID == "" || item.SessionID != childSessionID || item.Type != v1.EventSessionStatus || item.Sequence != nil || item.CreatedAt != nil || string(item.Data) != string(data) {
 			t.Fatalf("durable projection = %#v", item)
 		}
 	case <-time.After(time.Second):

@@ -112,31 +112,30 @@ event publication is serialized and all tools settle before continuation.
 
 ## Sessions and Tasks
 
-A session is a user session; it has an id and exactly one main task. A task is
-a unit of work within a session: the main task runs the session's own turns, and
-a task starts other tasks — agent tasks through `agent_spawn` and shell tasks
-through backgrounded `exec_command` processes. Child-agent and yielded shell
-tasks directly steer completion messages into their owning sessions. A task may
-have a parent task, so tasks form a tree rooted at the session's main task. The
-main task of a subagent child session is the subagent task itself.
+A session is a user session; it has an ID and runs its own turns. Sessions can
+start child-agent sessions through `agent_spawn` and shell processes through
+`exec_command`. Child agents and yielded shell processes directly steer
+completion messages into their owning sessions. Agent lifecycle and tools use
+`session_id`; shell lifecycle and process tools use `process_id`.
 
-Child-agent tasks admitted while a child concurrency limit is full have a
+Child-agent sessions admitted while a child concurrency limit is full have a
 `blocked` status until both their user-wide and direct-parent quotas are
-available. They can be waited on or interrupted like running tasks.
+available. They can be waited on or interrupted like running agents.
 
-Tasks emit a flat lifecycle on their session's event stream: `task.start`,
+Work emits a flat lifecycle on the session event stream: `task.start`,
 `task.working`, `task.idle`, and `task.finished`. A blocked child emits
-`task.start`, followed by `task.working` when it acquires quota. Task events are never
-nested inside a parent task's event. Every event instead carries the
-`task_id` of the task which produced it and the `session_id` of its stream,
-and `task.start` carries the `parent_task_id`. A child session's events are
-republished on its parent's stream as-is, keeping their own type, data, and
-task attribution, so a client needs one subscription regardless of subagent
-recursion.
+`task.start`, followed by `task.working` when it acquires quota. Lifecycle
+events are never nested inside a parent's event. Every event identifies its
+producer by `session_id`. Agent `task.start` events carry `parent_session_id` to
+form the lifecycle hierarchy, while shell lifecycle events also carry
+`process_id` to distinguish processes in the producing session. A child
+session's events are republished on its parent's stream as-is, keeping their
+own type, data, and producer attribution, so a client needs one subscription
+regardless of subagent recursion.
 
-Clients own the task tree. The server emits only flat events; the client
-tracks which task is a child of which from `parent_task_id`, and an event
-referencing a task the client has never seen produces an unknown-task error.
+Clients own the lifecycle tree. The server emits only flat events; the client
+tracks agent-session parentage from `parent_session_id`. An event referencing
+a session the client has never seen produces an unknown-session error.
 
 ## Context Epochs
 

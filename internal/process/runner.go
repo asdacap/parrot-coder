@@ -57,12 +57,12 @@ const (
 	PersistentEventFinished = "finished"
 )
 
-// PersistentEvent is one flat shell-task lifecycle emission. A shell task is a
-// persistent process which outlived the command that started it.
+// PersistentEvent is one flat process lifecycle emission. A managed process is
+// a persistent process which outlived the command that started it.
 type PersistentEvent struct {
 	Kind      string
 	SessionID string
-	TaskID    string
+	ProcessID string
 	Name      string
 	StartedAt time.Time
 	ExitCode  *int
