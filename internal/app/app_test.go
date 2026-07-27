@@ -1468,23 +1468,36 @@ func decodeAgentSessionEvent(t *testing.T, item v1.Event) *v1.AgentSessionEvent 
 }
 
 func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
-	live := event.NewBroker(nil, nil, testSessionHierarchy{"child": {ParentSessionID: "parent"}})
-	parentEvents, unsubscribeParent := live.Subscribe("parent", 2)
-	defer unsubscribeParent()
-	var progress []agent.ChildProgress
-	stop := live.ObserveTransient("child", func(item v1.Event) {
-		reportChildEvent(func(item agent.ChildProgress) { progress = append(progress, item) }, item)
-	})
-	defer stop()
-
-	usage, _ := json.Marshal(v1.SessionStatus{MessageID: "child-message", Kind: "usage", Usage: &v1.Usage{TotalTokens: 42}})
-	live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "child", Data: usage})
-	item := <-parentEvents
-	if item.Type != v1.EventSessionStatus || item.SessionID != "child" {
-		t.Fatalf("projection = %#v", item)
+	hierarchy := testSessionHierarchy{
+		"child":      {ParentSessionID: "parent"},
+		"grandchild": {ParentSessionID: "child"},
+		"unrelated":  {ParentSessionID: "other"},
 	}
-	if len(progress) != 1 || progress[0].Usage.TotalTokens != 42 {
-		t.Fatalf("progress = %#v", progress)
+	live := event.NewBroker(nil, nil, hierarchy)
+	var parentProgress, childProgress []agent.ChildProgress
+	parentStop := publishAgentTurnEvent(live, nil, event.BrokerEvent{Name: event.TurnWorking, Payload: agent.TurnWorkingEvent{
+		Status: agent.Status{SessionID: "parent"},
+		Report: func(item agent.ChildProgress) { parentProgress = append(parentProgress, item) },
+	}})
+	defer parentStop()
+	childStop := publishAgentTurnEvent(live, nil, event.BrokerEvent{Name: event.TurnWorking, Payload: agent.TurnWorkingEvent{
+		Status: agent.Status{SessionID: "child", ParentSession: "parent"},
+		Report: func(item agent.ChildProgress) { childProgress = append(childProgress, item) },
+	}})
+	defer childStop()
+
+	usage, _ := json.Marshal(v1.SessionStatus{MessageID: "grandchild-message", Kind: "usage", Usage: &v1.Usage{
+		InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3,
+	}})
+	toolCall, _ := json.Marshal(v1.SessionStatus{Kind: "tool_call_complete"})
+	live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "grandchild", Data: usage})
+	live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "child", Data: toolCall})
+	live.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "unrelated", Data: usage})
+
+	for name, progress := range map[string][]agent.ChildProgress{"parent": parentProgress, "child": childProgress} {
+		if len(progress) != 2 || progress[0].Usage != (agent.ChildUsage{InputTokens: 10, OutputTokens: 2, TotalTokens: 12, ReasoningTokens: 1, CachedInputTokens: 3}) || progress[1].ToolUses != 1 {
+			t.Fatalf("%s progress = %#v", name, progress)
+		}
 	}
 }
 

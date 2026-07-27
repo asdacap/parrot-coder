@@ -77,6 +77,129 @@ func TestBrokerProjectsDescendantsToEveryAncestor(t *testing.T) {
 	}
 }
 
+func TestNilBrokerObserversAreNoops(t *testing.T) {
+	var broker *event.Broker
+	broker.ObserveTransient("session", func(v1.Event) {})()
+	broker.ObserveTransientSubtree("session", func(v1.Event) {})()
+}
+
+func TestBrokerObserveTransientSubtreeFollowsDynamicHierarchyAndStopsExactlyOnce(t *testing.T) {
+	hierarchy := fakeHierarchy{"child": "parent"}
+	broker := event.NewBroker(nil, nil, hierarchy)
+	var direct, subtree []string
+	stopDirect := broker.ObserveTransient("parent", func(item v1.Event) { direct = append(direct, item.SessionID) })
+	defer stopDirect()
+	stopSubtree := broker.ObserveTransientSubtree("parent", func(item v1.Event) { subtree = append(subtree, item.SessionID) })
+
+	broker.PublishEvent(statusEvent("child"))
+	hierarchy["child"] = "other"
+	broker.PublishEvent(statusEvent("child"))
+	broker.PublishEvent(statusEvent("parent"))
+	stopSubtree()
+	stopSubtree()
+	broker.PublishEvent(statusEvent("parent"))
+
+	if got, want := direct, []string{"parent", "parent"}; !equalStrings(got, want) {
+		t.Fatalf("direct observations = %v, want %v", got, want)
+	}
+	if got, want := subtree, []string{"child", "parent"}; !equalStrings(got, want) {
+		t.Fatalf("subtree observations = %v, want %v", got, want)
+	}
+}
+
+func TestBrokerObserveTransientSubtreeStopsAtCycles(t *testing.T) {
+	broker := event.NewBroker(nil, nil, fakeHierarchy{"child": "parent", "parent": "child"})
+	calls := 0
+	broker.ObserveTransientSubtree("parent", func(v1.Event) { calls++ })
+	broker.ObserveTransientSubtree("child", func(v1.Event) { calls++ })
+
+	broker.PublishEvent(statusEvent("child"))
+	if calls != 2 {
+		t.Fatalf("subtree observer calls = %d, want 2", calls)
+	}
+}
+
+func TestBrokerPublishesStreamsBeforeObserversAndPermitsReentrancy(t *testing.T) {
+	broker := event.NewBroker(nil, nil, fakeHierarchy{"child": "parent"})
+	child, closeChild := broker.Subscribe("child", 2)
+	defer closeChild()
+	parent, closeParent := broker.Subscribe("parent", 2)
+	defer closeParent()
+	callbacks := 0
+	broker.ObserveTransientSubtree("parent", func(item v1.Event) {
+		callbacks++
+		if callbacks == 1 {
+			if got := <-child; got.SessionID != "child" {
+				t.Fatalf("child stream event = %#v", got)
+			}
+			if got := <-parent; got.SessionID != "child" || got.ID != "" {
+				t.Fatalf("parent projection = %#v", got)
+			}
+			broker.PublishEvent(statusEvent("child"))
+		}
+	})
+
+	broker.PublishEvent(statusEvent("child"))
+	if callbacks != 2 {
+		t.Fatalf("callbacks = %d, want 2", callbacks)
+	}
+	if got := <-child; got.SessionID != "child" {
+		t.Fatalf("reentrant child stream event = %#v", got)
+	}
+	if got := <-parent; got.SessionID != "child" || got.ID != "" {
+		t.Fatalf("reentrant parent projection = %#v", got)
+	}
+}
+
+func statusEvent(sessionID string) v1.Event {
+	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
+	return v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data}
+}
+
+func equalStrings(got, want []string) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range got {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func TestBrokerForwardsDurableStreamsBeforeObservers(t *testing.T) {
+	_, repository, childSessionID := newRepository(t)
+	broker := event.NewBroker(repository, nil, fakeHierarchy{childSessionID: "parent"})
+	parent, closeParent := broker.Subscribe("parent", 1)
+	defer closeParent()
+	observed := make(chan struct{})
+	broker.ObserveTransientSubtree("parent", func(item v1.Event) {
+		if item.SessionID != childSessionID {
+			return
+		}
+		select {
+		case projected := <-parent:
+			if projected.SessionID != childSessionID || projected.ID != "" {
+				t.Errorf("durable projection = %#v", projected)
+			}
+		case <-time.After(time.Second):
+			t.Error("durable observer ran before stream projection")
+		}
+		close(observed)
+	})
+	broker.ObserveSession(childSessionID)
+
+	if _, err := repository.Append(context.Background(), childSessionID, []event.NewEvent{{Type: v1.EventSessionStatus, Data: json.RawMessage(`{"kind":"running"}`)}}, nil); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-observed:
+	case <-time.After(time.Second):
+		t.Fatal("did not observe durable event")
+	}
+}
+
 func TestBrokerObserveSessionProjectsDurableEvents(t *testing.T) {
 	_, repository, childSessionID := newRepository(t)
 	hierarchy := fakeHierarchy{childSessionID: "parent"}

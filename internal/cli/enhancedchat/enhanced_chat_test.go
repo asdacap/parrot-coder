@@ -1124,6 +1124,46 @@ func TestEnhancedModelineUsageAggregatesNestedActivitiesRegisteredAfterUsage(t *
 	}
 }
 
+func TestEnhancedNestedProgressUsesCurrentModelineUsageWithoutCountingAgain(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}, knownMessages: map[string]bool{}}
+	runtime.resetRuntimeActivityTracker()
+	for _, item := range []v1.Event{
+		runtimeActivityStart("child", "session-main", "explore"),
+		runtimeActivityStart("grandchild", "child", "review"),
+	} {
+		if err := runtime.handleEvent(item); err != nil {
+			t.Fatal(err)
+		}
+	}
+	usage := v1.Usage{InputTokens: 40, OutputTokens: 5, CachedInputTokens: 10, TotalTokens: 45, InputCost: 0.25}
+	usageData, _ := json.Marshal(v1.SessionStatus{MessageID: "assistant", Kind: "usage", Usage: &usage})
+	if err := runtime.handleEvent(runtimeActivityEvent("grandchild", v1.EventSessionStatus, usageData)); err != nil {
+		t.Fatal(err)
+	}
+	want := chatview.RuntimeActivityUsage{InputTokens: 40, OutputTokens: 5, CachedTokens: 10, Cost: 0.25}
+	if runtime.runtimeUsage != want || formatRuntimeActivityTokenUsage(runtime.runtimeUsage) != "+40i +5o (+25.00% cache)" {
+		t.Fatalf("usage before parent progress = %#v", runtime.runtimeUsage)
+	}
+
+	progress, _ := json.Marshal(v1.AgentSessionProgress{Agent: "explore", Status: "running", Usage: usage, ToolUses: 2})
+	if err := runtime.handleEvent(runtimeActivityEvent("child", v1.EventAgentSessionProgress, progress)); err != nil {
+		t.Fatal(err)
+	}
+	if runtime.runtimeUsage != want {
+		t.Fatalf("aggregate parent progress changed modeline usage: %#v", runtime.runtimeUsage)
+	}
+	found := false
+	for _, item := range runtime.activity {
+		line := formatActivity(item, item.started)
+		if item.sessionID == "child" && strings.Contains(line, "+40i +5o (+25.00% cache) · 2 tools") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("parent activity did not show current subtree usage: %#v", runtime.activity)
+	}
+}
+
 func TestEnhancedRuntimeUsageResetsWhenRuntimeActivityTreeChangesSession(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}}
 	runtime.runtimeUsage = chatview.RuntimeActivityUsage{InputTokens: 10, OutputTokens: 2, Cost: 0.1}

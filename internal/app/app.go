@@ -1373,7 +1373,7 @@ func publishAgentTurnEvent(live *event.Broker, notifications *agent.CompletionNo
 	case event.TurnWorking:
 		if working, ok := item.Payload.(agent.TurnWorkingEvent); ok {
 			publishTurnLifecycle(live, agent.TurnLifecycleEvent{Kind: agent.TurnLifecycleWorking, Status: working.Status})
-			stop = live.ObserveTransient(working.Status.SessionID, func(item v1.Event) { reportChildEvent(working.Report, item) })
+			stop = live.ObserveTransientSubtree(working.Status.SessionID, func(item v1.Event) { reportChildEvent(working.Report, item) })
 		}
 	case event.TurnProgress:
 		if status, ok := item.Payload.(agent.Status); ok {

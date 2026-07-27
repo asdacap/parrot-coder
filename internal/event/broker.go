@@ -20,11 +20,12 @@ type Broker struct {
 	transient *TransientRepository
 	hierarchy SessionHierarchy
 
-	mu       sync.RWMutex
-	watching map[string]*Subscription
-	observer map[string]map[uint64]func(v1.Event)
-	next     uint64
-	handler  func(BrokerEvent) func()
+	mu              sync.RWMutex
+	watching        map[string]*Subscription
+	observer        map[string]map[uint64]func(v1.Event)
+	subtreeObserver map[string]map[uint64]func(v1.Event)
+	next            uint64
+	handler         func(BrokerEvent) func()
 }
 
 func NewBroker(durable *Repository, transient *TransientRepository, hierarchy ...SessionHierarchy) *Broker {
@@ -37,7 +38,7 @@ func NewBroker(durable *Repository, transient *TransientRepository, hierarchy ..
 	}
 	return &Broker{
 		durable: durable, transient: transient, hierarchy: sessions,
-		watching: make(map[string]*Subscription), observer: make(map[string]map[uint64]func(v1.Event)),
+		watching: make(map[string]*Subscription), observer: make(map[string]map[uint64]func(v1.Event)), subtreeObserver: make(map[string]map[uint64]func(v1.Event)),
 	}
 }
 
@@ -76,8 +77,9 @@ func (b *Broker) ForgetSession(sessionID string) {
 func (b *Broker) forwardDurable(sessionID string, subscription *Subscription) {
 	for item := range subscription.Events {
 		event := v1.Event{ID: item.ID, Type: item.Type, SessionID: item.SessionID, Data: item.Data}
-		b.notify(event.SessionID, event)
 		b.project(event)
+		b.notify(event.SessionID, event)
+		b.notifySubtree(event)
 	}
 }
 
@@ -90,24 +92,40 @@ func (b *Broker) SetSessionHierarchy(hierarchy SessionHierarchy) {
 // ObserveTransient receives transient events produced directly by sessionID.
 // It is used for subagent accounting without coupling the event package to it.
 func (b *Broker) ObserveTransient(sessionID string, observer func(v1.Event)) func() {
+	if b == nil {
+		return func() {}
+	}
+	return b.observeTransient(b.observer, sessionID, observer)
+}
+
+// ObserveTransientSubtree receives transient events produced by sessionID or
+// any of its descendants according to the hierarchy at delivery time.
+func (b *Broker) ObserveTransientSubtree(sessionID string, observer func(v1.Event)) func() {
+	if b == nil {
+		return func() {}
+	}
+	return b.observeTransient(b.subtreeObserver, sessionID, observer)
+}
+
+func (b *Broker) observeTransient(observersBySession map[string]map[uint64]func(v1.Event), sessionID string, observer func(v1.Event)) func() {
 	if b == nil || observer == nil {
 		return func() {}
 	}
 	b.mu.Lock()
 	id := b.next
 	b.next++
-	if b.observer[sessionID] == nil {
-		b.observer[sessionID] = make(map[uint64]func(v1.Event))
+	if observersBySession[sessionID] == nil {
+		observersBySession[sessionID] = make(map[uint64]func(v1.Event))
 	}
-	b.observer[sessionID][id] = observer
+	observersBySession[sessionID][id] = observer
 	b.mu.Unlock()
 	var once sync.Once
 	return func() {
 		once.Do(func() {
 			b.mu.Lock()
-			delete(b.observer[sessionID], id)
-			if len(b.observer[sessionID]) == 0 {
-				delete(b.observer, sessionID)
+			delete(observersBySession[sessionID], id)
+			if len(observersBySession[sessionID]) == 0 {
+				delete(observersBySession, sessionID)
 			}
 			b.mu.Unlock()
 		})
@@ -116,11 +134,29 @@ func (b *Broker) ObserveTransient(sessionID string, observer func(v1.Event)) fun
 
 func (b *Broker) notify(sessionID string, item v1.Event) {
 	b.mu.RLock()
-	observers := make([]func(v1.Event), 0, len(b.observer[sessionID]))
-	for _, observer := range b.observer[sessionID] {
+	observers := snapshotObservers(b.observer[sessionID])
+	b.mu.RUnlock()
+	notifyObservers(observers, item)
+}
+
+func (b *Broker) notifySubtree(item v1.Event) {
+	for _, sessionID := range b.ancestry(item.SessionID) {
+		b.mu.RLock()
+		observers := snapshotObservers(b.subtreeObserver[sessionID])
+		b.mu.RUnlock()
+		notifyObservers(observers, item)
+	}
+}
+
+func snapshotObservers(registered map[uint64]func(v1.Event)) []func(v1.Event) {
+	observers := make([]func(v1.Event), 0, len(registered))
+	for _, observer := range registered {
 		observers = append(observers, observer)
 	}
-	b.mu.RUnlock()
+	return observers
+}
+
+func notifyObservers(observers []func(v1.Event), item v1.Event) {
 	for _, observer := range observers {
 		observer(item)
 	}
@@ -173,34 +209,41 @@ func (b *Broker) PublishEvent(item v1.Event) {
 	if b == nil {
 		return
 	}
-	b.notify(item.SessionID, item)
 	b.transient.PublishEvent(item)
 	b.project(item)
+	b.notify(item.SessionID, item)
+	b.notifySubtree(item)
 }
 
 func (b *Broker) project(item v1.Event) {
-	origin := item.SessionID
-	route := origin
-	seen := map[string]bool{origin: true}
-	for {
-		b.mu.RLock()
-		hierarchy := b.hierarchy
-		b.mu.RUnlock()
-		if hierarchy == nil {
-			return
-		}
-		parent, ok := hierarchy.ChildRelation(route)
-		if !ok || parent == "" || seen[parent] {
-			return
-		}
-		seen[parent] = true
+	for _, parent := range b.ancestry(item.SessionID)[1:] {
 		projected := item
 		projected.ID = ""
 		projected.Sequence = nil
 		projected.CreatedAt = nil
 		b.transient.publishProjection(parent, projected)
-		route = parent
 	}
+}
+
+func (b *Broker) ancestry(origin string) []string {
+	route := []string{origin}
+	seen := map[string]bool{origin: true}
+	for current := origin; current != ""; {
+		b.mu.RLock()
+		hierarchy := b.hierarchy
+		b.mu.RUnlock()
+		if hierarchy == nil {
+			break
+		}
+		parent, ok := hierarchy.ChildRelation(current)
+		if !ok || parent == "" || seen[parent] {
+			break
+		}
+		route = append(route, parent)
+		seen[parent] = true
+		current = parent
+	}
+	return route
 }
 
 // Stream combines the durable replay/continuation and transient subscription.
