@@ -1275,7 +1275,7 @@ func TestManagedAgentSessionInterruptsItself(t *testing.T) {
 	}
 }
 
-func TestChildTurnWithoutFinalAssistantMessageSucceedsAndResets(t *testing.T) {
+func TestGoalCompletionToolProducesFinalAssistantAndResets(t *testing.T) {
 	started := make(chan struct{})
 	release := make(chan struct{})
 	var h *runnerHarness
@@ -1291,7 +1291,7 @@ func TestChildTurnWithoutFinalAssistantMessageSucceedsAndResets(t *testing.T) {
 			<-release
 			call := protocol.ToolCall{ID: "call-finish", Name: "finish", Input: json.RawMessage(`{}`)}
 			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
-		case 1:
+		case 1, 2:
 			return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 		default:
 			return nil, errors.New("unexpected provider turn")
@@ -1314,7 +1314,7 @@ func TestChildTurnWithoutFinalAssistantMessageSucceedsAndResets(t *testing.T) {
 	}
 	close(release)
 	completed, err := observation.Wait(t.Context())
-	if err != nil || completed.State != StatusSucceeded || completed.Output != "" || completed.Error != "" || !completed.NoFinalMessage {
+	if err != nil || completed.State != StatusSucceeded || completed.Output != "" || completed.Error != "" || completed.NoFinalMessage {
 		t.Fatalf("completion = %#v, %v", completed, err)
 	}
 
@@ -1345,25 +1345,62 @@ func TestChildTurnWithoutFinalAssistantMessageSucceedsAndResets(t *testing.T) {
 	}
 }
 
-func TestPromptStillRequiresFinalAssistantMessage(t *testing.T) {
+func TestPromptAcceptsEmptyFinalAssistantAfterGoalCompletionTool(t *testing.T) {
 	var h *runnerHarness
 	item := &fakeTool{id: "finish", execute: func(context.Context) (tool.Result, error) {
-		_, err := h.goals.UpdateAgentStatus(context.Background(), h.sessionID, session.GoalComplete)
+		if _, err := h.goals.UpdateAgentStatus(context.Background(), h.sessionID, session.GoalComplete); err != nil {
+			return tool.Result{}, err
+		}
+		_, err := h.goals.Create(context.Background(), h.sessionID, "replacement", nil)
 		return tool.Result{Text: "done", ModelText: "done"}, err
 	}}
-	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
-		call := protocol.ToolCall{ID: "call-finish", Name: "finish", Input: json.RawMessage(`{}`)}
-		return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			call := protocol.ToolCall{ID: "call-finish", Name: "finish", Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}
+		if len(request.Tools) != 0 || !strings.Contains(request.Instructions, "final turn") {
+			return nil, errors.New("goal completion was not followed by a final turn")
+		}
+		if _, err := h.goals.UpdateAgentStatus(context.Background(), h.sessionID, session.GoalComplete); err != nil {
+			return nil, err
+		}
+		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	h = newRunnerHarness(t, fake, nil, item)
 	if _, err := h.goals.Create(t.Context(), h.sessionID, "finish without response", nil); err != nil {
 		t.Fatal(err)
 	}
-	if answer, err := h.runner.Prompt(t.Context(), "work"); !errors.Is(err, ErrNoFinalAssistantMessage) || answer != "" {
+	if answer, err := h.runner.Prompt(t.Context(), "work"); err != nil || answer != "" {
 		t.Fatalf("Prompt() = %q, %v", answer, err)
 	}
 	if status := h.runner.Status(); status.State != StatusSucceeded || status.NoFinalMessage {
 		t.Fatalf("root status = %#v", status)
+	}
+}
+
+func TestCompletedGoalDoesNotStopLaterToolTurns(t *testing.T) {
+	var h *runnerHarness
+	item := &fakeTool{id: "inspect"}
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			call := protocol.ToolCall{ID: "call-inspect", Name: item.id, Input: json.RawMessage(`{}`)}
+			return events(protocol.Event{Type: protocol.EventToolCallComplete, ToolCall: &call}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishToolCalls}), nil
+		}
+		if len(request.Tools) == 0 || strings.Contains(request.Instructions, "final turn") {
+			return nil, errors.New("stale completed goal forced a final turn")
+		}
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "finished normally"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h = newRunnerHarness(t, fake, nil, item)
+	if _, err := h.goals.Create(t.Context(), h.sessionID, "old work", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.goals.UpdateAgentStatus(t.Context(), h.sessionID, session.GoalComplete); err != nil {
+		t.Fatal(err)
+	}
+	if answer, err := h.runner.Prompt(t.Context(), "new work"); err != nil || answer != "finished normally" {
+		t.Fatalf("Prompt() = %q, %v", answer, err)
 	}
 }
 

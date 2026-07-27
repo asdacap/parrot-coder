@@ -973,6 +973,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		r.securityProfile.AddCapability(security.Rule{Path: r.user.queues.Directory(), Action: security.ActionAllowRead})
 	}
 	activeTools := r.toolSnapshot.Only(profile.AllowedTools())
+	forceFinal := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -1059,9 +1060,12 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		definitions := toolDefinitions(activeTools)
 		turn++
 		maxTurnsReached := turn >= profile.MaxTurns()
-		instructions := runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), maxTurnsReached)
-		if maxTurnsReached {
+		finalTurn := forceFinal || maxTurnsReached
+		instructions := runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), finalTurn)
+		if finalTurn {
 			definitions = nil
+		}
+		if maxTurnsReached {
 			r.publishMaxTurnsReached(profile.MaxTurns())
 		}
 		if r.compactor != nil {
@@ -1081,7 +1085,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				if err != nil {
 					return err
 				}
-				instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), turn >= profile.MaxTurns())
+				instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), finalTurn)
 			}
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
@@ -1115,7 +1119,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if err != nil {
 				return err
 			}
-			request.Instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), turn >= profile.MaxTurns())
+			request.Instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), finalTurn)
 			request.Messages = history
 			calls, finish, err = r.loggedProviderTurn(ctx, providerClient.ID(), turn, providerClient, model, request)
 			if err != nil {
@@ -1123,23 +1127,28 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			}
 		}
 		if len(calls) > 0 {
-			if turn >= profile.MaxTurns() {
-				return errors.New("agent: provider returned tools after max-turn tool omission")
+			if finalTurn {
+				return errors.New("agent: provider returned tools after final-turn tool omission")
+			}
+			activeGoalID := ""
+			if r.goals != nil {
+				goal, err := r.goals.Get(ctx, r.dto.ID)
+				if err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+					return err
+				}
+				if err == nil && goal.Status == session.GoalActive {
+					activeGoalID = goal.ID
+				}
 			}
 			if err := r.executeTools(ctx, selected, profile, activeTools, calls); err != nil {
 				return err
 			}
-			if r.goals != nil {
+			if activeGoalID != "" {
 				goal, err := r.goals.Get(ctx, r.dto.ID)
-				if errors.Is(err, session.ErrGoalNotFound) {
-					continue
-				}
-				if err != nil {
+				if err != nil && !errors.Is(err, session.ErrGoalNotFound) {
 					return err
 				}
-				if goal.Status != session.GoalActive {
-					return nil
-				}
+				forceFinal = errors.Is(err, session.ErrGoalNotFound) || goal.ID != activeGoalID || goal.Status != session.GoalActive
 			}
 			continue
 		}
