@@ -152,6 +152,7 @@ type enhancedActivityItem struct {
 	messageID        string
 	label            string
 	toolName         string
+	successIcon      string
 	style            terminal.TextStyle
 	input            map[string]any
 	error            string

@@ -48,6 +48,47 @@ func TestCompletedInputPresentation(t *testing.T) {
 	}
 }
 
+func TestSuccessIconPresentationOnlyOverridesSuccess(t *testing.T) {
+	for _, test := range []struct {
+		name, icon, status, errorText, want string
+	}{
+		{name: "declared success", icon: "♟", status: "success", want: "♟ tool"},
+		{name: "default success", status: "success", want: "✓ tool"},
+		{name: "declared icon does not override failure", icon: "♟", status: "failure", errorText: "boom", want: "✗ tool: boom"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{ID: "custom", Presentation: v1.ToolPresentation{SuccessIcon: test.icon}}}})
+			tracker := StreamToolTracker{Presentation: presentations}
+			tracker.DescribeReport(v1.Event{Type: v1.EventSessionToolPending, Data: json.RawMessage(`{"call_id":"call","tool_name":"custom"}`)})
+			data, _ := json.Marshal(map[string]string{"call_id": "call", "error": test.errorText})
+			if got := tracker.DescribeReport(v1.Event{Type: "session.tool." + test.status, Data: data}).Line; got != test.want {
+				t.Fatalf("status line = %q, want %q", got, test.want)
+			}
+		})
+	}
+
+	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "custom_child_creator", Presentation: v1.ToolPresentation{
+			SuccessIcon: "★", Label: v1.ToolLabel{Fields: []v1.ToolLabelPart{{Names: []string{"name"}}}},
+		},
+	}}})
+	tracker := NewRuntimeActivityTracker("session-main")
+	tracker.Presentation = presentations
+	startRootSession(tracker)
+	if _, err := tracker.Apply(agentSessionEvent(v1.EventAgentSessionStart, v1.AgentSessionEvent{
+		SessionID: "child", ParentSessionID: "session-main", Agent: "explorer", Name: "token-accounting",
+	}), false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tracker.Apply(v1.Event{Type: v1.EventSessionToolPending, SessionID: "child", Data: json.RawMessage(`{"call_id":"call","tool_name":"custom_child_creator","input":{"name":"subagent-events"}}`)}, false); err != nil {
+		t.Fatal(err)
+	}
+	reports, err := tracker.Apply(v1.Event{Type: v1.EventSessionToolSuccess, SessionID: "child", Data: json.RawMessage(`{"call_id":"call"}`)}, false)
+	if err != nil || len(reports) != 1 || reports[0].Line != "  ★ [explorer:token-accounting] custom_child_creator · subagent-events" {
+		t.Fatalf("nested custom success report = %#v, %v", reports, err)
+	}
+}
+
 func TestAnswerPresentationUpdatesCompletedLabelInQuestionOrder(t *testing.T) {
 	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "question", Presentation: v1.ToolPresentation{

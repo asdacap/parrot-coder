@@ -161,6 +161,11 @@ func TestAgentToolsContract(t *testing.T) {
 		t.Fatalf("sent = %#v, messages = %#v", sent, child.messages)
 	}
 
+	spawnPresentation := tools[agentSpawnID].Presentation()
+	if spawnPresentation.SuccessIcon != "♟" {
+		t.Fatalf("agent_spawn success icon = %q", spawnPresentation.SuccessIcon)
+	}
+
 	send := tools[agentSendID]
 	presentation := send.Presentation()
 	if len(presentation.Label.Fields) != 2 || presentation.Label.Fields[0].Names[0] != "session_id" || !presentation.Label.Fields[0].TaskName {

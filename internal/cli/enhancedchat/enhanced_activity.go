@@ -120,7 +120,7 @@ func reasoningSummaryActivity(item enhancedActivityItem, now time.Time) terminal
 	}
 	return terminal.StyledText{
 		Text: item.label, Style: item.style, Markdown: true,
-		Prefix: activityTitle(item.status, elapsed) + separator,
+		Prefix: activityTitle(item.status, elapsed, "") + separator,
 		Suffix: formatActivityUsage(item) + fmt.Sprintf(" · %.1fs", elapsed.Seconds()),
 	}
 }
@@ -223,7 +223,7 @@ func formatActivity(item enhancedActivityItem, now time.Time) string {
 	if item.reasoning {
 		label = singleLineReasoningSummary(label)
 	}
-	return fmt.Sprintf("%s%s%s%s%s · %.1fs", activityTitle(item.status, elapsed), separator, label, detail, formatActivityUsage(item), elapsed.Seconds())
+	return fmt.Sprintf("%s%s%s%s%s · %.1fs", activityTitle(item.status, elapsed, item.successIcon), separator, label, detail, formatActivityUsage(item), elapsed.Seconds())
 }
 
 func singleLineReasoningSummary(summary string) string {
@@ -294,7 +294,7 @@ func formatCost(cost float64) string {
 	return fmt.Sprintf("$%.2f", cost)
 }
 
-func activityTitle(status string, elapsed time.Duration) string {
+func activityTitle(status string, elapsed time.Duration, successIcon string) string {
 	switch status {
 	case "thinking":
 		frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
@@ -305,7 +305,10 @@ func activityTitle(status string, elapsed time.Duration) string {
 		frame := int(elapsed/(100*time.Millisecond)) % len(chatview.SpinnerFrames)
 		return chatview.SpinnerFrames[frame] + " Working"
 	case "success":
-		return chatview.SuccessIcon
+		if successIcon == "" {
+			successIcon = chatview.SuccessIcon
+		}
+		return successIcon
 	case "failure":
 		return chatview.FailureIcon
 	case "interrupted":

@@ -12,6 +12,8 @@ type Presentation struct {
 	Redact []string `json:"redact,omitempty"`
 	// Muted marks an invocation as low-salience, rendered in a dimmer style.
 	Muted bool `json:"muted,omitempty"`
+	// SuccessIcon replaces the generic icon on a successful invocation.
+	SuccessIcon string `json:"success_icon,omitempty"`
 	// Result selects how a successful result body is rendered, if at all.
 	Result ResultRender `json:"result,omitempty"`
 	// ResultCountNoun appends the number of non-empty result lines to the

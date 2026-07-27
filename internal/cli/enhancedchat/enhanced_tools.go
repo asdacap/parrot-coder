@@ -71,6 +71,7 @@ func (r *enhancedChatRuntime) handleToolActivity(item v1.Event) {
 		}
 		if name != "" {
 			r.activity[i].toolName = name
+			r.activity[i].successIcon = presentation.SuccessIcon(name)
 			if presentation.Output(name) == chatview.ToolOutputNone {
 				r.activity[i].output = shellOutputTail{}
 			}

@@ -312,6 +312,7 @@ type ToolPresentation struct {
 	Label             ToolLabel          `json:"label,omitempty"`
 	Redact            []string           `json:"redact,omitempty"`
 	Muted             bool               `json:"muted,omitempty"`
+	SuccessIcon       string             `json:"success_icon,omitempty"`
 	Result            string             `json:"result,omitempty"`
 	ResultCountNoun   string             `json:"result_count_noun,omitempty"`
 	CompletedLabel    string             `json:"completed_label,omitempty"`

@@ -553,14 +553,15 @@ func firstString(raw map[string]any, keys ...string) string {
 }
 
 type streamToolCall struct {
-	name     string
-	input    map[string]any
-	style    terminal.TextStyle
-	result   string
-	stream   string
-	failure  string
-	liveOnly bool
-	output   ShellOutputTail
+	name        string
+	input       map[string]any
+	style       terminal.TextStyle
+	result      string
+	stream      string
+	failure     string
+	successIcon string
+	liveOnly    bool
+	output      ShellOutputTail
 }
 
 type StreamToolTracker struct {
@@ -575,6 +576,7 @@ type StreamToolTracker struct {
 type StreamToolReport struct {
 	Line      string
 	Label     string
+	Icon      string
 	Block     string
 	BlockKind string
 	Terminal  bool
@@ -699,10 +701,14 @@ func activityAgentLabel(agent, name string) string {
 // session depth and agent is the optional label shown in brackets. The event owns
 // its leading icon; a generic activity icon is added if it does not supply one.
 func EventLine(indent int, agent, event string) string {
+	icon, event := splitEventIcon(event)
+	return eventLine(indent, agent, icon, event)
+}
+
+func eventLine(indent int, agent, icon, event string) string {
 	if indent < 0 {
 		indent = 0
 	}
-	icon, event := splitEventIcon(event)
 	if icon == "" {
 		icon = ActivityIcon
 	}
@@ -763,6 +769,10 @@ func (t *RuntimeActivityTracker) depth(node *runtimeActivityNode) int {
 }
 
 func (t *RuntimeActivityTracker) eventLine(node *runtimeActivityNode, event string) string {
+	return t.eventLineWithIcon(node, "", event)
+}
+
+func (t *RuntimeActivityTracker) eventLineWithIcon(node *runtimeActivityNode, icon, event string) string {
 	label := activityAgentLabel(node.agent, node.name)
 	if node.kind == string(managedtask.KindShell) {
 		label = "shell"
@@ -772,7 +782,11 @@ func (t *RuntimeActivityTracker) eventLine(node *runtimeActivityNode, event stri
 	} else if label == "" {
 		label = "agent"
 	}
-	return EventLine(max(1, t.depth(node)), label, event)
+	if icon == "" {
+		return EventLine(max(1, t.depth(node)), label, event)
+	}
+	event = strings.TrimPrefix(event, icon+" ")
+	return eventLine(max(1, t.depth(node)), label, icon, event)
 }
 
 // unknownOrigin reports an event whose session/process pair was never
@@ -1363,11 +1377,11 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 			}
 			reports := t.activityStatusReports(sessionID, processID)
 			if report.Terminal && !report.LiveOnly {
-				reports = append(reports, RuntimeActivityReport{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, BlockKind: report.BlockKind, Terminal: true, EmitPlain: true, Skip: report.Hidden, Style: report.Style})
+				reports = append(reports, RuntimeActivityReport{ID: scope + "tool:" + callID, Line: t.eventLineWithIcon(node, report.Icon, line), Block: block, BlockKind: report.BlockKind, Terminal: true, EmitPlain: true, Skip: report.Hidden, Style: report.Style})
 			}
 			return reports, nil
 		}
-		return []RuntimeActivityReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, BlockKind: report.BlockKind, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
+		return []RuntimeActivityReport{{ID: scope + "tool:" + callID, Line: t.eventLineWithIcon(node, report.Icon, line), Block: block, BlockKind: report.BlockKind, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
 	case v1.EventCodeDisplay:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {
@@ -1620,6 +1634,7 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 		call.result = t.Presentation.Result(name)
 		call.stream = t.Presentation.Output(name)
 		call.failure = t.Presentation.Failure(name)
+		call.successIcon = t.Presentation.SuccessIcon(name)
 		call.liveOnly = t.Presentation.LiveOnly(name)
 	}
 	if input != nil {
@@ -1688,8 +1703,12 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	if status == "success" {
 		label = t.Presentation.CompletedLabel(call.name, call.input, result)
 	}
+	icon := ""
+	if status == "success" {
+		icon = call.successIcon
+	}
 	return StreamToolReport{
-		Line: StreamToolStatus(status, errorText), Label: label, Block: block, BlockKind: blockKind,
+		Line: StreamToolStatus(status, errorText, call.successIcon), Label: label, Icon: icon, Block: block, BlockKind: blockKind,
 		Terminal: terminalEvent, Hidden: !terminalEvent && t.Presentation.TerminalOnly(call.name), LiveOnly: call.liveOnly,
 		Modeline: t.Presentation.Modeline(call.name), Style: style,
 	}
@@ -1765,14 +1784,17 @@ func AgentsLoadedActivities(item v1.Event) []string {
 	return AgentsLoadedLines(paths)
 }
 
-func StreamToolStatus(status, errorText string) string {
+func StreamToolStatus(status, errorText, successIcon string) string {
 	switch status {
 	case "pending":
 		return "○ Queued tool"
 	case "running":
 		return "◌ Working: tool"
 	case "success":
-		return "✓ tool"
+		if successIcon == "" {
+			successIcon = SuccessIcon
+		}
+		return successIcon + " tool"
 	case "failure":
 		if errorText != "" {
 			return "✗ tool: " + errorText

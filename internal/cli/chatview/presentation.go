@@ -294,6 +294,15 @@ func (p Presentations) Output(name string) string {
 	return legacyOutput(name)
 }
 
+// SuccessIcon reports the tool-declared successful status icon, falling back to
+// the shared generic icon when the tool has no special success presentation.
+func (p Presentations) SuccessIcon(name string) string {
+	if icon := p.For(name).SuccessIcon; icon != "" {
+		return icon
+	}
+	return SuccessIcon
+}
+
 // Failure reports how a failed invocation's error should render.
 func (p Presentations) Failure(name string) string { return p.For(name).Failure }
 

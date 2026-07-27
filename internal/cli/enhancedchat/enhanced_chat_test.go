@@ -2169,6 +2169,32 @@ func TestEnhancedCompletedToolKeepsNameAndWaitsForAssistantBoundary(t *testing.T
 	}
 }
 
+func TestEnhancedToolSuccessIconPresentation(t *testing.T) {
+	for _, test := range []struct {
+		name, icon, status, want string
+	}{
+		{name: "declared success", icon: "♟", status: "success", want: "♟ custom · 0.0s"},
+		{name: "default success", status: "success", want: "✓ custom · 0.0s"},
+		{name: "failure unchanged", icon: "♟", status: "failure", want: "✗ custom · 0.0s"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{ID: "custom", Presentation: v1.ToolPresentation{SuccessIcon: test.icon}}}})
+			runtime := &enhancedChatRuntime{shell: &chatShell{config: &Config{Presentation: func() chatview.Presentations { return presentation }}}}
+			runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: json.RawMessage(`{"call_id":"call","tool_name":"custom"}`)})
+			runtime.handleToolActivity(v1.Event{Type: "session.tool." + test.status, Data: json.RawMessage(`{"call_id":"call"}`)})
+			if len(runtime.completedActivities) != 1 {
+				t.Fatalf("completed activities = %#v", runtime.completedActivities)
+			}
+			item := runtime.completedActivities[0]
+			item.started = time.Unix(100, 0)
+			item.ended = item.started
+			if got := formatActivity(item, item.ended); got != test.want {
+				t.Fatalf("formatted activity = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestEnhancedLiveOnlyToolIsRemovedWithoutCommit(t *testing.T) {
 	presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "wait", Presentation: v1.ToolPresentation{LiveOnly: true},

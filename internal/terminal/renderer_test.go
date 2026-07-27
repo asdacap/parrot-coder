@@ -334,6 +334,7 @@ func TestLiveRendererDecoratesIconStatuses(t *testing.T) {
 	renderer := NewLiveRenderer(&bytes.Buffer{}, RendererConfig{TTY: true, Color: true, Columns: 80})
 	tests := map[string]string{
 		"✓ task":              "\x1b[32m✓\x1b[0m task",
+		"♟ task":              "\x1b[32m♟\x1b[0m task",
 		"✗ task: bad input":   "\x1b[31m✗ task: bad input\x1b[0m",
 		"○ Queued tool: task": "\x1b[2m○ Queued tool: task\x1b[0m",
 		"■ Interrupted: task": "\x1b[2m■ Interrupted: task\x1b[0m",

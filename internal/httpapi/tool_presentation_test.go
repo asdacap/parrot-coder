@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
@@ -57,6 +58,14 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 				t.Fatalf("label = %q, want %q", got, want)
 			}
 		})
+	}
+}
+
+func TestSuccessIconPresentationSurvivesToolAPIProjection(t *testing.T) {
+	presentation := toolPresentationDTO(tool.AgentDescriptor("agent_spawn").Presentation)
+	declared := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{ID: "agent_spawn", Presentation: presentation}}})
+	if presentation.SuccessIcon != "♟" || declared.SuccessIcon("agent_spawn") != "♟" {
+		t.Fatalf("agent_spawn presentation = %#v", presentation)
 	}
 }
 

@@ -1736,8 +1736,9 @@ func semanticTextSpans(row string) []textSpan {
 	case strings.HasPrefix(row, AssistantMessageIcon+" ") || strings.HasPrefix(row, "- "):
 		_, rest := firstRune(row)
 		return span(len(row)-len(rest), ansiStyle{color: "32"})
-	case strings.HasPrefix(row, "✓ "):
-		return span(len("✓"), ansiStyle{color: "32"})
+	case strings.HasPrefix(row, "✓ ") || strings.HasPrefix(row, "♟ "):
+		_, rest := firstRune(row)
+		return span(len(row)-len(rest), ansiStyle{color: "32"})
 	case strings.HasPrefix(row, "✗ "):
 		return span(len(row), ansiStyle{color: "31"})
 	case strings.HasPrefix(row, "○ ") || strings.HasPrefix(row, "◌ ") || strings.HasPrefix(row, "■ "):

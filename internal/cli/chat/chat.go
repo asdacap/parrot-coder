@@ -1154,7 +1154,7 @@ func finishStream(api messageClient, sessionID string, before v1.MessageList, st
 }
 
 func streamToolStatus(status, errorText string) string {
-	return chatview.StreamToolStatus(status, errorText)
+	return chatview.StreamToolStatus(status, errorText, "")
 }
 
 func permissionContextLines(item v1.Permission) []string {
