@@ -119,6 +119,7 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 // state so friendly names learned by a new tree are also available to tool
 // activity labels.
 func (r *enhancedChatRuntime) resetRuntimeActivityTracker() {
+	r.runtimeUsage = chatview.RuntimeActivityUsage{}
 	r.runtimeActivities = runtimeActivityStreamTracker{presentation: r.presentation(), rootSessionID: r.shell.current.ID}
 }
 

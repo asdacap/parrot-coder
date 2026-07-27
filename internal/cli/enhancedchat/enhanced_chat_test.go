@@ -1096,6 +1096,50 @@ func TestEnhancedReasoningUsageDoesNotFallBackToOutputTokens(t *testing.T) {
 // reports usage on its own envelope, and a usage event covers one turn, so the
 // totals accumulate. A child agent's agent_session.progress repeats what it has
 // spent and must not be counted again on top of its usage events.
+func TestEnhancedModelineUsageAggregatesNestedActivitiesRegisteredAfterUsage(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}, knownMessages: map[string]bool{}}
+	usageEvent := func(sessionID string, usage v1.Usage) v1.Event {
+		data, _ := json.Marshal(v1.SessionStatus{MessageID: "assistant", Kind: "usage", Usage: &usage})
+		return v1.Event{Type: v1.EventSessionStatus, SessionID: sessionID, Data: data}
+	}
+	childStart := runtimeActivityStart("child", "session-main", "explore")
+	progress, _ := json.Marshal(v1.AgentSessionProgress{Agent: "review", Status: "running", Usage: v1.Usage{InputTokens: 20, OutputTokens: 3, CachedInputTokens: 10, TotalTokens: 23}})
+	for _, event := range []v1.Event{
+		usageEvent("child", v1.Usage{InputTokens: 10, OutputTokens: 2, CachedInputTokens: 4, InputCost: 0.125}),
+		usageEvent("child", v1.Usage{InputTokens: 5, OutputTokens: 1, CachedInputTokens: 1, InputCost: 0.125}),
+		usageEvent("grandchild", v1.Usage{InputTokens: 20, OutputTokens: 3, CachedInputTokens: 10, OutputCost: 0.25}),
+		childStart,
+		childStart,
+		runtimeActivityStart("grandchild", "child", "review"),
+		runtimeActivityEvent("grandchild", v1.EventAgentSessionProgress, progress),
+	} {
+		if err := runtime.handleEvent(event); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := chatview.RuntimeActivityUsage{InputTokens: 35, OutputTokens: 6, CachedTokens: 15, Cost: 0.5}
+	if runtime.runtimeUsage != want {
+		t.Fatalf("nested out-of-order modeline usage = %#v, want %#v", runtime.runtimeUsage, want)
+	}
+}
+
+func TestEnhancedRuntimeUsageResetsWhenRuntimeActivityTreeChangesSession(t *testing.T) {
+	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}}
+	runtime.runtimeUsage = chatview.RuntimeActivityUsage{InputTokens: 10, OutputTokens: 2, Cost: 0.1}
+	runtime.runtimeActivities.addUsage("session-main", "", v1.Usage{InputTokens: 10, OutputTokens: 2, InputCost: 0.1})
+
+	runtime.shell.current.ID = "session-next"
+	runtime.resetRuntimeActivityTracker()
+
+	if runtime.runtimeUsage != (chatview.RuntimeActivityUsage{}) {
+		t.Fatalf("reset runtime usage = %#v", runtime.runtimeUsage)
+	}
+	if tracker := runtime.runtimeActivities.Tracker(); tracker != nil {
+		t.Fatalf("reset tracker = %#v", tracker)
+	}
+}
+
 func TestEnhancedModelineUsageCoversRuntimeActivitiesOnce(t *testing.T) {
 	runtime := &enhancedChatRuntime{shell: &chatShell{current: v1.Session{ID: "session-main"}}, knownMessages: map[string]bool{}, completedToolIDs: map[string]bool{"call-agent": true}}
 	usageEvent := func(sessionID string, usage v1.Usage) v1.Event {

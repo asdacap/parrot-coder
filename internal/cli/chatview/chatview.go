@@ -659,13 +659,14 @@ type RuntimeActivityTracker struct {
 	rootSessionID   string
 	activities      map[string]*runtimeActivityNode
 	sessions        map[string]*runtimeActivityNode
+	pendingUsage    map[string]RuntimeActivityUsage
 	unknownReported map[string]bool
 }
 
 func processKey(sessionID, processID string) string { return sessionID + "\x00" + processID }
 
 func NewRuntimeActivityTracker(rootSessionID string) *RuntimeActivityTracker {
-	tracker := &RuntimeActivityTracker{rootSessionID: rootSessionID, activities: make(map[string]*runtimeActivityNode), sessions: make(map[string]*runtimeActivityNode)}
+	tracker := &RuntimeActivityTracker{rootSessionID: rootSessionID, activities: make(map[string]*runtimeActivityNode), sessions: make(map[string]*runtimeActivityNode), pendingUsage: make(map[string]RuntimeActivityUsage)}
 	if rootSessionID != "" {
 		root := &runtimeActivityNode{id: processKey(rootSessionID, ""), sessionID: rootSessionID, kind: runtimeActivityKindMain}
 		tracker.activities[root.id] = root
@@ -861,18 +862,25 @@ func (u *RuntimeActivityUsage) add(other RuntimeActivityUsage) {
 }
 
 // AddUsage folds one turn of provider usage into the session or process that
-// spent it. Usage for an origin the tree has never seen is dropped rather than
-// counted against the wrong session. Counts accumulate because each usage event
-// reports only its own turn.
+// spent it. If usage arrives before its lifecycle event, it remains assigned to
+// that origin and is attached when the node is registered. Counts accumulate
+// because each usage event reports only its own turn.
 func (t *RuntimeActivityTracker) AddUsage(sessionID, processID string, usage v1.Usage) {
 	if sessionID == "" {
 		sessionID = t.rootSessionID
 	}
-	node := t.known(sessionID, processID)
-	if node == nil {
+	key := processKey(sessionID, processID)
+	amount := RuntimeActivityUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedTokens: usage.CachedInputTokens, Cost: usage.InputCost + usage.OutputCost}
+	if node := t.known(sessionID, processID); node != nil {
+		node.direct.add(amount)
 		return
 	}
-	node.direct.add(RuntimeActivityUsage{InputTokens: usage.InputTokens, OutputTokens: usage.OutputTokens, CachedTokens: usage.CachedInputTokens, Cost: usage.InputCost + usage.OutputCost})
+	if t.pendingUsage == nil {
+		t.pendingUsage = make(map[string]RuntimeActivityUsage)
+	}
+	pending := t.pendingUsage[key]
+	pending.add(amount)
+	t.pendingUsage[key] = pending
 }
 
 // CumulativeUsage returns what a session or process and all its descendants
@@ -1451,6 +1459,10 @@ func (t *RuntimeActivityTracker) applyLifecycle(item v1.Event) ([]RuntimeActivit
 		if node == nil {
 			node = &runtimeActivityNode{id: key, sessionID: event.sessionID, processID: event.processID}
 			t.activities[key] = node
+		}
+		if pending, ok := t.pendingUsage[key]; ok {
+			node.direct.add(pending)
+			delete(t.pendingUsage, key)
 		}
 		node.kind = event.kind
 		if event.agent != "" {
