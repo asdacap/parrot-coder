@@ -543,26 +543,49 @@ func TestLiveRendererKeepsModelineThinAfterTranscriptBoundaryWasCommitted(t *tes
 	}
 }
 
-func TestLiveRendererSpacesSettledResponseFromModelineImmediately(t *testing.T) {
-	var output bytes.Buffer
-	renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Columns: 40, MaxRows: 6})
-	if err := renderer.CommitMessage("- ", "complete response", false); err != nil {
-		t.Fatal(err)
+func TestLiveRendererCommitsAssistantGapOutsideColoredLiveRows(t *testing.T) {
+	tests := []struct {
+		name   string
+		commit func(*LiveRenderer) error
+	}{
+		{name: "message", commit: func(renderer *LiveRenderer) error {
+			return renderer.CommitMessage("- ", "complete response", false)
+		}},
+		{name: "stream", commit: func(renderer *LiveRenderer) error {
+			return renderer.CommitStream(StreamMessage{ID: "answer", Prefix: "- ", Text: "complete response"}, false)
+		}},
 	}
-	if err := renderer.Frame(LiveFrame{
-		InputLeft: "mode: build", InputRight: "local/test",
-		Prompt: PromptState{Prefix: "$ "}, ShowDivider: true,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if len(renderer.rows) < 3 || renderer.rows[0] != "" {
-		t.Fatalf("settled response is not spaced from modeline: %#v", renderer.rows)
-	}
-	if got := renderer.rows[1]; !strings.HasPrefix(got, "─ mode: build ") {
-		t.Fatalf("modeline = %q", got)
-	}
-	if renderer.cursorRow != 2 {
-		t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 40, MaxRows: 6})
+			if err := test.commit(renderer); err != nil {
+				t.Fatal(err)
+			}
+			committed := output.String()
+			if !strings.Contains(committed, "\x1b[38;5;195m- complete response\x1b[0m\n\n") {
+				t.Fatalf("committed assistant response does not contain its styled trailing gap: %q", committed)
+			}
+
+			before := output.Len()
+			if err := renderer.Frame(LiveFrame{
+				InputLeft: "mode: build", InputRight: "local/test",
+				Prompt: PromptState{Prefix: "$ ", Text: "draft", Cursor: 5}, ShowDivider: true,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if len(renderer.rows) != 2 || renderer.rows[0] == "" || !strings.HasPrefix(renderer.rows[0], "─ mode: build ") || renderer.rows[1] != "$ draft" {
+				t.Fatalf("assistant spacer remained in live rows: %#v", renderer.rows)
+			}
+			live := output.String()[before:]
+			if !strings.Contains(live, "\x1b[32;48;5;236m"+renderer.rows[0]+"\x1b[0m") ||
+				!strings.Contains(live, "\x1b[32;48;5;236mdraft\x1b[0m") {
+				t.Fatalf("modeline or live prompt lost styling: %q", live)
+			}
+			if renderer.cursorRow != 1 {
+				t.Fatalf("cursor row = %d, rows=%#v", renderer.cursorRow, renderer.rows)
+			}
+		})
 	}
 }
 
@@ -625,7 +648,7 @@ func TestLiveRendererStylesCommittedAssistantAfterEmptyLine(t *testing.T) {
 	if err := renderer.CommitMessage("- ", "final answer", false); err != nil {
 		t.Fatal(err)
 	}
-	want := "\x1b[90m✓ summary\x1b[0m\n\n\x1b[38;5;195m- final answer\x1b[0m\n"
+	want := "\x1b[90m✓ summary\x1b[0m\n\n\x1b[38;5;195m- final answer\x1b[0m\n\n"
 	if got := output.String(); got != want {
 		t.Fatalf("committed final assistant = %q; want %q", got, want)
 	}
@@ -968,6 +991,59 @@ func TestLiveRendererCommitCodeBlock(t *testing.T) {
 						t.Errorf("row width = %d, want <= %d: %q", width, test.wantMaxWidth, row)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestLiveRendererTracksAssistantGapAcrossPlainFrameOutput(t *testing.T) {
+	var output bytes.Buffer
+	renderer := NewLiveRenderer(&output, RendererConfig{Columns: 80})
+	// Prime plain-mode deduplication with its empty input row, as happens during
+	// the live frame displayed before an assistant response is committed.
+	if err := renderer.Frame(LiveFrame{Activity: []string{"before"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.CommitMessage("- ", "answer", false); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.Frame(LiveFrame{Activity: []string{"working"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := renderer.CommitUserMessage("$ ", "next request"); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := output.String(), "before\n\n\n- answer\n\nworking\n\n$ next request\n"; got != want {
+		t.Fatalf("plain frame commit spacing = %q; want %q", got, want)
+	}
+}
+
+func TestLiveRendererReusesCommittedAssistantGapAtNextCommit(t *testing.T) {
+	tests := []struct {
+		name string
+		next func(*LiveRenderer) error
+		want string
+	}{
+		{name: "user block", next: func(renderer *LiveRenderer) error {
+			return renderer.CommitUserMessage("$ ", "next request")
+		}, want: "\x1b[32m$ next request\x1b[0m\n"},
+		{name: "tool report", next: func(renderer *LiveRenderer) error {
+			return renderer.Commit("✓ next tool")
+		}, want: "\x1b[32m✓\x1b[0m next tool\n"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			renderer := NewLiveRenderer(&output, RendererConfig{TTY: true, Color: true, Columns: 80})
+			if err := renderer.CommitMessage("- ", "answer", false); err != nil {
+				t.Fatal(err)
+			}
+			if err := test.next(renderer); err != nil {
+				t.Fatal(err)
+			}
+			want := "\n\x1b[38;5;195m- answer\x1b[0m\n\n" + test.want
+			if got := output.String(); got != want {
+				t.Fatalf("commit spacing = %q; want %q", got, want)
 			}
 		})
 	}

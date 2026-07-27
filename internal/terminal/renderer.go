@@ -205,6 +205,8 @@ type LiveRenderer struct {
 	stream       liveStream
 	committed    bool
 	lastCommit   commitKind
+	// committedGap records that scrollback already ends with the block spacer.
+	committedGap bool
 	streamBlock  bool
 	closed       bool
 }
@@ -582,9 +584,10 @@ func (r *LiveRenderer) frame(frame LiveFrame) error {
 	inputSpans := make([][]textSpan, dividerRows+barRows+len(pendingRows)+len(promptContextRows))
 	inputSpans = append(inputSpans, promptContent.spans...)
 	assistantMessage := frame.Message != "" && isAssistantPrefix(frame.MessagePrefix)
-	assistantGap := !r.streamBlock && len(promoted.rows) == 0 && len(streamRows) > 0
+	assistantMessageGap := assistantMessage && !r.committedGap
+	assistantGap := !r.committedGap && !r.streamBlock && len(promoted.rows) == 0 && len(streamRows) > 0
 	remaining := r.maxRows
-	if assistantGap || assistantMessage {
+	if assistantGap || assistantMessageGap {
 		remaining = max(1, remaining-1)
 	}
 
@@ -642,7 +645,7 @@ func (r *LiveRenderer) frame(frame LiveFrame) error {
 		activityStyles = activityStyles[start:]
 		activitySpans = activitySpans[start:]
 	}
-	if assistantMessage && len(activity) > 0 {
+	if assistantMessageGap && len(activity) > 0 {
 		messageStart := max(0, len(activity)-messageRowCount)
 		activity = slices.Insert(activity, messageStart, "")
 		activityStyles = slices.Insert(activityStyles, messageStart, TextStyleDefault)
@@ -660,7 +663,7 @@ func (r *LiveRenderer) frame(frame LiveFrame) error {
 	// regions. Keep an ordinary block gap before transient activity so it appears
 	// immediately after a submitted user message or settled response.
 	blockGap := 0
-	if !r.streamBlock && len(promoted.rows) == 0 && (assistantGap || r.committed && !assistantMessage && r.lastCommit == commitBlock) && (len(rows) > 0 || len(inputRows) > 0) {
+	if !r.streamBlock && len(promoted.rows) == 0 && (assistantGap || r.committed && !r.committedGap && !assistantMessage && r.lastCommit == commitBlock) && (len(rows) > 0 || len(inputRows) > 0) {
 		rows = append([]string{""}, rows...)
 		styles = append([]TextStyle{TextStyleDefault}, styles...)
 		spans = append([][]textSpan{nil}, spans...)
@@ -675,7 +678,7 @@ func (r *LiveRenderer) frame(frame LiveFrame) error {
 	spans = append(spans, inputSpans...)
 	cursorRow := len(streamRows) + len(contextRows) + len(activity) + blockGap + dividerRows + barRows + len(pendingRows) + len(promptContextRows) + promptCursorRow
 	if !r.tty {
-		if len(promoted.rows) > 0 && !r.streamBlock {
+		if len(promoted.rows) > 0 && !r.streamBlock && !r.committedGap {
 			promoted.rows = append([]string{""}, promoted.rows...)
 		}
 		if err := r.writePlain(append(promoted.rows, rows...)); err != nil {
@@ -741,12 +744,17 @@ func (r *LiveRenderer) commitStream(message StreamMessage, divider bool) error {
 	if divider {
 		styles[len(styles)-1] = TextStyleDefault
 	}
+	content.rows = append(content.rows, "")
+	styles = append(styles, TextStyleDefault)
+	content.spans = append(content.spans, nil)
 	if r.streamBlock {
 		err = r.commitRowsRich(content.rows, styles, content.spans)
 	} else {
-		content.rows = append([]string{""}, content.rows...)
-		styles = append([]TextStyle{TextStyleDefault}, styles...)
-		content.spans = append([][]textSpan{nil}, content.spans...)
+		if !r.committedGap {
+			content.rows = append([]string{""}, content.rows...)
+			styles = append([]TextStyle{TextStyleDefault}, styles...)
+			content.spans = append([][]textSpan{nil}, content.spans...)
+		}
 		err = r.commitRowsRich(content.rows, styles, content.spans)
 	}
 	if err != nil {
@@ -757,6 +765,7 @@ func (r *LiveRenderer) commitStream(message StreamMessage, divider bool) error {
 	r.streamBlock = false
 	r.committed = true
 	r.lastCommit = commitBlock
+	r.committedGap = true
 	return nil
 }
 
@@ -1003,14 +1012,20 @@ func (r *LiveRenderer) CommitMessage(prefix, text string, divider bool) error {
 		if divider {
 			styles[len(styles)-1] = TextStyleDefault
 		}
-		content.rows = append([]string{""}, content.rows...)
-		styles = append([]TextStyle{TextStyleDefault}, styles...)
-		content.spans = append([][]textSpan{nil}, content.spans...)
+		if !r.committedGap {
+			content.rows = append([]string{""}, content.rows...)
+			styles = append([]TextStyle{TextStyleDefault}, styles...)
+			content.spans = append([][]textSpan{nil}, content.spans...)
+		}
+		content.rows = append(content.rows, "")
+		styles = append(styles, TextStyleDefault)
+		content.spans = append(content.spans, nil)
 		if err := r.commitRowsRich(content.rows, styles, content.spans); err != nil {
 			return err
 		}
 		r.committed = true
 		r.lastCommit = commitBlock
+		r.committedGap = true
 		return nil
 	}
 	rows := r.messageRows(prefix, text)
@@ -1029,13 +1044,18 @@ func (r *LiveRenderer) CommitUserMessage(prefix, text string) error {
 		return errRendererClosed
 	}
 	r.syncColumns()
-	rows := append([]string{""}, r.messageRows(prefix, text)...)
-	styles := append([]TextStyle{TextStyleDefault}, repeatedStyle(textStyleUserMessage, len(rows)-1)...)
+	rows := r.messageRows(prefix, text)
+	styles := repeatedStyle(textStyleUserMessage, len(rows))
+	if !r.committedGap {
+		rows = append([]string{""}, rows...)
+		styles = append([]TextStyle{TextStyleDefault}, styles...)
+	}
 	if err := r.commitRowsStyled(rows, styles); err != nil {
 		return err
 	}
 	r.committed = true
 	r.lastCommit = commitBlock
+	r.committedGap = false
 	return nil
 }
 
@@ -1144,7 +1164,7 @@ func (r *LiveRenderer) Commit(text string) error {
 	if r.tty && len(r.rows) > 0 {
 		r.buildRedraw(&output, nil, 0, 0)
 	}
-	if r.committed && r.lastCommit == commitBlock {
+	if r.committed && r.lastCommit == commitBlock && !r.committedGap {
 		output.WriteByte('\n')
 	}
 	parts := strings.Split(clean, "\n")
@@ -1167,6 +1187,7 @@ func (r *LiveRenderer) Commit(text string) error {
 	r.cursorCol = 0
 	r.committed = true
 	r.lastCommit = commitCompact
+	r.committedGap = strings.HasSuffix(clean, "\n\n")
 	return nil
 }
 
@@ -1340,7 +1361,7 @@ func (r *LiveRenderer) commitRowsAsStyled(rows []string, styles []TextStyle, kin
 }
 
 func (r *LiveRenderer) commitRowsAsRich(rows []string, styles []TextStyle, spans [][]textSpan, kind commitKind) error {
-	if r.committed && (r.lastCommit == commitBlock || kind == commitBlock) {
+	if r.committed && !r.committedGap && (r.lastCommit == commitBlock || kind == commitBlock) {
 		rows = append([]string{""}, rows...)
 		styles = append([]TextStyle{TextStyleDefault}, styles...)
 		spans = append([][]textSpan{nil}, spans...)
@@ -1350,6 +1371,7 @@ func (r *LiveRenderer) commitRowsAsRich(rows []string, styles []TextStyle, spans
 	}
 	r.committed = true
 	r.lastCommit = kind
+	r.committedGap = len(rows) > 0 && rows[len(rows)-1] == ""
 	return nil
 }
 
@@ -1575,7 +1597,7 @@ func (r *LiveRenderer) renderStreamLine(line string, state *markdownState, start
 func (r *LiveRenderer) promoteAndRedraw(promoted richRows, rows []string, styles []TextStyle, spans [][]textSpan, cursorRow, cursorCol int) error {
 	var output strings.Builder
 	r.buildRedraw(&output, nil, 0, 0)
-	if !r.streamBlock {
+	if !r.streamBlock && !r.committedGap {
 		promoted.rows = append([]string{""}, promoted.rows...)
 		promoted.spans = append([][]textSpan{nil}, promoted.spans...)
 	}
@@ -1599,6 +1621,7 @@ func (r *LiveRenderer) promoteAndRedraw(promoted richRows, rows []string, styles
 	r.cursorCol = cursorCol
 	r.renderedCols = r.columns
 	r.streamBlock = true
+	r.committedGap = false
 	return nil
 }
 
@@ -1865,6 +1888,11 @@ func (r *LiveRenderer) writePlain(rows []string) error {
 	}
 	for _, row := range added {
 		r.plainSeen[row] = struct{}{}
+	}
+	if r.committed {
+		// Plain frames are permanent output. Preserve a committed block's gap
+		// only when the last newly written row is itself empty.
+		r.committedGap = added[len(added)-1] == ""
 	}
 	return nil
 }

@@ -301,7 +301,7 @@ func TestLiveRendererHighlightsFencedCodeAndHidesDelimiters(t *testing.T) {
 	}
 
 	plain := sgrPattern.ReplaceAllString(output.String(), "")
-	want := "\n- Before\n  package main\n  func main() { println(\"hello\") }\n  After\n"
+	want := "\n- Before\n  package main\n  func main() { println(\"hello\") }\n  After\n\n"
 	if plain != want {
 		t.Fatalf("highlighted code plain text = %q; want %q", plain, want)
 	}
@@ -440,7 +440,7 @@ func TestAssistantMarkdownNoColorNonTTYAndSanitization(t *testing.T) {
 	if err := plainRenderer.CommitMessage("- ", "**bold**\n```go\npackage main\n```", false); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := plainOutput.String(), "\n- bold\n  package main\n"; got != want {
+	if got, want := plainOutput.String(), "\n- bold\n  package main\n\n"; got != want {
 		t.Fatalf("non-TTY Markdown = %q; want %q", got, want)
 	}
 	if strings.ContainsRune(plainOutput.String(), '\x1b') {
