@@ -844,7 +844,7 @@ func (r *agentSessionRepository) Active() []Active {
 
 	result := make([]Active, 0, len(items))
 	for _, item := range items {
-		if status := item.executionStatus(); status != StatusIdle {
+		if status := item.Status().State; turnActive(status) {
 			result = append(result, Active{SessionID: item.ID(), Status: status})
 		}
 	}
@@ -865,7 +865,10 @@ func (r *agentSessionRepository) Status(sessionID string) AgentStatus {
 	if !ok {
 		return StatusIdle
 	}
-	return item.(*agentSession).executionStatus()
+	if status := item.Status().State; turnActive(status) {
+		return status
+	}
+	return StatusIdle
 }
 
 func (r *agentSessionRepository) Remove(sessionID string) error {

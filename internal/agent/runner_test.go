@@ -1387,6 +1387,51 @@ func TestPromptWaitsForItsOwnAdmittedMessage(t *testing.T) {
 	}
 }
 
+func TestCanceledJoinedPromptDoesNotInterruptSharedTurn(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	fake := &fakeProvider{stream: func(index int, ctx context.Context, _ protocol.Request) (provider.Stream, error) {
+		if index == 0 {
+			close(firstStarted)
+			select {
+			case <-releaseFirst:
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		}
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answer"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	if _, err := h.runner.Send(t.Context(), "msg_first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	<-firstStarted
+
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() {
+		_, err := h.runner.Prompt(ctx, "joined")
+		result <- err
+	}()
+	waitForAgentSession(t, func() bool {
+		h.runner.mu.Lock()
+		defer h.runner.mu.Unlock()
+		return len(h.runner.turnFinishListeners) == 1 && h.runner.turn.wake
+	})
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Prompt() error = %v, want context.Canceled", err)
+	}
+	close(releaseFirst)
+	waitForAgentSession(t, func() bool { return !turnActive(h.runner.Status().State) })
+	if requests := fake.Requests(); len(requests) != 2 {
+		t.Fatalf("provider turns = %d, want shared turn to continue for joined input", len(requests))
+	}
+	if status := h.runner.Status(); status.State != StatusSucceeded {
+		t.Fatalf("shared turn status = %#v, want succeeded", status)
+	}
+}
+
 func TestCanceledPromptRemovesTurnFinishListener(t *testing.T) {
 	started := make(chan struct{})
 	fake := &fakeProvider{stream: func(_ int, ctx context.Context, _ protocol.Request) (provider.Stream, error) {
@@ -2063,7 +2108,7 @@ func TestAgentSessionSendStartsExecution(t *testing.T) {
 		t.Fatal("Send did not start execution")
 	}
 	close(release)
-	waitForAgentSession(t, func() bool { return h.runner.executionStatus() == StatusIdle })
+	waitForAgentSession(t, func() bool { return !turnActive(h.runner.Status().State) })
 }
 
 func TestPromptReturnsTerminalResponseBeforeMonitoredQueueResponse(t *testing.T) {
@@ -2434,7 +2479,7 @@ func TestRunnerSteerYieldsTaskWaitAndContinuesWithSteer(t *testing.T) {
 	if _, err := h.runner.Send(context.Background(), "steer", "change direction"); err != nil {
 		t.Fatal(err)
 	}
-	waitForAgentSession(t, func() bool { return h.runner.executionStatus() == StatusIdle })
+	waitForAgentSession(t, func() bool { return !turnActive(h.runner.Status().State) })
 	if controller.interrupts.Load() != 0 {
 		t.Fatalf("task was interrupted %d times", controller.interrupts.Load())
 	}

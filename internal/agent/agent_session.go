@@ -140,6 +140,20 @@ func (l *turnFinishListener) notify(ctx context.Context, initialMessageID, termi
 	l.once.Do(func() { l.result <- turnFinishResult{content: content, err: err} })
 }
 
+func (l *turnFinishListener) await(ctx context.Context, interruptOnCancel bool) (string, error) {
+	select {
+	case result := <-l.result:
+		return result.content, result.err
+	case <-ctx.Done():
+		if interruptOnCancel {
+			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = l.session.interruptExecution(cleanup)
+		}
+		return "", ctx.Err()
+	}
+}
+
 type TurnWorkingEvent struct {
 	Status Status
 	Report func(ChildProgress)
@@ -222,15 +236,6 @@ func (s *agentSession) Status() Status {
 	return status
 }
 
-func (s *agentSession) executionStatus() AgentStatus {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.turn != nil && turnActive(s.turn.status) {
-		return s.turn.status
-	}
-	return StatusIdle
-}
-
 func (s *agentSession) Observe() (ChildTurnObserver, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -294,10 +299,11 @@ func (s *agentSession) sendAndWait(ctx context.Context, content string) (string,
 	}
 	listener, remove := s.registerTurnFinishListener(messageID)
 	defer remove()
-	if _, _, err := s.admitAndStart(ctx, messageID, content, false, true); err != nil {
+	_, state, err := s.admitAndStart(ctx, messageID, content, false, true)
+	if err != nil {
 		return "", err
 	}
-	return s.awaitMessage(ctx, listener)
+	return listener.await(ctx, state.messageID == messageID)
 }
 
 func (s *agentSession) registerTurnFinishListener(messageID string) (*turnFinishListener, func()) {
@@ -327,26 +333,6 @@ func (s *agentSession) notifyTurnFinishListeners(initialMessageID, terminalAssis
 	for _, listener := range listeners {
 		listener.notify(context.Background(), initialMessageID, terminalAssistantID, lifecycleErr)
 	}
-}
-
-func (s *agentSession) awaitMessage(ctx context.Context, listener *turnFinishListener) (string, error) {
-	select {
-	case result := <-listener.result:
-		return result.content, result.err
-	case <-ctx.Done():
-		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_ = s.interruptExecution(cleanup)
-		cancel()
-		return "", ctx.Err()
-	}
-}
-
-func (s *agentSession) messageResponse(ctx context.Context, messageID string) (string, error) {
-	received, content, err := s.messageResponseThrough(ctx, messageID, "")
-	if !received {
-		return "", ErrNoFinalAssistantMessage
-	}
-	return content, err
 }
 
 func (s *agentSession) messageResponseThrough(ctx context.Context, messageID, terminalAssistantID string) (bool, string, error) {
@@ -737,8 +723,9 @@ func (s *agentSession) runTurn(state *turnState) {
 	output := ""
 	noFinalMessage := false
 	if s.parent != nil && state.messageID != "" && err == nil {
-		output, err = s.messageResponse(context.Background(), state.messageID)
-		if errors.Is(err, ErrNoFinalAssistantMessage) {
+		var received bool
+		received, output, err = s.messageResponseThrough(context.Background(), state.messageID, "")
+		if !received || errors.Is(err, ErrNoFinalAssistantMessage) {
 			noFinalMessage, err = true, nil
 		}
 	}
@@ -832,10 +819,13 @@ func (s *agentSession) finishTurn(state *turnState, output string, runErr error,
 	s.notifyTurnFinishListeners(state.messageID, state.latestAssistantID, runErr)
 	s.events.Publish(event.BrokerEvent{Name: event.TurnCompleted, Payload: state.result})
 	s.completed(runErr)
+	// Admission or Wake can race with runTurn after its final wake check. Only a
+	// wake left on this finishing state needs a replacement turn; starting one
+	// after every completion would make an empty turn restart itself forever.
 	s.mu.Lock()
-	missedWake := state.wake && !s.shuttingDown && !s.removed
+	restart := state.wake && !s.shuttingDown && !s.removed
 	s.mu.Unlock()
-	if missedWake {
+	if restart {
 		_, _ = s.startEmptyTurn(false)
 	}
 }
