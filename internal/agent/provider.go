@@ -21,9 +21,15 @@ type ProviderLister interface {
 	List() []provider.Provider
 }
 
+type ModelAlias struct {
+	Name        string
+	ModelString string
+}
+
 type ProviderRegistry struct {
 	mu        sync.RWMutex
 	providers map[string]provider.Provider
+	aliases   map[string]string
 }
 
 func NewProviderRegistry(providers ...provider.Provider) (*ProviderRegistry, error) {
@@ -39,20 +45,61 @@ func NewProviderRegistry(providers ...provider.Provider) (*ProviderRegistry, err
 // without touching the existing set, so a failed reload leaves the running
 // providers intact.
 func (r *ProviderRegistry) Replace(providers []provider.Provider) error {
+	next, err := providerMap(providers)
+	if err != nil {
+		return err
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := validateAliasTargets(r.aliases, next); err != nil {
+		return err
+	}
+	r.providers = next
+	return nil
+}
+
+// InstallAliases atomically replaces the registry aliases. Entries with an
+// empty target are omitted, allowing configuration to disable an alias without
+// making the entire installation invalid.
+func (r *ProviderRegistry) InstallAliases(aliases []ModelAlias) error {
+	next := make(map[string]string, len(aliases))
+	for _, alias := range aliases {
+		if alias.Name == "" {
+			return errors.New("agent: alias name is required")
+		}
+		if _, exists := next[alias.Name]; exists {
+			return fmt.Errorf("agent: duplicate alias %q", alias.Name)
+		}
+		next[alias.Name] = alias.ModelString
+	}
+	for name, target := range next {
+		if target == "" {
+			delete(next, name)
+		}
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := validateAliasTargets(next, r.providers); err != nil {
+		return err
+	}
+	r.aliases = next
+	return nil
+}
+
+func providerMap(providers []provider.Provider) (map[string]provider.Provider, error) {
 	next := make(map[string]provider.Provider, len(providers))
 	for _, item := range providers {
 		if item == nil || item.ID() == "" {
-			return errors.New("agent: provider and provider ID are required")
+			return nil, errors.New("agent: provider and provider ID are required")
 		}
 		if _, exists := next[item.ID()]; exists {
-			return fmt.Errorf("agent: duplicate provider %q", item.ID())
+			return nil, fmt.Errorf("agent: duplicate provider %q", item.ID())
 		}
 		next[item.ID()] = item
 	}
-	r.mu.Lock()
-	r.providers = next
-	r.mu.Unlock()
-	return nil
+	return next, nil
 }
 
 // load validates and registers providers without holding the write lock,
@@ -87,14 +134,33 @@ func (r *ProviderRegistry) List() []provider.Provider {
 }
 
 func (r *ProviderRegistry) Resolve(selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if target, exists := r.aliases[selector]; exists {
+		selector = target
+	}
+	return resolveProvider(r.providers, selector)
+}
+
+func validateAliasTargets(aliases map[string]string, providers map[string]provider.Provider) error {
+	for name, target := range aliases {
+		if _, exists := aliases[target]; exists {
+			return fmt.Errorf("agent: alias %q targets alias %q", name, target)
+		}
+		if _, _, _, err := resolveProvider(providers, target); err != nil {
+			return fmt.Errorf("agent: invalid target for alias %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
+func resolveProvider(providers map[string]provider.Provider, selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
 	providerID, remainder, found := strings.Cut(selector, "/")
 	if !found || providerID == "" || remainder == "" || strings.HasSuffix(remainder, "/") || strings.Contains(remainder, "//") {
 		return nil, provider.Model{}, nil, fmt.Errorf("agent: malformed provider selector %q", selector)
 	}
 
-	r.mu.RLock()
-	selected := r.providers[providerID]
-	r.mu.RUnlock()
+	selected := providers[providerID]
 	if selected == nil {
 		return nil, provider.Model{}, nil, fmt.Errorf("agent: unknown provider %q", providerID)
 	}

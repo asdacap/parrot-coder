@@ -26,8 +26,8 @@ var (
 type ChildRequest struct {
 	Prompt string
 	Agent  string
-	// Model is a canonical provider/model[/variant] selector. Empty inherits the
-	// parent's complete selector.
+	// Model is a configured alias or canonical provider/model[/variant] selector.
+	// Empty inherits the parent's complete selector.
 	Model string
 	Name  string
 }

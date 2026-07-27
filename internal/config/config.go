@@ -28,6 +28,7 @@ const (
 type Config struct {
 	Prompt                     string              `json:"prompt,omitempty"`
 	DefaultModel               string              `json:"model,omitempty"`
+	ModelAliases               []ModelAlias        `json:"model_aliases,omitempty"`
 	InlineDiff                 bool                `json:"inline_diff,omitempty"`
 	PermissionRequestTimeoutMS int                 `json:"permission_request_timeout_ms,omitempty"`
 	Providers                  map[string]Provider `json:"providers,omitempty"`
@@ -36,6 +37,14 @@ type Config struct {
 	Subagents                  Subagents           `json:"subagents,omitempty"`
 	ToolBlacklist              []string            `json:"tool_blacklist,omitempty"`
 	SandboxRules               []SandboxRule       `json:"sandbox_rules,omitempty"`
+}
+
+// ModelAlias gives a stable name to a model selector for a particular class of
+// work. An empty ModelString leaves the alias available for user configuration.
+type ModelAlias struct {
+	Name        string `json:"name"`
+	ModelString string `json:"model_string"`
+	Usage       string `json:"usage"`
 }
 
 // Subagents controls child-agent concurrency and nesting.
@@ -276,6 +285,12 @@ func Load(options Options) (Result, error) {
 	if typed.MCP == nil {
 		typed.MCP = make(map[string]MCP)
 	}
+	if typed.ModelAliases == nil {
+		typed.ModelAliases = []ModelAlias{}
+	}
+	if err := validateModelAliases(typed.ModelAliases); err != nil {
+		return Result{}, err
+	}
 	if err := validateSubagents(typed.Subagents); err != nil {
 		return Result{}, err
 	}
@@ -348,6 +363,45 @@ func selectorHasConfiguredVariant(selector string, providersValue any) bool {
 		modelID, variant, found = modelID+"/"+next, suffix, true
 	}
 	return false
+}
+
+func validateModelAliases(aliases []ModelAlias) error {
+	seen := make(map[string]struct{}, len(aliases))
+	for index, alias := range aliases {
+		prefix := fmt.Sprintf("model_aliases[%d]", index)
+		if alias.Name == "" {
+			return fmt.Errorf("%s.name must not be empty", prefix)
+		}
+		if strings.TrimSpace(alias.Name) != alias.Name {
+			return fmt.Errorf("%s.name must not have surrounding whitespace", prefix)
+		}
+		if strings.Contains(alias.Name, "/") {
+			return fmt.Errorf("%s.name must not contain '/'", prefix)
+		}
+		if _, exists := seen[alias.Name]; exists {
+			return fmt.Errorf("model alias name %q must be unique", alias.Name)
+		}
+		seen[alias.Name] = struct{}{}
+		if alias.Usage == "" {
+			return fmt.Errorf("%s.usage must not be empty", prefix)
+		}
+		if alias.ModelString == "" {
+			continue
+		}
+		if strings.TrimSpace(alias.ModelString) != alias.ModelString {
+			return fmt.Errorf("%s.model_string must not have surrounding whitespace", prefix)
+		}
+		segments := strings.Split(alias.ModelString, "/")
+		if len(segments) < 2 {
+			return fmt.Errorf("%s.model_string must be provider/model, optionally followed by /variant", prefix)
+		}
+		for _, segment := range segments {
+			if segment == "" {
+				return fmt.Errorf("%s.model_string must not contain empty path segments", prefix)
+			}
+		}
+	}
+	return nil
 }
 
 func validateSubagents(value Subagents) error {
@@ -515,6 +569,13 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 # Default model selected as provider/model, optionally followed by /variant.
 # model: provider/model/high
 
+# Stable aliases for model selectors. The entire list replaces lower-precedence
+# aliases when configured.
+# model_aliases:
+#   - name: low_llm
+#     model_string: provider/model/low
+#     usage: Fast, inexpensive tasks
+
 # Render changed lines inline. Set to false for a side-by-side diff viewer.
 # inline_diff: true
 
@@ -651,6 +712,87 @@ func writeDefaultConfig(path string) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(defaultConfigYAML), 0o600)
+}
+
+// UpdateModelAliases replaces the top-level model_aliases list while preserving
+// comments and unrelated fields. Callers should pass the complete merged list,
+// because configured lists replace lower-precedence aliases rather than merging
+// by name. If path does not exist, it is created.
+func UpdateModelAliases(path string, aliases []ModelAlias) error {
+	if err := validateModelAliases(aliases); err != nil {
+		return err
+	}
+	data, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read config for model alias update: %w", err)
+	}
+
+	var doc yaml.Node
+	if errors.Is(err, os.ErrNotExist) || len(bytes.TrimSpace(data)) == 0 {
+		doc = yaml.Node{Kind: yaml.DocumentNode, Content: []*yaml.Node{{Kind: yaml.MappingNode}}}
+	} else if err := yaml.Unmarshal(data, &doc); err != nil {
+		return fmt.Errorf("parse config for model alias update: %w", err)
+	}
+	if err := rejectDuplicateYAMLKeys(&doc, "$"); err != nil {
+		return fmt.Errorf("parse config for model alias update: %w", err)
+	}
+	root := &doc
+	if doc.Kind == yaml.DocumentNode && len(doc.Content) > 0 {
+		root = doc.Content[0]
+	}
+	if root.Kind != yaml.MappingNode {
+		return errors.New("config root must be a mapping")
+	}
+
+	sequence := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+	for _, alias := range aliases {
+		sequence.Content = append(sequence.Content, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "name"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: alias.Name},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "model_string"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: alias.ModelString},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "usage"},
+			{Kind: yaml.ScalarNode, Tag: "!!str", Value: alias.Usage},
+		}})
+	}
+	if !setTopLevelNode(root, "model_aliases", sequence) {
+		return nil
+	}
+	out, err := yaml.Marshal(&doc)
+	if err != nil {
+		return fmt.Errorf("encode updated config: %w", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config directory for model alias update: %w", err)
+	}
+	if err := atomicfile.Write(path, out); err != nil {
+		return fmt.Errorf("write model alias update: %w", err)
+	}
+	return nil
+}
+
+func setTopLevelNode(root *yaml.Node, key string, value *yaml.Node) bool {
+	for i := 0; i < len(root.Content)-1; i += 2 {
+		if root.Content[i].Value != key {
+			continue
+		}
+		existing := root.Content[i+1]
+		encodedExisting, _ := yaml.Marshal(existing)
+		encodedValue, _ := yaml.Marshal(value)
+		if bytes.Equal(encodedExisting, encodedValue) {
+			return false
+		}
+		value.HeadComment = existing.HeadComment
+		value.LineComment = existing.LineComment
+		value.FootComment = existing.FootComment
+		root.Content[i+1] = value
+		return true
+	}
+	root.Content = append(root.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		value,
+	)
+	return true
 }
 
 // UpdateDefaultSelection updates the canonical top-level "model" field,

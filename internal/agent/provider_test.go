@@ -103,6 +103,115 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+func TestProviderRegistryAliases(t *testing.T) {
+	catalog := idProvider{"catalog", []provider.Model{
+		modelWithVariants("plain", "high"),
+		modelWithVariants("vendor/slash-model", "low"),
+	}}
+	registry, err := NewProviderRegistry(catalog)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.InstallAliases([]ModelAlias{
+		{Name: "quick", ModelString: "catalog/plain"},
+		{Name: "careful", ModelString: "catalog/plain/high"},
+		{Name: "disabled", ModelString: ""},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, testCase := range []struct {
+		name        string
+		selector    string
+		wantModel   string
+		wantVariant string
+		wantErr     bool
+	}{
+		{name: "base model alias", selector: "quick", wantModel: "plain"},
+		{name: "variant alias", selector: "careful", wantModel: "plain", wantVariant: "high"},
+		{name: "canonical selector remains available", selector: "catalog/vendor/slash-model/low", wantModel: "vendor/slash-model", wantVariant: "low"},
+		{name: "empty target is skipped", selector: "disabled", wantErr: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			client, model, variant, err := registry.Resolve(testCase.selector)
+			if (err != nil) != testCase.wantErr {
+				t.Fatalf("Resolve(%q) err = %v, want error = %t", testCase.selector, err, testCase.wantErr)
+			}
+			if testCase.wantErr {
+				return
+			}
+			if client == nil || client.ID() != "catalog" || model.ID != testCase.wantModel {
+				t.Fatalf("Resolve(%q) = provider %v, model %q; want catalog/%s", testCase.selector, client, model.ID, testCase.wantModel)
+			}
+			if testCase.wantVariant == "" && variant != nil || testCase.wantVariant != "" && (variant == nil || variant.Name != testCase.wantVariant) {
+				t.Fatalf("Resolve(%q) variant = %#v, want %q", testCase.selector, variant, testCase.wantVariant)
+			}
+		})
+	}
+}
+
+func TestProviderRegistryInstallAliasesValidationIsAtomic(t *testing.T) {
+	registry, err := NewProviderRegistry(idProvider{"catalog", models("plain", "other")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.InstallAliases([]ModelAlias{{Name: "stable", ModelString: "catalog/plain"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, testCase := range []struct {
+		name    string
+		aliases []ModelAlias
+	}{
+		{name: "empty name", aliases: []ModelAlias{{Name: "", ModelString: "catalog/other"}}},
+		{name: "duplicate name", aliases: []ModelAlias{{Name: "same", ModelString: "catalog/plain"}, {Name: "same", ModelString: ""}}},
+		{name: "malformed canonical target", aliases: []ModelAlias{{Name: "bad", ModelString: "catalog//plain"}}},
+		{name: "unknown provider target", aliases: []ModelAlias{{Name: "bad", ModelString: "missing/plain"}}},
+		{name: "unknown model target", aliases: []ModelAlias{{Name: "bad", ModelString: "catalog/missing"}}},
+		{name: "alias target", aliases: []ModelAlias{{Name: "first", ModelString: "second"}, {Name: "second", ModelString: "catalog/plain"}}},
+		{name: "self target", aliases: []ModelAlias{{Name: "self", ModelString: "self"}}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			if err := registry.InstallAliases(testCase.aliases); err == nil {
+				t.Fatal("InstallAliases succeeded, want error")
+			}
+			client, model, variant, err := registry.Resolve("stable")
+			if err != nil || client == nil || client.ID() != "catalog" || model.ID != "plain" || variant != nil {
+				t.Fatalf("previous alias after rejected install = (%v, %#v, %#v, %v)", client, model, variant, err)
+			}
+		})
+	}
+}
+
+func TestProviderRegistryReplaceRevalidatesAliasesAtomically(t *testing.T) {
+	original := idProvider{"catalog", models("plain")}
+	registry, err := NewProviderRegistry(original)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.InstallAliases([]ModelAlias{{Name: "stable", ModelString: "catalog/plain"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registry.Replace([]provider.Provider{idProvider{"other", models("plain")}}); err == nil {
+		t.Fatal("Replace succeeded despite invalidating an installed alias")
+	}
+	if ids := providerIDs(registry.List()); !equalStrings(ids, []string{"catalog"}) {
+		t.Fatalf("List after rejected replacement = %v, want [catalog]", ids)
+	}
+	if client, model, variant, err := registry.Resolve("stable"); err != nil || client == nil || client.ID() != "catalog" || model.ID != "plain" || variant != nil {
+		t.Fatalf("alias after rejected replacement = (%v, %#v, %#v, %v)", client, model, variant, err)
+	}
+
+	replacement := idProvider{"catalog", models("plain", "other")}
+	if err := registry.Replace([]provider.Provider{replacement}); err != nil {
+		t.Fatalf("valid Replace failed: %v", err)
+	}
+	if client, model, _, err := registry.Resolve("stable"); err != nil || client == nil || len(client.Models()) != 2 || model.ID != "plain" {
+		t.Fatalf("alias after valid replacement = (%v, %#v, %v), want replacement/plain", client, model, err)
+	}
+}
+
 func TestProviderRegistryResolve(t *testing.T) {
 	registry, err := NewProviderRegistry(
 		idProvider{"catalog", []provider.Model{

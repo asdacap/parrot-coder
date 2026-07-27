@@ -92,6 +92,12 @@ func writeJSONLine(output io.Writer, item v1.Event) error {
 	return json.NewEncoder(output).Encode(item)
 }
 
+func writeStartupWarnings(output io.Writer, warnings []string) {
+	for _, warning := range warnings {
+		fmt.Fprintln(output, "warning:", terminal.Sanitize(warning))
+	}
+}
+
 // jsonlRedactor blanks the transcript export for tools which declared they
 // have no displayable output, so a redacted field never reaches a file.
 type jsonlRedactor struct {
@@ -282,6 +288,7 @@ func promptCommand(ctx context.Context, config PromptConfig) int {
 		return finish(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
+	writeStartupWarnings(config.Stderr, runtime.StartupWarnings)
 	writeAgentsStartupActivity(config.Stderr, runtime.AgentsFiles)
 	sessionItem, err := chooseSession(ctx, runtime.Client, runtime.Project.ID, options.continued, options.session, prompt)
 	if err != nil {
@@ -349,6 +356,7 @@ func command(ctx context.Context, config Config) int {
 		return finish(ctx, exitError, appOpenReason(err), err)
 	}
 	defer runtime.Close()
+	writeStartupWarnings(stderr, runtime.StartupWarnings)
 	api := apiClient(runtime.Client)
 	models, err := api.Models(ctx)
 	if err != nil {
@@ -426,6 +434,7 @@ func command(ctx context.Context, config Config) int {
 	shell := &chatShell{
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
 		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, configDir: runtime.Paths.Config, claimRequest: claimRequest, commands: runtime.Commands,
+		modelAliases: append([]configpkg.ModelAlias(nil), runtime.Config.Config.ModelAliases...), configureModelAlias: runtime.ConfigureModelAlias,
 		build: config.Build, credentials: runtime.Credentials, handler: runtime.Handler,
 		reloadProviders: func(ctx context.Context) error { return runtime.ReloadProviders(ctx) },
 		models:          models.Items, presentation: chatview.NewPresentations(toolList),
@@ -1409,18 +1418,20 @@ func (s *chatShell) refreshModelInfo() {
 }
 
 type chatShell struct {
-	ctx          context.Context
-	api          apiClient
-	current      v1.Session
-	selection    chatSelection
-	options      codingFlags
-	projectID    string
-	projectRoot  string
-	configDir    string
-	claimRequest v1.ClaimSessionRequest
-	commands     *customcommand.Registry
-	build        BuildInfo
-	credentials  auth.Store
+	ctx                 context.Context
+	api                 apiClient
+	current             v1.Session
+	selection           chatSelection
+	options             codingFlags
+	projectID           string
+	projectRoot         string
+	configDir           string
+	claimRequest        v1.ClaimSessionRequest
+	commands            *customcommand.Registry
+	modelAliases        []configpkg.ModelAlias
+	configureModelAlias func(string, string) error
+	build               BuildInfo
+	credentials         auth.Store
 	// reloadProviders rebuilds the local backend's providers from the credential
 	// store after /auth changes a credential, so new keys take effect without a
 	// restart. It is nil when no local backend is reloadable.
@@ -1888,6 +1899,7 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/models", Description: "list available models"},
 	{Value: "/usage", Description: "show ChatGPT subscription usage"},
 	{Value: "/model", Description: "select a model"},
+	{Value: "/model-alias", Description: "list or configure model aliases"},
 	{Value: "/effort", Description: "select model reasoning effort"},
 	{Value: "/modes", Description: "list available modes"},
 	{Value: "/mode", Description: "select a mode"},
@@ -1933,6 +1945,8 @@ func (s *chatShell) slash(command, argument string) (bool, int) {
 		s.commit(fmt.Sprintf("parrot %s\ncommit: %s\nbuilt: %s", s.build.Version, s.build.Commit, s.build.Date))
 	case "/chat":
 		s.commitStatus("✓ Interactive chat is already active")
+	case "/model-alias":
+		s.modelAliasAction(argument)
 	case "/models":
 		items, err := s.api.Models(s.ctx)
 		if err != nil {
@@ -2663,6 +2677,77 @@ func (s *chatShell) close() {
 	s.server, s.listener = nil, nil
 }
 
+func (s *chatShell) modelAliasAction(argument string) {
+	fields := strings.Fields(argument)
+	if len(fields) == 0 {
+		aliases := append([]configpkg.ModelAlias(nil), s.modelAliases...)
+		sort.Slice(aliases, func(i, j int) bool { return aliases[i].Name < aliases[j].Name })
+		var text strings.Builder
+		for _, alias := range aliases {
+			target := alias.ModelString
+			if target == "" {
+				target = "(not configured)"
+			}
+			fmt.Fprintf(&text, "%s\t%s\t%s\n", alias.Name, target, alias.Usage)
+		}
+		if text.Len() == 0 {
+			s.commit("no model aliases configured")
+		} else {
+			s.commit(strings.TrimSuffix(text.String(), "\n"))
+		}
+		return
+	}
+	if len(fields) > 2 {
+		s.commitError("usage: /model-alias [alias] [provider/model[/variant]]")
+		return
+	}
+	aliasIndex := -1
+	for i, alias := range s.modelAliases {
+		if alias.Name == fields[0] {
+			aliasIndex = i
+			break
+		}
+	}
+	if aliasIndex < 0 {
+		s.commitError(fmt.Sprintf("unknown model alias %q", fields[0]))
+		return
+	}
+	model := ""
+	var err error
+	if len(fields) == 1 {
+		model, err = s.pickModel()
+		if errors.Is(err, terminal.ErrCanceled) || errors.Is(err, terminal.ErrInterrupted) {
+			return
+		}
+	} else {
+		if !strings.Contains(fields[1], "/") {
+			err = fmt.Errorf("model must be provider/model[/variant]")
+		} else {
+			items, listErr := s.api.Models(s.ctx)
+			if listErr != nil {
+				err = listErr
+			} else {
+				s.models = items.Items
+				model, err = matchModel(fields[1], items.Items)
+			}
+		}
+	}
+	if err != nil {
+		s.commitError(err.Error())
+		return
+	}
+	if s.configureModelAlias == nil {
+		s.commitError("model alias configuration is unavailable")
+		return
+	}
+	if err := s.configureModelAlias(fields[0], model); err != nil {
+		s.commitError(err.Error())
+		return
+	}
+	s.modelAliases[aliasIndex].ModelString = model
+	s.commitStatus(fmt.Sprintf("✓ Model alias configured: %s = %s", fields[0], model))
+}
+
 func (s *chatShell) selectModel(argument string) error {
 	items, err := s.api.Models(s.ctx)
 	if err != nil {
@@ -3057,7 +3142,7 @@ func slashParts(line string) (string, string) {
 
 func isBuiltinSlash(name string) bool {
 	switch name {
-	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/continue", "/compact", "/connect", "/thinking", "/goal", "/status", "/exit":
+	case "/help", "/version", "/run", "/chat", "/models", "/usage", "/model", "/model-alias", "/effort", "/modes", "/mode", "/agents", "/agent", "/sessions", "/session", "/auth", "/serve", "/resume", "/new", "/clear", "/continue", "/compact", "/connect", "/thinking", "/goal", "/status", "/exit":
 		return true
 	default:
 		return false

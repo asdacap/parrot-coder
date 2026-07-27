@@ -172,18 +172,20 @@ type App struct {
 	// DefaultSelection is incomplete when Open permits model-less startup and
 	// no default model is configured.
 	DefaultSelection v1.SessionSelection
+	StartupWarnings  []string
 
-	sessionStore  *store.Registry
-	userSession   agent.UserSession
-	compactions   *compaction.Repository
-	outputs       *tool.OutputStore
-	processes     *process.Runner
-	notifications *agent.CompletionNotifier
-	mcp           *mcp.Manager
-	providers     *agent.ProviderRegistry
-	httpClient    *http.Client
-	closeOnce     sync.Once
-	closeErr      error
+	sessionStore       *store.Registry
+	userSession        agent.UserSession
+	compactions        *compaction.Repository
+	outputs            *tool.OutputStore
+	processes          *process.Runner
+	notifications      *agent.CompletionNotifier
+	mcp                *mcp.Manager
+	providers          *agent.ProviderRegistry
+	modelAliasesSource *systemcontext.ModelAliasesSource
+	httpClient         *http.Client
+	closeOnce          sync.Once
+	closeErr           error
 }
 
 // Client is the typed application client used by local commands. It delegates
@@ -255,6 +257,15 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: config: %w", err)
 	}
+	startupWarnings := make([]string, 0)
+	for _, alias := range loaded.Config.ModelAliases {
+		if alias.ModelString != "" {
+			continue
+		}
+		warning := fmt.Sprintf("model alias %q is not configured; set model_aliases[].model_string in parrot.yaml", alias.Name)
+		startupWarnings = append(startupWarnings, warning)
+		diagnostics.Warn("model_alias_unconfigured", "alias", alias.Name)
+	}
 	if err := validateConfigTrust(loaded); err != nil {
 		return nil, err
 	}
@@ -269,6 +280,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	providerRegistry, err := agent.NewProviderRegistry(providers...)
 	if err != nil {
 		return nil, fmt.Errorf("app: providers: %w", err)
+	}
+	if err := providerRegistry.InstallAliases(agentAliases(loaded.Config.ModelAliases)); err != nil {
+		return nil, fmt.Errorf("app: model aliases: %w", err)
 	}
 	selectedModel := options.Model
 	if selectedModel == "" {
@@ -319,7 +333,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	defaultSelection := session.Selection{Agent: agentID, Model: selectedModel}
 	result := &App{
 		Paths: paths, Project: info, WorkingDirectory: cwd, Config: loaded, Credentials: credentials, sessionStore: sessionStore,
-		DefaultSelection: v1.SessionSelection{Agent: agentID, Model: selectedModel},
+		DefaultSelection: v1.SessionSelection{Agent: agentID, Model: selectedModel}, StartupWarnings: startupWarnings,
 	}
 	defer func() {
 		if err != nil {
@@ -440,11 +454,14 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	toolSystemGuidance := toolProviders.SystemPromptGuidance()
 	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
 	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)
+	modelAliasesSource := systemcontext.NewModelAliasesSource(systemContextAliases(loaded.Config.ModelAliases))
+	result.modelAliasesSource = modelAliasesSource
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
 		AgentPrompt:        loaded.Config.Prompt,
 		ToolSystemGuidance: toolSystemGuidance,
 		Skills:             skillMetadata(skills),
 		Subagents:          subagentIDs,
+		ModelAliases:       modelAliasesSource,
 		ConfigDir:          paths.Config, ConfigPath: filepath.Join(paths.Config, config.FileName), PredefinedConfigPath: filepath.Join(paths.Config, config.PredefinedFileName), ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
 		AvailableCLIUtilities: availableCLIUtilities, AvailableOptionalCLIUtilities: availableOptionalCLIUtilities,
 	})
@@ -891,6 +908,55 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // model/usage listings) sees the new providers on its next resolution, so a
 // credential change takes effect without restarting the chat. A build failure
 // leaves the existing providers in place; the error is returned to the caller.
+func systemContextAliases(configured []config.ModelAlias) []systemcontext.ModelAlias {
+	aliases := make([]systemcontext.ModelAlias, len(configured))
+	for i, alias := range configured {
+		aliases[i] = systemcontext.ModelAlias{Name: alias.Name, ModelString: alias.ModelString, Usage: alias.Usage}
+	}
+	return aliases
+}
+
+func agentAliases(configured []config.ModelAlias) []agent.ModelAlias {
+	aliases := make([]agent.ModelAlias, len(configured))
+	for i, alias := range configured {
+		aliases[i] = agent.ModelAlias{Name: alias.Name, ModelString: alias.ModelString}
+	}
+	return aliases
+}
+
+// ConfigureModelAlias validates and persistently updates an existing alias,
+// while keeping the live provider registry immediately usable.
+func (a *App) ConfigureModelAlias(name, model string) error {
+	if a == nil || a.providers == nil {
+		return errors.New("app: provider registry is unavailable")
+	}
+	next := append([]config.ModelAlias(nil), a.Config.Config.ModelAliases...)
+	found := false
+	for i := range next {
+		if next[i].Name == name {
+			next[i].ModelString = model
+			found = true
+			break
+		}
+	}
+	if !found {
+		return fmt.Errorf("app: unknown model alias %q", name)
+	}
+	previous := agentAliases(a.Config.Config.ModelAliases)
+	if err := a.providers.InstallAliases(agentAliases(next)); err != nil {
+		return fmt.Errorf("app: model alias %q: %w", name, err)
+	}
+	if err := config.UpdateModelAliases(filepath.Join(a.Paths.Config, config.FileName), next); err != nil {
+		_ = a.providers.InstallAliases(previous)
+		return fmt.Errorf("app: persist model alias %q: %w", name, err)
+	}
+	a.Config.Config.ModelAliases = next
+	if a.modelAliasesSource != nil {
+		a.modelAliasesSource.Set(systemContextAliases(next))
+	}
+	return nil
+}
+
 func (a *App) ReloadProviders(ctx context.Context) error {
 	if a == nil || a.providers == nil {
 		return errors.New("app: provider registry is unavailable")

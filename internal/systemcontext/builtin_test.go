@@ -22,6 +22,61 @@ func observeSources(t *testing.T, sources []Source) map[string]Observation {
 	return observations
 }
 
+func TestBuiltinsRenderOnlyConfiguredModelAliasesInNameOrder(t *testing.T) {
+	root := t.TempDir()
+	sources, err := Builtins(BuiltinOptions{
+		AgentPrompt: "prompt", ProjectRoot: root, WorkingDirectory: root,
+		ModelAliases: NewModelAliasesSource([]ModelAlias{
+			{Name: "xhigh_llm", ModelString: "provider/model/xhigh", Usage: "exceptionally difficult work"},
+			{Name: "low_llm", ModelString: "provider/model/low", Usage: "routine work"},
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, ok := observeSources(t, sources)["runtime:model-aliases"]
+	if !ok {
+		t.Fatal("model alias source is absent")
+	}
+	low := strings.Index(observation.Text, "- low_llm: provider/model/low — routine work")
+	xhigh := strings.Index(observation.Text, "- xhigh_llm: provider/model/xhigh — exceptionally difficult work")
+	if low < 0 || xhigh < 0 || low > xhigh || !strings.Contains(observation.Text, "agent_spawn model argument") {
+		t.Fatalf("model alias observation = %q", observation.Text)
+	}
+
+	sources, err = Builtins(BuiltinOptions{AgentPrompt: "prompt", ProjectRoot: root, WorkingDirectory: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := observeSources(t, sources)["runtime:model-aliases"]; ok {
+		t.Fatal("empty model aliases unexpectedly produced a source")
+	}
+}
+
+func TestModelAliasesSourceUpdateChangesSystemContextPrompt(t *testing.T) {
+	source := NewModelAliasesSource([]ModelAlias{{Name: "low_llm", Usage: "routine work"}})
+	registry, err := NewRegistry(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := registry.GetSystemContextPrompt(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before != "" {
+		t.Fatalf("prompt before configuration = %q", before)
+	}
+
+	source.Set([]ModelAlias{{Name: "low_llm", ModelString: "provider/model/low", Usage: "routine work"}})
+	after, err := registry.GetSystemContextPrompt(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(after, "- low_llm: provider/model/low — routine work") {
+		t.Fatalf("prompt after configuration = %q", after)
+	}
+}
+
 func TestCLIUtilitiesSourceListsAvailableUtilities(t *testing.T) {
 	observation, err := (CLIUtilitiesSource{Available: []string{"bash", "git"}}).Observe(context.Background())
 	if err != nil {
