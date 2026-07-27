@@ -56,7 +56,7 @@ func TestFormatDiffSideBySide(t *testing.T) {
 func TestFormatDiffInline(t *testing.T) {
 	formatted := formatDiff(testTraditionalDiff, 80, true)
 	joined := strings.Join(formatted.rows, "\n")
-	for _, want := range []string{"new/a.txt", "@@ -1,2 +1,2 @@", " 1  1  keep", " 2    -old", "    2 +new", "11    -left", "   11 +right"} {
+	for _, want := range []string{"new/a.txt", "@@ -1,2 +1,2 @@", " 1  keep", " 2 -old", " 2 +new", "11 -left", "11 +right"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("inline diff omitted %q: %q", want, joined)
 		}
@@ -64,7 +64,7 @@ func TestFormatDiffInline(t *testing.T) {
 	if strings.Contains(joined, "│") {
 		t.Fatalf("inline diff contains side-by-side gutter: %q", joined)
 	}
-	if len(formatted.spans[3]) != 1 || formatted.spans[3][0].style.color != "31" || len(formatted.spans[4]) != 1 || formatted.spans[4][0].style.color != "32" {
+	if len(formatted.spans[3]) != 1 || formatted.spans[3][0].start != 0 || formatted.spans[3][0].end != len(formatted.rows[3]) || formatted.spans[3][0].style.color != "31" || len(formatted.spans[4]) != 1 || formatted.spans[4][0].start != 0 || formatted.spans[4][0].end != len(formatted.rows[4]) || formatted.spans[4][0].style.color != "32" {
 		t.Fatalf("replacement spans = %#v / %#v", formatted.spans[3], formatted.spans[4])
 	}
 	for _, row := range formatted.rows {
@@ -151,7 +151,7 @@ func TestCommitDiffBlockIsAtomicAndRendererStyled(t *testing.T) {
 		t.Fatalf("writes = %d, want 1", writer.writes)
 	}
 	output := writer.text.String()
-	for _, value := range []string{"changed files", " 2    -", "    2 +", "\x1b[31m", "\x1b[32m"} {
+	for _, value := range []string{"changed files", "\x1b[31m 2 -", "\x1b[32m 2 +", "\x1b[31m", "\x1b[32m"} {
 		if !strings.Contains(output, value) {
 			t.Errorf("output does not contain %q: %q", value, output)
 		}

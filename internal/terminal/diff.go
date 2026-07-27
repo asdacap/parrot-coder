@@ -186,19 +186,17 @@ func renderInlineDiff(files []*gitdiff.File, columns int, sourceOmitted bool) ri
 			result.spans = append(result.spans, []textSpan{{start: 0, end: len(result.rows[len(result.rows)-1]), style: ansiStyle{dim: true}}})
 			continue
 		}
-		oldNumber, newNumber, marker := "", "", " "
-		if row.oldLine != 0 {
-			oldNumber = strconv.FormatInt(row.oldLine, 10)
-		}
-		if row.newLine != 0 {
-			newNumber = strconv.FormatInt(row.newLine, 10)
-		}
+		lineNumber, marker := "", " "
 		if row.op == gitdiff.OpDelete {
+			lineNumber = strconv.FormatInt(row.oldLine, 10)
 			marker = "-"
-		} else if row.op == gitdiff.OpAdd {
-			marker = "+"
+		} else {
+			lineNumber = strconv.FormatInt(row.newLine, 10)
+			if row.op == gitdiff.OpAdd {
+				marker = "+"
+			}
 		}
-		prefix := fmt.Sprintf("%*s %*s %s", lineDigits, oldNumber, lineDigits, newNumber, marker)
+		prefix := fmt.Sprintf("%*s %s", lineDigits, lineNumber, marker)
 		line := truncateWidth(prefix+expandDiffTabs(row.text), columns)
 		result.rows = append(result.rows, line)
 		var style ansiStyle
@@ -207,10 +205,10 @@ func renderInlineDiff(files []*gitdiff.File, columns int, sourceOmitted bool) ri
 		} else if row.op == gitdiff.OpAdd {
 			style.color = "32"
 		}
-		if style == (ansiStyle{}) || len(line) <= len(prefix) {
+		if style == (ansiStyle{}) {
 			result.spans = append(result.spans, nil)
 		} else {
-			result.spans = append(result.spans, []textSpan{{start: len(prefix), end: len(line), style: style}})
+			result.spans = append(result.spans, []textSpan{{start: 0, end: len(line), style: style}})
 		}
 	}
 	if omitted := len(rows) - limit; omitted > 0 {
