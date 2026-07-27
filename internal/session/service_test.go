@@ -3,6 +3,7 @@ package session_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -33,11 +34,11 @@ func TestSessionLifecycleSurvivesReopen(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.Title != "durable" || got.Name != "inspect" {
+	if got.Title != "durable" || got.Name != "main-agent" {
 		t.Fatalf("session = %#v", got)
 	}
 	listed, err := service.List(ctx)
-	if err != nil || len(listed) != 1 || listed[0].Name != "inspect" {
+	if err != nil || len(listed) != 1 || listed[0].Name != "main-agent" {
 		t.Fatalf("List = %#v, %v", listed, err)
 	}
 	if err := service.GetSession(created.ID).Delete(ctx); err != nil {
@@ -68,8 +69,8 @@ func TestBoundSessionsKeepOperationsIsolated(t *testing.T) {
 		text  string
 		msgID string
 	}{
-		{service.GetSession(first.ID), first.ID, "first", "first prompt", "msg_first"},
-		{service.GetSession(second.ID), second.ID, "second", "second prompt", "msg_second"},
+		{service.GetSession(first.ID), first.ID, "main-agent", "first prompt", "msg_first"},
+		{service.GetSession(second.ID), second.ID, "main-agent-2", "second prompt", "msg_second"},
 	} {
 		admission, err := test.bound.Admit(ctx, session.AdmitParams{MessageID: test.msgID, Content: test.text, Delivery: session.DeliverySteer})
 		if err != nil {
@@ -92,31 +93,115 @@ func TestBoundSessionsKeepOperationsIsolated(t *testing.T) {
 	}
 }
 
-func TestRootSessionNamesAreGeneratedWithoutOverridingExplicitOrChildNames(t *testing.T) {
+func TestRootSessionNamesReserveMainAgentWithoutChangingChildNames(t *testing.T) {
 	ctx := context.Background()
 	registry := store.NewRegistry(t.TempDir(), "host-test")
 	defer registry.Close()
 	service := session.NewService(registry, event.NewRepository(registry))
 
-	generated, err := service.Create(ctx, session.CreateParams{ProjectID: "project", Title: "generated"})
+	first, err := service.Create(ctx, session.CreateParams{ProjectID: "project", Title: "first"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	explicit, err := service.Create(ctx, session.CreateParams{Name: "main-task", Title: "explicit"})
+	second, err := service.Create(ctx, session.CreateParams{Name: "ignored", ProjectID: "project", Title: "second"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := service.Create(ctx, session.CreateParams{ParentSessionID: generated.ID, ProjectID: "project", Title: "child"})
+	third, err := service.Create(ctx, session.CreateParams{ProjectID: "project", Title: "third"})
 	if err != nil {
 		t.Fatal(err)
+	}
+	unnamedChild, err := service.Create(ctx, session.CreateParams{ParentSessionID: first.ID, ProjectID: "project", Title: "unnamed child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	namedChild, err := service.Create(ctx, session.CreateParams{ParentSessionID: first.ID, Name: "worker", ProjectID: "project", Title: "named child"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := service.GetSession(first.ID).Get(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Name != "main-agent" || loaded.Name != first.Name || second.Name != "main-agent-2" || third.Name != "main-agent-3" || unnamedChild.Name != "" || namedChild.Name != "worker" {
+		t.Fatalf("session names: first=%q loaded=%q second=%q third=%q unnamed child=%q named child=%q", first.Name, loaded.Name, second.Name, third.Name, unnamedChild.Name, namedChild.Name)
 	}
 
-	loaded, err := service.GetSession(generated.ID).Get(ctx)
+	if err := service.GetSession(second.ID).Delete(ctx); err != nil {
+		t.Fatal(err)
+	}
+	reused, err := service.Create(ctx, session.CreateParams{ProjectID: "project", Title: "reuse gap"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if generated.Name == "" || loaded.Name != generated.Name || explicit.Name != "main-task" || child.Name != "" {
-		t.Fatalf("session names: generated=%q loaded=%q explicit=%q child=%q", generated.Name, loaded.Name, explicit.Name, child.Name)
+	if reused.Name != "main-agent-2" {
+		t.Fatalf("reused root name = %q, want main-agent-2", reused.Name)
+	}
+}
+
+func TestRootSessionNameReclaimsInterruptedSameHostReservation(t *testing.T) {
+	ctx := context.Background()
+	state := t.TempDir()
+	if err := store.ReserveSessionName(state, "main-agent", "ses_interrupted", "host-test", 1<<30, func(int) bool { return false }); err != nil {
+		t.Fatal(err)
+	}
+	registry := store.NewRegistry(state, "host-test")
+	defer registry.Close()
+	service := session.NewService(registry, event.NewRepository(registry))
+
+	created, err := service.Create(ctx, session.CreateParams{ProjectID: "project"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.Name != "main-agent" {
+		t.Fatalf("root name = %q, want reclaimed main-agent", created.Name)
+	}
+}
+
+func TestConcurrentRootSessionNamesAreUnique(t *testing.T) {
+	ctx := context.Background()
+	state := t.TempDir()
+	const count = 16
+	services := make([]*session.Service, count)
+	for index := range services {
+		registry := store.NewRegistry(state, "host-test")
+		t.Cleanup(func() { registry.Close() })
+		services[index] = session.NewService(registry, event.NewRepository(registry))
+	}
+	results := make(chan session.AgentSessionDto, count)
+	errs := make(chan error, count)
+	var workers sync.WaitGroup
+	for _, service := range services {
+		workers.Add(1)
+		go func() {
+			defer workers.Done()
+			created, err := service.Create(ctx, session.CreateParams{ProjectID: "project"})
+			results <- created
+			errs <- err
+		}()
+	}
+	workers.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	names := make(map[string]bool, count)
+	for created := range results {
+		if names[created.Name] {
+			t.Fatalf("duplicate root name %q", created.Name)
+		}
+		names[created.Name] = true
+	}
+	if len(names) != count || !names["main-agent"] {
+		t.Fatalf("root names = %#v", names)
+	}
+	for suffix := 2; suffix <= count; suffix++ {
+		if name := fmt.Sprintf("main-agent-%d", suffix); !names[name] {
+			t.Fatalf("root names do not contain %q: %#v", name, names)
+		}
 	}
 }
 
@@ -494,21 +579,21 @@ func TestInteractiveClaimLifecycle(t *testing.T) {
 	owner := session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 101}
 
 	first, err := service.ClaimInteractive(ctx, owner, session.CreateParams{Title: "first"}, selection, false, func(int) bool { return false })
-	if err != nil || first.Disposition != session.ClaimCreated {
+	if err != nil || first.Disposition != session.ClaimCreated || first.Session.Name != "main-agent" {
 		t.Fatalf("first claim = %#v, %v", first, err)
 	}
 	retry, err := service.ClaimInteractive(ctx, owner, session.CreateParams{}, selection, false, func(int) bool { return true })
-	if err != nil || retry.Session.ID != first.Session.ID || retry.Disposition != session.ClaimExisting {
+	if err != nil || retry.Session.ID != first.Session.ID || retry.Session.Name != first.Session.Name || retry.Disposition != session.ClaimExisting {
 		t.Fatalf("retry = %#v, %v", retry, err)
 	}
 
 	reclaimed, err := service.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 202}, session.CreateParams{}, selection, false, func(pid int) bool { return pid != 101 })
-	if err != nil || reclaimed.Session.ID != first.Session.ID || reclaimed.Disposition != session.ClaimReclaimed {
+	if err != nil || reclaimed.Session.ID != first.Session.ID || reclaimed.Session.Name != first.Session.Name || reclaimed.Disposition != session.ClaimReclaimed {
 		t.Fatalf("reclaimed = %#v, %v", reclaimed, err)
 	}
 
 	cleared, err := service.ClaimInteractive(ctx, session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 202}, session.CreateParams{Title: "fresh"}, selection, true, func(int) bool { return true })
-	if err != nil || cleared.Session.ID == first.Session.ID || cleared.Disposition != session.ClaimCreated {
+	if err != nil || cleared.Session.ID == first.Session.ID || cleared.Session.Name != "main-agent-2" || cleared.Disposition != session.ClaimCreated {
 		t.Fatalf("clear = %#v, %v", cleared, err)
 	}
 	items, err := service.List(ctx)
@@ -531,7 +616,7 @@ func TestInteractiveClaimDoesNotStealLiveOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if second.Session.ID == first.Session.ID || second.Disposition != session.ClaimCreated {
+	if first.Session.Name != "main-agent" || second.Session.Name != "main-agent-2" || second.Session.ID == first.Session.ID || second.Disposition != session.ClaimCreated {
 		t.Fatalf("live owner was stolen: first=%#v second=%#v", first, second)
 	}
 }

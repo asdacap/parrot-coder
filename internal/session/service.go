@@ -7,14 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/store"
-	petname "github.com/dustinkirkland/golang-petname"
 )
 
 var (
@@ -31,6 +30,7 @@ type Delivery string
 const (
 	DeliverySteer Delivery = "steer"
 	DeliveryQueue Delivery = "queue"
+	rootAgentName          = "main-agent"
 )
 
 type AgentSessionDto struct {
@@ -149,9 +149,6 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 	if err := s.validateParent(params); err != nil {
 		return AgentSessionDto{}, err
 	}
-	if params.ParentSessionID == "" && strings.TrimSpace(params.Name) == "" {
-		params.Name = petname.Generate(3, "-")
-	}
 	sessionID, err := id.New("ses")
 	if err != nil {
 		return AgentSessionDto{}, fmt.Errorf("session: generate ID: %w", err)
@@ -160,9 +157,20 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 	if err != nil {
 		return AgentSessionDto{}, err
 	}
+	if params.ParentSessionID == "" {
+		params.Name, err = s.reserveRootName(sessionID)
+		if err != nil {
+			_ = s.sessions.Remove(sessionID)
+			return AgentSessionDto{}, err
+		}
+	}
+	remove := func() {
+		_ = s.sessions.Remove(sessionID)
+		_ = store.ReleaseSessionName(s.sessions.State(), params.Name, sessionID)
+	}
 	epochID, err := id.New("ctx")
 	if err != nil {
-		_ = s.sessions.Remove(sessionID)
+		remove()
 		return AgentSessionDto{}, fmt.Errorf("session: generate compaction epoch ID: %w", err)
 	}
 	now := time.Now().UTC()
@@ -181,14 +189,42 @@ func (s *Service) create(ctx context.Context, params CreateParams, selection Sel
 	if err != nil {
 		// A session whose row was never written would be listed from its
 		// directory but fail to open, so remove it rather than leave a shell.
-		_ = s.sessions.Remove(sessionID)
+		remove()
 		return AgentSessionDto{}, err
 	}
 	if err := s.publish(result); err != nil {
-		_ = s.sessions.Remove(sessionID)
+		remove()
 		return AgentSessionDto{}, err
 	}
 	return result, nil
+}
+
+func (s *Service) reserveRootName(sessionID string) (string, error) {
+	metas, _, err := store.ListMeta(s.sessions.State())
+	if err != nil {
+		return "", err
+	}
+	unavailable := make(map[string]bool, len(metas))
+	for _, meta := range metas {
+		unavailable[meta.Name] = true
+	}
+	for suffix := 1; ; suffix++ {
+		name := rootAgentName
+		if suffix > 1 {
+			name = fmt.Sprintf("%s-%d", rootAgentName, suffix)
+		}
+		if unavailable[name] {
+			continue
+		}
+		err := store.ReserveSessionName(s.sessions.State(), name, sessionID, s.sessions.HostKey(), s.pid, processidentity.Alive)
+		if errors.Is(err, store.ErrSessionNameReserved) {
+			continue
+		}
+		if err != nil {
+			return "", err
+		}
+		return name, nil
+	}
 }
 
 func (s *Service) validateParent(params CreateParams) error {
@@ -325,7 +361,7 @@ func (s *Service) claimInteractiveOnce(ctx context.Context, owner InteractiveOwn
 		HostKey:          owner.HostKey,
 		PID:              owner.PID,
 	}); err != nil {
-		_ = s.sessions.Remove(item.ID)
+		_ = s.GetSession(item.ID).Delete(ctx)
 		return InteractiveClaim{}, err
 	}
 	return InteractiveClaim{Session: item, Disposition: ClaimCreated}, nil
@@ -390,12 +426,17 @@ func (s *Service) LatestSelection(ctx context.Context, projectID string) (Select
 // Delete removes a session directory. The old shared table relied on cascading
 // deletes that its own RESTRICT constraints could block; a session now owns its
 // file, so deleting it is removing that file.
-func (s *agentSessionStore) Delete(ctx context.Context) error {
-	err := s.sessions.Remove(s.sessionID)
-	if errors.Is(err, store.ErrNoSession) {
-		return ErrNotFound
+func (s *agentSessionStore) Delete(context.Context) error {
+	if err := store.ReleaseSessionNames(s.sessions.State(), s.sessionID); err != nil {
+		return err
 	}
-	return err
+	if err := s.sessions.Remove(s.sessionID); err != nil {
+		if errors.Is(err, store.ErrNoSession) {
+			return ErrNotFound
+		}
+		return err
+	}
+	return nil
 }
 
 func (s *agentSessionStore) Admit(ctx context.Context, params AdmitParams) (Admission, error) {
