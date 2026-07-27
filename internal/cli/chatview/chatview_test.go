@@ -475,6 +475,87 @@ func TestRuntimeActivityTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	}
 }
 
+func TestRuntimeActivityTrackerFoldsNestedModelineToolsIntoOwnerStatus(t *testing.T) {
+	for _, test := range []struct {
+		name, tool         string
+		modeline, liveOnly bool
+	}{
+		{name: "wait agent", tool: "wait_agent", modeline: true, liveOnly: true},
+		{name: "wait process", tool: "wait_process", modeline: true, liveOnly: true},
+		{name: "modeline terminal result", tool: "background-work", modeline: true},
+		{name: "ordinary tool", tool: "ordinary", liveOnly: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tracker := NewRuntimeActivityTracker("session-main")
+			tracker.Presentation = NewPresentations(v1.ToolList{Items: []v1.Tool{{
+				ID: test.tool, Presentation: v1.ToolPresentation{Modeline: test.modeline, LiveOnly: test.liveOnly, Result: ToolResultText},
+			}}})
+			startRootSession(tracker)
+			if _, err := tracker.Apply(agentSessionEvent(v1.EventAgentSessionStart, v1.AgentSessionEvent{
+				SessionID: "child", ParentSessionID: "session-main", Agent: "worker",
+			}), false); err != nil {
+				t.Fatal(err)
+			}
+			progress, _ := json.Marshal(v1.AgentSessionProgress{SessionID: "child", Agent: "worker", Status: "running", Usage: v1.Usage{TotalTokens: 10}})
+			if reports, err := tracker.Apply(v1.Event{Type: v1.EventAgentSessionProgress, SessionID: "child", Data: progress}, false); err != nil || len(reports) != 1 {
+				t.Fatalf("progress reports = %#v, %v", reports, err)
+			}
+
+			var report RuntimeActivityReport
+			for _, eventType := range []string{v1.EventSessionToolPending, v1.EventSessionToolRunning} {
+				reports, err := tracker.Apply(v1.Event{Type: eventType, SessionID: "child", Data: json.RawMessage(`{"call_id":"call","tool_name":"` + test.tool + `"}`)}, false)
+				if err != nil || len(reports) != 1 {
+					t.Fatalf("%s reports = %#v, %v", eventType, reports, err)
+				}
+				report = reports[0]
+				if test.modeline {
+					if report.ID != "child\x00:status" || !report.MainStatus || report.Terminal || strings.Contains(report.ID, ":tool:") || !strings.Contains(report.Line, "] Working: "+test.tool) || strings.Contains(report.Line, "agent: worker") {
+						t.Fatalf("folded %s report = %#v", eventType, report)
+					}
+				} else if !strings.Contains(report.ID, ":tool:") || report.MainStatus {
+					t.Fatalf("ordinary %s report = %#v", eventType, report)
+				}
+			}
+
+			if test.modeline && test.liveOnly {
+				if reports, err := tracker.Apply(agentSessionEvent(v1.EventAgentSessionWorking, v1.AgentSessionEvent{SessionID: "child"}), false); err != nil || len(reports) != 0 {
+					t.Fatalf("follow-up working reports = %#v, %v", reports, err)
+				}
+				if reports, err := tracker.Apply(v1.Event{Type: v1.EventAgentSessionProgress, SessionID: "child", Data: progress}, false); err != nil || len(reports) != 1 || strings.Contains(reports[0].Line, "Working:") {
+					t.Fatalf("follow-up progress reports = %#v, %v", reports, err)
+				}
+				reports, err := tracker.Apply(v1.Event{Type: v1.EventSessionToolSuccess, SessionID: "child", Data: json.RawMessage(`{"call_id":"call"}`)}, false)
+				if err != nil || len(reports) != 1 || strings.Contains(reports[0].Line, "Working:") || reports[0].Terminal || reports[0].EmitPlain {
+					t.Fatalf("delayed terminal reports = %#v, %v", reports, err)
+				}
+				return
+			}
+
+			reports, err := tracker.Apply(v1.Event{Type: v1.EventSessionToolSuccess, SessionID: "child", Data: json.RawMessage(`{"call_id":"call","result":"finished output"}`)}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if test.modeline && !test.liveOnly {
+				if len(reports) != 2 || reports[0].ID != "child\x00:status" || strings.Contains(reports[0].Line, "Working:") || !strings.Contains(reports[0].Line, "agent: worker") || reports[0].Terminal || reports[0].EmitPlain || !strings.Contains(reports[1].ID, ":tool:") || !reports[1].Terminal || !reports[1].EmitPlain || !strings.Contains(reports[1].Block, "finished output") {
+					t.Fatalf("modeline terminal reports = %#v", reports)
+				}
+				return
+			}
+			if len(reports) != 1 {
+				t.Fatalf("success reports = %#v", reports)
+			}
+			report = reports[0]
+			if test.modeline {
+				if report.ID != "child\x00:status" || strings.Contains(report.Line, "Working:") || !strings.Contains(report.Line, "agent: worker") || report.Terminal || report.EmitPlain {
+					t.Fatalf("cleared modeline report = %#v", report)
+				}
+			} else if !report.Skip || !report.Terminal || report.EmitPlain {
+				t.Fatalf("settled live-only report = %#v", report)
+			}
+		})
+	}
+}
+
 func TestRuntimeActivityTrackerAttachesPendingUsageToNestedSessions(t *testing.T) {
 	tracker := NewRuntimeActivityTracker("session-main")
 	startRootSession(tracker)

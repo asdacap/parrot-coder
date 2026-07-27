@@ -580,6 +580,7 @@ type StreamToolReport struct {
 	Terminal  bool
 	Hidden    bool
 	LiveOnly  bool
+	Modeline  bool
 	Style     terminal.TextStyle
 }
 
@@ -623,6 +624,11 @@ type RuntimeActivityInfo struct {
 
 // runtimeActivityNode is one session or process in the tracker. Session ancestry determines
 // hierarchy; processID is empty for a session node.
+type runtimeActivityModelineTool struct {
+	label string
+	order int
+}
+
 type runtimeActivityNode struct {
 	id              string
 	sessionID       string
@@ -645,6 +651,8 @@ type runtimeActivityNode struct {
 	progressIgnored  bool
 	finished         bool
 	lifecycleFlushed bool
+	modelineTools    map[string]runtimeActivityModelineTool
+	modelineOrder    int
 
 	direct RuntimeActivityUsage
 }
@@ -1051,6 +1059,17 @@ func (t *RuntimeActivityTracker) activityActive(node *runtimeActivityNode) bool 
 	return t.activityActiveSeen(node, make(map[*runtimeActivityNode]bool, len(t.activities)))
 }
 
+func (node *runtimeActivityNode) modelineToolLabel() string {
+	var selected runtimeActivityModelineTool
+	selectedID := ""
+	for id, tool := range node.modelineTools {
+		if selectedID == "" || tool.order > selected.order || tool.order == selected.order && id < selectedID {
+			selected, selectedID = tool, id
+		}
+	}
+	return selected.label
+}
+
 func (t *RuntimeActivityTracker) activityActiveSeen(node *runtimeActivityNode, seen map[*runtimeActivityNode]bool) bool {
 	if node == nil {
 		return false
@@ -1059,9 +1078,9 @@ func (t *RuntimeActivityTracker) activityActiveSeen(node *runtimeActivityNode, s
 		return false
 	}
 	seen[node] = true
-	selfActive := node.status == "working"
+	selfActive := node.status == "working" || node.modelineToolLabel() != ""
 	if node.progress != nil {
-		selfActive = !node.progressDone
+		selfActive = !node.progressDone || node.modelineToolLabel() != ""
 	}
 	if selfActive {
 		return true
@@ -1096,7 +1115,7 @@ func (t *RuntimeActivityTracker) activityStatusReports(sessionID, processID stri
 		}
 		children := t.activeChildCount(node)
 		if node.progress == nil {
-			if !node.finished || node.lifecycleFlushed || children != 0 {
+			if !node.finished || node.lifecycleFlushed || children != 0 || node.modelineToolLabel() != "" {
 				continue
 			}
 			icon, body, style := SuccessIcon, "completed", terminal.TextStyleMuted
@@ -1118,6 +1137,9 @@ func (t *RuntimeActivityTracker) activityStatusReports(sessionID, processID stri
 			continue
 		}
 		body := fmt.Sprintf("agent: %s · %s tokens · %d tools", node.progress.Agent, FormatTokenCount(node.progress.Usage.TotalTokens), node.progress.ToolUses)
+		if label := node.modelineToolLabel(); label != "" {
+			body = fmt.Sprintf("Working: %s · %s tokens · %d tools", label, FormatTokenCount(node.progress.Usage.TotalTokens), node.progress.ToolUses)
+		}
 		if children > 0 {
 			unit := "active activity"
 			if children != 1 {
@@ -1125,7 +1147,7 @@ func (t *RuntimeActivityTracker) activityStatusReports(sessionID, processID stri
 			}
 			body += fmt.Sprintf(" · %d %s", children, unit)
 		}
-		terminalEvent := node.progressDone && children == 0
+		terminalEvent := node.progressDone && children == 0 && node.modelineToolLabel() == ""
 		icon := SpinnerFrames[0]
 		if terminalEvent {
 			icon = SuccessIcon
@@ -1327,6 +1349,24 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 		if block != "" && report.BlockKind != ToolResultDiff {
 			block = prefixActivityText(strings.Repeat("  ", max(1, t.depth(node)))+"  ", block)
 		}
+		if report.Modeline && node.sessionID != t.rootSessionID {
+			if report.Terminal {
+				delete(node.modelineTools, callID)
+			} else {
+				if node.modelineTools == nil {
+					node.modelineTools = make(map[string]runtimeActivityModelineTool)
+				}
+				if _, exists := node.modelineTools[callID]; !exists {
+					node.modelineOrder++
+				}
+				node.modelineTools[callID] = runtimeActivityModelineTool{label: report.Label, order: node.modelineOrder}
+			}
+			reports := t.activityStatusReports(sessionID, processID)
+			if report.Terminal && !report.LiveOnly {
+				reports = append(reports, RuntimeActivityReport{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, BlockKind: report.BlockKind, Terminal: true, EmitPlain: true, Skip: report.Hidden, Style: report.Style})
+			}
+			return reports, nil
+		}
 		return []RuntimeActivityReport{{ID: scope + "tool:" + callID, Line: t.eventLine(node, line), Block: block, BlockKind: report.BlockKind, Terminal: report.Terminal, EmitPlain: !report.LiveOnly, Skip: report.Hidden || report.Terminal && report.LiveOnly, Style: report.Style}}, nil
 	case v1.EventCodeDisplay:
 		payload, err := v1.DecodeEventData(item)
@@ -1503,6 +1543,8 @@ func (t *RuntimeActivityTracker) applyLifecycle(item v1.Event) ([]RuntimeActivit
 		node.status = "working"
 		node.error = ""
 		node.progress = nil
+		node.modelineTools = nil
+		node.modelineOrder = 0
 		node.progressOpen = true
 		node.progressDone, node.progressFlushed, node.finished, node.lifecycleFlushed = false, false, false, false
 		return nil, nil
@@ -1648,7 +1690,8 @@ func (t *StreamToolTracker) DescribeReport(item v1.Event) StreamToolReport {
 	}
 	return StreamToolReport{
 		Line: StreamToolStatus(status, errorText), Label: label, Block: block, BlockKind: blockKind,
-		Terminal: terminalEvent, Hidden: !terminalEvent && t.Presentation.TerminalOnly(call.name), LiveOnly: call.liveOnly, Style: style,
+		Terminal: terminalEvent, Hidden: !terminalEvent && t.Presentation.TerminalOnly(call.name), LiveOnly: call.liveOnly,
+		Modeline: t.Presentation.Modeline(call.name), Style: style,
 	}
 }
 

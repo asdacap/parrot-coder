@@ -1311,6 +1311,39 @@ func TestEnhancedRuntimeActivityEventUsesTreeDepthAndAgentPrefix(t *testing.T) {
 	}
 }
 
+func TestEnhancedNestedModelineToolFoldsIntoOwnerStatus(t *testing.T) {
+	presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "wait_agent", Presentation: v1.ToolPresentation{Modeline: true, LiveOnly: true},
+	}}})
+	runtime := &enhancedChatRuntime{
+		shell:         &chatShell{current: v1.Session{ID: "session-main"}, config: &Config{Presentation: func() chatview.Presentations { return presentation }}},
+		knownMessages: map[string]bool{},
+	}
+	if err := runtime.handleEvent(runtimeActivityStart("child", "session-main", "worker")); err != nil {
+		t.Fatal(err)
+	}
+	progress, _ := json.Marshal(v1.AgentSessionProgress{SessionID: "child", Agent: "worker", Status: "running", Usage: v1.Usage{TotalTokens: 10}})
+	if err := runtime.handleEvent(runtimeActivityEvent("child", v1.EventAgentSessionProgress, progress)); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionToolRunning, SessionID: "child", Data: json.RawMessage(`{"call_id":"call","tool_name":"wait_agent"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 || runtime.activity[0].id != "child\x00:status" || !runtime.activity[0].mainStatus || runtime.activity[0].sessionID != "child" || !strings.Contains(runtime.activity[0].rendered, "] Working: wait_agent") || strings.Contains(runtime.activity[0].rendered, "agent: worker") {
+		t.Fatalf("nested modeline activity = %#v", runtime.activity)
+	}
+	frames := runtime.activityFrames(runtime.activity[0].started, 100)
+	if len(frames) != 2 || len(frames[1].StyledActivity) != 1 || !frames[1].MainStatus || frames[1].SessionID != "child" {
+		t.Fatalf("nested modeline frames = %#v", frames)
+	}
+	if err := runtime.handleEvent(v1.Event{Type: v1.EventSessionToolSuccess, SessionID: "child", Data: json.RawMessage(`{"call_id":"call"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if len(runtime.activity) != 1 || strings.Contains(runtime.activity[0].rendered, "Working:") || !strings.Contains(runtime.activity[0].rendered, "agent: worker") {
+		t.Fatalf("settled modeline activity = %#v", runtime.activity)
+	}
+}
+
 func TestEnhancedModelineToolOnlyMovesTopLevelInvocation(t *testing.T) {
 	presentation := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "background_wait", Presentation: v1.ToolPresentation{Modeline: true},
