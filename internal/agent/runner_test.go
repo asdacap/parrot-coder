@@ -760,10 +760,10 @@ func TestRunningSendCannotEscapeCompletingManagedTurn(t *testing.T) {
 	captured := item.turn
 	item.mu.Unlock()
 	close(release)
-	select {
-	case <-captured.done:
-	case <-time.After(time.Second):
-		t.Fatal("child turn did not become idle")
+	waitCtx, cancel := context.WithTimeout(t.Context(), time.Second)
+	defer cancel()
+	if _, err := (turnObserver{turn: captured}).Wait(waitCtx); err != nil {
+		t.Fatalf("child turn did not become idle: %v", err)
 	}
 
 	type sendResult struct {
@@ -2242,7 +2242,7 @@ func TestRunnerProcessesMonitoredQueueItemAsSyntheticTurn(t *testing.T) {
 	}
 	h.admit(t, "user", "initial question", session.DeliverySteer)
 	ctx, cancel := context.WithCancel(context.Background())
-	state := &turnState{ctx: ctx, cancel: cancel, done: make(chan struct{}), status: StatusRunning}
+	state := &turnState{ctx: ctx, cancel: cancel, status: StatusRunning}
 	h.runner.turn = state
 	h.runner.runTurn(state)
 	if state.err != nil {

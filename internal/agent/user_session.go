@@ -1075,12 +1075,13 @@ func (o turnObserver) Wait(ctx context.Context) (Status, error) {
 	if o.turn == nil {
 		return Status{}, ErrChildNotFound
 	}
-	select {
-	case <-o.turn.done:
-		return cloneStatus(o.turn.result), nil
-	case <-ctx.Done():
+	listener, remove := o.turn.completion.subscribe()
+	defer remove()
+	result, completed := listener.await(ctx)
+	if !completed {
 		return Status{}, ctx.Err()
 	}
+	return result.status, nil
 }
 
 type managedChildTask struct{ child *agentSession }
@@ -1106,12 +1107,10 @@ func (t managedChildTask) Interrupt(ctx context.Context) (managedtask.Snapshot, 
 	return childSnapshot(t.child.Status()), err
 }
 func (t managedChildTurn) Snapshot() managedtask.Snapshot {
-	select {
-	case <-t.turn.done:
-		return childSnapshot(t.turn.result)
-	default:
-		return childSnapshot(t.child.statusSnapshot())
+	if result, completed := t.turn.completion.Result(); completed {
+		return childSnapshot(result.status)
 	}
+	return childSnapshot(t.child.statusSnapshot())
 }
 func (t managedChildTurn) Wait(ctx context.Context) (managedtask.Completion, error) {
 	item, err := turnObserver{turn: t.turn}.Wait(ctx)

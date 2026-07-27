@@ -98,7 +98,7 @@ var ErrNoFinalAssistantMessage = errors.New("agent: session produced no assistan
 type turnState struct {
 	ctx               context.Context
 	cancel            context.CancelFunc
-	done              chan struct{}
+	completion        turnCompletion
 	wake              bool
 	steer             chan struct{}
 	steerSignaled     bool
@@ -111,6 +111,86 @@ type turnState struct {
 	mode              Mode
 	profile           Profile
 	latestAssistantID string
+}
+
+type turnCompletionResult struct {
+	status Status
+	err    error
+}
+
+type turnCompletion struct {
+	mu        sync.Mutex
+	result    *turnCompletionResult
+	listeners map[*turnCompletionListener]struct{}
+}
+
+type turnCompletionListener struct {
+	result chan turnCompletionResult
+}
+
+func (c *turnCompletion) subscribe() (*turnCompletionListener, func()) {
+	listener := &turnCompletionListener{result: make(chan turnCompletionResult, 1)}
+	c.mu.Lock()
+	if c.result != nil {
+		listener.result <- cloneTurnCompletionResult(*c.result)
+	} else {
+		if c.listeners == nil {
+			c.listeners = make(map[*turnCompletionListener]struct{})
+		}
+		c.listeners[listener] = struct{}{}
+	}
+	c.mu.Unlock()
+	var once sync.Once
+	return listener, func() {
+		once.Do(func() {
+			c.mu.Lock()
+			delete(c.listeners, listener)
+			c.mu.Unlock()
+		})
+	}
+}
+
+func (c *turnCompletion) complete(status Status, err error) {
+	result := turnCompletionResult{status: cloneStatus(status), err: err}
+	c.mu.Lock()
+	if c.result != nil {
+		c.mu.Unlock()
+		return
+	}
+	stored := cloneTurnCompletionResult(result)
+	c.result = &stored
+	listeners := make([]*turnCompletionListener, 0, len(c.listeners))
+	for listener := range c.listeners {
+		listeners = append(listeners, listener)
+	}
+	c.listeners = nil
+	c.mu.Unlock()
+	for _, listener := range listeners {
+		listener.result <- cloneTurnCompletionResult(result)
+	}
+}
+
+func (c *turnCompletion) Result() (turnCompletionResult, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.result == nil {
+		return turnCompletionResult{}, false
+	}
+	return cloneTurnCompletionResult(*c.result), true
+}
+
+func (l *turnCompletionListener) await(ctx context.Context) (turnCompletionResult, bool) {
+	select {
+	case result := <-l.result:
+		return result, true
+	case <-ctx.Done():
+		return turnCompletionResult{}, false
+	}
+}
+
+func cloneTurnCompletionResult(result turnCompletionResult) turnCompletionResult {
+	result.status = cloneStatus(result.status)
+	return result
 }
 
 type turnFinishResult struct {
@@ -195,14 +275,14 @@ func (s *agentSession) UpdateSelection(ctx context.Context, patch session.Select
 	s.selectionMu.Lock()
 	defer s.selectionMu.Unlock()
 	updated, err := s.store.UpdateSelection(ctx, patch, validate)
-	if err != nil {
-		if reconciled, getErr := s.store.Get(ctx); getErr == nil {
-			s.applySelection(reconciled)
-		}
-		return session.AgentSessionDto{}, err
+	if err == nil {
+		s.applySelection(updated)
+		return updated, nil
 	}
-	s.applySelection(updated)
-	return updated, nil
+	if reconciled, getErr := s.store.Get(ctx); getErr == nil {
+		s.applySelection(reconciled)
+	}
+	return session.AgentSessionDto{}, err
 }
 
 func (s *agentSession) applySelection(updated session.AgentSessionDto) {
@@ -375,13 +455,14 @@ retry:
 	}
 	if s.turn != nil && (s.turn.status == StatusBlocked || s.turn.status == StatusInterrupting) {
 		turn := s.turn
+		listener, remove := turn.completion.subscribe()
 		s.mu.Unlock()
-		select {
-		case <-turn.done:
+		_, completed := listener.await(ctx)
+		remove()
+		if completed {
 			goto retry
-		case <-ctx.Done():
-			return session.Admission{}, nil, ctx.Err()
 		}
+		return session.Admission{}, nil, ctx.Err()
 	}
 	if s.turn != nil && turnActive(s.turn.status) {
 		admission, err := s.admitLocked(ctx, messageID, content)
@@ -451,12 +532,18 @@ func (s *agentSession) abortTurn(state *turnState) {
 		state.releaseQuota()
 		state.releaseQuota = nil
 	}
+	state.status = StatusCanceled
 	state.err = context.Canceled
+	s.status.State = StatusCanceled
+	s.status.Error = context.Canceled.Error()
+	s.status.FinishedAt = time.Now().UTC()
+	state.result = cloneStatus(s.status)
 	if s.turn == state {
 		s.turn = nil
 	}
-	close(state.done)
 	s.mu.Unlock()
+	state.completion.complete(state.result, state.err)
+	s.notifyTurnFinishListeners(state.messageID, "", state.err)
 }
 
 func (s *agentSession) admitLocked(ctx context.Context, messageID, content string) (session.Admission, error) {
@@ -526,12 +613,13 @@ func (s *agentSession) wait(ctx context.Context, state *turnState) error {
 	if state == nil {
 		return nil
 	}
-	select {
-	case <-state.done:
-		return state.err
-	case <-ctx.Done():
+	listener, remove := state.completion.subscribe()
+	defer remove()
+	result, completed := listener.await(ctx)
+	if !completed {
 		return ctx.Err()
 	}
+	return result.err
 }
 
 func (s *agentSession) Interrupt(ctx context.Context) error {
@@ -608,7 +696,7 @@ func (s *agentSession) newTurnLocked(messageID string, release func(), blocked b
 	if blocked {
 		status = StatusBlocked
 	}
-	state := &turnState{ctx: ctx, cancel: cancel, done: make(chan struct{}), steer: make(chan struct{}), status: status, messageID: messageID, releaseQuota: release}
+	state := &turnState{ctx: ctx, cancel: cancel, steer: make(chan struct{}), status: status, messageID: messageID, releaseQuota: release}
 	s.turn = state
 	s.status.Turn++
 	s.status.State, s.status.FinishedAt = status, time.Time{}
@@ -814,8 +902,8 @@ func (s *agentSession) finishTurn(state *turnState, output string, runErr error,
 	s.events.Publish(event.BrokerEvent{Name: event.TurnFinished, Payload: state.result})
 	s.mu.Lock()
 	state.status = status
-	close(state.done)
 	s.mu.Unlock()
+	state.completion.complete(state.result, runErr)
 	s.notifyTurnFinishListeners(state.messageID, state.latestAssistantID, runErr)
 	s.events.Publish(event.BrokerEvent{Name: event.TurnCompleted, Payload: state.result})
 	s.completed(runErr)
