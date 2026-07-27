@@ -37,7 +37,7 @@ func (t *QueueTool) ID() string { return t.Kind }
 func (t *QueueTool) Descriptor() Descriptor {
 	descriptor := Descriptor{ID: t.ID(), Description: t.Description(), Schema: t.JSONSchema(), Presentation: t.Presentation()}
 	if t.Kind == "queue_create" {
-		descriptor.SystemPromptGuidance = "Use queue when there are task with large count of input such as checking files manually one by one. Optionally create multiple publisher and multiple consumer for better throughput."
+		descriptor.SystemPromptGuidance = "When a task have many work item, use queue and multiple worker subagent. Publisher and consumer can be spawned at the same time."
 	}
 	return descriptor
 }
