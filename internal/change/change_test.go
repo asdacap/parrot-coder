@@ -264,6 +264,60 @@ func TestPatchUpdateLineEndingsPreserveExactBytes(t *testing.T) {
 	}
 }
 
+func TestPatchRepeatedExplicitPathBlocks(t *testing.T) {
+	ctx := context.Background()
+	service := NewService(Config{})
+	tests := []struct {
+		name            string
+		patch           string
+		want            string
+		wantErr         error
+		wantErrContains string
+	}{
+		{
+			name: "disjoint ranges succeed",
+			patch: aiderBlock("file", "first", "FIRST") +
+				aiderBlock("file", "third", "THIRD"),
+			want: "FIRST\nsecond\nTHIRD\n",
+		},
+		{
+			name: "overlapping ranges conflict",
+			patch: aiderBlock("file", "first\nsecond", "FIRST\nSECOND") +
+				aiderBlock("file", "second\nthird", "SECOND\nTHIRD"),
+			wantErr:         ErrConflict,
+			wantErrContains: "hunk 2",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			ws := testWorkspace(t)
+			if err := os.WriteFile(filepath.Join(ws.Root(), "file"), []byte("first\nsecond\nthird\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			plan, err := service.PlanPatch(ctx, ws, tc.patch, PatchFormatAider)
+			if !errors.Is(err, tc.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tc.wantErr)
+			}
+			if tc.wantErr != nil {
+				if !strings.Contains(err.Error(), tc.wantErrContains) {
+					t.Fatalf("error = %v, want it to contain %q", err, tc.wantErrContains)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(plan.Mutations) != 1 {
+				t.Fatalf("mutations = %d, want 1", len(plan.Mutations))
+			}
+			if got := string(plan.Mutations[0].After.Data); got != tc.want {
+				t.Fatalf("after = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestPatchUpdateSemantics(t *testing.T) {
 	ctx := context.Background()
 	ws := testWorkspace(t)
