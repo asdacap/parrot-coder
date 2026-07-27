@@ -132,10 +132,20 @@ func (b *TransientRepository) PublishEvent(event v1.Event) {
 // publishTo routes an event to a subscription key without changing the
 // producing session recorded in the public event envelope.
 func (b *TransientRepository) publishTo(routeSessionID string, event v1.Event) {
+	b.publish(routeSessionID, event, true)
+}
+
+// publishProjection preserves the deliberately cursor-free envelope used when
+// descendant activity is copied onto an ancestor stream.
+func (b *TransientRepository) publishProjection(routeSessionID string, event v1.Event) {
+	b.publish(routeSessionID, event, false)
+}
+
+func (b *TransientRepository) publish(routeSessionID string, event v1.Event, assignID bool) {
 	if b == nil || routeSessionID == "" || event.SessionID == "" || !v1.KnownEvent(event.Type) || len(event.Data) == 0 || !json.Valid(event.Data) {
 		return
 	}
-	if event.ID == "" {
+	if assignID && event.ID == "" {
 		event.ID, _ = id.New("evt")
 		if event.ID == "" {
 			return

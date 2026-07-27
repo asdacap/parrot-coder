@@ -52,7 +52,9 @@ const (
 	EventSessionAssistantError       = "session.assistant.error"
 	EventSessionAssistantInterrupted = "session.assistant.interrupted"
 	EventSessionRuntimeRepaired      = "session.runtime.repaired"
+	EventSessionCompactionStarted    = "session.compaction.started"
 	EventSessionCompactionCompleted  = "session.compaction.completed"
+	EventSessionCompactionFinished   = "session.compaction.finished"
 	EventSessionCompactionRetry      = "session.compaction.retry"
 )
 
@@ -61,7 +63,7 @@ const (
 // routes descendant activity to an ancestor subscription. Sequence and
 // CreatedAt are present only for durable session events.
 type Event struct {
-	ID        string          `json:"id"`
+	ID        string          `json:"id,omitempty"`
 	Type      string          `json:"type"`
 	SessionID string          `json:"session_id,omitempty"`
 	Sequence  *int64          `json:"sequence,omitempty"`
@@ -150,6 +152,18 @@ type ToolEvent struct {
 	OutputTail string         `json:"output_tail,omitempty"`
 }
 
+// CompactionEvent is the stable payload shared by the durable compaction
+// lifecycle. Event.SessionID identifies the session performing the attempt.
+type CompactionEvent struct {
+	AttemptID     string `json:"attempt_id"`
+	Status        string `json:"status"`
+	Error         string `json:"error,omitempty"`
+	RecordID      string `json:"record_id,omitempty"`
+	SourceEpochID string `json:"source_epoch_id,omitempty"`
+	TargetEpochID string `json:"target_epoch_id,omitempty"`
+	HistoryCutoff int64  `json:"history_cutoff,omitempty"`
+}
+
 type SessionStatus struct {
 	MessageID    string `json:"message_id,omitempty"`
 	Kind         string `json:"kind"`
@@ -235,7 +249,9 @@ var EventManifest = []EventDefinition{
 	{Name: EventSessionToolFailure, Durable: true, Payload: "ToolEvent"},
 	{Name: EventSessionToolInterrupted, Durable: true, Payload: "ToolEvent"},
 	{Name: EventSessionRuntimeRepaired, Durable: true, Payload: "object"},
-	{Name: EventSessionCompactionCompleted, Durable: true, Payload: "object"},
+	{Name: EventSessionCompactionStarted, Durable: true, Payload: "CompactionEvent"},
+	{Name: EventSessionCompactionCompleted, Durable: true, Payload: "CompactionEvent"},
+	{Name: EventSessionCompactionFinished, Durable: true, Payload: "CompactionEvent"},
 	{Name: EventSessionCompactionRetry, Durable: true, Payload: "object"},
 }
 
@@ -288,6 +304,8 @@ func DecodeEventData(event Event) (any, error) {
 		return decodePendingToolEvent(event.Data)
 	case EventSessionToolRunning, EventSessionToolSuccess, EventSessionToolFailure, EventSessionToolInterrupted:
 		return decodeToolEvent(event.Data)
+	case EventSessionCompactionStarted, EventSessionCompactionCompleted, EventSessionCompactionFinished:
+		target = &CompactionEvent{}
 	case EventToolOutputDelta:
 		target = &ToolOutputDelta{}
 	case EventCodeDisplay:

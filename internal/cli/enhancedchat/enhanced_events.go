@@ -222,6 +222,15 @@ func (r *enhancedChatRuntime) refreshRuntimeUsage() {
 // tracker. The tracker owns the hierarchy; this runtime only maps the resulting
 // reports onto the live activity list and the transcript.
 func (r *enhancedChatRuntime) handleRuntimeActivityEvent(item v1.Event) error {
+	if handled, err := r.handleCompactionLifecycleEvent(item); err != nil || handled {
+		return err
+	}
+	return r.renderRuntimeActivityEvent(item)
+}
+
+// renderRuntimeActivityEvent bypasses manual-request correlation. Buffered
+// lifecycle events are replayed through this raw renderer after HTTP settles.
+func (r *enhancedChatRuntime) renderRuntimeActivityEvent(item v1.Event) error {
 	if r.runtimeActivities.Tracker() == nil {
 		r.runtimeActivities.presentation = r.presentation()
 	}
@@ -269,6 +278,29 @@ func (r *enhancedChatRuntime) handleRuntimeActivityEvent(item v1.Event) error {
 			continue
 		}
 		if report.terminal {
+			if item.Type == v1.EventSessionCompactionFinished {
+				found := false
+				for i := range r.activity {
+					if r.activity[i].id != report.id {
+						continue
+					}
+					r.activity[i].rendered = text
+					r.activity[i].style = report.style
+					r.activity[i].status = "success"
+					r.activity[i].terminal = true
+					r.activity[i].ended = time.Now()
+					found = true
+					break
+				}
+				if !found {
+					r.activity = append(r.activity, enhancedActivityItem{id: report.id, sessionID: report.sessionID, parentSessionID: report.parentSessionID, mainStatus: report.mainStatus, rendered: text, style: report.style, status: "success", terminal: true, started: time.Now(), ended: time.Now()})
+				}
+				r.queueCompletedActivity(report.id)
+				if err := r.flushCompletedActivities(); err != nil {
+					return err
+				}
+				continue
+			}
 			for i := 0; i < len(r.activity); i++ {
 				if r.activity[i].id == report.id {
 					r.activity = append(r.activity[:i], r.activity[i+1:]...)

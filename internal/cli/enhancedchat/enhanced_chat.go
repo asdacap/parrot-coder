@@ -122,6 +122,21 @@ type enhancedCompactionResult struct {
 	err        error
 }
 
+type enhancedCompactionLifecycleEvent struct {
+	item      v1.Event
+	attemptID string
+}
+
+type enhancedCompactionRequest struct {
+	activityID string
+	events     []enhancedCompactionLifecycleEvent
+}
+
+type enhancedCompactionTombstone struct {
+	sessionID string
+	attemptID string
+}
+
 type queuedChatInput struct {
 	inputID   string
 	messageID string
@@ -254,10 +269,11 @@ type enhancedChatRuntime struct {
 	pendingToolOutput   map[string]shellOutputTail
 	completedToolIDs    map[string]bool
 
-	ctx               context.Context
-	cancel            context.CancelFunc
-	compactionResults chan enhancedCompactionResult
-	compacting        map[string]string
+	ctx                  context.Context
+	cancel               context.CancelFunc
+	compactionResults    chan enhancedCompactionResult
+	compactions          map[string]*enhancedCompactionRequest
+	compactionTombstones map[enhancedCompactionTombstone]struct{}
 
 	stream           *client.EventStream
 	streamSessionID  string
@@ -279,7 +295,8 @@ func (s *chatShell) runEnhanced(first string) int {
 	runtime := &enhancedChatRuntime{
 		shell: s, state: state, knownMessages: make(map[string]bool), unsyncedMessages: make(map[string]bool),
 		ctx: runtimeContext, cancel: cancelRuntime, events: make(chan enhancedSessionEvent, 128),
-		compactionResults: make(chan enhancedCompactionResult, 16), compacting: make(map[string]string),
+		compactionResults: make(chan enhancedCompactionResult, 16), compactions: make(map[string]*enhancedCompactionRequest),
+		compactionTombstones: make(map[enhancedCompactionTombstone]struct{}),
 	}
 	defer runtime.stopStream()
 	defer runtime.cancel()

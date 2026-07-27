@@ -100,6 +100,31 @@ func (d *retrySessionStateDirectories) Remove(string) error {
 	return d.err
 }
 
+func TestAgentSessionRepositoryRepairsCompactionBeforeBindingAndCanRetry(t *testing.T) {
+	failures := 1
+	compactor := &fakeCompactor{repair: func(string) error {
+		if failures > 0 {
+			failures--
+			return errors.New("repair failed")
+		}
+		return nil
+	}}
+	repository := &agentSessionRepository{
+		toolProviders: emptyToolProviders(t), compactor: compactor,
+		sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding),
+	}
+	if created, err := repository.Get("repair"); err == nil || created != nil || !strings.Contains(err.Error(), "repair compaction") {
+		t.Fatalf("first Get = %#v, %v", created, err)
+	}
+	if _, ok := repository.Lookup("repair"); ok {
+		t.Fatal("failed repair exposed a runtime")
+	}
+	mustGetRepositorySession(t, repository, "repair")
+	if !slices.Equal(compactor.repairs, []string{"repair", "repair"}) {
+		t.Fatalf("repair calls = %#v", compactor.repairs)
+	}
+}
+
 func TestAgentSessionRepositoryProviderBindingLifecycle(t *testing.T) {
 	var mu sync.Mutex
 	calls := map[string]int{}

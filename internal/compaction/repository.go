@@ -12,6 +12,7 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/id"
+	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/store"
 )
@@ -19,10 +20,12 @@ import (
 type Repository struct {
 	sessions *store.Registry
 	events   *event.Repository
+	owner    processidentity.Identity
+	inspect  func(processidentity.Identity, processidentity.Identity) processidentity.Liveness
 }
 
-func NewRepository(sessions *store.Registry, events *event.Repository) *Repository {
-	return &Repository{sessions: sessions, events: events}
+func NewRepository(sessions *store.Registry, events *event.Repository, owner processidentity.Identity) *Repository {
+	return &Repository{sessions: sessions, events: events, owner: owner, inspect: processidentity.Inspect}
 }
 
 func (r *Repository) Load(ctx context.Context, sessionID string) (State, error) {
@@ -88,17 +91,24 @@ func (r *Repository) Begin(ctx context.Context, attempt Attempt) (Attempt, error
 			return Attempt{}, err
 		}
 	}
-	attempt.Status = "active"
-	attempt.CreatedAt = time.Now().UTC()
-	db, err := r.sessions.Session(ctx, attempt.SessionID)
-	if err != nil {
-		return Attempt{}, err
+	if r.owner.HostKey == "" || r.owner.PID <= 0 || r.owner.ProcessKey == "" {
+		return Attempt{}, errors.New("compaction: process owner is required")
 	}
-	_, err = db.SQL().ExecContext(ctx, `INSERT INTO compaction_attempt(
-		id,session_id,source_epoch_id,covered_from_sequence,covered_to_sequence,history_cutoff,
-		provider_id,model_id,forced,status,created_at) VALUES(?,?,?,?,?,?,?,?,?,'active',?)`,
-		attempt.ID, attempt.SessionID, attempt.SourceEpochID, attempt.CoveredFrom, attempt.CoveredTo,
-		attempt.HistoryCutoff, attempt.ProviderID, attempt.ModelID, boolInt(attempt.Forced), formatTime(attempt.CreatedAt))
+	attempt.Status = "active"
+	payload, _ := json.Marshal(v1.CompactionEvent{
+		AttemptID: attempt.ID, Status: "started", SourceEpochID: attempt.SourceEpochID, HistoryCutoff: attempt.HistoryCutoff,
+	})
+	_, err := r.events.Append(ctx, attempt.SessionID, []event.NewEvent{{Type: v1.EventSessionCompactionStarted, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+		attempt.CreatedAt = events[0].CreatedAt
+		_, err := tx.ExecContext(ctx, `INSERT INTO compaction_attempt(
+			id,session_id,source_epoch_id,covered_from_sequence,covered_to_sequence,history_cutoff,
+			provider_id,model_id,forced,status,created_at,owner_host_key,owner_pid,owner_process_key)
+			VALUES(?,?,?,?,?,?,?,?,?,'active',?,?,?,?)`,
+			attempt.ID, attempt.SessionID, attempt.SourceEpochID, attempt.CoveredFrom, attempt.CoveredTo,
+			attempt.HistoryCutoff, attempt.ProviderID, attempt.ModelID, boolInt(attempt.Forced), formatTime(attempt.CreatedAt),
+			r.owner.HostKey, r.owner.PID, r.owner.ProcessKey)
+		return err
+	})
 	if err != nil {
 		return Attempt{}, fmt.Errorf("compaction: begin attempt: %w", err)
 	}
@@ -118,15 +128,25 @@ func (r *Repository) Complete(ctx context.Context, attempt Attempt, summary Summ
 	if err != nil {
 		return Record{}, err
 	}
-	payload, _ := json.Marshal(map[string]any{"attempt_id": attempt.ID, "record_id": recordID, "source_epoch_id": attempt.SourceEpochID, "target_epoch_id": epochID, "history_cutoff": attempt.HistoryCutoff})
+	payload, _ := json.Marshal(v1.CompactionEvent{
+		AttemptID: attempt.ID, Status: "completed", RecordID: recordID, SourceEpochID: attempt.SourceEpochID,
+		TargetEpochID: epochID, HistoryCutoff: attempt.HistoryCutoff,
+	})
 	var record Record
-	_, err = r.events.Append(ctx, attempt.SessionID, []event.NewEvent{{Type: v1.EventSessionCompactionCompleted, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
-		var status string
-		if err := tx.QueryRowContext(ctx, `SELECT status FROM compaction_attempt WHERE id=?`, attempt.ID).Scan(&status); err != nil {
+	_, err = r.events.Append(ctx, attempt.SessionID, []event.NewEvent{
+		{Type: v1.EventSessionCompactionCompleted, Data: payload},
+		{Type: v1.EventSessionCompactionFinished, Data: payload},
+	}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+		var status, hostKey, processKey string
+		var pid int
+		if err := tx.QueryRowContext(ctx, `SELECT status,owner_host_key,owner_pid,owner_process_key FROM compaction_attempt WHERE id=?`, attempt.ID).Scan(&status, &hostKey, &pid, &processKey); err != nil {
 			return err
 		}
 		if status != "active" {
 			return errors.New("compaction: attempt is not active")
+		}
+		if (processidentity.Identity{HostKey: hostKey, PID: pid, ProcessKey: processKey}) != r.owner {
+			return errors.New("compaction: attempt belongs to another process")
 		}
 		var current string
 		var ordinal int
@@ -150,7 +170,9 @@ func (r *Repository) Complete(ctx context.Context, attempt Attempt, summary Summ
 			attempt.CoveredTo, attempt.HistoryCutoff, summary.Summary, usage, attempt.ProviderID, attempt.ModelID, formatTime(now)); err != nil {
 			return err
 		}
-		result, err := tx.ExecContext(ctx, `UPDATE compaction_attempt SET status='completed',error_text='',finished_at=? WHERE id=? AND status='active'`, formatTime(now), attempt.ID)
+		result, err := tx.ExecContext(ctx, `UPDATE compaction_attempt SET status='completed',error_text='',finished_at=?
+			WHERE id=? AND status='active' AND owner_host_key=? AND owner_pid=? AND owner_process_key=?`,
+			formatTime(now), attempt.ID, r.owner.HostKey, r.owner.PID, r.owner.ProcessKey)
 		if err != nil {
 			return err
 		}
@@ -171,18 +193,80 @@ func (r *Repository) Fail(ctx context.Context, sessionID, attemptID, status, rea
 	if status != "failed" && status != "interrupted" {
 		return errors.New("compaction: invalid failure status")
 	}
-	db, err := r.sessions.Session(ctx, sessionID)
-	if err != nil {
-		return err
-	}
 	reason = boundedText(reason, 1024)
-	_, err = db.SQL().ExecContext(ctx, `UPDATE compaction_attempt SET status=?,error_text=?,finished_at=? WHERE id=? AND status='active'`, status, reason, formatTime(time.Now().UTC()), attemptID)
-	return err
+	payload, _ := json.Marshal(v1.CompactionEvent{AttemptID: attemptID, Status: status, Error: reason})
+	_, err := r.events.Append(ctx, sessionID, []event.NewEvent{{Type: v1.EventSessionCompactionFinished, Data: payload}}, func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+		result, err := tx.ExecContext(ctx, `UPDATE compaction_attempt SET status=?,error_text=?,finished_at=?
+			WHERE id=? AND session_id=? AND status='active' AND owner_host_key=? AND owner_pid=? AND owner_process_key=?`,
+			status, reason, formatTime(events[0].CreatedAt), attemptID, sessionID,
+			r.owner.HostKey, r.owner.PID, r.owner.ProcessKey)
+		if err != nil {
+			return err
+		}
+		if changed, _ := result.RowsAffected(); changed != 1 {
+			return errors.New("compaction: attempt changed during failure")
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("compaction: fail attempt: %w", err)
+	}
+	return nil
 }
 
-// Attempts abandoned by a dead process are repaired by session.RepairActive,
-// which settles them alongside that session's in-flight messages and tool calls
-// when the session is next opened.
+// RepairActive interrupts attempts whose durable owner is known dead. Attempts
+// owned by this process, another live process, or an uninspectable foreign host
+// remain active.
+func (r *Repository) RepairActive(ctx context.Context, sessionID string) error {
+	const reason = "process restarted"
+	_, err := r.events.AppendBuilt(ctx, sessionID, func(ctx context.Context, tx *sql.Tx, _ int64) ([]event.NewEvent, event.Projector, error) {
+		type ownedAttempt struct {
+			id    string
+			owner processidentity.Identity
+		}
+		rows, err := tx.QueryContext(ctx, `SELECT id,owner_host_key,owner_pid,owner_process_key
+			FROM compaction_attempt WHERE session_id=? AND status='active' ORDER BY created_at,id`, sessionID)
+		if err != nil {
+			return nil, nil, err
+		}
+		defer rows.Close()
+		var abandoned []ownedAttempt
+		for rows.Next() {
+			var item ownedAttempt
+			if err := rows.Scan(&item.id, &item.owner.HostKey, &item.owner.PID, &item.owner.ProcessKey); err != nil {
+				return nil, nil, err
+			}
+			if r.inspect(r.owner, item.owner) == processidentity.LivenessDead {
+				abandoned = append(abandoned, item)
+			}
+		}
+		if err := rows.Err(); err != nil || len(abandoned) == 0 {
+			return nil, nil, err
+		}
+		pending := make([]event.NewEvent, len(abandoned))
+		for i, item := range abandoned {
+			payload, _ := json.Marshal(v1.CompactionEvent{AttemptID: item.id, Status: "interrupted", Error: reason})
+			pending[i] = event.NewEvent{Type: v1.EventSessionCompactionFinished, Data: payload}
+		}
+		project := func(ctx context.Context, tx *sql.Tx, events []event.Event) error {
+			for i, item := range abandoned {
+				result, err := tx.ExecContext(ctx, `UPDATE compaction_attempt SET status='interrupted',error_text=?,finished_at=?
+					WHERE id=? AND session_id=? AND status='active' AND owner_host_key=? AND owner_pid=? AND owner_process_key=?`,
+					reason, formatTime(events[i].CreatedAt), item.id, sessionID,
+					item.owner.HostKey, item.owner.PID, item.owner.ProcessKey)
+				if err != nil {
+					return err
+				}
+				if changed, _ := result.RowsAffected(); changed != 1 {
+					return errors.New("compaction: active attempt changed during repair")
+				}
+			}
+			return nil
+		}
+		return pending, project, nil
+	})
+	return err
+}
 
 func (r *Repository) Records(ctx context.Context, sessionID string) ([]Record, error) {
 	db, err := r.sessions.Session(ctx, sessionID)

@@ -16,6 +16,7 @@ GET    /api/v1/sessions/{id}
 DELETE /api/v1/sessions/{id}
 GET    /api/v1/sessions/{id}/messages
 POST   /api/v1/sessions/{id}/prompts
+POST   /api/v1/sessions/{id}/compact
 POST   /api/v1/sessions/{id}/interrupt
 GET    /api/v1/sessions/{id}/events
 GET    /api/v1/sessions/{id}/permissions
@@ -87,12 +88,15 @@ parent event, and the event namespace determines the payload type.
   processes. They emit `process.start` and `process.finished`, carrying their
   owning `session_id`, distinct `process_id`, name, status, and error.
 
-Child-session events are also published on the parent's stream, so clients
-subscribe once while retaining original producer attribution. Clients rebuild
-a runtime activity tree from agent parentage and process ownership rather than
-receiving a common lifecycle payload. `agent_session.progress` remains the
-separate agent progress event. References to an unknown session or process
-indicate a client-side tracking gap.
+Child-session events are also published on every ancestor's stream, so clients
+subscribe once while retaining original producer attribution. Each ancestor
+projection preserves the originating `session_id`, event type, and payload, but
+omits `id`, `sequence`, and `created_at`. A projected copy therefore cannot
+serve as a durable cursor; clients recover durable history from the originating
+session. Clients rebuild a runtime activity tree from agent parentage and
+process ownership rather than receiving a common lifecycle payload.
+`agent_session.progress` remains the separate agent progress event. References
+to an unknown session or process indicate a client-side tracking gap.
 
 ## Tool lifecycle
 

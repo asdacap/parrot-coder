@@ -457,14 +457,9 @@ func (s *agentSessionStore) transitionTool(ctx context.Context, callID, status, 
 	return err
 }
 
-// RepairActive settles work this session left in flight when its process died.
-//
-// Repair is per session because that is the scope in which "abandoned" is
-// knowable: these rows are active only if the process running this session
-// stopped. Compaction attempts are repaired here too, in the same transaction.
-// They were previously swept across every session in a shared database, which
-// interrupted compactions that other live processes, on other machines, were
-// still running.
+// RepairActive settles active message and tool work left by a stopped process.
+// Compaction attempts carry durable process ownership and are repaired by the
+// compaction domain when a session runtime is bound.
 func (s *agentSessionStore) RepairActive(ctx context.Context) error {
 	const reason = "process restarted"
 	data := json.RawMessage(`{"reason":"process restarted"}`)
@@ -490,12 +485,11 @@ func (s *agentSessionStore) RepairActive(ctx context.Context) error {
 		if err := rows.Close(); err != nil {
 			return nil, nil, err
 		}
-		var otherActive int
-		if err := tx.QueryRowContext(ctx, `SELECT (SELECT COUNT(*) FROM session_message WHERE session_id=? AND status='active')
-			+ (SELECT COUNT(*) FROM compaction_attempt WHERE session_id=? AND status='active')`, s.sessionID, s.sessionID).Scan(&otherActive); err != nil {
+		var activeMessages int
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM session_message WHERE session_id=? AND status='active'`, s.sessionID).Scan(&activeMessages); err != nil {
 			return nil, nil, err
 		}
-		if len(tools) == 0 && otherActive == 0 {
+		if len(tools) == 0 && activeMessages == 0 {
 			return nil, nil, nil
 		}
 
@@ -518,9 +512,7 @@ func (s *agentSessionStore) RepairActive(ctx context.Context) error {
 					return errors.New("session: active tool changed during repair")
 				}
 			}
-			repaired := events[len(events)-1]
-			_, err := tx.ExecContext(ctx, `UPDATE compaction_attempt SET status='interrupted',error_text=?,finished_at=? WHERE session_id=? AND status='active'`, reason, formatTime(repaired.CreatedAt), s.sessionID)
-			return err
+			return nil
 		}
 		return pending, project, nil
 	})

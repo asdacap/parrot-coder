@@ -101,7 +101,7 @@ func buildOpenAPI() []byte {
 	schemaFor(reflect.TypeOf(v1.Problem{}), definitions)
 	for _, payload := range []any{
 		v1.Empty{}, v1.MessagePartDelta{}, v1.SessionStatus{}, v1.PermissionResolved{}, v1.QuestionResolved{}, v1.TodoUpdated{},
-		v1.UserSessionEvent{}, v1.AgentSessionEvent{}, v1.AgentSessionProgress{}, v1.ProcessEvent{}, v1.ToolEvent{},
+		v1.UserSessionEvent{}, v1.AgentSessionEvent{}, v1.AgentSessionProgress{}, v1.ProcessEvent{}, v1.ToolEvent{}, v1.CompactionEvent{},
 	} {
 		schemaFor(reflect.TypeOf(payload), definitions)
 	}

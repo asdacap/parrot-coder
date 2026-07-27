@@ -536,7 +536,17 @@ type runnerHarness struct {
 
 type fakeCompactor struct {
 	requests []compaction.Request
+	repairs  []string
 	compact  func(compaction.Request) (compaction.Result, error)
+	repair   func(string) error
+}
+
+func (c *fakeCompactor) RepairActive(_ context.Context, sessionID string) error {
+	c.repairs = append(c.repairs, sessionID)
+	if c.repair != nil {
+		return c.repair(sessionID)
+	}
+	return nil
 }
 
 func (c *fakeCompactor) Compact(_ context.Context, request compaction.Request) (compaction.Result, error) {

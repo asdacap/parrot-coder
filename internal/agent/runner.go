@@ -87,6 +87,7 @@ func (p toolDisplayPublisher) DisplayCode(display tool.CodeDisplay) {
 
 type Compactor interface {
 	Compact(context.Context, compaction.Request) (compaction.Result, error)
+	RepairActive(context.Context, string) error
 }
 
 type ProfileResolver interface {

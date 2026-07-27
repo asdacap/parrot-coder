@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -88,7 +89,8 @@ func newHarness(t *testing.T, baseline string, messages int) *harness {
 			t.Fatal(err)
 		}
 	}
-	return &harness{db: sessionDB, sessions: sessions, repo: NewRepository(db, events), id: created.ID}
+	owner := processidentity.Identity{HostKey: "test-host", PID: 100, ProcessKey: "test-process"}
+	return &harness{db: sessionDB, sessions: sessions, repo: NewRepository(db, events, owner), id: created.ID}
 }
 
 func TestBudgetTriggerAndTokenEstimate(t *testing.T) {

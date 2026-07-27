@@ -63,10 +63,15 @@ func TestBrokerProjectsDescendantsToEveryAncestor(t *testing.T) {
 	child, closeChild := broker.Subscribe("child", 2)
 	defer closeChild()
 	data, _ := json.Marshal(v1.SessionStatus{Kind: "running"})
+	sequence := int64(42)
+	createdAt := time.Date(2026, time.July, 27, 12, 0, 0, 0, time.UTC)
 
-	broker.PublishEvent(v1.Event{Type: v1.EventSessionStatus, SessionID: "grandchild", Data: data})
+	broker.PublishEvent(v1.Event{
+		ID: "evt_grandchild", Type: v1.EventSessionStatus, SessionID: "grandchild",
+		Sequence: &sequence, Data: data, CreatedAt: &createdAt,
+	})
 	for name, item := range map[string]v1.Event{"parent": <-parent, "child": <-child} {
-		if item.SessionID != "grandchild" || item.Sequence != nil || item.CreatedAt != nil {
+		if item.ID != "" || item.SessionID != "grandchild" || item.Type != v1.EventSessionStatus || item.Sequence != nil || item.CreatedAt != nil || string(item.Data) != string(data) {
 			t.Fatalf("%s projection = %#v", name, item)
 		}
 	}
@@ -88,7 +93,7 @@ func TestBrokerObserveSessionProjectsDurableEvents(t *testing.T) {
 	}
 	select {
 	case item := <-parent:
-		if item.ID == "" || item.SessionID != childSessionID || item.Type != v1.EventSessionStatus || item.Sequence != nil || item.CreatedAt != nil || string(item.Data) != string(data) {
+		if item.ID != "" || item.SessionID != childSessionID || item.Type != v1.EventSessionStatus || item.Sequence != nil || item.CreatedAt != nil || string(item.Data) != string(data) {
 			t.Fatalf("durable projection = %#v", item)
 		}
 	case <-time.After(time.Second):

@@ -60,7 +60,8 @@ func TestAdoptLegacySplitsSessionsAndSetsFileAside(t *testing.T) {
 		UPDATE session SET name='inspect', parent_session_id='ses_1' WHERE id='ses_2';
 		INSERT INTO session_compaction_epoch VALUES('epoch-0','ses_1',0,'',0,'2026-01-01T00:00:00Z');
 		INSERT INTO session_compaction_epoch VALUES('epoch-1','ses_1',1,'compacted prompt',2,'2026-01-01T00:01:00Z');
-		INSERT INTO compaction_attempt VALUES('attempt-1','ses_1','epoch-0',0,1,2,'provider','model',0,'completed','','2026-01-01T00:00:30Z','2026-01-01T00:01:00Z');
+		INSERT INTO compaction_attempt(id,session_id,source_epoch_id,covered_from_sequence,covered_to_sequence,history_cutoff,provider_id,model_id,forced,status,error_text,created_at,finished_at)
+		VALUES('attempt-1','ses_1','epoch-0',0,1,2,'provider','model',0,'completed','','2026-01-01T00:00:30Z','2026-01-01T00:01:00Z');
 		INSERT INTO compaction_record VALUES('record-1','attempt-1','ses_1','epoch-0','epoch-1',0,1,2,'summary','{}','provider','model','2026-01-01T00:01:00Z');
 	`); err != nil {
 		t.Fatal(err)

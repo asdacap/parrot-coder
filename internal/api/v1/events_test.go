@@ -75,6 +75,11 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			event: v1.Event{Type: v1.EventProcessFinished, Data: json.RawMessage(`{"session_id":"ses_parent","process_id":"proc_1","name":"tests","status":"failed","error":"boom"}`)},
 			want:  &v1.ProcessEvent{SessionID: "ses_parent", ProcessID: "proc_1", Name: "tests", Status: "failed", Error: "boom"},
 		},
+		{
+			name:  "compaction completed",
+			event: v1.Event{Type: v1.EventSessionCompactionCompleted, Data: json.RawMessage(`{"attempt_id":"cmpa_1","status":"completed","record_id":"cmpr_1","source_epoch_id":"ctx_1","target_epoch_id":"ctx_2","history_cutoff":42}`)},
+			want:  &v1.CompactionEvent{AttemptID: "cmpa_1", Status: "completed", RecordID: "cmpr_1", SourceEpochID: "ctx_1", TargetEpochID: "ctx_2", HistoryCutoff: 42},
+		},
 	}
 
 	for _, test := range tests {
@@ -101,6 +106,7 @@ func TestDecodeSessionInputEventDataRejectsUnknownFields(t *testing.T) {
 		{Type: v1.EventAgentSessionProgress, Data: json.RawMessage(`{"task` + `_id":"task_1","session_id":"ses_child","agent":"explore","status":"running","usage":{},"tool_uses":0}`)},
 		{Type: v1.EventCodeDisplay, Data: json.RawMessage(`{"tool_call_id":"call_1","source":"x","extra":true}`)},
 		{Type: v1.EventSessionToolSuccess, Data: json.RawMessage(`{"call_id":"call_1","result":"ok","extra":true}`)},
+		{Type: v1.EventSessionCompactionFinished, Data: json.RawMessage(`{"attempt_id":"cmpa_1","status":"failed","extra":true}`)},
 	} {
 		if _, err := v1.DecodeEventData(event); err == nil {
 			t.Fatalf("DecodeEventData(%q) accepted an unknown field", event.Type)
@@ -186,8 +192,8 @@ func TestEventManifestUsesCanonicalNamesAndTypedPayloads(t *testing.T) {
 		v1.EventSessionStatusPromptAppended, v1.EventSessionAssistantStarted, v1.EventSessionAssistantComplete,
 		v1.EventSessionAssistantError, v1.EventSessionAssistantInterrupted, v1.EventSessionToolPending,
 		v1.EventSessionToolRunning, v1.EventSessionToolSuccess, v1.EventSessionToolFailure,
-		v1.EventSessionToolInterrupted, v1.EventSessionRuntimeRepaired, v1.EventSessionCompactionCompleted,
-		v1.EventSessionCompactionRetry,
+		v1.EventSessionToolInterrupted, v1.EventSessionRuntimeRepaired, v1.EventSessionCompactionStarted,
+		v1.EventSessionCompactionCompleted, v1.EventSessionCompactionFinished, v1.EventSessionCompactionRetry,
 	}
 	if len(v1.EventManifest) != len(canonical) {
 		t.Fatalf("manifest size = %d, canonical event count = %d", len(v1.EventManifest), len(canonical))
@@ -207,21 +213,24 @@ func TestEventManifestUsesCanonicalNamesAndTypedPayloads(t *testing.T) {
 	}
 
 	want := map[string]string{
-		v1.EventUserSessionStart:       "UserSessionEvent",
-		v1.EventUserSessionWorking:     "UserSessionEvent",
-		v1.EventUserSessionIdle:        "UserSessionEvent",
-		v1.EventAgentSessionStart:      "AgentSessionEvent",
-		v1.EventAgentSessionWorking:    "AgentSessionEvent",
-		v1.EventAgentSessionIdle:       "AgentSessionEvent",
-		v1.EventAgentSessionFinished:   "AgentSessionEvent",
-		v1.EventProcessStart:           "ProcessEvent",
-		v1.EventProcessFinished:        "ProcessEvent",
-		v1.EventAgentSessionProgress:   "AgentSessionProgress",
-		v1.EventSessionToolPending:     "ToolEvent",
-		v1.EventSessionToolRunning:     "ToolEvent",
-		v1.EventSessionToolSuccess:     "ToolEvent",
-		v1.EventSessionToolFailure:     "ToolEvent",
-		v1.EventSessionToolInterrupted: "ToolEvent",
+		v1.EventUserSessionStart:           "UserSessionEvent",
+		v1.EventUserSessionWorking:         "UserSessionEvent",
+		v1.EventUserSessionIdle:            "UserSessionEvent",
+		v1.EventAgentSessionStart:          "AgentSessionEvent",
+		v1.EventAgentSessionWorking:        "AgentSessionEvent",
+		v1.EventAgentSessionIdle:           "AgentSessionEvent",
+		v1.EventAgentSessionFinished:       "AgentSessionEvent",
+		v1.EventProcessStart:               "ProcessEvent",
+		v1.EventProcessFinished:            "ProcessEvent",
+		v1.EventAgentSessionProgress:       "AgentSessionProgress",
+		v1.EventSessionToolPending:         "ToolEvent",
+		v1.EventSessionToolRunning:         "ToolEvent",
+		v1.EventSessionToolSuccess:         "ToolEvent",
+		v1.EventSessionToolFailure:         "ToolEvent",
+		v1.EventSessionToolInterrupted:     "ToolEvent",
+		v1.EventSessionCompactionStarted:   "CompactionEvent",
+		v1.EventSessionCompactionCompleted: "CompactionEvent",
+		v1.EventSessionCompactionFinished:  "CompactionEvent",
 	}
 	for _, definition := range v1.EventManifest {
 		if payload, ok := want[definition.Name]; ok {

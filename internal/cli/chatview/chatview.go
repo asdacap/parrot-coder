@@ -922,11 +922,15 @@ func CodeDisplayStatus(display v1.CodeDisplay) string {
 	return "↳ Code · " + location
 }
 
-// IsRuntimeActivityEvent reports whether an event belongs to child-session or process
-// activity rather than the foreground transcript. Lifecycle events always do;
-// other events do when their origin differs from the foreground session.
+// IsRuntimeActivityEvent reports whether an event belongs to shared runtime
+// activity rather than the foreground transcript. Compaction lifecycle events
+// use this path for both the foreground session and descendants.
 func IsRuntimeActivityEvent(item v1.Event, rootSessionID string) bool {
-	return isLifecycleEvent(item.Type) || item.SessionID != "" && item.SessionID != rootSessionID
+	return isLifecycleEvent(item.Type) || isCompactionActivityEvent(item.Type) || item.SessionID != "" && item.SessionID != rootSessionID
+}
+
+func isCompactionActivityEvent(eventType string) bool {
+	return eventType == v1.EventSessionCompactionStarted || eventType == v1.EventSessionCompactionFinished
 }
 
 type runtimeLifecycleEvent struct {
@@ -1023,7 +1027,7 @@ func (t *RuntimeActivityTracker) Apply(item v1.Event, thinking bool) ([]RuntimeA
 		if owner != nil {
 			reports[i].ParentSessionID = owner.parentSessionID
 		}
-		reports[i].MainStatus = item.Type == v1.EventAgentSessionFinished || item.Type == v1.EventProcessFinished
+		reports[i].MainStatus = reports[i].MainStatus || item.Type == v1.EventAgentSessionFinished || item.Type == v1.EventProcessFinished
 	}
 	if item.Type == v1.EventAgentSessionProgress && owner != nil && owner.progressIgnored {
 		owner.progressIgnored = false
@@ -1138,13 +1142,16 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 	if isLifecycleEvent(item.Type) {
 		return t.applyLifecycle(item)
 	}
-	if v1.KnownEvent(item.Type) && !isRuntimeActivityContentEvent(item.Type) {
+	if v1.KnownEvent(item.Type) && !isRuntimeActivityContentEvent(item.Type) && !isCompactionActivityEvent(item.Type) {
 		return nil, nil
 	}
 	sessionID, processID := t.eventOrigin(item)
 	node := t.known(sessionID, processID)
 	if node == nil {
 		return t.unknownOrigin(sessionID, processID, item.Type), nil
+	}
+	if isCompactionActivityEvent(item.Type) {
+		return t.applyCompaction(node, item)
 	}
 	if sessionID == t.rootSessionID && processID == "" {
 		return nil, nil
@@ -1384,6 +1391,46 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 	default:
 		return nil, nil
 	}
+}
+
+func (t *RuntimeActivityTracker) applyCompaction(node *runtimeActivityNode, item v1.Event) ([]RuntimeActivityReport, error) {
+	payload, err := v1.DecodeEventData(item)
+	if err != nil {
+		return nil, err
+	}
+	compaction := payload.(*v1.CompactionEvent)
+	if compaction.AttemptID == "" {
+		return nil, nil
+	}
+	line := func(body string) string {
+		if node.sessionID == t.rootSessionID && node.processID == "" {
+			return body
+		}
+		return t.eventLine(node, body)
+	}
+	report := RuntimeActivityReport{
+		ID: node.id + ":compaction:" + compaction.AttemptID, SessionID: node.sessionID,
+		Line: line(SpinnerFrames[0] + " Compaction"), MainStatus: true, Style: terminal.TextStyleMuted,
+	}
+	if item.Type == v1.EventSessionCompactionStarted {
+		return []RuntimeActivityReport{report}, nil
+	}
+	report.Terminal = true
+	report.EmitPlain = true
+	switch compaction.Status {
+	case "completed":
+		report.Line = line(SuccessIcon + " Compaction: complete")
+	case "interrupted":
+		report.Line = line(InterruptedIcon + " Compaction: interrupted")
+		report.Style = terminal.TextStyleDefault
+	default:
+		report.Line = line(FailureIcon + " Compaction: failed")
+		report.Style = terminal.TextStyleDefault
+	}
+	if detail := cleanActivityDetail(compaction.Error); detail != "" {
+		report.Line += " · " + detail
+	}
+	return []RuntimeActivityReport{report}, nil
 }
 
 // applyLifecycle folds one domain lifecycle event into the presentation tree.

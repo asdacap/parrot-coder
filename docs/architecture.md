@@ -155,6 +155,19 @@ source snapshots, and a history cutoff. Context sources are sampled only at a
 safe provider-turn boundary. Changes become durable chronological system
 messages. Completed compaction starts a new epoch.
 
+Compaction attempts have a durable lifecycle. Creating an active attempt and
+emitting `session.compaction.started` are one transaction. Successful completion
+atomically records the summary and cutoff, creates the next epoch, settles the
+attempt, and emits `session.compaction.completed` and the terminal
+`session.compaction.finished`. Failure or interruption leaves the source epoch
+current and atomically settles the attempt with `session.compaction.finished`.
+Each active attempt records its host, PID, boot identity, and process start time.
+When a session runtime is bound, attempts with an owner proven dead (including
+ownerless legacy attempts) are settled as interrupted; live, foreign-host, and
+otherwise uninspectable owners remain untouched. Thus an epoch is never
+partially advanced: a provider turn observes one fully committed epoch, and
+failed or interrupted compaction cannot change its baseline or history cutoff.
+
 Initial context sources are the merged configuration's base agent prompt, date,
 platform, working directory, project metadata, `AGENTS.md` files, available
 skills, and tool guidance.

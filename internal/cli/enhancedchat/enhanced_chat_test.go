@@ -201,8 +201,8 @@ func newEnhancedCompactionRuntime(t *testing.T, api API, output *bytes.Buffer) (
 			ctx: ctx, api: api, current: v1.Session{ID: "current"},
 			renderer: terminal.NewLiveRenderer(output, terminal.RendererConfig{TTY: true, Columns: 100}),
 		},
-		ctx: ctx, state: state, compactionResults: make(chan enhancedCompactionResult, 2), compacting: make(map[string]string),
-		knownMessages: map[string]bool{},
+		ctx: ctx, state: state, compactionResults: make(chan enhancedCompactionResult, 2), compactions: make(map[string]*enhancedCompactionRequest),
+		compactionTombstones: make(map[enhancedCompactionTombstone]struct{}), knownMessages: map[string]bool{},
 	}
 	return runtime, cancel
 }
@@ -292,11 +292,228 @@ func TestEnhancedCompactionTerminalOutcomes(t *testing.T) {
 			if err := runtime.settleCompaction(settled); err != nil {
 				t.Fatal(err)
 			}
-			if len(runtime.activity) != 0 || len(runtime.completedActivities) != 0 || runtime.compacting["current"] != "" || !strings.Contains(output.String(), test.want) {
-				t.Fatalf("settled activity=%#v queued=%#v compacting=%#v output=%q", runtime.activity, runtime.completedActivities, runtime.compacting, output.String())
+			if len(runtime.activity) != 0 || len(runtime.completedActivities) != 0 || runtime.compactions["current"] != nil || !strings.Contains(output.String(), test.want) {
+				t.Fatalf("settled activity=%#v queued=%#v compactions=%#v output=%q", runtime.activity, runtime.completedActivities, runtime.compactions, output.String())
 			}
 		})
 	}
+}
+
+func TestEnhancedDurableCompactionLifecycleRendersBackgroundAndDescendantTerminalOutput(t *testing.T) {
+	for _, test := range []struct {
+		sessionID, attemptID, wantStart, wantFinish string
+	}{
+		{sessionID: "background", attemptID: "attempt-background", wantStart: "  ⠋ [worker:background] Compaction", wantFinish: "  ■ [worker:background] Compaction: interrupted · provider stopped"},
+		{sessionID: "descendant", attemptID: "attempt-descendant", wantStart: "    ⠋ [explorer:nested] Compaction", wantFinish: "    ■ [explorer:nested] Compaction: interrupted · provider stopped"},
+	} {
+		t.Run(test.sessionID, func(t *testing.T) {
+			var output bytes.Buffer
+			runtime, cancel := newEnhancedCompactionRuntime(t, &enhancedCompactionAPI{}, &output)
+			defer cancel()
+			runtime.runtimeActivities.rootSessionID = "current"
+			lifecycle := func(eventType string, event any, sessionID string) v1.Event {
+				data, _ := json.Marshal(event)
+				return v1.Event{Type: eventType, SessionID: sessionID, Data: data}
+			}
+			for _, event := range []v1.Event{
+				lifecycle(v1.EventUserSessionStart, v1.UserSessionEvent{SessionID: "current"}, "current"),
+				lifecycle(v1.EventAgentSessionStart, v1.AgentSessionEvent{SessionID: "background", ParentSessionID: "current", Agent: "worker", Name: "background"}, "background"),
+				lifecycle(v1.EventAgentSessionStart, v1.AgentSessionEvent{SessionID: "descendant", ParentSessionID: "background", Agent: "explorer", Name: "nested"}, "descendant"),
+			} {
+				if err := runtime.handleEvent(event); err != nil {
+					t.Fatal(err)
+				}
+			}
+			compaction := func(eventType, status string) v1.Event {
+				data, _ := json.Marshal(v1.CompactionEvent{AttemptID: test.attemptID, Status: status, Error: "provider stopped"})
+				return v1.Event{Type: eventType, SessionID: test.sessionID, Data: data}
+			}
+			if err := runtime.handleEvent(compaction(v1.EventSessionCompactionStarted, "started")); err != nil {
+				t.Fatal(err)
+			}
+			if len(runtime.activity) != 1 || runtime.activity[0].id != test.sessionID+"\x00:compaction:"+test.attemptID || runtime.activity[0].rendered != test.wantStart {
+				t.Fatalf("durable started activity = %#v", runtime.activity)
+			}
+			if err := runtime.handleEvent(compaction(v1.EventSessionCompactionFinished, "interrupted")); err != nil {
+				t.Fatal(err)
+			}
+			if len(runtime.activity) != 0 || len(runtime.completedActivities) != 0 || !strings.Contains(output.String(), test.wantFinish) {
+				t.Fatalf("durable terminal activity=%#v queued=%#v output=%q", runtime.activity, runtime.completedActivities, output.String())
+			}
+		})
+	}
+}
+
+func TestEnhancedManualCompactionCorrelationSuppressesOnlyMatchingAttempt(t *testing.T) {
+	for _, httpFirst := range []bool{false, true} {
+		name := "event before HTTP"
+		if httpFirst {
+			name = "HTTP before event"
+		}
+		t.Run(name, func(t *testing.T) {
+			api := &enhancedCompactionAPI{
+				started: make(chan string, 1), release: make(chan struct{}),
+				result: v1.Compaction{Status: "complete", AttemptID: "attempt-manual"},
+			}
+			var output bytes.Buffer
+			runtime, cancel := newEnhancedCompactionRuntime(t, api, &output)
+			defer cancel()
+			runtime.runtimeActivities.rootSessionID = "current"
+			root, _ := json.Marshal(v1.UserSessionEvent{SessionID: "current"})
+			if err := runtime.handleEvent(v1.Event{Type: v1.EventUserSessionStart, SessionID: "current", Data: root}); err != nil {
+				t.Fatal(err)
+			}
+			event := func(eventType, attemptID, status, eventError string) v1.Event {
+				data, _ := json.Marshal(v1.CompactionEvent{AttemptID: attemptID, Status: status, Error: eventError})
+				return v1.Event{Type: eventType, SessionID: "current", Data: data}
+			}
+
+			runtime.handleInput("/compact")
+			<-api.started
+			if httpFirst {
+				close(api.release)
+				settled := <-runtime.compactionResults
+				if settled.result.AttemptID != "attempt-manual" {
+					t.Fatalf("HTTP result AttemptID = %q", settled.result.AttemptID)
+				}
+				if err := runtime.settleCompaction(settled); err != nil {
+					t.Fatal(err)
+				}
+			}
+			for _, item := range []v1.Event{
+				event(v1.EventSessionCompactionStarted, "attempt-manual", "started", ""),
+				event(v1.EventSessionCompactionStarted, "attempt-unrelated", "started", ""),
+				event(v1.EventSessionCompactionFinished, "attempt-manual", "completed", ""),
+			} {
+				if err := runtime.handleEvent(item); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if !httpFirst {
+				close(api.release)
+				settled := <-runtime.compactionResults
+				if settled.result.AttemptID != "attempt-manual" {
+					t.Fatalf("HTTP result AttemptID = %q", settled.result.AttemptID)
+				}
+				if err := runtime.settleCompaction(settled); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := runtime.handleEvent(event(v1.EventSessionCompactionFinished, "attempt-unrelated", "failed", "unrelated remains visible")); err != nil {
+				t.Fatal(err)
+			}
+			text := output.String()
+			if !strings.Contains(text, "✗ Compaction: failed · unrelated remains visible") || strings.Count(text, "Compaction: complete · current") != 1 || len(runtime.activity) != 0 {
+				t.Fatalf("correlated output=%q activity=%#v", text, runtime.activity)
+			}
+		})
+	}
+}
+
+func TestEnhancedManualCompactionCorrelationStateMachine(t *testing.T) {
+	compactionEvent := func(eventType, sessionID, attemptID, status, eventError string) v1.Event {
+		data, _ := json.Marshal(v1.CompactionEvent{AttemptID: attemptID, Status: status, Error: eventError})
+		return v1.Event{Type: eventType, SessionID: sessionID, Data: data}
+	}
+	registerTree := func(t *testing.T, runtime *enhancedChatRuntime) {
+		t.Helper()
+		for _, item := range []v1.Event{
+			{Type: v1.EventUserSessionStart, SessionID: "current", Data: json.RawMessage(`{"session_id":"current"}`)},
+			{Type: v1.EventAgentSessionStart, SessionID: "child", Data: json.RawMessage(`{"session_id":"child","parent_session_id":"current","agent":"worker","name":"child"}`)},
+		} {
+			if err := runtime.handleEvent(item); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	t.Run("descendant target replays in order and tombstone precedes next pending request", func(t *testing.T) {
+		api := &enhancedCompactionAPI{
+			started: make(chan string, 2), release: make(chan struct{}),
+			result: v1.Compaction{Status: "complete", AttemptID: "manual"},
+		}
+		var output bytes.Buffer
+		runtime, cancel := newEnhancedCompactionRuntime(t, api, &output)
+		defer cancel()
+		registerTree(t, runtime)
+
+		runtime.handleInput("/compact child")
+		if sessionID := <-api.started; sessionID != "child" {
+			t.Fatalf("compacted session = %q", sessionID)
+		}
+		for _, item := range []v1.Event{
+			compactionEvent(v1.EventSessionCompactionStarted, "child", "manual", "started", ""),
+			compactionEvent(v1.EventSessionCompactionFinished, "child", "other-one", "failed", "first unrelated"),
+			compactionEvent(v1.EventSessionCompactionStarted, "child", "", "started", ""),
+			compactionEvent(v1.EventSessionCompactionFinished, "child", "other-two", "interrupted", "second unrelated"),
+		} {
+			if err := runtime.handleEvent(item); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := len(runtime.compactions["child"].events); got != 4 {
+			t.Fatalf("buffered events = %d, want 4", got)
+		}
+		close(api.release)
+		if err := runtime.settleCompaction(<-runtime.compactionResults); err != nil {
+			t.Fatal(err)
+		}
+		text := output.String()
+		first, second, settled := strings.Index(text, "first unrelated"), strings.Index(text, "second unrelated"), strings.Index(text, "Compaction: complete · child")
+		if first < 0 || second <= first || settled <= second || strings.Contains(text, "[worker:child] Compaction: complete") || runtime.compactions["child"] != nil {
+			t.Fatalf("replay order first=%d second=%d settled=%d pending=%#v output=%q", first, second, settled, runtime.compactions["child"], text)
+		}
+
+		// A missing terminal event did not retain the duplicate guard, so another
+		// request can start. The old exact duplicate is checked against its
+		// tombstone before the new request's buffer.
+		runtime.handleInput("/compact child")
+		if sessionID := <-api.started; sessionID != "child" {
+			t.Fatalf("second compacted session = %q", sessionID)
+		}
+		for _, eventType := range []string{v1.EventSessionCompactionStarted, v1.EventSessionCompactionFinished} {
+			if err := runtime.handleEvent(compactionEvent(eventType, "child", "manual", "completed", "")); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if got := len(runtime.compactions["child"].events); got != 0 {
+			t.Fatalf("late duplicates entered new request buffer: %#v", runtime.compactions["child"].events)
+		}
+	})
+
+	t.Run("HTTP error does not trust attempt ID and malformed SSE fails immediately", func(t *testing.T) {
+		api := &enhancedCompactionAPI{
+			started: make(chan string, 1), release: make(chan struct{}),
+			result: v1.Compaction{Status: "complete", AttemptID: "untrusted"}, err: errors.New("request failed"),
+		}
+		var output bytes.Buffer
+		runtime, cancel := newEnhancedCompactionRuntime(t, api, &output)
+		defer cancel()
+		registerTree(t, runtime)
+		runtime.handleInput("/compact child")
+		<-api.started
+
+		malformed := v1.Event{Type: v1.EventSessionCompactionStarted, SessionID: "child", Data: json.RawMessage(`{"attempt_id":`)}
+		if err := runtime.handleEvent(malformed); err == nil || len(runtime.compactions["child"].events) != 0 {
+			t.Fatalf("malformed event err=%v buffered=%#v", err, runtime.compactions["child"].events)
+		}
+		for _, item := range []v1.Event{
+			compactionEvent(v1.EventSessionCompactionStarted, "child", "untrusted", "started", ""),
+			compactionEvent(v1.EventSessionCompactionFinished, "child", "untrusted", "failed", "must remain visible"),
+		} {
+			if err := runtime.handleEvent(item); err != nil {
+				t.Fatal(err)
+			}
+		}
+		close(api.release)
+		if err := runtime.settleCompaction(<-runtime.compactionResults); err != nil {
+			t.Fatal(err)
+		}
+		key := enhancedCompactionTombstone{sessionID: "child", attemptID: "untrusted"}
+		if _, trusted := runtime.compactionTombstones[key]; trusted || !strings.Contains(output.String(), "must remain visible") || !strings.Contains(output.String(), "request failed") {
+			t.Fatalf("trusted=%t tombstones=%#v output=%q", trusted, runtime.compactionTombstones, output.String())
+		}
+	})
 }
 
 func TestEnhancedCompactionValidationUnsupportedAndDuplicate(t *testing.T) {

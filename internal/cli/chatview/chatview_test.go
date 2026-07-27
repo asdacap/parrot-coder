@@ -331,6 +331,85 @@ func sessionDelta(sessionID string, delta v1.MessagePartDelta) v1.Event {
 	return v1.Event{Type: v1.EventMessagePartDelta, SessionID: sessionID, Data: data}
 }
 
+func TestRuntimeActivityTrackerCompactionLifecycle(t *testing.T) {
+	for _, test := range []struct {
+		name, sessionID, attemptID, status, eventError, wantStart, wantFinish string
+		wantStyle                                                             terminal.TextStyle
+	}{
+		{
+			name: "root completed", sessionID: "session-main", attemptID: "attempt-root", status: "completed",
+			wantStart: "⠋ Compaction", wantFinish: "✓ Compaction: complete", wantStyle: terminal.TextStyleMuted,
+		},
+		{
+			name: "descendant failed", sessionID: "task-child", attemptID: "attempt-failed", status: "failed", eventError: "provider failed\nretry exhausted",
+			wantStart: "  ⠋ [worker:background] Compaction", wantFinish: "  ✗ [worker:background] Compaction: failed · provider failed retry exhausted", wantStyle: terminal.TextStyleDefault,
+		},
+		{
+			name: "descendant interrupted", sessionID: "task-child", attemptID: "attempt-interrupted", status: "interrupted", eventError: "runtime stopped",
+			wantStart: "  ⠋ [worker:background] Compaction", wantFinish: "  ■ [worker:background] Compaction: interrupted · runtime stopped", wantStyle: terminal.TextStyleDefault,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tracker := NewRuntimeActivityTracker("session-main")
+			startRootSession(tracker)
+			if _, err := tracker.Apply(agentSessionEvent(v1.EventAgentSessionStart, v1.AgentSessionEvent{
+				SessionID: "task-child", ParentSessionID: "session-main", Agent: "worker", Name: "background",
+			}), false); err != nil {
+				t.Fatal(err)
+			}
+			event := func(eventType, status, eventError string) v1.Event {
+				data, _ := json.Marshal(v1.CompactionEvent{AttemptID: test.attemptID, Status: status, Error: eventError})
+				return v1.Event{Type: eventType, SessionID: test.sessionID, Data: data}
+			}
+
+			started, err := tracker.Apply(event(v1.EventSessionCompactionStarted, "started", ""), false)
+			if err != nil || len(started) != 1 {
+				t.Fatalf("started reports = %#v, %v", started, err)
+			}
+			wantID := test.sessionID + "\x00:compaction:" + test.attemptID
+			if report := started[0]; report.ID != wantID || report.Line != test.wantStart || report.SessionID != test.sessionID || report.Terminal || report.EmitPlain || !report.MainStatus || report.Style != terminal.TextStyleMuted {
+				t.Fatalf("started report = %#v", report)
+			}
+
+			finished, err := tracker.Apply(event(v1.EventSessionCompactionFinished, test.status, test.eventError), false)
+			if err != nil || len(finished) != 1 {
+				t.Fatalf("finished reports = %#v, %v", finished, err)
+			}
+			if report := finished[0]; report.ID != wantID || report.ID != started[0].ID || report.Line != test.wantFinish || report.SessionID != test.sessionID || !report.Terminal || !report.EmitPlain || !report.MainStatus || report.Style != test.wantStyle {
+				t.Fatalf("finished report = %#v", report)
+			}
+		})
+	}
+
+	tracker := NewRuntimeActivityTracker("session-main")
+	startRootSession(tracker)
+	for _, test := range []struct {
+		name  string
+		event v1.Event
+		want  string
+	}{
+		{name: "missing attempt id", event: v1.Event{Type: v1.EventSessionCompactionStarted, SessionID: "session-main", Data: json.RawMessage(`{"status":"started"}`)}},
+		{name: "unknown origin", event: v1.Event{Type: v1.EventSessionCompactionFinished, SessionID: "unknown", Data: json.RawMessage(`{"attempt_id":"attempt-unknown","status":"failed"}`)}, want: "✗ unknown event origin unknown (session.compaction.finished)"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			reports, err := tracker.Apply(test.event, false)
+			wantCount := 0
+			if test.want != "" {
+				wantCount = 1
+			}
+			if err != nil || len(reports) != wantCount {
+				t.Fatalf("reports = %#v, %v", reports, err)
+			}
+			if test.want != "" && (!reports[0].Terminal || reports[0].Line != test.want) {
+				t.Fatalf("report = %#v", reports[0])
+			}
+		})
+	}
+	if reports, err := tracker.Apply(v1.Event{Type: v1.EventSessionCompactionStarted, SessionID: "session-main", Data: json.RawMessage(`{"attempt_id":`)}, false); err == nil || reports != nil {
+		t.Fatalf("malformed event reports = %#v, %v", reports, err)
+	}
+}
+
 func TestRuntimeActivityTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	tracker := NewRuntimeActivityTracker("session-main")
 	startRootSession(tracker)

@@ -148,10 +148,8 @@ func (r *enhancedChatRuntime) startCompaction(argument, usage string) {
 		r.commitError("connected server does not support compaction")
 		return
 	}
-	if r.compacting == nil {
-		r.compacting = make(map[string]string)
-	}
-	if r.compacting[sessionID] != "" {
+	r.ensureCompactionState()
+	if r.compactions[sessionID] != nil {
 		r.commitError("compaction already in progress for session " + sessionID)
 		return
 	}
@@ -166,7 +164,7 @@ func (r *enhancedChatRuntime) startCompaction(argument, usage string) {
 	if r.compactionResults == nil {
 		r.compactionResults = make(chan enhancedCompactionResult, 1)
 	}
-	r.compacting[sessionID] = activityID
+	r.compactions[sessionID] = &enhancedCompactionRequest{activityID: activityID}
 	r.upsertActivity(activityID, "Compaction · "+sessionID, "running", false, false, false)
 	for i := range r.activity {
 		if r.activity[i].id == activityID {
@@ -186,10 +184,30 @@ func (r *enhancedChatRuntime) startCompaction(argument, usage string) {
 }
 
 func (r *enhancedChatRuntime) settleCompaction(settled enhancedCompactionResult) error {
-	if r.compacting[settled.sessionID] != settled.activityID {
+	r.ensureCompactionState()
+	pending := r.compactions[settled.sessionID]
+	if pending == nil || pending.activityID != settled.activityID {
 		return nil
 	}
-	delete(r.compacting, settled.sessionID)
+
+	// The HTTP response is authoritative. Release the per-session duplicate guard
+	// before replaying so a missing terminal SSE can never block the next command.
+	delete(r.compactions, settled.sessionID)
+	attemptID := ""
+	if settled.err == nil {
+		attemptID = settled.result.AttemptID
+	}
+	if attemptID != "" {
+		r.compactionTombstones[enhancedCompactionTombstone{sessionID: settled.sessionID, attemptID: attemptID}] = struct{}{}
+	}
+	var replayErr error
+	for _, event := range pending.events {
+		if attemptID != "" && event.attemptID == attemptID {
+			continue
+		}
+		replayErr = errors.Join(replayErr, r.renderRuntimeActivityEvent(event.item))
+	}
+
 	status := "success"
 	reason := ""
 	if settled.err != nil {
@@ -202,8 +220,15 @@ func (r *enhancedChatRuntime) settleCompaction(settled enhancedCompactionResult)
 			reason = "compaction did not complete"
 		}
 	}
+	// Replay first, then settle the HTTP activity, preserving event arrival order
+	// ahead of the authoritative request result in the transcript.
+	r.settleCompactionActivity(settled.activityID, settled.sessionID, status, reason)
+	return errors.Join(replayErr, r.flushCompletedActivities())
+}
+
+func (r *enhancedChatRuntime) settleCompactionActivity(activityID, sessionID, status, reason string) {
 	for i := range r.activity {
-		if r.activity[i].id != settled.activityID {
+		if r.activity[i].id != activityID {
 			continue
 		}
 		r.activity[i].status = status
@@ -211,12 +236,45 @@ func (r *enhancedChatRuntime) settleCompaction(settled enhancedCompactionResult)
 		r.activity[i].terminal = true
 		r.activity[i].ended = time.Now()
 		if status == "success" {
-			r.activity[i].label = "Compaction: complete · " + settled.sessionID
+			r.activity[i].label = "Compaction: complete · " + sessionID
 		}
 		break
 	}
-	r.queueCompletedActivity(settled.activityID)
-	return r.flushCompletedActivities()
+	r.queueCompletedActivity(activityID)
+}
+
+func (r *enhancedChatRuntime) ensureCompactionState() {
+	if r.compactions == nil {
+		r.compactions = make(map[string]*enhancedCompactionRequest)
+	}
+	if r.compactionTombstones == nil {
+		r.compactionTombstones = make(map[enhancedCompactionTombstone]struct{})
+	}
+}
+
+func (r *enhancedChatRuntime) handleCompactionLifecycleEvent(item v1.Event) (bool, error) {
+	if item.Type != v1.EventSessionCompactionStarted && item.Type != v1.EventSessionCompactionFinished {
+		return false, nil
+	}
+	decoded, err := v1.DecodeEventData(item)
+	if err != nil {
+		return true, err
+	}
+	attemptID := decoded.(*v1.CompactionEvent).AttemptID
+	r.ensureCompactionState()
+
+	// Check settled correlations first. A new request for the same session must
+	// not accidentally capture a late duplicate from the preceding request.
+	if attemptID != "" {
+		if _, suppressed := r.compactionTombstones[enhancedCompactionTombstone{sessionID: item.SessionID, attemptID: attemptID}]; suppressed {
+			return true, nil
+		}
+	}
+	if pending := r.compactions[item.SessionID]; pending != nil {
+		pending.events = append(pending.events, enhancedCompactionLifecycleEvent{item: item, attemptID: attemptID})
+		return true, nil
+	}
+	return false, nil
 }
 
 func safeBusySlash(name string) bool {

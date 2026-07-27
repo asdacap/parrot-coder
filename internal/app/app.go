@@ -459,7 +459,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: context registry: %w", err)
 	}
-	compactionRepository := compaction.NewRepository(sessionStore, repository)
+	compactionRepository := compaction.NewRepository(sessionStore, repository, identity)
 	compactionService, err := compaction.NewService(compactionRepository,
 		compaction.ProviderSummarizer{Providers: compactionProviderResolver{resolver: providerRegistry}}, textTokenizer, compaction.Config{})
 	if err != nil {

@@ -198,7 +198,7 @@ func (b *Broker) project(item v1.Event) {
 		projected.ID = ""
 		projected.Sequence = nil
 		projected.CreatedAt = nil
-		b.transient.publishTo(parent, projected)
+		b.transient.publishProjection(parent, projected)
 		route = parent
 	}
 }

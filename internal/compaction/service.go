@@ -16,6 +16,7 @@ var ErrNoSafeCut = errors.New("compaction: no safe history cutoff")
 
 type Store interface {
 	Load(context.Context, string) (State, error)
+	RepairActive(context.Context, string) error
 	Completed(context.Context, string, string, int64, int64) (Record, bool, error)
 	Begin(context.Context, Attempt) (Attempt, error)
 	Complete(context.Context, Attempt, SummaryResult) (Record, error)
@@ -61,6 +62,13 @@ func NewService(store Store, summarizer Summarizer, tokenCounter TokenCounter, c
 		config.MaxSummaryInputBytes = 2 << 20
 	}
 	return &Service{store: store, summarizer: summarizer, tokenCounter: tokenCounter, config: config}, nil
+}
+
+func (s *Service) RepairActive(ctx context.Context, sessionID string) error {
+	if sessionID == "" {
+		return errors.New("compaction: session is required")
+	}
+	return s.store.RepairActive(ctx, sessionID)
 }
 
 func (s *Service) Compact(ctx context.Context, request Request) (result Result, err error) {

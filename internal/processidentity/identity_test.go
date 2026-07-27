@@ -40,12 +40,35 @@ func TestLoadReturnsCurrentPIDAndStableHostKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.PID != os.Getpid() || second.PID != os.Getpid() || first.HostKey == "" || first.HostKey != second.HostKey {
+	if first.PID != os.Getpid() || second.PID != os.Getpid() || first.HostKey == "" || first.ProcessKey == "" || first != second {
 		t.Fatalf("identities = %#v %#v", first, second)
 	}
 	// Systems with a machine ID do not need the fallback file. When created,
 	// it must remain private.
 	if info, err := os.Stat(filepath.Join(dir, hostKeyFile)); err == nil && info.Mode().Perm() != 0o600 {
 		t.Fatalf("fallback host key mode = %o", info.Mode().Perm())
+	}
+}
+
+func TestInspectOwnershipConservatively(t *testing.T) {
+	local, err := Load(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name  string
+		owner Identity
+		want  Liveness
+	}{
+		{name: "current process", owner: local, want: LivenessAlive},
+		{name: "legacy ownerless", owner: Identity{}, want: LivenessDead},
+		{name: "partial owner", owner: Identity{HostKey: local.HostKey, PID: local.PID}, want: LivenessUnknown},
+		{name: "foreign host", owner: Identity{HostKey: "foreign", PID: local.PID, ProcessKey: local.ProcessKey}, want: LivenessUnknown},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := Inspect(local, test.owner); got != test.want {
+				t.Fatalf("Inspect(%#v) = %v, want %v", test.owner, got, test.want)
+			}
+		})
 	}
 }

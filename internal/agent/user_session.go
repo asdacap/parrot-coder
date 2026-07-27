@@ -679,6 +679,11 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		r.mu.Unlock()
 	}()
 
+	if r.compactor != nil {
+		if err = r.compactor.RepairActive(context.Background(), dto.ID); err != nil {
+			return nil, fmt.Errorf("agent: repair compaction for session %s: %w", dto.ID, err)
+		}
+	}
 	snapshot, err := r.toolProviders.Materialize(agentToolSession{candidate})
 	if err != nil {
 		return nil, err
