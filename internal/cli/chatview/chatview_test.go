@@ -475,6 +475,34 @@ func TestRuntimeActivityTrackerProjectsTreeAndReportOwners(t *testing.T) {
 	}
 }
 
+func TestRuntimeActivityTrackerAttachesPendingUsageToNestedSessions(t *testing.T) {
+	tracker := NewRuntimeActivityTracker("session-main")
+	startRootSession(tracker)
+
+	tracker.AddUsage("child", "", v1.Usage{InputTokens: 10, OutputTokens: 2, CachedInputTokens: 4, InputCost: 0.125})
+	tracker.AddUsage("child", "", v1.Usage{InputTokens: 5, OutputTokens: 1, CachedInputTokens: 1, InputCost: 0.125})
+	tracker.AddUsage("grandchild", "", v1.Usage{InputTokens: 20, OutputTokens: 3, CachedInputTokens: 10, OutputCost: 0.25})
+	if got := tracker.CumulativeUsage("session-main", ""); got != (RuntimeActivityUsage{}) {
+		t.Fatalf("unregistered usage = %#v", got)
+	}
+
+	childStart := agentSessionEvent(v1.EventAgentSessionStart, v1.AgentSessionEvent{SessionID: "child", ParentSessionID: "session-main", Agent: "explore"})
+	for _, event := range []v1.Event{
+		childStart,
+		childStart,
+		agentSessionEvent(v1.EventAgentSessionStart, v1.AgentSessionEvent{SessionID: "grandchild", ParentSessionID: "child", Agent: "review"}),
+	} {
+		if _, err := tracker.Apply(event, false); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	want := RuntimeActivityUsage{InputTokens: 35, OutputTokens: 6, CachedTokens: 15, Cost: 0.5}
+	if got := tracker.CumulativeUsage("session-main", ""); got != want {
+		t.Fatalf("nested cumulative usage = %#v, want %#v", got, want)
+	}
+}
+
 func TestRuntimeActivityTrackerCumulativeUsageHandlesCyclicAncestry(t *testing.T) {
 	tracker := NewRuntimeActivityTracker("session-main")
 	for _, start := range []v1.AgentSessionEvent{
