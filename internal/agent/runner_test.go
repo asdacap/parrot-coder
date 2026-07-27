@@ -1345,6 +1345,78 @@ func TestGoalCompletionToolProducesFinalAssistantAndResets(t *testing.T) {
 	}
 }
 
+func TestPromptWaitsForItsOwnAdmittedMessage(t *testing.T) {
+	firstStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
+		last := request.Messages[len(request.Messages)-1]
+		if index == 0 {
+			close(firstStarted)
+			<-releaseFirst
+			return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answer-first"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+		}
+		if last.Role != protocol.RoleUser || last.Content[0].Text != "awaited" {
+			return nil, fmt.Errorf("second request last message = %#v, want awaited user message", last)
+		}
+		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "answer-awaited"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	if _, err := h.runner.Send(t.Context(), "msg_first", "first"); err != nil {
+		t.Fatal(err)
+	}
+	<-firstStarted
+
+	result := make(chan turnFinishResult, 1)
+	go func() {
+		answer, err := h.runner.Prompt(t.Context(), "awaited")
+		result <- turnFinishResult{content: answer, err: err}
+	}()
+	waitForAgentSession(t, func() bool {
+		h.runner.mu.Lock()
+		defer h.runner.mu.Unlock()
+		return len(h.runner.turnFinishListeners) == 1
+	})
+	close(releaseFirst)
+
+	got := <-result
+	if got.err != nil || got.content != "answer-awaited" {
+		t.Fatalf("Prompt() = %q, %v; want answer-awaited", got.content, got.err)
+	}
+	if requests := fake.Requests(); len(requests) != 2 {
+		t.Fatalf("provider turns = %d, want 2", len(requests))
+	}
+}
+
+func TestCanceledPromptRemovesTurnFinishListener(t *testing.T) {
+	started := make(chan struct{})
+	fake := &fakeProvider{stream: func(_ int, ctx context.Context, _ protocol.Request) (provider.Stream, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() {
+		_, err := h.runner.Prompt(ctx, "blocked")
+		result <- err
+	}()
+	<-started
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("Prompt() error = %v, want context.Canceled", err)
+	}
+	h.runner.mu.Lock()
+	listeners := len(h.runner.turnFinishListeners)
+	h.runner.mu.Unlock()
+	if listeners != 0 {
+		t.Fatalf("turn finish listeners = %d, want 0", listeners)
+	}
+	// A later notification must remain safe after the canceled listener has
+	// unregistered itself.
+	h.runner.notifyTurnFinishListeners("", "", nil)
+}
+
 func TestPromptAcceptsEmptyFinalAssistantAfterGoalCompletionTool(t *testing.T) {
 	var h *runnerHarness
 	item := &fakeTool{id: "finish", execute: func(context.Context) (tool.Result, error) {

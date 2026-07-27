@@ -61,7 +61,7 @@ type agentSession struct {
 	toolExecutor           tool.Executor
 	maxChildPromptBytes    int
 	maxChildResultBytes    int
-	latestAssistantID      string
+	turnFinishListeners    []*turnFinishListener
 }
 
 type LifecycleObserver interface {
@@ -96,20 +96,48 @@ var noSteerSignal <-chan struct{} = make(chan struct{})
 var ErrNoFinalAssistantMessage = errors.New("agent: session produced no assistant output")
 
 type turnState struct {
-	ctx           context.Context
-	cancel        context.CancelFunc
-	done          chan struct{}
-	wake          bool
-	steer         chan struct{}
-	steerSignaled bool
-	steerSequence int64
-	status        AgentStatus
-	err           error
-	messageID     string
-	result        Status
-	releaseQuota  func()
-	mode          Mode
-	profile       Profile
+	ctx               context.Context
+	cancel            context.CancelFunc
+	done              chan struct{}
+	wake              bool
+	steer             chan struct{}
+	steerSignaled     bool
+	steerSequence     int64
+	status            AgentStatus
+	err               error
+	messageID         string
+	result            Status
+	releaseQuota      func()
+	mode              Mode
+	profile           Profile
+	latestAssistantID string
+}
+
+type turnFinishResult struct {
+	content string
+	err     error
+}
+
+type turnFinishListener struct {
+	session   *agentSession
+	messageID string
+	result    chan turnFinishResult
+	once      sync.Once
+}
+
+func (l *turnFinishListener) notify(ctx context.Context, initialMessageID, terminalAssistantID string, lifecycleErr error) {
+	received, content, err := l.session.messageResponseThrough(ctx, l.messageID, terminalAssistantID)
+	if !received {
+		if err == nil && initialMessageID != l.messageID {
+			return
+		}
+		if err == nil {
+			err = lifecycleErr
+		}
+	} else if errors.Is(err, ErrNoFinalAssistantMessage) && lifecycleErr != nil {
+		err = lifecycleErr
+	}
+	l.once.Do(func() { l.result <- turnFinishResult{content: content, err: err} })
 }
 
 type TurnWorkingEvent struct {
@@ -264,48 +292,88 @@ func (s *agentSession) sendAndWait(ctx context.Context, content string) (string,
 	if err != nil {
 		return "", err
 	}
-	_, state, err := s.admitAndStart(ctx, messageID, content, false, true)
-	if err != nil {
+	listener, remove := s.registerTurnFinishListener(messageID)
+	defer remove()
+	if _, _, err := s.admitAndStart(ctx, messageID, content, false, true); err != nil {
 		return "", err
 	}
-	return s.awaitMessage(ctx, state, messageID)
+	return s.awaitMessage(ctx, listener)
 }
 
-func (s *agentSession) awaitMessage(ctx context.Context, state *turnState, messageID string) (string, error) {
-	if err := s.wait(ctx, state); err != nil {
-		if ctx.Err() != nil {
-			cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			_ = s.interruptExecution(cleanup)
-			cancel()
-		}
-		return "", err
+func (s *agentSession) registerTurnFinishListener(messageID string) (*turnFinishListener, func()) {
+	listener := &turnFinishListener{session: s, messageID: messageID, result: make(chan turnFinishResult, 1)}
+	s.mu.Lock()
+	s.turnFinishListeners = append(s.turnFinishListeners, listener)
+	s.mu.Unlock()
+	var once sync.Once
+	return listener, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			for i, current := range s.turnFinishListeners {
+				if current == listener {
+					s.turnFinishListeners = append(s.turnFinishListeners[:i], s.turnFinishListeners[i+1:]...)
+					break
+				}
+			}
+			s.mu.Unlock()
+		})
 	}
-	return s.messageResponse(ctx, messageID)
+}
+
+func (s *agentSession) notifyTurnFinishListeners(initialMessageID, terminalAssistantID string, lifecycleErr error) {
+	s.mu.Lock()
+	listeners := append([]*turnFinishListener(nil), s.turnFinishListeners...)
+	s.mu.Unlock()
+	for _, listener := range listeners {
+		listener.notify(context.Background(), initialMessageID, terminalAssistantID, lifecycleErr)
+	}
+}
+
+func (s *agentSession) awaitMessage(ctx context.Context, listener *turnFinishListener) (string, error) {
+	select {
+	case result := <-listener.result:
+		return result.content, result.err
+	case <-ctx.Done():
+		cleanup, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_ = s.interruptExecution(cleanup)
+		cancel()
+		return "", ctx.Err()
+	}
 }
 
 func (s *agentSession) messageResponse(ctx context.Context, messageID string) (string, error) {
+	received, content, err := s.messageResponseThrough(ctx, messageID, "")
+	if !received {
+		return "", ErrNoFinalAssistantMessage
+	}
+	return content, err
+}
+
+func (s *agentSession) messageResponseThrough(ctx context.Context, messageID, terminalAssistantID string) (bool, string, error) {
 	messages, err := s.store.ListMessages(ctx)
 	if err != nil {
-		return "", err
+		return false, "", err
 	}
 	found := false
 	for _, message := range messages {
 		if !found {
 			found = message.Role == "user" && message.ID == messageID
-			continue
+		} else {
+			if message.Role == "assistant" && message.FinishReason != string(protocol.FinishToolCalls) {
+				if message.Error != "" {
+					return true, message.Content, errors.New(message.Error)
+				}
+				return true, message.Content, nil
+			}
 		}
-		if message.Role == "user" {
+		if terminalAssistantID != "" && message.ID == terminalAssistantID {
 			break
 		}
-		if message.Role != "assistant" || message.FinishReason == string(protocol.FinishToolCalls) {
-			continue
-		}
-		if message.Error != "" {
-			return message.Content, errors.New(message.Error)
-		}
-		return message.Content, nil
 	}
-	return "", ErrNoFinalAssistantMessage
+	if found {
+		return true, "", ErrNoFinalAssistantMessage
+	}
+	return false, "", nil
 }
 
 func (s *agentSession) admitAndStart(ctx context.Context, messageID, content string, waitForPermit, start bool) (session.Admission, *turnState, error) {
@@ -676,7 +744,7 @@ func (s *agentSession) runTurn(state *turnState) {
 	}
 	if err == nil && !noFinalMessage && state.ctx.Err() == nil {
 		s.mu.Lock()
-		messageID := s.latestAssistantID
+		messageID := state.latestAssistantID
 		s.mu.Unlock()
 		if messageID == "" {
 			err = ErrNoFinalAssistantMessage
@@ -714,9 +782,6 @@ func (s *agentSession) prepareTurn(state *turnState) error {
 	s.securityProfile = newAgentSessionSecurityProfile(turnProfile)
 	s.securityProfile.AddCapability(security.Rule{Path: stateDirectory.ScratchPath(), Action: security.ActionAllowWrite})
 	s.securityProfile.AddCapability(security.Rule{Path: s.user.queues.Directory(), Action: security.ActionAllowRead})
-	s.mu.Lock()
-	s.latestAssistantID = ""
-	s.mu.Unlock()
 	return nil
 }
 
@@ -764,8 +829,15 @@ func (s *agentSession) finishTurn(state *turnState, output string, runErr error,
 	state.status = status
 	close(state.done)
 	s.mu.Unlock()
+	s.notifyTurnFinishListeners(state.messageID, state.latestAssistantID, runErr)
 	s.events.Publish(event.BrokerEvent{Name: event.TurnCompleted, Payload: state.result})
 	s.completed(runErr)
+	s.mu.Lock()
+	missedWake := state.wake && !s.shuttingDown && !s.removed
+	s.mu.Unlock()
+	if missedWake {
+		_, _ = s.startEmptyTurn(false)
+	}
 }
 
 func (s *agentSession) started() {
@@ -1379,7 +1451,9 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		return nil, finish, err
 	}
 	r.mu.Lock()
-	r.latestAssistantID = assistant.ID
+	if r.turn != nil {
+		r.turn.latestAssistantID = assistant.ID
+	}
 	r.mu.Unlock()
 	if r.goals != nil {
 		if _, err := r.goals.AccountUsage(ctx, r.dto.ID, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
