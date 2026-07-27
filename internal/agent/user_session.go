@@ -153,7 +153,7 @@ func NewUserSessionWithModes(
 	if sessions == nil || systemPromptProvider == nil || queues == nil {
 		return nil, errors.New("agent: session persistence, system prompt provider, and queue manager are required")
 	}
-	if stateDirectories == nil || profiles == nil || modes == nil || providers == nil {
+	if stateDirectories == nil || profiles == nil || modes == nil || providers == nil || goals == nil {
 		return nil, errors.New("agent: session dependencies are required")
 	}
 	if !toolProviders.Valid() {
@@ -162,6 +162,9 @@ func NewUserSessionWithModes(
 	applyAgentSessionDefaults(&config.AgentSession)
 	if live == nil {
 		live = noopLivePublisher{}
+	}
+	if compactor == nil {
+		compactor = noopCompactor{}
 	}
 	if events == nil {
 		events = event.NoopBroker{}
@@ -706,10 +709,8 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		r.mu.Unlock()
 	}()
 
-	if r.compactor != nil {
-		if err = r.compactor.RepairActive(context.Background(), dto.ID); err != nil {
-			return nil, fmt.Errorf("agent: repair compaction for session %s: %w", dto.ID, err)
-		}
+	if err = r.compactor.RepairActive(context.Background(), dto.ID); err != nil {
+		return nil, fmt.Errorf("agent: repair compaction for session %s: %w", dto.ID, err)
 	}
 	snapshot, err := r.toolProviders.Materialize(agentToolSession{candidate})
 	if err != nil {

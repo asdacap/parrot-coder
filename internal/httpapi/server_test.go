@@ -213,16 +213,16 @@ func newSelectionBackend(t *testing.T) (*DomainBackend, agent.UserSession) {
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
 	agents := testAgentRegistry(t)
-	userSession := newTestUserSession(t, sessions, agents)
+	userSession := newTestUserSession(t, sessions, agents, db)
 	return &DomainBackend{AgentSessions: newTestSessionController(nil, userSession), Goals: session.NewGoalService(db, repository), Agents: agents, ProviderResolver: selectionResolver{}}, userSession
 }
 
-func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *agent.Registry) agent.UserSession {
+func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *agent.Registry, db *store.Registry) agent.UserSession {
 	t.Helper()
-	return newTestUserSessionWithResolver(t, sessions, agents, selectionResolver{})
+	return newTestUserSessionWithResolver(t, sessions, agents, selectionResolver{}, db)
 }
 
-func newTestUserSessionWithResolver(t *testing.T, sessions agent.SessionRuntime, agents *agent.Registry, resolver agent.ProviderResolver) agent.UserSession {
+func newTestUserSessionWithResolver(t *testing.T, sessions agent.SessionRuntime, agents *agent.Registry, resolver agent.ProviderResolver, db *store.Registry) agent.UserSession {
 	t.Helper()
 	toolProviders, err := tool.NewProviders()
 	if err != nil {
@@ -242,7 +242,7 @@ func newTestUserSessionWithResolver(t *testing.T, sessions agent.SessionRuntime,
 	}
 	userSession, err := agent.NewUserSession(context.Background(), sessions, contextRegistry, queues, agent.UserSessionConfig{
 		MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 1,
-	}, stateDirectories, agents, resolver, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	}, stateDirectories, agents, resolver, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, session.NewGoalService(db), nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -726,7 +726,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
 	agents := testAgentRegistry(t)
-	userSession := newTestUserSessionWithResolver(t, sessions, agents, availableSelectionResolver{})
+	userSession := newTestUserSessionWithResolver(t, sessions, agents, availableSelectionResolver{}, db)
 	created, err := userSession.CreateSelected(ctx, session.CreateParams{Title: "test"}, session.Selection{Agent: "build", Model: "local/code"})
 	if err != nil {
 		t.Fatal(err)

@@ -35,7 +35,7 @@ func mustGetRepositorySession(t *testing.T, repository *agentSessionRepository, 
 }
 
 func TestAgentSessionRepositoryIdentityLifecycleAndRemoval(t *testing.T) {
-	repository := &agentSessionRepository{sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), toolProviders: emptyToolProviders(t)}
+	repository := &agentSessionRepository{sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), toolProviders: emptyToolProviders(t), compactor: noopCompactor{}}
 	first := mustGetRepositorySession(t, repository, "a")
 	if first != mustGetRepositorySession(t, repository, "a") || first == mustGetRepositorySession(t, repository, "b") {
 		t.Fatal("repository did not preserve one runtime object per session ID")
@@ -161,7 +161,7 @@ func TestAgentSessionRepositoryProviderBindingLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	repository := &agentSessionRepository{toolProviders: providers, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession)}
+	repository := &agentSessionRepository{toolProviders: providers, compactor: noopCompactor{}, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding), dtos: make(map[string]session.AgentSessionDto), children: make(map[string]ChildSession)}
 
 	const waiters = 16
 	results := make(chan AgentSession, waiters)
@@ -260,7 +260,7 @@ func TestAgentSessionRepositoryMaterializesSystemPromptAfterToolsAndRetriesPanic
 	}}
 	user := &userSession{systemPromptProvider: promptProvider}
 	repository := &agentSessionRepository{
-		user: user, toolProviders: tools, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding),
+		user: user, toolProviders: tools, compactor: noopCompactor{}, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding),
 		dtos: make(map[string]session.AgentSessionDto),
 	}
 	dto := session.AgentSessionDto{ID: "prompt", Model: "provider/model"}
@@ -294,7 +294,7 @@ func TestAgentSessionRepositoryRestoredChildPropagatesParentBindFailure(t *testi
 		t.Fatal(err)
 	}
 	repository := &agentSessionRepository{
-		toolProviders: providers, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding),
+		toolProviders: providers, compactor: noopCompactor{}, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding),
 		dtos:     map[string]session.AgentSessionDto{"parent": {ID: "parent"}, "child": {ID: "child", ParentSessionID: "parent"}},
 		children: map[string]ChildSession{"child": {SessionID: "child", ParentSessionID: "parent"}},
 	}

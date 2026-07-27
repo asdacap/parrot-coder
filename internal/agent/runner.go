@@ -91,6 +91,13 @@ type Compactor interface {
 	RepairActive(context.Context, string) error
 }
 
+type noopCompactor struct{}
+
+func (noopCompactor) Compact(context.Context, compaction.Request) (compaction.Result, error) {
+	return compaction.Result{}, nil
+}
+func (noopCompactor) RepairActive(context.Context, string) error { return nil }
+
 type ProfileResolver interface {
 	GetProfile(string) (Profile, error)
 }

@@ -1085,7 +1085,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 	}
 	scratchPath := stateDirectory.ScratchPath()
 	defer func() {
-		if runErr == nil || ctx.Err() != nil || r.goals == nil || !provider.IsUsageLimitError(runErr) {
+		if runErr == nil || ctx.Err() != nil || !provider.IsUsageLimitError(runErr) {
 			return
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), r.config.CleanupTimeout)
@@ -1218,25 +1218,23 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if maxTurnsReached {
 			r.publishMaxTurnsReached(profile.MaxTurns())
 		}
-		if r.compactor != nil {
-			result, compactErr := r.compactor.Compact(ctx, compaction.Request{
-				SessionID: r.dto.ID, ProviderID: providerClient.ID(), Model: model,
-				Instructions: instructions, Tools: definitions,
-			})
-			if compactErr != nil {
-				return compactErr
+		result, compactErr := r.compactor.Compact(ctx, compaction.Request{
+			SessionID: r.dto.ID, ProviderID: providerClient.ID(), Model: model,
+			Instructions: instructions, Tools: definitions,
+		})
+		if compactErr != nil {
+			return compactErr
+		}
+		if result.Status == "complete" {
+			epoch, err = r.store.CurrentCompactionEpoch(ctx)
+			if err != nil {
+				return err
 			}
-			if result.Status == "complete" {
-				epoch, err = r.store.CurrentCompactionEpoch(ctx)
-				if err != nil {
-					return err
-				}
-				history, err = r.store.ListModelHistory(ctx, epoch.HistoryCutoff)
-				if err != nil {
-					return err
-				}
-				instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), finalTurn)
+			history, err = r.store.ListModelHistory(ctx, epoch.HistoryCutoff)
+			if err != nil {
+				return err
 			}
+			instructions = runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), finalTurn)
 		}
 		request := protocol.Request{Model: model.ID, Instructions: instructions, Messages: history, Tools: definitions}
 		if variant != nil {
@@ -1245,7 +1243,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		calls, finish, err := r.loggedProviderTurn(ctx, providerClient.ID(), turn, providerClient, model, request)
 		if err != nil {
 			var failure *providerTurnFailure
-			if !errors.As(err, &failure) || !failure.overflow || !failure.retrySafe || r.compactor == nil {
+			if !errors.As(err, &failure) || !failure.overflow || !failure.retrySafe {
 				return err
 			}
 			result, compactErr := r.compactor.Compact(ctx, compaction.Request{
@@ -1281,14 +1279,12 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				return errors.New("agent: provider returned tools after final-turn tool omission")
 			}
 			activeGoalID := ""
-			if r.goals != nil {
-				goal, err := r.goals.Get(ctx, r.dto.ID)
-				if err != nil && !errors.Is(err, session.ErrGoalNotFound) {
-					return err
-				}
-				if err == nil && goal.Status == session.GoalActive {
-					activeGoalID = goal.ID
-				}
+			goal, err := r.goals.Get(ctx, r.dto.ID)
+			if err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+				return err
+			}
+			if err == nil && goal.Status == session.GoalActive {
+				activeGoalID = goal.ID
 			}
 			if err := r.executeTools(ctx, selected, profile, activeTools, calls); err != nil {
 				return err
@@ -1374,9 +1370,6 @@ func (s *userSession) deliverQueueNotification(ctx context.Context, target *agen
 // remains after a successful drain. The coordinator invokes this only while
 // the session is otherwise idle, so each continuation is a normal new turn.
 func (r *agentSession) prepareContinuation(ctx context.Context) (bool, error) {
-	if r.goals == nil {
-		return false, nil
-	}
 	goal, active, err := r.goals.Active(ctx, r.dto.ID)
 	if err != nil || !active {
 		return false, err
@@ -1525,10 +1518,8 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		r.turn.latestAssistantID = assistant.ID
 	}
 	r.mu.Unlock()
-	if r.goals != nil {
-		if _, err := r.goals.AccountUsage(ctx, r.dto.ID, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
-			return nil, finish, err
-		}
+	if _, err := r.goals.AccountUsage(ctx, r.dto.ID, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
+		return nil, finish, err
 	}
 	for _, call := range calls {
 		if _, err := r.store.AddToolCall(ctx, assistant.ID, call.call); err != nil {
