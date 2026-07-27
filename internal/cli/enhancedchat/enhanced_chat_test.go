@@ -2610,7 +2610,7 @@ func TestEnhancedEditCommitsConfiguredDiffAsBlock(t *testing.T) {
 		want       []string
 		wantGutter bool
 	}{
-		{name: "inline", inline: true, want: []string{"1   -before", "  1 +after"}},
+		{name: "inline", inline: true, want: []string{"1 -before", "1 +after"}},
 		{name: "side by side", want: []string{"1 -before", "│ 1 +after"}, wantGutter: true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
