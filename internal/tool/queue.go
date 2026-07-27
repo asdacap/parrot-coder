@@ -35,13 +35,17 @@ type queueInput struct {
 func (t *QueueTool) ID() string { return t.Kind }
 
 func (t *QueueTool) Descriptor() Descriptor {
-	return Descriptor{ID: t.ID(), Description: t.Description(), Schema: t.JSONSchema(), Presentation: t.Presentation()}
+	descriptor := Descriptor{ID: t.ID(), Description: t.Description(), Schema: t.JSONSchema(), Presentation: t.Presentation()}
+	if t.Kind == "queue_create" {
+		descriptor.SystemPromptGuidance = "Use queue when there are task with large count of input such as checking files manually one by one. Optionally create multiple publisher and multiple consumer for better throughput."
+	}
+	return descriptor
 }
 
 func (t *QueueTool) Description() string {
 	switch t.Kind {
 	case "queue_create":
-		return "Explicitly create a persistent queue shared by agents in the current user session. Queue names must be exactly three lowercase ASCII alphanumeric words separated by hyphens."
+		return "Explicitly create a persistent queue shared by agents in the current user session. Queue names may contain lowercase ASCII letters, numbers, and hyphens."
 	case "queue_push":
 		return "Push a string onto an existing shared user-session queue. Direction defaults to back."
 	case "queue_take":
@@ -62,7 +66,7 @@ func (t *QueueTool) DescribeRequest(raw json.RawMessage) (string, error) {
 }
 
 func (t *QueueTool) JSONSchema() json.RawMessage {
-	properties := `"name":{"type":"string","pattern":"^[a-z0-9]+-[a-z0-9]+-[a-z0-9]+$","description":"Exactly three lowercase ASCII alphanumeric words separated by hyphens."}`
+	properties := `"name":{"type":"string","pattern":"^[a-z0-9]+(-[a-z0-9]+)*$","description":"Lowercase ASCII letters and numbers, optionally separated by hyphens."}`
 	required := `"name"`
 	switch t.Kind {
 	case "queue_create":

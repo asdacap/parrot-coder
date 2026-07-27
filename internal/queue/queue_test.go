@@ -88,9 +88,14 @@ func TestQueueLifecycleDirectionsAndJSONL(t *testing.T) {
 
 func TestValidationAndExplicitCreation(t *testing.T) {
 	queues := newStore(t, filepath.Join(t.TempDir(), "queues"))
-	for _, name := range []string{"", "one", "one-two", "one-two-three-four", "One-two-three", "one_two-three", "one--three", "é-one-two"} {
+	for _, name := range []string{"", "One-two-three", "one_two-three", "one--three", "-one", "one-", "é-one-two"} {
 		if _, err := queues.Create(name, ""); !errors.Is(err, ErrInvalidName) {
 			t.Errorf("Create(%q) error = %v, want ErrInvalidName", name, err)
+		}
+	}
+	for _, name := range []string{"one", "one-two", "one-two-three-four"} {
+		if _, err := queues.Create(name, ""); err != nil {
+			t.Errorf("Create(%q) error = %v", name, err)
 		}
 	}
 	if _, err := queues.Push("one-two-three", "item", ""); !errors.Is(err, ErrNotFound) {

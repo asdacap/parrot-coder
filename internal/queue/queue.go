@@ -23,7 +23,7 @@ import (
 var (
 	ErrNotFound         = errors.New("queue: not found")
 	ErrAlreadyExists    = errors.New("queue: already exists")
-	ErrInvalidName      = errors.New("queue: name must be exactly three lowercase ASCII alphanumeric words separated by hyphens")
+	ErrInvalidName      = errors.New("queue: name must contain only lowercase ASCII alphanumeric words separated by hyphens")
 	ErrInvalidDirection = errors.New("queue: direction must be front or back")
 	ErrEmpty            = errors.New("queue: empty")
 )
@@ -372,9 +372,6 @@ func lock(path string) (func(), error) {
 
 func validName(name string) bool {
 	parts := strings.Split(name, "-")
-	if len(parts) != 3 {
-		return false
-	}
 	for _, part := range parts {
 		if part == "" {
 			return false
