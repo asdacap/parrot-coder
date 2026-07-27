@@ -40,6 +40,10 @@ selected model. Durations are integer milliseconds.
 prompt: |-
   You are Parrot Coder, a local coding agent.
 model: provider/model/effort-variant # optional final segment
+model_aliases:
+  - name: low_llm
+    model_string: provider/fast-model
+    usage: Routine and simple tasks where speed and low cost matter most.
 inline_diff: true # false selects side-by-side diff blocks
 permission_request_timeout_ms: 30000
 providers:
@@ -136,6 +140,29 @@ complete selector in the global `model` field, so the selection persists across
 restarts. `/effort high`, for example, rewrites `provider/model` to
 `provider/model/high`; selecting a model or effort does not create a top-level
 `variant` field. Project-scope config files are not written to.
+
+### Model aliases
+
+`model_aliases` gives stable names to model selectors so callers can request a
+model suited to a class of work without hard-coding a provider. Parrot defines
+`low_llm`, `medium_llm`, `high_llm`, and `xhigh_llm` for progressively more
+complex work. Their `model_string` values are empty by default and may be set to
+any canonical `provider/model[/variant]` selector. An empty value leaves an alias
+unconfigured.
+
+Alias names must be nonempty, unique, contain no `/`, and have no surrounding
+whitespace. `usage` must be nonempty. A nonempty `model_string` must have at
+least a provider and model, with no empty segments or surrounding whitespace.
+Model IDs may contain slashes, just as in the top-level `model` selector.
+
+The alias list is an array, so a higher-precedence `model_aliases` value replaces
+the complete lower-precedence list rather than merging aliases by name. Include
+all aliases you want to retain when overriding the defaults. Interactive alias
+configuration writes the complete effective list to the global config and does
+not modify project files. Use `/model-alias` to list aliases,
+`/model-alias low_llm` to choose a target interactively, or
+`/model-alias low_llm provider/model[/variant]` to configure one directly.
+Configured aliases become available to the running agent immediately.
 
 ### Subagents
 

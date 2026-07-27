@@ -22,6 +22,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
+	configpkg "github.com/amirulashraf/parrot-coder/internal/config"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
@@ -488,6 +489,46 @@ type agentModeAPI struct {
 type catalogOnlyAPI struct {
 	apiClient
 	models v1.ModelList
+}
+
+func TestWriteStartupWarningsUsesProvidedOutput(t *testing.T) {
+	var output bytes.Buffer
+	writeStartupWarnings(&output, []string{"model alias \"low_llm\" is not configured"})
+	if got := output.String(); got != "warning: model alias \"low_llm\" is not configured\n" {
+		t.Fatalf("startup warnings = %q", got)
+	}
+}
+
+func TestModelAliasSlashListsAndConfiguresExistingAlias(t *testing.T) {
+	api := catalogOnlyAPI{models: v1.ModelList{Items: []v1.Model{{Provider: "provider", ID: "model", Variants: []v1.ModelVariant{{Name: "high"}}}}}}
+	var stdout, stderr bytes.Buffer
+	var configuredName, configuredModel string
+	shell := &chatShell{
+		ctx: context.Background(), api: api, stdout: &stdout, stderr: &stderr,
+		modelAliases: []configpkg.ModelAlias{{Name: "low_llm", Usage: "routine work"}},
+		configureModelAlias: func(name, model string) error {
+			configuredName, configuredModel = name, model
+			return nil
+		},
+	}
+
+	shell.modelAliasAction("")
+	if got := stdout.String(); !strings.Contains(got, "low_llm\t(not configured)\troutine work") {
+		t.Fatalf("alias list = %q", got)
+	}
+	shell.modelAliasAction("low_llm provider/model/high")
+	if configuredName != "low_llm" || configuredModel != "provider/model/high" || shell.modelAliases[0].ModelString != configuredModel {
+		t.Fatalf("configured = %q %q, aliases = %#v", configuredName, configuredModel, shell.modelAliases)
+	}
+	if !strings.Contains(stderr.String(), "Model alias configured: low_llm = provider/model/high") {
+		t.Fatalf("status = %q", stderr.String())
+	}
+
+	configuredName = ""
+	shell.modelAliasAction("unknown provider/model")
+	if configuredName != "" || !strings.Contains(stderr.String(), `unknown model alias "unknown"`) {
+		t.Fatalf("unknown alias result: configured=%q stderr=%q", configuredName, stderr.String())
+	}
 }
 
 func (r *recordingSessionCreator) CreateSession(_ context.Context, request v1.CreateSessionRequest) (v1.Session, error) {

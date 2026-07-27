@@ -8,7 +8,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -85,6 +87,56 @@ func (s OptionalCLIUtilitiesSource) Observe(context.Context) (Observation, error
 	return Observation{Available: true, Text: "Available optional CLI utilities: " + utilities}, nil
 }
 
+// ModelAlias describes one usable short name without coupling system context
+// construction to the configuration package.
+type ModelAlias struct {
+	Name        string
+	ModelString string
+	Usage       string
+}
+
+type ModelAliasesSource struct {
+	mu      sync.RWMutex
+	aliases []ModelAlias
+}
+
+func NewModelAliasesSource(aliases []ModelAlias) *ModelAliasesSource {
+	s := &ModelAliasesSource{}
+	s.Set(aliases)
+	return s
+}
+
+func (*ModelAliasesSource) Key() string { return "runtime:model-aliases" }
+
+// Set atomically replaces the aliases observed by future system-context builds.
+func (s *ModelAliasesSource) Set(aliases []ModelAlias) {
+	s.mu.Lock()
+	s.aliases = append([]ModelAlias(nil), aliases...)
+	s.mu.Unlock()
+}
+
+func (s *ModelAliasesSource) Observe(context.Context) (Observation, error) {
+	s.mu.RLock()
+	configured := append([]ModelAlias(nil), s.aliases...)
+	s.mu.RUnlock()
+	aliases := make([]ModelAlias, 0, len(configured))
+	for _, alias := range configured {
+		if alias.ModelString != "" {
+			aliases = append(aliases, alias)
+		}
+	}
+	if len(aliases) == 0 {
+		return Observation{Available: true}, nil
+	}
+	sort.Slice(aliases, func(i, j int) bool { return aliases[i].Name < aliases[j].Name })
+	var text strings.Builder
+	text.WriteString("Configured model aliases may be passed anywhere a model selector is accepted, especially the agent_spawn model argument:\n")
+	for _, alias := range aliases {
+		fmt.Fprintf(&text, "- %s: %s — %s\n", alias.Name, alias.ModelString, alias.Usage)
+	}
+	return Observation{Available: true, Text: strings.TrimSuffix(text.String(), "\n")}, nil
+}
+
 type SubagentsSource struct {
 	Available []string
 }
@@ -146,6 +198,7 @@ type BuiltinOptions struct {
 	AvailableCLIUtilities         []string
 	AvailableOptionalCLIUtilities []string
 	Subagents                     []string
+	ModelAliases                  *ModelAliasesSource
 	Now                           func() time.Time
 }
 
@@ -169,6 +222,9 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 	}
 	if len(options.Subagents) > 0 {
 		sources = append(sources, SubagentsSource{Available: options.Subagents})
+	}
+	if options.ModelAliases != nil {
+		sources = append(sources, options.ModelAliases)
 	}
 	paths := []struct{ path, key, label string }{}
 	if options.ConfigDir != "" {

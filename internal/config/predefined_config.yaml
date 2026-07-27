@@ -12,6 +12,22 @@ prompt: |-
 # Default model selected as provider/model, optionally followed by /variant.
 model: ""
 
+# Stable aliases for choosing an appropriate model by task complexity. Empty
+# model_string values are intended to be configured by the user.
+model_aliases:
+  - name: low_llm
+    model_string: ""
+    usage: Routine and simple tasks where speed and low cost matter most.
+  - name: medium_llm
+    model_string: ""
+    usage: Moderately complex tasks requiring a balance of capability and cost.
+  - name: high_llm
+    model_string: ""
+    usage: Difficult tasks where stronger reasoning is worth the added cost.
+  - name: xhigh_llm
+    model_string: ""
+    usage: Exceptionally difficult tasks requiring the most capable model.
+
 # Render changed lines inline. Set to false for a side-by-side diff viewer.
 inline_diff: true
 
