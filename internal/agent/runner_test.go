@@ -143,7 +143,7 @@ func (failingGetUserSession) Get(context.Context) (session.AgentSessionDto, erro
 func newUserSessionFromHarness(ctx context.Context, sessions SessionRuntime, h *runnerHarness, config UserSessionConfig) (UserSession, error) {
 	r := h.agentSessions.repository
 	s := h.agentSessions
-	return NewUserSession(ctx, sessions, s.systemContext, s.queues, config,
+	return NewUserSession(ctx, sessions, s.systemPromptProvider, s.queues, config,
 		r.stateDirectories, r.profiles, r.providers, r.toolProviders, r.toolAuthorizer, r.toolErrorAdvisor,
 		r.workspace, r.outputs, r.processes, r.live, r.events, r.compactor, r.goals, r.status, r.toolPanicLogger,
 		s.childTasks, s.identityFor, s.recursionLimitFor, s.childNameGenerator, s.onChildDiscard)

@@ -69,8 +69,10 @@ const (
 )
 
 type InteractiveClaim struct {
-	Session     AgentSessionDto
-	Disposition ClaimDisposition
+	Session                AgentSessionDto
+	Disposition            ClaimDisposition
+	PreviousOwner          *InteractiveOwner
+	PreviousOwnerSessionID string
 }
 
 type Input struct {
@@ -343,7 +345,8 @@ func (s *Service) claimInteractiveOnce(ctx context.Context, owner InteractiveOwn
 			if err := store.StampOwner(s.sessions.State(), item.ID, owner.HostKey, owner.PID); err != nil {
 				return InteractiveClaim{}, err
 			}
-			return InteractiveClaim{Session: item, Disposition: ClaimReclaimed}, nil
+			previous := InteractiveOwner{WorkingDirectory: current.WorkingDirectory, HostKey: current.HostKey, PID: current.PID}
+			return InteractiveClaim{Session: item, Disposition: ClaimReclaimed, PreviousOwner: &previous, PreviousOwnerSessionID: current.SessionID}, nil
 		case err != nil && !errors.Is(err, ErrNotFound) && !errors.Is(err, store.ErrNoSession):
 			return InteractiveClaim{}, err
 		}
@@ -364,7 +367,65 @@ func (s *Service) claimInteractiveOnce(ctx context.Context, owner InteractiveOwn
 		_ = s.GetSession(item.ID).Delete(ctx)
 		return InteractiveClaim{}, err
 	}
-	return InteractiveClaim{Session: item, Disposition: ClaimCreated}, nil
+	var previous *InteractiveOwner
+	if bound {
+		previous = &InteractiveOwner{WorkingDirectory: current.WorkingDirectory, HostKey: current.HostKey, PID: current.PID}
+	}
+	previousSessionID := ""
+	if bound {
+		previousSessionID = current.SessionID
+	}
+	return InteractiveClaim{Session: item, Disposition: ClaimCreated, PreviousOwner: previous, PreviousOwnerSessionID: previousSessionID}, nil
+}
+
+// RollbackInteractiveClaim undoes a newly created or reclaimed owner record when
+// the runtime cannot be constructed. Existing claims require no rollback.
+func (s *Service) RollbackInteractiveClaim(ctx context.Context, owner InteractiveOwner, claim InteractiveClaim) error {
+	if claim.Disposition == ClaimExisting {
+		return nil
+	}
+	chain, _, err := store.LoadOwnerChain(s.sessions.State(), owner.HostKey, owner.WorkingDirectory)
+	if err != nil {
+		return err
+	}
+	current, ok := chain.Current()
+	if !ok || current.SessionID != claim.Session.ID || current.PID != owner.PID {
+		return store.ErrOwnerConflict
+	}
+	switch claim.Disposition {
+	case ClaimCreated:
+		if claim.PreviousOwner == nil {
+			if err := chain.Release(owner.HostKey, owner.WorkingDirectory); err != nil {
+				return err
+			}
+		} else {
+			previous := store.Owner{
+				SessionID: claim.PreviousOwnerSessionID, WorkingDirectory: claim.PreviousOwner.WorkingDirectory,
+				HostKey: claim.PreviousOwner.HostKey, PID: claim.PreviousOwner.PID,
+			}
+			if err := chain.Claim(previous); err != nil {
+				return err
+			}
+			if err := store.StampOwner(s.sessions.State(), previous.SessionID, previous.HostKey, previous.PID); err != nil {
+				return err
+			}
+		}
+		return s.GetSession(claim.Session.ID).Delete(ctx)
+	case ClaimReclaimed:
+		if claim.PreviousOwner == nil {
+			return errors.New("session: reclaimed claim is missing its previous owner")
+		}
+		previous := store.Owner{
+			SessionID: claim.Session.ID, WorkingDirectory: claim.PreviousOwner.WorkingDirectory,
+			HostKey: claim.PreviousOwner.HostKey, PID: claim.PreviousOwner.PID,
+		}
+		if err := chain.Claim(previous); err != nil {
+			return err
+		}
+		return store.StampOwner(s.sessions.State(), claim.Session.ID, previous.HostKey, previous.PID)
+	default:
+		return fmt.Errorf("session: unknown interactive claim disposition %q", claim.Disposition)
+	}
 }
 
 func (s *agentSessionStore) Get(ctx context.Context) (AgentSessionDto, error) {

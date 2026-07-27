@@ -18,15 +18,25 @@ model_aliases:
   low_llm:
     model_string: ""
     usage: mechanical, single file task, text or code processing when no suitable cli tool available.
+    # Optional alias-specific system-prompt augmentation. An explicit empty
+    # string suppresses this augmentation rather than inheriting it.
+    augment_system_prompt: null
   medium_llm:
     model_string: ""
     usage: Decently capable, specific clear task, component level task, two or three file window
+    augment_system_prompt: null
   high_llm:
     model_string: ""
     usage: General purpose, agent spawner, tactical decision making and planning, debugging, colaborator
+    augment_system_prompt: null
   xhigh_llm:
     model_string: ""
     usage: Strategic, multiple module, multiple party and subagent planning, high level vision and strategic alignment, ambiguous and open ended requirement, should always spawn worker for actual work or exploration, last resort when all other agent failed such as on very hard debugging or optimization task
+    augment_system_prompt: null
+
+# System-prompt augmentations keyed by exact provider/model[/variant] selector.
+# Entries merge by selector. An explicit empty value clears an inherited prompt.
+model_augment_system_prompts: {}
 
 # Render changed lines inline. Set to false for a side-by-side diff viewer.
 inline_diff: true

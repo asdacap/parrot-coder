@@ -602,6 +602,55 @@ func TestInteractiveClaimLifecycle(t *testing.T) {
 	}
 }
 
+func TestInteractiveClaimRollbackRestoresCreatedAndReclaimedOwnership(t *testing.T) {
+	ctx := context.Background()
+	db := store.NewRegistry(t.TempDir(), "host-test")
+	defer db.Close()
+	service := session.NewService(db, event.NewRepository(db))
+	selection := session.Selection{Agent: "build", Model: "local/code"}
+	firstOwner := session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 101}
+
+	created, err := service.ClaimInteractive(ctx, firstOwner, session.CreateParams{}, selection, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := service.RollbackInteractiveClaim(ctx, firstOwner, created); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := service.GetSession(created.Session.ID).Get(ctx); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("rolled-back created session error = %v, want not found", err)
+	}
+
+	original, err := service.ClaimInteractive(ctx, firstOwner, session.CreateParams{}, selection, false, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondOwner := session.InteractiveOwner{WorkingDirectory: "/workspace", HostKey: "host", PID: 202}
+	reclaimed, err := service.ClaimInteractive(ctx, secondOwner, session.CreateParams{}, selection, false, func(int) bool { return false })
+	if err != nil || reclaimed.PreviousOwner == nil || reclaimed.PreviousOwner.PID != firstOwner.PID {
+		t.Fatalf("reclaimed = %#v, %v", reclaimed, err)
+	}
+	if err := service.RollbackInteractiveClaim(ctx, secondOwner, reclaimed); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := service.ClaimInteractive(ctx, firstOwner, session.CreateParams{}, selection, false, func(int) bool { return true })
+	if err != nil || restored.Session.ID != original.Session.ID || restored.Disposition != session.ClaimExisting {
+		t.Fatalf("restored claim = %#v, %v", restored, err)
+	}
+
+	forced, err := service.ClaimInteractive(ctx, secondOwner, session.CreateParams{}, selection, true, func(int) bool { return true })
+	if err != nil || forced.PreviousOwner == nil || forced.PreviousOwnerSessionID != original.Session.ID {
+		t.Fatalf("forced claim = %#v, %v", forced, err)
+	}
+	if err := service.RollbackInteractiveClaim(ctx, secondOwner, forced); err != nil {
+		t.Fatal(err)
+	}
+	restored, err = service.ClaimInteractive(ctx, firstOwner, session.CreateParams{}, selection, false, func(int) bool { return true })
+	if err != nil || restored.Session.ID != original.Session.ID || restored.Disposition != session.ClaimExisting {
+		t.Fatalf("restored forced claim = %#v, %v", restored, err)
+	}
+}
+
 func TestInteractiveClaimDoesNotStealLiveOwner(t *testing.T) {
 	ctx := context.Background()
 	db := store.NewRegistry(t.TempDir(), "host-test")

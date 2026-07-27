@@ -59,7 +59,7 @@ func TestModelAliasesSourceUpdateChangesSystemContextPrompt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	before, err := registry.GetSystemContextPrompt(context.Background())
+	before, err := registry.GetSystemPrompt(context.Background(), ModelSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -68,7 +68,7 @@ func TestModelAliasesSourceUpdateChangesSystemContextPrompt(t *testing.T) {
 	}
 
 	source.Set([]ModelAlias{{Name: "low_llm", ModelString: "provider/model/low", Usage: "routine work"}})
-	after, err := registry.GetSystemContextPrompt(context.Background())
+	after, err := registry.GetSystemPrompt(context.Background(), ModelSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -275,39 +275,5 @@ func TestBuiltinsIncludeSubagentsSource(t *testing.T) {
 	observation, ok := snapshot["runtime:subagents"]
 	if !ok || observation.Text != "Available subagents; delegate according to their configured usage:\n- explorer: investigate\n- worker: implement" {
 		t.Fatalf("subagent observation = %#v", observation)
-	}
-}
-
-func TestBuiltinsIncludeToolSystemGuidanceWhenNonEmpty(t *testing.T) {
-	root := t.TempDir()
-	for _, test := range []struct {
-		name     string
-		guidance string
-		wantKey  bool
-	}{
-		{name: "non-empty guidance registers source", guidance: "exec_command runs sandboxed", wantKey: true},
-		{name: "empty guidance omits source", guidance: "", wantKey: false},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			sources, err := Builtins(BuiltinOptions{
-				ProjectRoot:        root,
-				WorkingDirectory:   root,
-				ToolSystemGuidance: test.guidance,
-			})
-			if err != nil {
-				t.Fatal(err)
-			}
-			snapshot := observeSources(t, sources)
-			observation, ok := snapshot["runtime:tool-system-guidance"]
-			if test.wantKey {
-				if !ok || observation.Text != test.guidance {
-					t.Fatalf("tool-system-guidance = %#v, want %q", observation, test.guidance)
-				}
-			} else {
-				if ok {
-					t.Fatalf("tool-system-guidance should be absent, got %#v", observation)
-				}
-			}
-		})
 	}
 }

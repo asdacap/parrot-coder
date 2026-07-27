@@ -333,9 +333,78 @@ func TestLoadModelAliasDefaultsMergeAndValidation(t *testing.T) {
 		{name: "model whitespace", aliases: "  low:\n    model_string: ' local/code'\n    usage: work\n", want: "surrounding whitespace"},
 		{name: "missing provider", aliases: "  low:\n    model_string: code\n    usage: work\n", want: "must be provider/model"},
 		{name: "empty segment", aliases: "  low:\n    model_string: local//code\n    usage: work\n", want: "empty path segments"},
+		{name: "control whitespace", aliases: "  low:\n    model_string: \"local/code\\tvariant\"\n    usage: work\n", want: "control whitespace"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			writeFile(t, path, "model_aliases:\n"+test.aliases)
+			if _, err := Load(Options{ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadModelAugmentSystemPromptsAndAliasEmptySemantics(t *testing.T) {
+	root := t.TempDir()
+	configDir := filepath.Join(root, "config")
+	project := filepath.Join(root, "project")
+	global := filepath.Join(configDir, FileName)
+	projectFile := filepath.Join(project, FileName)
+	writeFile(t, global, `model_aliases:
+  low_llm:
+    augment_system_prompt: inherited alias prompt
+model_augment_system_prompts:
+  provider/model: inherited model prompt
+  provider/team/model/high: variant prompt
+`)
+	writeFile(t, projectFile, `model_aliases:
+  low_llm:
+    augment_system_prompt: ""
+model_augment_system_prompts:
+  provider/model: ""
+`)
+
+	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	aliasPrompt := result.Config.ModelAliases["low_llm"].AugmentSystemPrompt
+	if aliasPrompt == nil || *aliasPrompt != "" {
+		t.Fatalf("explicit empty alias augmentation = %#v, want non-nil empty", aliasPrompt)
+	}
+	if got := result.Config.ModelAugmentSystemPrompts; len(got) != 2 || got["provider/model"] != "" || got["provider/team/model/high"] != "variant prompt" {
+		t.Fatalf("ModelAugmentSystemPrompts = %#v", got)
+	}
+	if result.Provenance["model_aliases.low_llm.augment_system_prompt"] != projectFile || result.Provenance["model_augment_system_prompts.provider/model"] != projectFile {
+		t.Fatalf("augmentation provenance = %#v", result.Provenance)
+	}
+
+	writeFile(t, projectFile, "model_aliases:\n  low_llm:\n    model_string: provider/model\n")
+	result, err = Load(Options{ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Config.ModelAliases["low_llm"].AugmentSystemPrompt != nil {
+		t.Fatalf("omitted alias augmentation = %#v, want nil", result.Config.ModelAliases["low_llm"].AugmentSystemPrompt)
+	}
+	if result.Config.ModelAugmentSystemPrompts == nil || len(result.Config.ModelAugmentSystemPrompts) != 0 {
+		t.Fatalf("default ModelAugmentSystemPrompts = %#v, want non-nil empty", result.Config.ModelAugmentSystemPrompts)
+	}
+}
+
+func TestLoadValidatesModelAugmentSystemPromptSelectors(t *testing.T) {
+	for _, test := range []struct {
+		name, selector, want string
+	}{
+		{name: "empty", selector: `""`, want: "must be provider/model"},
+		{name: "missing model", selector: "provider", want: "must be provider/model"},
+		{name: "empty segment", selector: "provider//model", want: "empty path segments"},
+		{name: "surrounding whitespace", selector: `' provider/model'`, want: "surrounding whitespace"},
+		{name: "control whitespace", selector: `"provider/model\tvariant"`, want: "control whitespace"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, FileName), "model_augment_system_prompts:\n  "+test.selector+": prompt\n")
 			if _, err := Load(Options{ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Load error = %v, want %q", err, test.want)
 			}

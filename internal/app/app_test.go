@@ -28,6 +28,8 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/process"
+	"github.com/amirulashraf/parrot-coder/internal/protocol"
+	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
@@ -35,6 +37,14 @@ import (
 )
 
 type appDrainerFunc func(context.Context, string) error
+
+type selectionTestProvider struct{ models []provider.Model }
+
+func (p selectionTestProvider) ID() string               { return "catalog" }
+func (p selectionTestProvider) Models() []provider.Model { return p.models }
+func (selectionTestProvider) Stream(context.Context, protocol.Request) (provider.Stream, error) {
+	return nil, errors.New("not implemented")
+}
 
 type waitingManagedTask struct{ snapshot managedtask.Snapshot }
 
@@ -45,6 +55,41 @@ func (waitingManagedTask) Wait(ctx context.Context) (managedtask.Completion, err
 }
 func (t waitingManagedTask) Interrupt(context.Context) (managedtask.Snapshot, error) {
 	return t.snapshot, nil
+}
+
+func TestModelSelectionPreservesAliasUnlessVariantIsOverridden(t *testing.T) {
+	registry, err := agent.NewProviderRegistry(selectionTestProvider{models: []provider.Model{{
+		ID: "model", Capabilities: provider.Capabilities{Variants: []provider.Variant{{Name: "high"}}},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.InstallAliases([]agent.ModelAlias{{Name: "default_alias", ModelString: "catalog/model"}}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name, selector, variant, want string
+	}{
+		{name: "alias remains caller-facing identity", selector: "default_alias", want: "default_alias"},
+		{name: "canonical selector remains unchanged", selector: "catalog/model", want: "catalog/model"},
+		{name: "effort override canonicalizes alias", selector: "default_alias", variant: "high", want: "catalog/model/high"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, resolveErr := resolveModelVariant(registry, test.selector, test.variant)
+			if resolveErr != nil || got != test.want {
+				t.Fatalf("resolveModelVariant(%q, %q) = %q, %v; want %q", test.selector, test.variant, got, resolveErr, test.want)
+			}
+		})
+	}
+
+	empty := ""
+	overrides := modelAugmentAliasOverrides(map[string]config.ModelAlias{
+		"inherited": {}, "suppressed": {AugmentSystemPrompt: &empty},
+	})
+	if overrides["inherited"] != nil || overrides["suppressed"] == nil || *overrides["suppressed"] != "" {
+		t.Fatalf("alias augmentation overrides = %#v", overrides)
+	}
 }
 
 func TestManagedTaskControllerPreservesTaskStateWhenWaitIsCanceled(t *testing.T) {

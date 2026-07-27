@@ -17,6 +17,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/queue"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
+	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
@@ -30,9 +31,8 @@ type StatusObserver interface {
 	Observe(context.Context, statusinfo.Query, statusinfo.Provider) (string, error)
 }
 
-type SystemContextPrompt interface {
-	GetSystemContextPrompt(context.Context) (string, error)
-}
+type SystemPromptProvider = systemcontext.SystemPromptProvider
+type SystemPrompt = systemcontext.SystemPrompt
 
 type LivePublisher interface {
 	PublishProtocol(string, protocol.Event)

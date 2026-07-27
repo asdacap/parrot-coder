@@ -44,6 +44,9 @@ model_aliases:
   low_llm:
     model_string: provider/fast-model
     usage: Routine and simple tasks where speed and low cost matter most.
+    augment_system_prompt: Prefer concise answers. # optional; "" explicitly suppresses
+model_augment_system_prompts:
+  provider/fast-model: Prefer concise answers. # "" explicitly clears an inherited value
 inline_diff: true # false selects side-by-side diff blocks
 permission_request_timeout_ms: 30000
 providers:
@@ -171,9 +174,16 @@ any canonical `provider/model[/variant]` selector. An empty value leaves an alia
 unconfigured.
 
 Alias mapping keys must be nonempty, contain no `/`, and have no surrounding
-whitespace. YAML mapping keys are unique. `usage` must be nonempty. A nonempty `model_string` must have at
-least a provider and model, with no empty segments or surrounding whitespace.
-Model IDs may contain slashes, just as in the top-level `model` selector.
+whitespace. YAML mapping keys are unique. `usage` must be nonempty. A nonempty
+`model_string` must have at least a provider and model, with no empty segments,
+surrounding whitespace, or control whitespace. Model IDs may contain slashes,
+just as in the top-level `model` selector.
+
+Each alias may also define `augment_system_prompt`. When that alias is selected,
+its value is included as an additional system-prompt augmentation. The field is
+a nullable override: omitting it preserves the lower-precedence value (or its
+absence), while `augment_system_prompt: ""` explicitly suppresses it. This
+nil-versus-empty distinction is preserved through configuration loading.
 
 The alias dictionary merges recursively across configuration scopes. A
 higher-precedence file can override only `model_aliases.low_llm.model_string`
@@ -185,6 +195,22 @@ alias, model, and effort selection; `/model-alias low_llm` to select the model
 and effort for that alias; or `/model-alias low_llm provider/model[/variant]` to
 configure it directly. Configured aliases become available to the running agent
 immediately.
+
+### Model system-prompt augmentations
+
+`model_augment_system_prompts` maps exact model selectors to additional system
+prompt text. Keys use `provider/model[/variant]` syntax. They must contain at
+least provider and model segments and must not contain empty segments,
+surrounding whitespace, or control whitespace. Model IDs may contain `/`, so
+configuration loading validates only this syntax: it does not normalize keys,
+strip variant-looking suffixes, or require selectors to exist in the current
+provider catalog.
+
+Entries merge by exact key across configuration scopes. A higher-precedence
+empty string is meaningful and explicitly clears an inherited augmentation; it
+is not treated as an omitted value. Alias `augment_system_prompt` and this map
+are separate inputs so runtime prompt composition can distinguish how the model
+was selected.
 
 ### Tool blacklist
 
