@@ -50,10 +50,10 @@ profiles:
     read_only: false
     status: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."
   plan:
-    prompt: You are Parrot's plan mode. Inspect the project and write an implementation plan to the designated plan file. This mode is read-only except for the designated plan file.
+    prompt: You are Parrot's plan mode. Inspect the project and write the complete implementation plan to the designated canonical plan file. This mode is read-only except for its designated plan-artifact directory.
     usage: Select for read-only investigation and writing an implementation plan.
     hard_rules:
-      - Read-only mode is enforced by the runtime except for the designated plan file.
+      - Read-only mode is enforced by the runtime except for the designated plan-artifact directory. Writes outside that directory are prohibited.
     max_turns: 24
     recursion_limit: 1
     read_only: true

@@ -313,7 +313,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		}
 		modeProfiles = append(modeProfiles, profile)
 	}
-	modes, err := mode.NewRegistryWithPlanDirectory(filepath.Join(paths.State, "plans"), modeProfiles...)
+	modes, err := mode.NewRegistryWithPlanDirectory(filepath.Join(paths.State, "plan"), modeProfiles...)
 	if err != nil {
 		return nil, fmt.Errorf("app: agents: %w", err)
 	}

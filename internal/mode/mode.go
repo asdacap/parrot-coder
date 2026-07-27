@@ -154,9 +154,9 @@ func (m *planMode) PrepareTurn(sessionID string) (agent.TurnProfile, error) {
 	}
 	profile := profileWithPrompt{
 		Profile: m.profile,
-		prompt:  m.profile.Prompt() + "\n\nWrite the complete implementation plan as Markdown to this exact file: " + path + ". Do not include the plan in your assistant response. Finish only after writing the file.",
+		prompt:  m.profile.Prompt() + "\n\nWrite the complete implementation plan as Markdown to this exact canonical file: " + path + ". You may write optional supporting artifacts under this plan directory and reference them from the canonical plan: " + m.directory + ". Do not include the plan in your assistant response. Finish only after writing the canonical file.",
 	}
-	return agent.NewTurnProfile(profile, security.Rule{Path: path, Action: security.ActionAllowWrite}), nil
+	return agent.NewTurnProfile(profile, security.Rule{Path: m.directory, Action: security.ActionAllowWrite}), nil
 }
 
 func (m *planMode) CompleteTurn(sessionID, _ string) (TurnCompleteResult, error) {

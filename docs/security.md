@@ -116,9 +116,11 @@ The runtime then applies one ordered stream of workspace, session-grant,
 profile, protected-metadata, and configured filesystem rules. Each rule
 maps a path to `allow_write`, `deny_read`, `allow_read`, or `deny_write`, and
 later rules override earlier ones for writable profiles. Project-scope
-configuration cannot define sandbox rules. For read-only profiles, configured
-rules cannot add write access or mask a narrow explicit write rule such as a
-designated plan artifact.
+configuration cannot define sandbox rules. Plan mode receives a runtime-granted
+writable plan-artifact directory containing its canonical plan file and any
+optional artifacts referenced by that plan; writes outside that directory remain
+prohibited. For read-only profiles, configured rules cannot add write access,
+widen that plan-directory capability, or mask it.
 
 ## Changes and Recovery
 

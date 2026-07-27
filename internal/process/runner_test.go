@@ -966,6 +966,35 @@ func TestBuildProfileProtectsReadOnlyWritesAndPreservesWritableRules(t *testing.
 	}
 }
 
+func TestBuildProfilePlanDirectoryCapabilityOverridesConfiguredRestriction(t *testing.T) {
+	root := t.TempDir()
+	ws, err := workspace.New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent := t.TempDir()
+	directory := filepath.Join(parent, "plan")
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner, err := NewRunner(Config{
+		Workspace:    ws,
+		OutputStore:  &memoryOutputStore{},
+		SandboxRules: []security.Rule{{Path: parent, Action: security.ActionDenyWrite}},
+	}, runeTokenizer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile := testSecurityProfile{readOnly: true, capabilities: []security.Rule{{Path: directory, Action: security.ActionAllowWrite}}}
+	built, err := runner.buildProfile(profile, "session", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !security.CanWrite(built, filepath.Join(directory, "supporting", "details.md")) || security.CanWrite(built, filepath.Join(parent, "outside.md")) {
+		t.Fatalf("directory capability rules = %#v", built.Rules())
+	}
+}
+
 func TestBuildProfileAppendsSessionProfileRulesAfterConfiguredRestrictions(t *testing.T) {
 	root := t.TempDir()
 	ws, err := workspace.New(root)
