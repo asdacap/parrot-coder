@@ -17,6 +17,9 @@ type Presentation struct {
 	// ResultCountNoun appends the number of non-empty result lines to the
 	// completed label, using this value as the singular noun.
 	ResultCountNoun string `json:"result_count_noun,omitempty"`
+	// CompletedLabel selects how a successful result enriches the invocation
+	// label. The zero value leaves the label unchanged.
+	CompletedLabel CompletedLabelKind `json:"completed_label,omitempty"`
 	// Output describes how streamed output is handled. OutputNone folds two
 	// concerns deliberately: it suppresses both streamed deltas and error text,
 	// because both follow from a tool having nothing displayable to show.
@@ -101,6 +104,17 @@ const (
 	LabelPatchTargets LabelKind = "patch_targets"
 	// LabelItemCount replaces the label with a count of items in a collection.
 	LabelItemCount LabelKind = "item_count"
+)
+
+// CompletedLabelKind names a result-to-label strategy rather than a tool.
+type CompletedLabelKind string
+
+const (
+	// CompletedLabelNone does not add result details to the label.
+	CompletedLabelNone CompletedLabelKind = ""
+	// CompletedLabelAnswers appends human-facing answers resolved from the
+	// invocation's questions and the structured result.
+	CompletedLabelAnswers CompletedLabelKind = "answers"
 )
 
 // OutputMode describes how a tool's streamed output should be presented.

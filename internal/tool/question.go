@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"github.com/amirulashraf/parrot-coder/internal/question"
 )
 
@@ -19,10 +20,13 @@ func (*QuestionTool) Available(session AgentSession) bool {
 	return session == nil || !session.IsSubagent()
 }
 func (*QuestionTool) Presentation() Presentation {
-	return Presentation{Label: LabelSpec{Fields: []LabelField{{
-		Names: []string{"questions"}, Array: true,
-		Item: []string{"header", "prompt", "question"}, Overflow: true,
-	}}}}
+	return Presentation{
+		Label: LabelSpec{Fields: []LabelField{{
+			Names: []string{"questions"}, Array: true,
+			Item: []string{"header", "prompt", "question"}, Overflow: true,
+		}}},
+		CompletedLabel: CompletedLabelAnswers,
+	}
 }
 
 func (t *QuestionTool) Descriptor() Descriptor {
