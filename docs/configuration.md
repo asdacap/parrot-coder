@@ -159,10 +159,11 @@ The alias list is an array, so a higher-precedence `model_aliases` value replace
 the complete lower-precedence list rather than merging aliases by name. Include
 all aliases you want to retain when overriding the defaults. Interactive alias
 configuration writes the complete effective list to the global config and does
-not modify project files. Use `/model-alias` to list aliases,
-`/model-alias low_llm` to choose a target interactively, or
-`/model-alias low_llm provider/model[/variant]` to configure one directly.
-Configured aliases become available to the running agent immediately.
+not modify project files. Use `/model-alias` with no arguments for a guided
+alias, model, and effort selection; `/model-alias low_llm` to select the model
+and effort for that alias; or `/model-alias low_llm provider/model[/variant]` to
+configure it directly. Configured aliases become available to the running agent
+immediately.
 
 ### Subagents
 

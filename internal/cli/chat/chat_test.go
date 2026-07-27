@@ -499,35 +499,103 @@ func TestWriteStartupWarningsUsesProvidedOutput(t *testing.T) {
 	}
 }
 
-func TestModelAliasSlashListsAndConfiguresExistingAlias(t *testing.T) {
-	api := catalogOnlyAPI{models: v1.ModelList{Items: []v1.Model{{Provider: "provider", ID: "model", Variants: []v1.ModelVariant{{Name: "high"}}}}}}
+func TestModelAliasSlashConfiguresExistingAlias(t *testing.T) {
+	api := catalogOnlyAPI{models: v1.ModelList{Items: []v1.Model{{
+		Provider: "provider", ID: "model", Name: "Model",
+		Variants: []v1.ModelVariant{{Name: "low", ReasoningEffort: "Low reasoning"}, {Name: "high", ReasoningEffort: "High reasoning"}},
+	}}}}
+	for _, test := range []struct {
+		name      string
+		argument  string
+		input     string
+		wantModel string
+		wantUI    []string
+	}{
+		{name: "no arguments picks alias model and effort", input: "1\n1\n2\n", wantModel: "provider/model/high", wantUI: []string{"alias> ", "routine work; not configured", "model> ", "effort> ", "High reasoning"}},
+		{name: "alias argument picks model and effort", argument: "low_llm", input: "1\n1\n", wantModel: "provider/model/low", wantUI: []string{"model> ", "effort> "}},
+		{name: "two arguments remain noninteractive", argument: "low_llm provider/model/high", wantModel: "provider/model/high"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			var configuredName, configuredModel string
+			shell := &chatShell{
+				ctx: context.Background(), api: api, stdout: &stdout, stderr: &stderr,
+				reader:       bufio.NewReader(strings.NewReader(test.input)),
+				selection:    chatSelection{provider: "active", model: "unchanged", variant: "old", agent: "build"},
+				modelAliases: []configpkg.ModelAlias{{Name: "low_llm", Usage: "routine work"}},
+				configureModelAlias: func(name, model string) error {
+					configuredName, configuredModel = name, model
+					return nil
+				},
+			}
+
+			shell.modelAliasAction(test.argument)
+
+			if configuredName != "low_llm" || configuredModel != test.wantModel || shell.modelAliases[0].ModelString != test.wantModel {
+				t.Fatalf("configured = %q %q, aliases = %#v", configuredName, configuredModel, shell.modelAliases)
+			}
+			if got := shell.selection.canonicalModel(); got != "active/unchanged/old" {
+				t.Fatalf("active selection mutated to %q", got)
+			}
+			for _, want := range test.wantUI {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("picker output missing %q: %q", want, stdout.String())
+				}
+			}
+			if !strings.Contains(stderr.String(), "Model alias configured: low_llm = "+test.wantModel) {
+				t.Fatalf("status = %q", stderr.String())
+			}
+		})
+	}
+}
+
+func TestModelAliasSlashSkipsEffortForModelWithoutVariantsAndHandlesEmptyAliases(t *testing.T) {
+	api := catalogOnlyAPI{models: v1.ModelList{Items: []v1.Model{{Provider: "provider", ID: "model", Name: "Model"}}}}
 	var stdout, stderr bytes.Buffer
-	var configuredName, configuredModel string
+	configuredModel := ""
 	shell := &chatShell{
 		ctx: context.Background(), api: api, stdout: &stdout, stderr: &stderr,
-		modelAliases: []configpkg.ModelAlias{{Name: "low_llm", Usage: "routine work"}},
-		configureModelAlias: func(name, model string) error {
-			configuredName, configuredModel = name, model
-			return nil
-		},
+		reader: bufio.NewReader(strings.NewReader("1\n1\n")), modelAliases: []configpkg.ModelAlias{{Name: "low_llm"}},
+		configureModelAlias: func(_ string, model string) error { configuredModel = model; return nil },
 	}
 
 	shell.modelAliasAction("")
-	if got := stdout.String(); !strings.Contains(got, "low_llm\t(not configured)\troutine work") {
-		t.Fatalf("alias list = %q", got)
-	}
-	shell.modelAliasAction("low_llm provider/model/high")
-	if configuredName != "low_llm" || configuredModel != "provider/model/high" || shell.modelAliases[0].ModelString != configuredModel {
-		t.Fatalf("configured = %q %q, aliases = %#v", configuredName, configuredModel, shell.modelAliases)
-	}
-	if !strings.Contains(stderr.String(), "Model alias configured: low_llm = provider/model/high") {
-		t.Fatalf("status = %q", stderr.String())
+	if configuredModel != "provider/model" || strings.Contains(stdout.String(), "effort> ") {
+		t.Fatalf("configured model=%q picker output=%q", configuredModel, stdout.String())
 	}
 
-	configuredName = ""
+	stdout.Reset()
+	shell.modelAliases = nil
+	shell.modelAliasAction("")
+	if got := stdout.String(); !strings.Contains(got, "no model aliases configured") {
+		t.Fatalf("empty aliases output=%q", got)
+	}
+}
+
+func TestModelAliasSlashCancelAndUnknownAlias(t *testing.T) {
+	api := catalogOnlyAPI{models: v1.ModelList{Items: []v1.Model{{
+		Provider: "provider", ID: "model", Variants: []v1.ModelVariant{{Name: "high"}},
+	}}}}
+	for _, input := range []string{"\n", "1\n\n", "1\n1\n\n"} {
+		var stdout, stderr bytes.Buffer
+		configured := false
+		shell := &chatShell{
+			ctx: context.Background(), api: api, stdout: &stdout, stderr: &stderr,
+			reader: bufio.NewReader(strings.NewReader(input)), modelAliases: []configpkg.ModelAlias{{Name: "low_llm"}},
+			configureModelAlias: func(string, string) error { configured = true; return nil },
+		}
+
+		shell.modelAliasAction("")
+		if configured || stderr.Len() != 0 {
+			t.Fatalf("input %q: cancel configured=%t stderr=%q", input, configured, stderr.String())
+		}
+	}
+
+	var stderr bytes.Buffer
+	shell := &chatShell{stderr: &stderr, modelAliases: []configpkg.ModelAlias{{Name: "low_llm"}}}
 	shell.modelAliasAction("unknown provider/model")
-	if configuredName != "" || !strings.Contains(stderr.String(), `unknown model alias "unknown"`) {
-		t.Fatalf("unknown alias result: configured=%q stderr=%q", configuredName, stderr.String())
+	if !strings.Contains(stderr.String(), `unknown model alias "unknown"`) {
+		t.Fatalf("unknown alias stderr=%q", stderr.String())
 	}
 }
 

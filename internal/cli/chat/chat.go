@@ -1899,7 +1899,7 @@ var builtinChatCommands = []terminal.Candidate{
 	{Value: "/models", Description: "list available models"},
 	{Value: "/usage", Description: "show ChatGPT subscription usage"},
 	{Value: "/model", Description: "select a model"},
-	{Value: "/model-alias", Description: "list or configure model aliases"},
+	{Value: "/model-alias", Description: "configure a model alias"},
 	{Value: "/effort", Description: "select model reasoning effort"},
 	{Value: "/modes", Description: "list available modes"},
 	{Value: "/mode", Description: "select a mode"},
@@ -2679,27 +2679,35 @@ func (s *chatShell) close() {
 
 func (s *chatShell) modelAliasAction(argument string) {
 	fields := strings.Fields(argument)
-	if len(fields) == 0 {
-		aliases := append([]configpkg.ModelAlias(nil), s.modelAliases...)
-		sort.Slice(aliases, func(i, j int) bool { return aliases[i].Name < aliases[j].Name })
-		var text strings.Builder
-		for _, alias := range aliases {
-			target := alias.ModelString
-			if target == "" {
-				target = "(not configured)"
-			}
-			fmt.Fprintf(&text, "%s\t%s\t%s\n", alias.Name, target, alias.Usage)
-		}
-		if text.Len() == 0 {
-			s.commit("no model aliases configured")
-		} else {
-			s.commit(strings.TrimSuffix(text.String(), "\n"))
-		}
-		return
-	}
 	if len(fields) > 2 {
 		s.commitError("usage: /model-alias [alias] [provider/model[/variant]]")
 		return
+	}
+	if len(fields) == 0 {
+		aliases := append([]configpkg.ModelAlias(nil), s.modelAliases...)
+		sort.Slice(aliases, func(i, j int) bool { return aliases[i].Name < aliases[j].Name })
+		candidates := make([]terminal.Candidate, 0, len(aliases))
+		for _, alias := range aliases {
+			status := alias.ModelString
+			if status == "" {
+				status = "not configured"
+			}
+			description := status
+			if alias.Usage != "" {
+				description = alias.Usage + "; " + status
+			}
+			candidates = append(candidates, terminal.Candidate{Value: alias.Name, Description: description})
+		}
+		if len(candidates) == 0 {
+			s.commit("no model aliases configured")
+			return
+		}
+		picked, err := s.pick("alias> ", candidates)
+		if err != nil {
+			s.commitPickerError(err)
+			return
+		}
+		fields = []string{picked.Value}
 	}
 	aliasIndex := -1
 	for i, alias := range s.modelAliases {
@@ -2715,10 +2723,7 @@ func (s *chatShell) modelAliasAction(argument string) {
 	model := ""
 	var err error
 	if len(fields) == 1 {
-		model, err = s.pickModel()
-		if errors.Is(err, terminal.ErrCanceled) || errors.Is(err, terminal.ErrInterrupted) {
-			return
-		}
+		model, err = s.pickModelAliasTarget()
 	} else {
 		if !strings.Contains(fields[1], "/") {
 			err = fmt.Errorf("model must be provider/model[/variant]")
@@ -2733,7 +2738,7 @@ func (s *chatShell) modelAliasAction(argument string) {
 		}
 	}
 	if err != nil {
-		s.commitError(err.Error())
+		s.commitPickerError(err)
 		return
 	}
 	if s.configureModelAlias == nil {
@@ -2746,6 +2751,39 @@ func (s *chatShell) modelAliasAction(argument string) {
 	}
 	s.modelAliases[aliasIndex].ModelString = model
 	s.commitStatus(fmt.Sprintf("✓ Model alias configured: %s = %s", fields[0], model))
+}
+
+func (s *chatShell) commitPickerError(err error) {
+	if !errors.Is(err, terminal.ErrCanceled) && !errors.Is(err, terminal.ErrInterrupted) {
+		s.commitError(err.Error())
+	}
+}
+
+func (s *chatShell) pickModelAliasTarget() (string, error) {
+	model, err := s.pickModel()
+	if err != nil {
+		return "", err
+	}
+	selection, err := decodeCanonicalModel(model, s.models)
+	if err != nil {
+		return "", err
+	}
+	for _, item := range s.models {
+		if item.Provider != selection.provider || item.ID != selection.model || len(item.Variants) == 0 {
+			continue
+		}
+		candidates := make([]terminal.Candidate, 0, len(item.Variants))
+		for _, variant := range item.Variants {
+			candidates = append(candidates, terminal.Candidate{Value: variant.Name, Description: variant.ReasoningEffort})
+		}
+		picked, pickErr := s.pick("effort> ", candidates)
+		if pickErr != nil {
+			return "", pickErr
+		}
+		selection.variant = picked.Value
+		break
+	}
+	return selection.canonicalModel(), nil
 }
 
 func (s *chatShell) selectModel(argument string) error {
