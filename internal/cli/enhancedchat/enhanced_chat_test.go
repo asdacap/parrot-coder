@@ -28,6 +28,26 @@ type agentModeAPI struct {
 func (a *agentModeAPI) Agents(context.Context) (v1.AgentList, error) { return a.agents, nil }
 func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error)   { return a.modes, nil }
 
+func TestEnhancedModelAliasRoutesAsBuiltin(t *testing.T) {
+	var command, argument string
+	expanded := false
+	runtime := &enhancedChatRuntime{shell: &chatShell{
+		config: &Config{Slash: func(name, arguments string) (bool, int) {
+			command, argument = name, arguments
+			return false, exitOK
+		}},
+		commands: expansionAdapter{expand: func(string, string) (Expansion, error) {
+			expanded = true
+			return Expansion{}, nil
+		}},
+	}}
+
+	outcome := runtime.handleInput("/model-alias fast provider/model")
+	if !isBuiltinSlash("/model-alias") || command != "/model-alias" || argument != "fast provider/model" || expanded || outcome != (enhancedInputOutcome{}) {
+		t.Fatalf("builtin=%t command=%q argument=%q expanded=%t outcome=%#v", isBuiltinSlash("/model-alias"), command, argument, expanded, outcome)
+	}
+}
+
 func TestSubtaskPromptUsesSpawnAndWaitAgent(t *testing.T) {
 	prompt := subtaskPrompt(customcommand.Expansion{Prompt: "Inspect this", Agent: "explorer", Model: "local/model", Subtask: true})
 	want := "Delegate the following work using agent_spawn with agent \"explorer\" and model \"local/model\". Completion is reported automatically. If you need to block for the result, call wait_agent with the returned session_id, then relay its output.\n\nInspect this"

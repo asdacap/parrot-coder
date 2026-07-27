@@ -365,14 +365,11 @@ func (s *EditorState) Handle(key Key) EditorResult {
 	case KeyEnter:
 		matches := s.editor.visibleMatches(string(s.buffer), s.menuClosed, s.tabMatches)
 		exact := false
-		for _, match := range matches {
-			if string(s.buffer) == match.Value {
-				exact = true
-				break
-			}
+		if len(matches) > 0 {
+			s.selected = clamp(s.selected, 0, len(matches)-1)
+			exact = string(s.buffer) == matches[s.selected].Value
 		}
 		if len(matches) > 0 && !exact && !s.editor.hasCommandArguments(string(s.buffer)) {
-			s.selected = clamp(s.selected, 0, len(matches)-1)
 			s.buffer = []rune(matches[s.selected].Value + " ")
 			s.cursor = len(s.buffer)
 			s.menuClosed = true
@@ -461,7 +458,11 @@ func (e *Editor) completionMatches(input string) []Candidate {
 	}
 	matches := make([]Candidate, 0)
 	for _, candidate := range e.completions {
-		if strings.HasPrefix(candidate.Value, input) {
+		if candidate.Value == input {
+			matches = append(matches, Candidate{})
+			copy(matches[1:], matches)
+			matches[0] = candidate
+		} else if strings.HasPrefix(candidate.Value, input) {
 			matches = append(matches, candidate)
 		}
 	}

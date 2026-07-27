@@ -88,14 +88,31 @@ func TestEditorCompletionFilteringNavigationAndNestedNames(t *testing.T) {
 	}
 }
 
-func TestEditorExactCompletionSubmitsAndInitialDraftIsEditable(t *testing.T) {
-	value, err := readEditor(t, "/help\r", WithCompletions([]Candidate{{Value: "/help", Description: "help"}, {Value: "/helper"}}))
-	if err != nil || value != "/help" {
-		t.Fatalf("exact completion Read() = %q, %v", value, err)
+func TestEditorExactCompletionSubmitsUnlessAnotherCompletionIsHighlighted(t *testing.T) {
+	candidates := []Candidate{{Value: "/models"}, {Value: "/model"}, {Value: "/model-alias"}}
+	value, err := readEditor(t, "/model\r", WithCompletions(candidates))
+	if err != nil || value != "/model" {
+		t.Fatalf("exact Read() = %q, %v", value, err)
 	}
 
+	editor := NewEditorIO(bytes.NewBuffer(nil), nil, WithCompletions(candidates))
+	state, err := editor.Start("/model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index, candidate := range editor.completionMatches(state.Value()) {
+		if candidate.Value == "/model-alias" {
+			state.selected = index
+		}
+	}
+	if result := state.Handle(Key{Kind: KeyEnter}); result.Done || state.Value() != "/model-alias " {
+		t.Fatalf("highlighted completion result=%#v value=%q", result, state.Value())
+	}
+}
+
+func TestEditorInitialDraftIsEditable(t *testing.T) {
 	editor := NewEditorIO(bytes.NewBufferString("!\r"), nil)
-	value, err = editor.ReadInitial(context.Background(), "draft")
+	value, err := editor.ReadInitial(context.Background(), "draft")
 	if err != nil || value != "draft!" {
 		t.Fatalf("ReadInitial() = %q, %v", value, err)
 	}
