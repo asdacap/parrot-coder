@@ -36,6 +36,11 @@ func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	presentations := chatview.NewPresentations(list)
+	for _, item := range list.Items {
+		if item.ID == "question" && item.Presentation.CompletedLabel != "answers" {
+			t.Fatalf("question completed label presentation = %#v", item.Presentation)
+		}
+	}
 
 	input := map[string]any{
 		"path": "src/main.go", "file": "src/main.go", "pattern": "needle", "id": "out_1",

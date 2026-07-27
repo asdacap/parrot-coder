@@ -63,6 +63,35 @@ func TestShellCallbacksSynchronizeExtractedState(t *testing.T) {
 	}
 }
 
+func TestEnhancedToolCompletionEnrichesQuestionLabelWithAnswer(t *testing.T) {
+	presentations := chatview.NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "question", Presentation: v1.ToolPresentation{
+			Label:          v1.ToolLabel{Fields: []v1.ToolLabelPart{{Names: []string{"questions"}, Array: true, Item: []string{"prompt"}, Overflow: true}}},
+			CompletedLabel: "answers",
+		},
+	}}})
+	runtime := &enhancedChatRuntime{shell: &chatShell{config: &Config{Presentation: func() chatview.Presentations { return presentations }}}}
+	pending, _ := json.Marshal(v1.ToolEvent{
+		CallID: "call", ToolName: "question",
+		Input: map[string]any{"questions": []any{map[string]any{
+			"id": "commit", "prompt": "Commit changed usage text?",
+			"options": []any{map[string]any{"id": "yes", "label": "Yes"}},
+		}}},
+	})
+	success, _ := json.Marshal(v1.ToolEvent{CallID: "call", Result: `{"answers":[{"question_id":"commit","option_ids":["yes"]}]}`})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolPending, Data: pending})
+	runtime.handleToolActivity(v1.Event{Type: v1.EventSessionToolSuccess, Data: success})
+	if len(runtime.completedActivities) != 1 {
+		t.Fatalf("completed activities = %#v", runtime.completedActivities)
+	}
+	item := runtime.completedActivities[0]
+	item.started = time.Unix(0, 0)
+	item.ended = item.started.Add(1500 * time.Millisecond)
+	if got := formatActivity(item, item.ended); got != "✓ question · Commit changed usage text? · Yes · 1.5s" {
+		t.Fatalf("completed question activity = %q", got)
+	}
+}
+
 func TestEnhancedYieldedShellTaskSurvivesToolSettlementUntilFinished(t *testing.T) {
 	var output bytes.Buffer
 	renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true, Columns: 100})

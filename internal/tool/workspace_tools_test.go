@@ -91,7 +91,7 @@ func TestQuestionToolBlocksForReply(t *testing.T) {
 	done := make(chan error, 1)
 	go func() {
 		result, err := executor.Execute(context.Background(), "question", raw, CallContext{SessionID: "session"})
-		if err == nil && !strings.Contains(result.Text, `"a"`) {
+		if err == nil && (result.Text != `{"answers":[{"question_id":"q","option_ids":["a"]}]}` || result.ModelText != result.Text) {
 			err = errors.New("answer missing from result")
 		}
 		done <- err

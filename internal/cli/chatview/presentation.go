@@ -32,6 +32,9 @@ const (
 	ToolResultTodos = "todos"
 )
 
+// Completed-label strategies, mirroring tool.CompletedLabelKind.
+const toolCompletedLabelAnswers = "answers"
+
 // Failure renderers, mirroring tool.FailureRender.
 const ToolFailureErrorBlock = "error_block"
 
@@ -103,10 +106,17 @@ func (p Presentations) EnrichLabelInput(name string, input map[string]any, resul
 	return out
 }
 
-// CompletedLabel appends a declared result-line count to the invocation label.
+// CompletedLabel enriches an invocation label with declared result details.
 func (p Presentations) CompletedLabel(name string, input map[string]any, result string) string {
 	label := p.Label(name, input)
-	noun := p.For(name).ResultCountNoun
+	presentation := p.For(name)
+	if presentation.CompletedLabel == toolCompletedLabelAnswers {
+		if answers := completedAnswerSummary(input, result); answers != "" {
+			return label + " · " + answers
+		}
+		return label
+	}
+	noun := presentation.ResultCountNoun
 	if noun == "" {
 		return label
 	}
@@ -124,6 +134,60 @@ func (p Presentations) CompletedLabel(name string, input map[string]any, result 
 		}
 	}
 	return fmt.Sprintf("%s · %d %s", label, count, noun)
+}
+
+type completedAnswersDto struct {
+	Answers []completedAnswerDto `json:"answers"`
+}
+
+type completedAnswerDto struct {
+	QuestionID string   `json:"question_id"`
+	OptionIDs  []string `json:"option_ids"`
+	Custom     string   `json:"custom"`
+}
+
+func completedAnswerSummary(input map[string]any, result string) string {
+	var response completedAnswersDto
+	if json.Unmarshal([]byte(result), &response) != nil {
+		return ""
+	}
+	answers := make(map[string]completedAnswerDto, len(response.Answers))
+	for _, answer := range response.Answers {
+		answers[answer.QuestionID] = answer
+	}
+	questions, _ := input["questions"].([]any)
+	var summaries []string
+	for _, rawQuestion := range questions {
+		question, _ := rawQuestion.(map[string]any)
+		questionID, _ := question["id"].(string)
+		answer, ok := answers[questionID]
+		if !ok {
+			continue
+		}
+		labels := make(map[string]string)
+		options, _ := question["options"].([]any)
+		for _, rawOption := range options {
+			option, _ := rawOption.(map[string]any)
+			optionID, _ := option["id"].(string)
+			label, _ := option["label"].(string)
+			labels[optionID] = label
+		}
+		var selected []string
+		for _, optionID := range answer.OptionIDs {
+			label := labels[optionID]
+			if label == "" {
+				label = optionID
+			}
+			selected = append(selected, label)
+		}
+		if answer.Custom != "" {
+			selected = append(selected, answer.Custom)
+		}
+		if summary := cleanActivityDetail(strings.Join(selected, ", ")); summary != "" {
+			summaries = append(summaries, summary)
+		}
+	}
+	return strings.Join(summaries, "; ")
 }
 
 // Label summarises an invocation from its input, following the strategy the

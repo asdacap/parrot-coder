@@ -48,6 +48,21 @@ func TestCompletedInputPresentation(t *testing.T) {
 	}
 }
 
+func TestAnswerPresentationUpdatesCompletedLabelInQuestionOrder(t *testing.T) {
+	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
+		ID: "question", Presentation: v1.ToolPresentation{
+			Label:          v1.ToolLabel{Fields: []v1.ToolLabelPart{{Names: []string{"questions"}, Array: true, Item: []string{"prompt"}, Overflow: true}}},
+			CompletedLabel: toolCompletedLabelAnswers,
+		},
+	}}})
+	tracker := StreamToolTracker{Presentation: presentations}
+	pending := tracker.DescribeReport(v1.Event{Type: v1.EventSessionToolPending, Data: json.RawMessage(`{"call_id":"call","tool_name":"question","input":{"questions":[{"id":"commit","prompt":"Commit changed usage text?","options":[{"id":"yes","label":"Yes"}]},{"id":"note","prompt":"Note?","custom":true}]}}`)})
+	success := tracker.DescribeReport(v1.Event{Type: v1.EventSessionToolSuccess, Data: json.RawMessage(`{"call_id":"call","result":"{\"answers\":[{\"question_id\":\"note\",\"custom\":\"Ship it\"},{\"question_id\":\"commit\",\"option_ids\":[\"yes\"]}]}"}`)})
+	if pending.Label != "question · Commit changed usage text? · +1 more" || success.Label != "question · Commit changed usage text? · +1 more · Yes; Ship it" {
+		t.Fatalf("answer labels: pending=%q success=%q", pending.Label, success.Label)
+	}
+}
+
 func TestResultCountPresentationUpdatesCompletedLabel(t *testing.T) {
 	presentations := NewPresentations(v1.ToolList{Items: []v1.Tool{{
 		ID: "search", Presentation: v1.ToolPresentation{
