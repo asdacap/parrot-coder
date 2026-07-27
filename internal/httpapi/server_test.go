@@ -18,6 +18,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/mode"
+	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -168,6 +169,14 @@ func TestEveryRouteBasicAndMethodHandling(t *testing.T) {
 
 type selectionResolver struct{}
 
+type unavailableProvider struct{}
+
+func (unavailableProvider) ID() string               { return "local" }
+func (unavailableProvider) Models() []provider.Model { return nil }
+func (unavailableProvider) Stream(context.Context, protocol.Request) (provider.Stream, error) {
+	return nil, errors.New("provider unavailable in test")
+}
+
 func (selectionResolver) Resolve(selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
 	if selector != "local/code" && selector != "local/code/high" && selector != "local/reasoning" {
 		return nil, provider.Model{}, nil, errors.New("unknown model")
@@ -176,6 +185,13 @@ func (selectionResolver) Resolve(selector string) (provider.Provider, provider.M
 		return nil, provider.Model{ID: "code"}, &provider.Variant{Name: "high"}, nil
 	}
 	return nil, provider.Model{ID: strings.TrimPrefix(selector, "local/")}, nil, nil
+}
+
+type availableSelectionResolver struct{ selectionResolver }
+
+func (availableSelectionResolver) Resolve(selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
+	_, model, variant, err := (selectionResolver{}).Resolve(selector)
+	return unavailableProvider{}, model, variant, err
 }
 
 func testAgentRegistry(t *testing.T) *agent.Registry {
@@ -203,6 +219,11 @@ func newSelectionBackend(t *testing.T) (*DomainBackend, agent.UserSession) {
 
 func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *agent.Registry) agent.UserSession {
 	t.Helper()
+	return newTestUserSessionWithResolver(t, sessions, agents, selectionResolver{})
+}
+
+func newTestUserSessionWithResolver(t *testing.T, sessions agent.SessionRuntime, agents *agent.Registry, resolver agent.ProviderResolver) agent.UserSession {
+	t.Helper()
 	toolProviders, err := tool.NewProviders()
 	if err != nil {
 		t.Fatal(err)
@@ -221,7 +242,7 @@ func newTestUserSession(t *testing.T, sessions agent.SessionRuntime, agents *age
 	}
 	userSession, err := agent.NewUserSession(context.Background(), sessions, contextRegistry, queues, agent.UserSessionConfig{
 		MaxConcurrentChildTurns: 1, MaxConcurrentChildTurnsPerParent: 1,
-	}, stateDirectories, agents, selectionResolver{}, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
+	}, stateDirectories, agents, resolver, toolProviders, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil, nil,
 		nil, nil, nil, nil, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -705,12 +726,13 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
 	agents := testAgentRegistry(t)
-	userSession := newTestUserSession(t, sessions, agents)
+	userSession := newTestUserSessionWithResolver(t, sessions, agents, availableSelectionResolver{})
 	created, err := userSession.CreateSelected(ctx, session.CreateParams{Title: "test"}, session.Selection{Agent: "build", Model: "local/code"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	server := New(&DomainBackend{AgentSessions: newTestSessionController(nil, userSession), Events: event.NewBroker(repository, event.NewTransientRepository())}, Config{})
+	defer userSession.Shutdown(ctx)
+	server := New(&DomainBackend{AgentSessions: userSession, Events: event.NewBroker(repository, event.NewTransientRepository())}, Config{})
 	body := `{"message_id":"msg_retry","content":"hello"}`
 	for attempt := 0; attempt < 2; attempt++ {
 		request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(body))
@@ -732,8 +754,14 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(items) != 1 || items[0].Type != v1.EventSessionInputAdmitted {
-		t.Fatalf("events = %#v", items)
+	admitted := 0
+	for _, item := range items {
+		if item.Type == v1.EventSessionInputAdmitted {
+			admitted++
+		}
+	}
+	if admitted != 1 {
+		t.Fatalf("admitted events = %d, events = %#v", admitted, items)
 	}
 
 	request := httptest.NewRequest(http.MethodPost, "/api/v1/sessions/"+created.ID()+"/prompts", strings.NewReader(`{"message_id":"msg_retry","content":"different"}`))
