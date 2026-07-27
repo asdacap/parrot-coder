@@ -300,7 +300,19 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	} else if !options.AllowNoModel && variantOverride == "" {
 		return nil, errors.New("app: no default model configured; set model to provider/model[/variant] in parrot.yaml or pass --model")
 	}
-	modes, err := mode.NewRegistryWithPlanDirectory(filepath.Join(paths.State, "plans"))
+	profiles := make(map[string]agent.Profile, len(loaded.Config.Profiles))
+	for id, configured := range loaded.Config.Profiles {
+		profiles[id] = configuredProfile(id, configured)
+	}
+	modeProfiles := make([]agent.Profile, 0, 3)
+	for _, id := range []string{mode.BuildID, mode.PlanID, mode.QueryID} {
+		profile, ok := profiles[id]
+		if !ok {
+			return nil, fmt.Errorf("app: required mode profile %q is not configured", id)
+		}
+		modeProfiles = append(modeProfiles, profile)
+	}
+	modes, err := mode.NewRegistryWithPlanDirectory(filepath.Join(paths.State, "plans"), modeProfiles...)
 	if err != nil {
 		return nil, fmt.Errorf("app: agents: %w", err)
 	}
@@ -309,16 +321,24 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		agentID = options.Agent
 	}
 	if agentID == "" {
-		agentID = mode.BuildID
+		agentID = loaded.Config.DefaultProfile
 	}
 	if _, err := modes.Get(agentID); err != nil {
 		return nil, fmt.Errorf("app: %w", err)
 	}
-	taskAgents, err := agent.NewRegistry(agent.Subagents()...)
+	subagentProfiles := make([]agent.Profile, 0, 3)
+	for _, id := range []string{agent.ExplorerID, agent.ReviewID, agent.WorkerID} {
+		profile, ok := profiles[id]
+		if !ok {
+			return nil, fmt.Errorf("app: required subagent profile %q is not configured", id)
+		}
+		subagentProfiles = append(subagentProfiles, profile)
+	}
+	taskAgents, err := agent.NewRegistry(subagentProfiles...)
 	if err != nil {
 		return nil, fmt.Errorf("app: subagents: %w", err)
 	}
-	subagentIDs := make([]string, 0, len(agent.Subagents()))
+	subagentIDs := make([]string, 0, len(subagentProfiles))
 	for _, p := range taskAgents.List() {
 		subagentIDs = append(subagentIDs, p.ID())
 	}
@@ -594,9 +614,14 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	return result, nil
 }
 
+func configuredProfile(id string, configured config.Profile) agent.Profile {
+	return agent.NewProfile(id, configured.Prompt, configured.HardRules, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules), statusinfo.Static{ProviderKey: "profile:" + id, Text: configured.Status})
+}
+
 // Project configuration may select models and override model metadata, but it
-// cannot introduce endpoints, credentials, private-network access, or local
-// executables. Those capabilities require a file in the user's global config.
+// cannot introduce endpoints, credentials, private-network access, local
+// executables, or profile security policy. Those capabilities require a file in
+// the user's global config.
 func validateConfigTrust(loaded config.Result) error {
 	kinds := make(map[string]config.SourceKind, len(loaded.Sources))
 	for _, source := range loaded.Sources {
@@ -606,8 +631,9 @@ func validateConfigTrust(loaded config.Result) error {
 		if kinds[source] != config.SourceProject {
 			continue
 		}
-		restricted := strings.HasPrefix(field, "mcp.") ||
+		restricted := strings.HasPrefix(field, "mcp.") || field == "default_profile" ||
 			field == "sandbox_rules" || strings.HasPrefix(field, "sandbox_rules.") ||
+			strings.HasPrefix(field, "profiles.") && (strings.Contains(field, ".sandbox_rules") || strings.HasSuffix(field, ".read_only")) ||
 			field == "web_fetch.allow_private"
 		if strings.HasPrefix(field, "providers.") {
 			parts := strings.Split(field, ".")

@@ -7,6 +7,7 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
 	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 type profileWithRules struct {
@@ -18,11 +19,25 @@ type typedNilModeProfile struct{ agent.Profile }
 
 func (p profileWithRules) Rules() []security.Rule { return append([]security.Rule(nil), p.rules...) }
 
-func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
-	r, err := NewRegistry()
+func testModeProfiles() []agent.Profile {
+	return []agent.Profile{
+		agent.NewProfile(BuildID, "build", []string{"rule"}, 64, 3, false, nil, status.Static{ProviderKey: "profile:build"}),
+		agent.NewProfile(PlanID, "plan profile", []string{"rule"}, 24, 1, true, nil, status.Static{ProviderKey: "profile:plan"}),
+		agent.NewProfile(QueryID, "query", []string{"rule"}, 24, 1, true, nil, status.Static{ProviderKey: "profile:query"}),
+	}
+}
+
+func testModeRegistry(t *testing.T) *Registry {
+	t.Helper()
+	r, err := NewRegistry(Builtins(testModeProfiles()...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
+	return r
+}
+
+func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
+	r := testModeRegistry(t)
 	items := r.List()
 	if len(items) != 3 || items[0].ID() != BuildID || items[1].ID() != PlanID || items[2].ID() != QueryID {
 		t.Fatalf("modes = %#v", items)
@@ -40,7 +55,7 @@ func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 }
 
 func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.T) {
-	r, err := NewRegistryWithPlanDirectory(t.TempDir())
+	r, err := NewRegistryWithPlanDirectory(t.TempDir(), testModeProfiles()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,7 +71,7 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	}
 	profile := prepared.Profile()
 	capabilities := prepared.CapabilityRules()
-	if rules := profile.Rules(); len(rules) != 1 || rules[0] != baseRule || len(capabilities) != 1 || capabilities[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt(), "This mode is read-only except for the designated plan file.") {
+	if rules := profile.Rules(); len(rules) != 1 || rules[0] != baseRule || len(capabilities) != 1 || capabilities[0].Action != security.ActionAllowWrite || !strings.Contains(profile.Prompt(), "Write the complete implementation plan") {
 		t.Fatalf("plan profile = %#v, capabilities = %#v", profile, capabilities)
 	}
 	path := capabilities[0].Path
@@ -88,10 +103,7 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 }
 
 func TestOnTurnCompleteDeclaresDialogPerMode(t *testing.T) {
-	r, err := NewRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	r := testModeRegistry(t)
 	items := r.List()
 	// Build mode declares no turn-complete behavior.
 	if result := items[0].OnTurnComplete(); result != (TurnCompleteResult{}) {

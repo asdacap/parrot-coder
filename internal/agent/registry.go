@@ -56,38 +56,16 @@ type Registry struct {
 }
 
 func NewRegistry(profiles ...Profile) (*Registry, error) {
-	r := &Registry{profiles: make(map[string]Profile), def: BuildID}
-	if len(profiles) == 0 {
-		profiles = Builtins()
+	if len(profiles) == 0 || nilProfile(profiles[0]) {
+		return nil, errors.New("agent: at least one profile is required")
 	}
+	r := &Registry{profiles: make(map[string]Profile), def: profiles[0].ID()}
 	for _, profile := range profiles {
 		if err := r.Register(profile); err != nil {
 			return nil, err
 		}
 	}
-	if _, ok := r.profiles[r.def]; !ok {
-		r.def = r.List()[0].ID()
-	}
 	return r, nil
-}
-
-func Builtins() []Profile {
-	return []Profile{
-		profiles.Build(),
-		profiles.Plan(),
-		profiles.Explorer(),
-		profiles.Review(),
-		profiles.Worker(),
-	}
-}
-
-// Subagents returns child-agent-only profiles, not foreground modes.
-func Subagents() []Profile {
-	return []Profile{
-		profiles.Explorer(),
-		profiles.Review(),
-		profiles.Worker(),
-	}
 }
 
 func (r *Registry) GetProfile(id string) (Profile, error) { return r.Get(id) }

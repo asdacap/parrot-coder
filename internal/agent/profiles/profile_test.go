@@ -44,34 +44,8 @@ func TestNewPreservesValuesAndDefensiveCopies(t *testing.T) {
 	}
 }
 
-func TestBuiltinProfilesPreserveConfiguration(t *testing.T) {
-	tests := []struct {
-		name           string
-		profile        Profile
-		id             string
-		maxTurns       int
-		recursionLimit int
-		readOnly       bool
-		statusKey      string
-	}{
-		{"build", Build(), BuildID, 64, 3, false, "profile:build"},
-		{"plan", Plan(), PlanID, 24, 1, true, "profile:plan-agent"},
-		{"explorer", Explorer(), ExplorerID, 32, 3, true, "profile:explorer"},
-		{"review", Review(), ReviewID, 32, 3, true, "profile:review"},
-		{"worker", Worker(), WorkerID, 64, 3, false, "profile:worker"},
-	}
-
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			if test.profile.ID() != test.id || test.profile.Prompt() == "" || len(test.profile.HardRules()) == 0 {
-				t.Fatalf("profile identity/instructions = (%q, %q, %v)", test.profile.ID(), test.profile.Prompt(), test.profile.HardRules())
-			}
-			if test.profile.MaxTurns() != test.maxTurns || test.profile.RecursionLimit() != test.recursionLimit || test.profile.IsReadOnly() != test.readOnly {
-				t.Fatalf("profile limits/security = (%d, %d, %t), want (%d, %d, %t)", test.profile.MaxTurns(), test.profile.RecursionLimit(), test.profile.IsReadOnly(), test.maxTurns, test.recursionLimit, test.readOnly)
-			}
-			if test.profile.Status() == nil || test.profile.Status().Key() != test.statusKey {
-				t.Fatalf("status key = %v, want %q", test.profile.Status(), test.statusKey)
-			}
-		})
+func TestStableProfileIDs(t *testing.T) {
+	if BuildID != "build" || PlanID != "plan" || ExplorerID != "explorer" || ReviewID != "review" || WorkerID != "worker" {
+		t.Fatalf("profile IDs changed: %q %q %q %q %q", BuildID, PlanID, ExplorerID, ReviewID, WorkerID)
 	}
 }

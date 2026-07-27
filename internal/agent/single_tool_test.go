@@ -142,6 +142,9 @@ func newRunnerHarnessWithSource(t *testing.T, fake *fakeProvider, profiles []Pro
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(profiles) == 0 {
+		profiles = testProfiles()
+	}
 	agents, err := NewRegistry(profiles...)
 	if err != nil {
 		t.Fatal(err)

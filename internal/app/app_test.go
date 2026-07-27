@@ -60,11 +60,20 @@ func TestManagedTaskControllerPreservesTaskStateWhenWaitIsCanceled(t *testing.T)
 }
 
 func TestAgentRecursionLimitPolicy(t *testing.T) {
-	modes, err := mode.NewRegistry()
+	modeProfiles := []agent.Profile{
+		agent.NewProfile(mode.BuildID, "build", nil, 64, 3, false, nil, nil),
+		agent.NewProfile(mode.PlanID, "plan", nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.QueryID, "query", nil, 24, 1, true, nil, nil),
+	}
+	modes, err := mode.NewRegistry(mode.Builtins(modeProfiles...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
-	agents, err := agent.NewRegistry(agent.Subagents()...)
+	agents, err := agent.NewRegistry(
+		agent.NewProfile(agent.ExplorerID, "explorer", nil, 32, 3, true, nil, nil),
+		agent.NewProfile(agent.ReviewID, "review", nil, 32, 3, true, nil, nil),
+		agent.NewProfile(agent.WorkerID, "worker", nil, 64, 3, false, nil, nil),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -319,6 +328,51 @@ func TestOpenDiscoversSkillsCommandsAndNeedsNoOptionalConfig(t *testing.T) {
 	expansion, err := runtime.Commands.Expand("check", "this")
 	if err != nil || expansion.Prompt != "Check this" {
 		t.Fatalf("command expansion = %#v, %v", expansion, err)
+	}
+}
+
+func TestOpenUsesConfiguredProfilesAndDefault(t *testing.T) {
+	root := t.TempDir()
+	paths := appdirs.Overrides{
+		Home: root, ConfigHome: filepath.Join(root, "config"), DataHome: filepath.Join(root, "data"),
+		StateHome: filepath.Join(root, "state"), CacheHome: filepath.Join(root, "cache"),
+	}
+	configDir := filepath.Join(paths.ConfigHome, "parrot")
+	if err := os.MkdirAll(configDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, config.FileName), []byte("default_profile: query\nprofiles:\n  query:\n    max_turns: 17\n  worker:\n    max_turns: 23\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := Open(context.Background(), Options{CWD: root, Paths: paths, AllowNoModel: true, NonInteractive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtime.Close()
+	if runtime.DefaultSelection.Agent != "query" {
+		t.Fatalf("default profile = %q", runtime.DefaultSelection.Agent)
+	}
+	modes, err := runtime.Client.Modes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agents, err := runtime.Client.Agents(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var queryTurns, workerTurns int
+	for _, item := range modes.Items {
+		if item.ID == "query" {
+			queryTurns = item.MaxTurns
+		}
+	}
+	for _, item := range agents.Items {
+		if item.ID == "worker" {
+			workerTurns = item.MaxTurns
+		}
+	}
+	if queryTurns != 17 || workerTurns != 23 {
+		t.Fatalf("configured max turns = query %d, worker %d", queryTurns, workerTurns)
 	}
 }
 
@@ -737,6 +791,9 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 		"sandbox_rules",
 		"sandbox_rules.0.path",
 		"sandbox_rules.0.rule",
+		"profiles.worker.sandbox_rules.0.path",
+		"profiles.worker.read_only",
+		"default_profile",
 	} {
 		loaded := config.Result{
 			Sources:    []config.Source{{Path: projectFile, Kind: config.SourceProject}},

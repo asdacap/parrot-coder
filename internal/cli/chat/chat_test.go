@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/amirulashraf/parrot-coder/internal/agent"
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/app"
 	"github.com/amirulashraf/parrot-coder/internal/auth"
@@ -639,7 +640,11 @@ func TestPlanTurnCompletePolicy(t *testing.T) {
 // each mode's declared turn-complete behavior as the backend would.
 func testModeList(t *testing.T) v1.ModeList {
 	t.Helper()
-	registry, err := mode.NewRegistry()
+	registry, err := mode.NewRegistry(mode.Builtins(
+		agent.NewProfile(mode.BuildID, "build", nil, 64, 3, false, nil, nil),
+		agent.NewProfile(mode.PlanID, "plan", nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.QueryID, "query", nil, 24, 1, true, nil, nil),
+	)...)
 	if err != nil {
 		t.Fatal(err)
 	}
