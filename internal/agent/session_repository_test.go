@@ -12,6 +12,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
 
@@ -212,6 +213,71 @@ func TestAgentSessionRepositoryProviderBindingLifecycle(t *testing.T) {
 	defer mu.Unlock()
 	if calls["same"] != 1 || calls["other"] != 1 || calls["retry"] != 2 || calls["panic"] != 2 || calls["panic-wait"] != 1 {
 		t.Fatalf("provider calls = %#v", calls)
+	}
+}
+
+type bindingPromptProvider struct {
+	materialize func(systemcontext.AgentSession) (systemcontext.SystemPrompt, error)
+}
+
+func (bindingPromptProvider) Key() string { return "test:binding-prompt" }
+func (p bindingPromptProvider) MaterializeSystemPrompt(session systemcontext.AgentSession) (systemcontext.SystemPrompt, error) {
+	return p.materialize(session)
+}
+
+type bindingPrompt string
+
+func (p bindingPrompt) GetSystemPrompt(context.Context, systemcontext.ModelSelection) (string, error) {
+	return string(p), nil
+}
+
+type guidedBindingTool struct{ fakeTool }
+
+func (t guidedBindingTool) Descriptor() tool.Descriptor {
+	descriptor := t.fakeTool.Descriptor()
+	descriptor.SystemPromptGuidance = "bound tool guidance"
+	return descriptor
+}
+
+func TestAgentSessionRepositoryMaterializesSystemPromptAfterToolsAndRetriesPanic(t *testing.T) {
+	toolProvider := &tool.ProviderFunc{ToolDescriptor: tool.DescriptorOf(&guidedBindingTool{fakeTool{id: "guided"}}), CreateTool: func(tool.AgentSession) (tool.Tool, error) {
+		return &guidedBindingTool{fakeTool{id: "guided"}}, nil
+	}}
+	tools, err := tool.NewProviders(toolProvider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	calls := 0
+	promptProvider := bindingPromptProvider{materialize: func(session systemcontext.AgentSession) (systemcontext.SystemPrompt, error) {
+		calls++
+		if session.ModelSelector() != "provider/model" || session.ToolSystemGuidance() != "bound tool guidance" {
+			t.Fatalf("materialized session = model %q, guidance %q", session.ModelSelector(), session.ToolSystemGuidance())
+		}
+		if calls == 1 {
+			panic("prompt panic")
+		}
+		return bindingPrompt("bound prompt"), nil
+	}}
+	user := &userSession{systemPromptProvider: promptProvider}
+	repository := &agentSessionRepository{
+		user: user, toolProviders: tools, sessions: make(map[string]*agentSession), bindings: make(map[string]*sessionBinding),
+		dtos: make(map[string]session.AgentSessionDto),
+	}
+	dto := session.AgentSessionDto{ID: "prompt", Model: "provider/model"}
+	if created, err := repository.bind(dto, nil, nil, nil); created != nil || err == nil || !strings.Contains(err.Error(), "prompt panic") {
+		t.Fatalf("panic bind = %#v, %v", created, err)
+	}
+	bound, err := repository.bind(dto, nil, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	created := bound.(*agentSession)
+	if calls != 2 {
+		t.Fatalf("materialize calls = %d, want 2", calls)
+	}
+	prompt, err := created.systemPrompt.GetSystemPrompt(t.Context(), systemcontext.ModelSelection{})
+	if err != nil || prompt != "bound prompt" {
+		t.Fatalf("system prompt = %q, %v", prompt, err)
 	}
 }
 

@@ -294,7 +294,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		variantOverride = loaded.LegacyVariant
 	}
 	if selectedModel != "" {
-		selectedModel, err = resolveCanonicalModelVariant(providerRegistry, selectedModel, variantOverride)
+		selectedModel, err = resolveModelVariant(providerRegistry, selectedModel, variantOverride)
 		if err != nil {
 			return nil, err
 		}
@@ -371,7 +371,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: restore model selection: %w", selectionErr)
 	}
 	if selectedModel == "" && selectionErr == nil {
-		if restoredModel, resolveErr := resolveCanonicalModelVariant(providerRegistry, selected.Model, variantOverride); resolveErr == nil {
+		if restoredModel, resolveErr := resolveModelVariant(providerRegistry, selected.Model, variantOverride); resolveErr == nil {
 			selectedModel = restoredModel
 		}
 	}
@@ -472,18 +472,16 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: register built-in tools: %w", err)
 	}
 	toolProviders = toolProviders.Without(enabledToolBlacklist(loaded.Config.ToolBlacklist))
-	toolSystemGuidance := toolProviders.SystemPromptGuidance()
 	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
 	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)
 	modelAliasesSource := systemcontext.NewModelAliasesSource(systemContextAliases(loaded.Config.ModelAliases))
 	result.modelAliasesSource = modelAliasesSource
 	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{
-		AgentPrompt:        loaded.Config.Prompt,
-		ToolSystemGuidance: toolSystemGuidance,
-		Skills:             skillMetadata(skills),
-		Subagents:          subagents,
-		ModelAliases:       modelAliasesSource,
-		ConfigDir:          paths.Config, ConfigPath: filepath.Join(paths.Config, config.FileName), PredefinedConfigPath: filepath.Join(paths.Config, config.PredefinedFileName), ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
+		AgentPrompt:  loaded.Config.Prompt,
+		Skills:       skillMetadata(skills),
+		Subagents:    subagents,
+		ModelAliases: modelAliasesSource,
+		ConfigDir:    paths.Config, ConfigPath: filepath.Join(paths.Config, config.FileName), PredefinedConfigPath: filepath.Join(paths.Config, config.PredefinedFileName), ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
 		AvailableCLIUtilities: availableCLIUtilities, AvailableOptionalCLIUtilities: availableOptionalCLIUtilities,
 	})
 	if err != nil {
@@ -496,6 +494,26 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	contextRegistry, err := systemcontext.NewRegistry(sources...)
 	if err != nil {
 		return nil, fmt.Errorf("app: context registry: %w", err)
+	}
+	modelAugmentProvider, err := systemcontext.NewModelAugmentProvider(
+		"runtime:model-system-augment",
+		loaded.Config.ModelAugmentSystemPrompts,
+		modelAugmentAliasOverrides(loaded.Config.ModelAliases),
+		func(selector string) (systemcontext.ModelResolution, error) {
+			resolved, resolveErr := providerRegistry.ResolveModel(selector)
+			return systemcontext.ModelResolution{
+				CanonicalBase: resolved.CanonicalBase, CanonicalSelector: resolved.CanonicalSelector,
+			}, resolveErr
+		},
+	)
+	if err != nil {
+		return nil, fmt.Errorf("app: model augment provider: %w", err)
+	}
+	systemPromptProvider, err := systemcontext.NewCompositeSystemPromptProvider(
+		"runtime:system-prompt", contextRegistry, systemcontext.ToolGuidanceProvider{}, modelAugmentProvider,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("app: system prompt provider: %w", err)
 	}
 	compactionRepository := compaction.NewRepository(sessionStore, repository, identity)
 	compactionService, err := compaction.NewService(compactionRepository,
@@ -514,7 +532,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: user session status registry: %w", err)
 	}
-	userSession, err := agent.NewUserSessionWithModes(ctx, sessions, contextRegistry, queues, agent.UserSessionConfig{
+	userSession, err := agent.NewUserSessionWithModes(ctx, sessions, systemPromptProvider, queues, agent.UserSessionConfig{
 		MaxConcurrentChildTurns:          loaded.Config.Subagents.MaxConcurrent,
 		MaxConcurrentChildTurnsPerParent: loaded.Config.Subagents.MaxConcurrentPerParent,
 		MaxChildDepth:                    loaded.Config.Subagents.MaxDepth, ProjectID: info.ID, DefaultSelection: defaultSelection,
@@ -945,6 +963,14 @@ func systemContextAliases(configured map[string]config.ModelAlias) []systemconte
 	return aliases
 }
 
+func modelAugmentAliasOverrides(configured map[string]config.ModelAlias) map[string]*string {
+	overrides := make(map[string]*string, len(configured))
+	for name, alias := range configured {
+		overrides[name] = alias.AugmentSystemPrompt
+	}
+	return overrides
+}
+
 func agentAliases(configured map[string]config.ModelAlias) []agent.ModelAlias {
 	names := sortedAliasNames(configured)
 	aliases := make([]agent.ModelAlias, len(names))
@@ -1198,29 +1224,24 @@ func (r compactionProviderResolver) Resolve(providerID, modelID string) (provide
 	return selectedProvider, selectedModel, err
 }
 
-func resolveCanonicalModel(resolver agent.ProviderResolver, value string) (string, error) {
-	return resolveCanonicalModelVariant(resolver, value, "")
-}
-
-func resolveCanonicalModelVariant(resolver agent.ProviderResolver, value, variantOverride string) (string, error) {
+// resolveModelVariant validates the caller-facing selector without changing its
+// identity. Only an explicit effort/variant override requires a canonical base
+// selector because aliases cannot be safely extended with a path segment.
+func resolveModelVariant(resolver agent.ProviderResolver, value, variantOverride string) (string, error) {
 	if value == "" {
 		return "", errors.New("app: no default model configured; set model to provider/model[/variant] in parrot.yaml or pass --model")
 	}
-	selectedProvider, selectedModel, selectedVariant, err := resolver.Resolve(value)
+	selectedProvider, selectedModel, _, err := resolver.Resolve(value)
 	if err != nil {
 		return "", fmt.Errorf("app: default model: %w", err)
 	}
-	canonical := selectedProvider.ID() + "/" + selectedModel.ID
-	if variantOverride != "" {
-		canonical += "/" + variantOverride
-		providerWithVariant, modelWithVariant, selectedOverride, resolveErr := resolver.Resolve(canonical)
-		if resolveErr != nil || selectedOverride == nil || providerWithVariant.ID() != selectedProvider.ID() || modelWithVariant.ID != selectedModel.ID {
-			return "", fmt.Errorf("app: variant %q is not available for model %s/%s", variantOverride, selectedProvider.ID(), selectedModel.ID)
-		}
-		return canonical, nil
+	if variantOverride == "" {
+		return value, nil
 	}
-	if selectedVariant != nil {
-		canonical += "/" + selectedVariant.Name
+	canonical := selectedProvider.ID() + "/" + selectedModel.ID + "/" + variantOverride
+	providerWithVariant, modelWithVariant, selectedOverride, resolveErr := resolver.Resolve(canonical)
+	if resolveErr != nil || selectedOverride == nil || providerWithVariant.ID() != selectedProvider.ID() || modelWithVariant.ID != selectedModel.ID {
+		return "", fmt.Errorf("app: variant %q is not available for model %s/%s", variantOverride, selectedProvider.ID(), selectedModel.ID)
 	}
 	return canonical, nil
 }

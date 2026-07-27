@@ -35,7 +35,7 @@ func TestRegistryRejectsInvalidAndDuplicateSourcesAndRendersStableKeyOrder(t *te
 			t.Fatalf("invalid source %#v was accepted", source)
 		}
 	}
-	prompt, err := registry.GetSystemContextPrompt(context.Background())
+	prompt, err := registry.GetSystemPrompt(context.Background(), ModelSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestRegistryRejectsInvalidAndDuplicateSourcesAndRendersStableKeyOrder(t *te
 	}
 }
 
-func TestGetSystemContextPromptOmitsAvailableEmptyObservations(t *testing.T) {
+func TestGetSystemPromptOmitsAvailableEmptyObservations(t *testing.T) {
 	registry, err := NewRegistry(
 		&testSource{key: "test:empty", observation: Observation{Available: true, Text: " \n"}},
 		&testSource{key: "test:included", observation: Observation{Available: true, Text: "included"}},
@@ -52,7 +52,7 @@ func TestGetSystemContextPromptOmitsAvailableEmptyObservations(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompt, err := registry.GetSystemContextPrompt(context.Background())
+	prompt, err := registry.GetSystemPrompt(context.Background(), ModelSelection{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -61,12 +61,12 @@ func TestGetSystemContextPromptOmitsAvailableEmptyObservations(t *testing.T) {
 	}
 }
 
-func TestGetSystemContextPromptReportsAllSourceAndNilRegistryErrors(t *testing.T) {
+func TestGetSystemPromptReportsAllSourceAndNilRegistryErrors(t *testing.T) {
 	failing := &testSource{key: "test:failing", err: errors.New("offline")}
 	later := &testSource{key: "test:later", observation: Observation{Available: true, Text: "later"}}
 	unavailable := &testSource{key: "test:unavailable"}
 	registry, _ := NewRegistry(failing, later, unavailable)
-	prompt, err := registry.GetSystemContextPrompt(context.Background())
+	prompt, err := registry.GetSystemPrompt(context.Background(), ModelSelection{})
 	if err == nil || !strings.Contains(err.Error(), "test:failing: offline") || !strings.Contains(err.Error(), "test:unavailable: source unavailable") {
 		t.Fatalf("error = %v", err)
 	}
@@ -74,7 +74,7 @@ func TestGetSystemContextPromptReportsAllSourceAndNilRegistryErrors(t *testing.T
 		t.Fatalf("prompt = %q, observed = %t/%t/%t", prompt, failing.observed, later.observed, unavailable.observed)
 	}
 	var missing *Registry
-	if _, err := missing.GetSystemContextPrompt(context.Background()); err == nil {
+	if _, err := missing.GetSystemPrompt(context.Background(), ModelSelection{}); err == nil {
 		t.Fatal("nil registry succeeded")
 	}
 }

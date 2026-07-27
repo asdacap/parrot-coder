@@ -26,6 +26,19 @@ type ModelAlias struct {
 	ModelString string
 }
 
+// ModelResolution preserves both the selector supplied by the caller and the
+// canonical catalog identity selected by the registry. Alias is empty when the
+// requested selector was already canonical.
+type ModelResolution struct {
+	RequestedSelector string
+	Alias             string
+	CanonicalBase     string
+	CanonicalSelector string
+	Provider          provider.Provider
+	Model             provider.Model
+	Variant           *provider.Variant
+}
+
 type ProviderRegistry struct {
 	mu        sync.RWMutex
 	providers map[string]provider.Provider
@@ -133,13 +146,35 @@ func (r *ProviderRegistry) List() []provider.Provider {
 	return out
 }
 
-func (r *ProviderRegistry) Resolve(selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
+// ResolveModel resolves a canonical selector or alias while preserving the
+// caller-facing identity and reporting canonical base and exact selector keys.
+func (r *ProviderRegistry) ResolveModel(selector string) (ModelResolution, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+
+	requested := selector
+	alias := ""
 	if target, exists := r.aliases[selector]; exists {
+		alias = selector
 		selector = target
 	}
-	return resolveProvider(r.providers, selector)
+	resolved, err := resolveProvider(r.providers, selector)
+	if err != nil {
+		return ModelResolution{}, err
+	}
+	resolved.RequestedSelector = requested
+	resolved.Alias = alias
+	return resolved, nil
+}
+
+// Resolve retains the original tuple API for callers which do not need model
+// identity metadata.
+func (r *ProviderRegistry) Resolve(selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
+	resolved, err := r.ResolveModel(selector)
+	if err != nil {
+		return nil, provider.Model{}, nil, err
+	}
+	return resolved.Provider, resolved.Model, resolved.Variant, nil
 }
 
 func validateAliasTargets(aliases map[string]string, providers map[string]provider.Provider) error {
@@ -147,22 +182,22 @@ func validateAliasTargets(aliases map[string]string, providers map[string]provid
 		if _, exists := aliases[target]; exists {
 			return fmt.Errorf("agent: alias %q targets alias %q", name, target)
 		}
-		if _, _, _, err := resolveProvider(providers, target); err != nil {
+		if _, err := resolveProvider(providers, target); err != nil {
 			return fmt.Errorf("agent: invalid target for alias %q: %w", name, err)
 		}
 	}
 	return nil
 }
 
-func resolveProvider(providers map[string]provider.Provider, selector string) (provider.Provider, provider.Model, *provider.Variant, error) {
+func resolveProvider(providers map[string]provider.Provider, selector string) (ModelResolution, error) {
 	providerID, remainder, found := strings.Cut(selector, "/")
 	if !found || providerID == "" || remainder == "" || strings.HasSuffix(remainder, "/") || strings.Contains(remainder, "//") {
-		return nil, provider.Model{}, nil, fmt.Errorf("agent: malformed provider selector %q", selector)
+		return ModelResolution{}, fmt.Errorf("agent: malformed provider selector %q", selector)
 	}
 
 	selected := providers[providerID]
 	if selected == nil {
-		return nil, provider.Model{}, nil, fmt.Errorf("agent: unknown provider %q", providerID)
+		return ModelResolution{}, fmt.Errorf("agent: unknown provider %q", providerID)
 	}
 
 	var baseModel *provider.Model
@@ -187,14 +222,22 @@ func resolveProvider(providers map[string]provider.Provider, selector string) (p
 	// variant names. An exact catalog model is authoritative; only interpret a
 	// suffix as a variant when no exact model exists.
 	if baseModel != nil {
-		return selected, *baseModel, nil, nil
+		canonical := selected.ID() + "/" + baseModel.ID
+		return ModelResolution{
+			CanonicalBase: canonical, CanonicalSelector: canonical,
+			Provider: selected, Model: *baseModel,
+		}, nil
 	}
 	if len(variantMatches) == 1 {
 		match := variantMatches[0]
-		return selected, match.model, &match.variant, nil
+		canonicalBase := selected.ID() + "/" + match.model.ID
+		return ModelResolution{
+			CanonicalBase: canonicalBase, CanonicalSelector: canonicalBase + "/" + match.variant.Name,
+			Provider: selected, Model: match.model, Variant: &match.variant,
+		}, nil
 	}
 	if len(variantMatches) > 1 {
-		return nil, provider.Model{}, nil, fmt.Errorf("agent: ambiguous model selector %q", selector)
+		return ModelResolution{}, fmt.Errorf("agent: ambiguous model selector %q", selector)
 	}
-	return nil, provider.Model{}, nil, fmt.Errorf("agent: unknown model selector %q for provider %q", remainder, providerID)
+	return ModelResolution{}, fmt.Errorf("agent: unknown model selector %q for provider %q", remainder, providerID)
 }

@@ -230,17 +230,6 @@ func (p Providers) Presentations() []PresentationEntry {
 	}
 	return out
 }
-func (p Providers) SystemPromptGuidance() string {
-	var entries []string
-	for _, descriptor := range p.Descriptors() {
-		if descriptor.SystemPromptGuidance != "" {
-			entries = append(entries, descriptor.SystemPromptGuidance)
-		}
-	}
-	sort.Strings(entries)
-	return strings.Join(entries, "\n\n")
-}
-
 func (p Providers) Materialize(state AgentSession) (Snapshot, error) {
 	tools := make(map[string]Tool, len(p.items))
 	for _, provider := range p.items {

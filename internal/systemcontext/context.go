@@ -26,6 +26,23 @@ type Registry struct {
 	sources map[string]Source
 }
 
+func (*Registry) Key() string { return "runtime:source-context" }
+
+// MaterializeSystemPrompt binds this source registry to a session while
+// retaining live source observation when the returned product is rendered.
+func (r *Registry) MaterializeSystemPrompt(AgentSession) (SystemPrompt, error) {
+	if r == nil {
+		return nil, errors.New("systemcontext: registry is unavailable")
+	}
+	return &registrySystemPrompt{registry: r}, nil
+}
+
+type registrySystemPrompt struct{ registry *Registry }
+
+func (p *registrySystemPrompt) GetSystemPrompt(ctx context.Context, _ ModelSelection) (string, error) {
+	return p.registry.GetSystemPrompt(ctx, ModelSelection{})
+}
+
 func NewRegistry(sources ...Source) (*Registry, error) {
 	r := &Registry{sources: make(map[string]Source)}
 	for _, source := range sources {
@@ -37,7 +54,7 @@ func NewRegistry(sources ...Source) (*Registry, error) {
 }
 
 func (r *Registry) Register(source Source) error {
-	if source == nil || !validKey(source.Key()) {
+	if isNil(source) || !validKey(source.Key()) {
 		return errors.New("systemcontext: source requires a stable namespaced key")
 	}
 	r.mu.Lock()
@@ -54,9 +71,9 @@ func validKey(key string) bool {
 	return ok && namespace != "" && name != "" && !strings.ContainsAny(key, "\r\n\t ")
 }
 
-// GetSystemContextPrompt observes every source and renders available context in
-// stable key order.
-func (r *Registry) GetSystemContextPrompt(ctx context.Context) (string, error) {
+// GetSystemPrompt observes every source and renders available context in stable
+// key order.
+func (r *Registry) GetSystemPrompt(ctx context.Context, _ ModelSelection) (string, error) {
 	if r == nil {
 		return "", errors.New("systemcontext: registry is unavailable")
 	}

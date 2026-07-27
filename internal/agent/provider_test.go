@@ -150,6 +150,89 @@ func TestProviderRegistryAliases(t *testing.T) {
 	}
 }
 
+func TestProviderRegistryResolveModelIdentity(t *testing.T) {
+	registry, err := NewProviderRegistry(idProvider{"catalog", []provider.Model{
+		modelWithVariants("plain", "high"),
+		modelWithVariants("vendor/slash-model", "low"),
+		modelWithVariants("ambiguous/model", "high"),
+		modelWithVariants("ambiguous/model/high"),
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.InstallAliases([]ModelAlias{
+		{Name: "quick", ModelString: "catalog/plain"},
+		{Name: "careful", ModelString: "catalog/vendor/slash-model/low"},
+		{Name: "exact", ModelString: "catalog/ambiguous/model/high"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, testCase := range []struct {
+		name          string
+		selector      string
+		wantAlias     string
+		wantBase      string
+		wantCanonical string
+		wantModel     string
+		wantVariant   string
+	}{
+		{
+			name: "canonical base preserves requested selector", selector: "catalog/plain",
+			wantBase: "catalog/plain", wantCanonical: "catalog/plain", wantModel: "plain",
+		},
+		{
+			name: "base alias preserves alias identity", selector: "quick", wantAlias: "quick",
+			wantBase: "catalog/plain", wantCanonical: "catalog/plain", wantModel: "plain",
+		},
+		{
+			name: "slash model variant has distinct base and exact keys", selector: "catalog/vendor/slash-model/low",
+			wantBase: "catalog/vendor/slash-model", wantCanonical: "catalog/vendor/slash-model/low",
+			wantModel: "vendor/slash-model", wantVariant: "low",
+		},
+		{
+			name: "variant alias preserves requested and alias identity", selector: "careful", wantAlias: "careful",
+			wantBase: "catalog/vendor/slash-model", wantCanonical: "catalog/vendor/slash-model/low",
+			wantModel: "vendor/slash-model", wantVariant: "low",
+		},
+		{
+			name: "exact slash model takes precedence over variant interpretation", selector: "catalog/ambiguous/model/high",
+			wantBase: "catalog/ambiguous/model/high", wantCanonical: "catalog/ambiguous/model/high",
+			wantModel: "ambiguous/model/high",
+		},
+		{
+			name: "alias to exact slash model retains exact precedence", selector: "exact", wantAlias: "exact",
+			wantBase: "catalog/ambiguous/model/high", wantCanonical: "catalog/ambiguous/model/high",
+			wantModel: "ambiguous/model/high",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			resolved, err := registry.ResolveModel(testCase.selector)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if resolved.RequestedSelector != testCase.selector || resolved.Alias != testCase.wantAlias {
+				t.Fatalf("identity = requested %q alias %q, want %q/%q", resolved.RequestedSelector, resolved.Alias, testCase.selector, testCase.wantAlias)
+			}
+			if resolved.CanonicalBase != testCase.wantBase || resolved.CanonicalSelector != testCase.wantCanonical {
+				t.Fatalf("canonical keys = %q/%q, want %q/%q", resolved.CanonicalBase, resolved.CanonicalSelector, testCase.wantBase, testCase.wantCanonical)
+			}
+			if resolved.Provider == nil || resolved.Provider.ID() != "catalog" || resolved.Model.ID != testCase.wantModel {
+				t.Fatalf("catalog match = (%v, %q), want catalog/%s", resolved.Provider, resolved.Model.ID, testCase.wantModel)
+			}
+			if testCase.wantVariant == "" && resolved.Variant != nil || testCase.wantVariant != "" && (resolved.Variant == nil || resolved.Variant.Name != testCase.wantVariant) {
+				t.Fatalf("variant = %#v, want %q", resolved.Variant, testCase.wantVariant)
+			}
+		})
+	}
+
+	resolved, err := registry.ResolveModel("catalog/missing")
+	if err == nil || resolved.RequestedSelector != "" || resolved.Alias != "" || resolved.CanonicalBase != "" ||
+		resolved.CanonicalSelector != "" || resolved.Provider != nil || resolved.Model.ID != "" || resolved.Variant != nil {
+		t.Fatalf("failed resolution = (%#v, %v), want zero resolution and error", resolved, err)
+	}
+}
+
 func TestProviderRegistryInstallAliasesValidationIsAtomic(t *testing.T) {
 	registry, err := NewProviderRegistry(idProvider{"catalog", models("plain", "other")})
 	if err != nil {

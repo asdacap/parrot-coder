@@ -20,6 +20,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/session"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
+	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -30,7 +31,7 @@ type agentSession struct {
 	user                   *userSession
 	agentSessionRepository *agentSessionRepository
 	store                  session.AgentSessionStore
-	systemContext          SystemContextPrompt
+	systemPrompt           SystemPrompt
 	config                 AgentSessionConfig
 	stateDirectories       UserSessionStateDirectories
 	profiles               ProfileResolver
@@ -871,7 +872,6 @@ func newAgentSession(
 	user *userSession,
 	repository *agentSessionRepository,
 	store session.AgentSessionStore,
-	systemContext SystemContextPrompt,
 	config AgentSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, modes ModeResolver, providers ProviderResolver,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
@@ -891,7 +891,7 @@ func newAgentSession(
 		status.Depth = parentStatus.Depth + 1
 	}
 	return &agentSession{
-		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, config: config,
+		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, config: config,
 		stateDirectories: stateDirectories, profiles: profiles, modes: modes, providers: providers,
 		workspace: workspace, outputs: outputs, processes: processes,
 		live: live, compactor: compactor, goals: goals, statusObserver: statusObserver, toolPanicLogger: toolPanicLogger,
@@ -999,6 +999,14 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if err != nil {
 			return err
 		}
+		promptModel := systemcontext.ModelSelection{
+			RequestedSelector: selected.Model,
+			CanonicalBase:     providerClient.ID() + "/" + model.ID,
+			CanonicalSelector: providerClient.ID() + "/" + model.ID,
+		}
+		if variant != nil {
+			promptModel.CanonicalSelector += "/" + variant.Name
+		}
 		history, err := r.store.ListModelHistory(ctx, epoch.HistoryCutoff)
 		if err != nil {
 			return err
@@ -1040,10 +1048,10 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 				}
 			}
 		}
-		if r.systemContext == nil {
-			return errors.New("agent: system context prompt is required")
+		if r.systemPrompt == nil {
+			return errors.New("agent: system prompt is required")
 		}
-		systemPrompt, err := r.systemContext.GetSystemContextPrompt(ctx)
+		systemPrompt, err := r.systemPrompt.GetSystemPrompt(ctx, promptModel)
 		if err != nil {
 			return err
 		}

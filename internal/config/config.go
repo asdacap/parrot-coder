@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/amirulashraf/parrot-coder/internal/atomicfile"
 	"go.yaml.in/yaml/v3"
@@ -29,6 +30,7 @@ type Config struct {
 	Prompt                     string                `json:"prompt,omitempty"`
 	DefaultModel               string                `json:"model,omitempty"`
 	ModelAliases               map[string]ModelAlias `json:"model_aliases,omitempty"`
+	ModelAugmentSystemPrompts  map[string]string     `json:"model_augment_system_prompts,omitempty"`
 	InlineDiff                 bool                  `json:"inline_diff,omitempty"`
 	PermissionRequestTimeoutMS int                   `json:"permission_request_timeout_ms,omitempty"`
 	Providers                  map[string]Provider   `json:"providers,omitempty"`
@@ -43,9 +45,12 @@ type Config struct {
 
 // ModelAlias gives a stable name to a model selector for a particular class of
 // work. An empty ModelString leaves the alias available for user configuration.
+// AugmentSystemPrompt distinguishes an omitted override from an explicit empty
+// augmentation.
 type ModelAlias struct {
-	ModelString string `json:"model_string"`
-	Usage       string `json:"usage"`
+	ModelString         string  `json:"model_string"`
+	Usage               string  `json:"usage"`
+	AugmentSystemPrompt *string `json:"augment_system_prompt,omitempty"`
 }
 
 // Subagents controls child-agent concurrency and nesting.
@@ -302,6 +307,9 @@ func Load(options Options) (Result, error) {
 	if typed.ModelAliases == nil {
 		typed.ModelAliases = make(map[string]ModelAlias)
 	}
+	if typed.ModelAugmentSystemPrompts == nil {
+		typed.ModelAugmentSystemPrompts = make(map[string]string)
+	}
 	if typed.ToolBlacklist == nil {
 		typed.ToolBlacklist = make(map[string]bool)
 	}
@@ -309,6 +317,9 @@ func Load(options Options) (Result, error) {
 		typed.Profiles = make(map[string]Profile)
 	}
 	if err := validateModelAliases(typed.ModelAliases); err != nil {
+		return Result{}, err
+	}
+	if err := validateModelAugmentSystemPrompts(typed.ModelAugmentSystemPrompts); err != nil {
 		return Result{}, err
 	}
 	if err := validateToolBlacklist(typed.ToolBlacklist); err != nil {
@@ -406,20 +417,41 @@ func validateModelAliases(aliases map[string]ModelAlias) error {
 		if alias.Usage == "" {
 			return fmt.Errorf("%s.usage must not be empty", prefix)
 		}
-		if alias.ModelString == "" {
-			continue
+		if err := validateModelSelector(prefix+".model_string", alias.ModelString, true); err != nil {
+			return err
 		}
-		if strings.TrimSpace(alias.ModelString) != alias.ModelString {
-			return fmt.Errorf("%s.model_string must not have surrounding whitespace", prefix)
+	}
+	return nil
+}
+
+func validateModelAugmentSystemPrompts(prompts map[string]string) error {
+	for selector := range prompts {
+		if err := validateModelSelector("model_augment_system_prompts key", selector, false); err != nil {
+			return err
 		}
-		segments := strings.Split(alias.ModelString, "/")
-		if len(segments) < 2 {
-			return fmt.Errorf("%s.model_string must be provider/model, optionally followed by /variant", prefix)
+	}
+	return nil
+}
+
+func validateModelSelector(path, selector string, allowEmpty bool) error {
+	if selector == "" && allowEmpty {
+		return nil
+	}
+	if strings.TrimSpace(selector) != selector {
+		return fmt.Errorf("%s must not have surrounding whitespace", path)
+	}
+	for _, character := range selector {
+		if unicode.IsControl(character) && unicode.IsSpace(character) {
+			return fmt.Errorf("%s must not contain control whitespace", path)
 		}
-		for _, segment := range segments {
-			if segment == "" {
-				return fmt.Errorf("%s.model_string must not contain empty path segments", prefix)
-			}
+	}
+	segments := strings.Split(selector, "/")
+	if len(segments) < 2 {
+		return fmt.Errorf("%s must be provider/model, optionally followed by /variant", path)
+	}
+	for _, segment := range segments {
+		if segment == "" {
+			return fmt.Errorf("%s must not contain empty path segments", path)
 		}
 	}
 	return nil
@@ -674,6 +706,12 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 #   low_llm:
 #     model_string: provider/model/low
 #     usage: Fast, inexpensive tasks
+#     augment_system_prompt: Prefer concise answers.
+
+# Extra system prompts keyed by an exact provider/model[/variant] selector.
+# Set a value to "" to explicitly clear an inherited augmentation.
+# model_augment_system_prompts:
+#   provider/model/low: Prefer concise answers.
 
 # Render changed lines inline. Set to false for a side-by-side diff viewer.
 # inline_diff: true

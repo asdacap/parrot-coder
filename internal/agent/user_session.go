@@ -13,6 +13,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/id"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
@@ -23,6 +24,10 @@ var (
 	ErrAgentSessionActive  = errors.New("agent: session is active")
 	ErrAgentSessionRemoved = errors.New("agent: session was removed")
 )
+
+type interactiveClaimRollbacker interface {
+	RollbackInteractiveClaim(context.Context, session.InteractiveOwner, session.InteractiveClaim) error
+}
 
 type SessionRuntime interface {
 	GetSession(string) session.AgentSessionStore
@@ -80,44 +85,44 @@ type UserSessionConfig struct {
 }
 
 type userSession struct {
-	config             UserSessionConfig
-	sessions           SessionRuntime
-	systemContext      SystemContextPrompt
-	queues             QueueManager
-	stateDirectories   UserSessionStateDirectories
-	profiles           ProfileResolver
-	modes              ModeResolver
-	providers          ProviderResolver
-	toolProviders      tool.Providers
-	toolAuthorizer     tool.Authorizer
-	toolErrorAdvisor   tool.ErrorAdvisor
-	workspace          *workspace.Workspace
-	outputs            *tool.OutputStore
-	processes          *process.Runner
-	live               LivePublisher
-	compactor          Compactor
-	goals              *session.GoalService
-	statusObserver     StatusObserver
-	toolPanicLogger    func(context.Context, string, string, any, []byte)
-	identityFor        func(string) string
-	recursionLimitFor  func(string) int
-	childNameGenerator func() string
-	childTasks         *managedtask.Manager
-	events             event.EventBroker
-	onChildDiscard     func(string)
-	repository         *agentSessionRepository
-	childTurns         *childTurnSemaphore
-	quotaMu            sync.Mutex
-	childMu            sync.Mutex
-	queueDeliveryMu    sync.Mutex
-	closed             bool
+	config               UserSessionConfig
+	sessions             SessionRuntime
+	systemPromptProvider SystemPromptProvider
+	queues               QueueManager
+	stateDirectories     UserSessionStateDirectories
+	profiles             ProfileResolver
+	modes                ModeResolver
+	providers            ProviderResolver
+	toolProviders        tool.Providers
+	toolAuthorizer       tool.Authorizer
+	toolErrorAdvisor     tool.ErrorAdvisor
+	workspace            *workspace.Workspace
+	outputs              *tool.OutputStore
+	processes            *process.Runner
+	live                 LivePublisher
+	compactor            Compactor
+	goals                *session.GoalService
+	statusObserver       StatusObserver
+	toolPanicLogger      func(context.Context, string, string, any, []byte)
+	identityFor          func(string) string
+	recursionLimitFor    func(string) int
+	childNameGenerator   func() string
+	childTasks           *managedtask.Manager
+	events               event.EventBroker
+	onChildDiscard       func(string)
+	repository           *agentSessionRepository
+	childTurns           *childTurnSemaphore
+	quotaMu              sync.Mutex
+	childMu              sync.Mutex
+	queueDeliveryMu      sync.Mutex
+	closed               bool
 }
 
 var _ UserSession = (*userSession)(nil)
 
 // NewUserSession creates a user runtime whose lifecycle follows its profiles.
 func NewUserSession(
-	ctx context.Context, sessions SessionRuntime, systemContext SystemContextPrompt, queues QueueManager, config UserSessionConfig,
+	ctx context.Context, sessions SessionRuntime, systemPromptProvider SystemPromptProvider, queues QueueManager, config UserSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
@@ -126,14 +131,14 @@ func NewUserSession(
 	childAgentIdentity func(string) string, childAgentRecursionLimit func(string) int, childNameGenerator func() string,
 	onChildDiscard func(string), observers ...LifecycleObserver,
 ) (UserSession, error) {
-	return NewUserSessionWithModes(ctx, sessions, systemContext, queues, config, stateDirectories, profiles, NewProfileModeResolver(profiles), providers,
+	return NewUserSessionWithModes(ctx, sessions, systemPromptProvider, queues, config, stateDirectories, profiles, NewProfileModeResolver(profiles), providers,
 		toolProviders, toolAuthorizer, toolErrorAdvisor, workspace, outputs, processes, live, events, compactor, goals, status, toolPanicLogger,
 		childTasks, childAgentIdentity, childAgentRecursionLimit, childNameGenerator, onChildDiscard, observers...)
 }
 
 // NewUserSessionWithModes creates a user runtime with an explicit lifecycle resolver.
 func NewUserSessionWithModes(
-	ctx context.Context, sessions SessionRuntime, systemContext SystemContextPrompt, queues QueueManager, config UserSessionConfig,
+	ctx context.Context, sessions SessionRuntime, systemPromptProvider SystemPromptProvider, queues QueueManager, config UserSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, modes ModeResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
@@ -145,8 +150,8 @@ func NewUserSessionWithModes(
 	if config.MaxConcurrentChildTurns <= 0 || config.MaxConcurrentChildTurnsPerParent <= 0 || config.MaxConcurrentChildTurnsPerParent > config.MaxConcurrentChildTurns {
 		return nil, errors.New("agent: child turn concurrency limits are invalid")
 	}
-	if sessions == nil || systemContext == nil || queues == nil {
-		return nil, errors.New("agent: session persistence, system context prompt, and queue manager are required")
+	if sessions == nil || systemPromptProvider == nil || queues == nil {
+		return nil, errors.New("agent: session persistence, system prompt provider, and queue manager are required")
 	}
 	if stateDirectories == nil || profiles == nil || modes == nil || providers == nil {
 		return nil, errors.New("agent: session dependencies are required")
@@ -164,7 +169,7 @@ func NewUserSessionWithModes(
 	if toolPanicLogger == nil {
 		toolPanicLogger = func(context.Context, string, string, any, []byte) {}
 	}
-	created := &userSession{config: config, sessions: sessions, systemContext: systemContext, queues: queues,
+	created := &userSession{config: config, sessions: sessions, systemPromptProvider: systemPromptProvider, queues: queues,
 		stateDirectories: stateDirectories, profiles: profiles, modes: modes, providers: providers, toolProviders: toolProviders,
 		toolAuthorizer: toolAuthorizer, toolErrorAdvisor: toolErrorAdvisor, workspace: workspace, outputs: outputs,
 		processes: processes, live: live, compactor: compactor, goals: goals, statusObserver: status,
@@ -264,7 +269,11 @@ func (s *userSession) ClaimInteractive(ctx context.Context, owner session.Intera
 		return session.InteractiveClaim{}, err
 	}
 	if _, err := s.repository.Get(claim.Session.ID); err != nil {
-		return session.InteractiveClaim{}, err
+		rollbacker, ok := s.sessions.(interactiveClaimRollbacker)
+		if !ok {
+			return session.InteractiveClaim{}, errors.Join(err, errors.New("agent: session runtime cannot roll back interactive claim"))
+		}
+		return session.InteractiveClaim{}, errors.Join(err, rollbacker.RollbackInteractiveClaim(ctx, owner, claim))
 	}
 	return claim, nil
 }
@@ -652,16 +661,16 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 
 	var (
 		user                                     *userSession
-		systemContext                            SystemContextPrompt
+		systemPromptProvider                     SystemPromptProvider
 		maxChildPromptBytes, maxChildResultBytes int
 	)
 	if r.user != nil {
 		user = r.user
-		systemContext = r.user.systemContext
+		systemPromptProvider = r.user.systemPromptProvider
 		maxChildPromptBytes, maxChildResultBytes = r.user.config.MaxChildPromptBytes, r.user.config.MaxChildResultBytes
 	}
 	candidate := newAgentSession(
-		dto, parent, user, r, store, systemContext, r.config,
+		dto, parent, user, r, store, r.config,
 		r.stateDirectories, r.profiles, r.modes, r.providers, r.workspace, r.outputs, r.processes,
 		r.live, r.compactor, r.goals, r.status, r.toolPanicLogger,
 		r.maxConcurrentChildTurns, r.observers, maxChildPromptBytes, maxChildResultBytes, r.events,
@@ -669,7 +678,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	rolledBack := false
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			err = fmt.Errorf("agent: materialize tools for session %s: panic: %v\n%s", dto.ID, recovered, debug.Stack())
+			err = fmt.Errorf("agent: bind session %s: panic: %v\n%s", dto.ID, recovered, debug.Stack())
 		}
 		if err != nil && rollback != nil {
 			if rollbackErr := rollback(); rollbackErr != nil {
@@ -708,7 +717,38 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	}
 	candidate.toolSnapshot = snapshot
 	candidate.toolExecutor = tool.Executor{Snapshot: snapshot, Permissions: r.toolAuthorizer, ErrorAdvisor: r.toolErrorAdvisor, MaxInputBytes: r.config.ToolMaxInputBytes, MaxOutputBytes: r.config.ToolMaxOutputBytes}
+	if systemPromptProvider == nil {
+		systemPromptProvider = emptySystemPrompt{}
+	}
+	candidate.systemPrompt, err = systemPromptProvider.MaterializeSystemPrompt(agentSystemContextSession{candidate})
+	if err != nil {
+		return nil, fmt.Errorf("agent: materialize system prompt for session %s: %w", dto.ID, err)
+	}
+	if candidate.systemPrompt == nil {
+		return nil, fmt.Errorf("agent: materialize system prompt for session %s: provider returned nil", dto.ID)
+	}
 	return candidate, nil
+}
+
+type emptySystemPrompt struct{}
+
+func (emptySystemPrompt) Key() string { return "agent:empty-system-prompt" }
+func (p emptySystemPrompt) MaterializeSystemPrompt(systemcontext.AgentSession) (systemcontext.SystemPrompt, error) {
+	return p, nil
+}
+func (emptySystemPrompt) GetSystemPrompt(context.Context, systemcontext.ModelSelection) (string, error) {
+	return "", nil
+}
+
+type agentSystemContextSession struct{ session *agentSession }
+
+func (s agentSystemContextSession) ModelSelector() string {
+	s.session.mu.Lock()
+	defer s.session.mu.Unlock()
+	return s.session.dto.Model
+}
+func (s agentSystemContextSession) ToolSystemGuidance() string {
+	return s.session.toolSnapshot.SystemPromptGuidance()
 }
 
 type agentToolSession struct{ session *agentSession }
