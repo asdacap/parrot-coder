@@ -13,7 +13,7 @@ import (
 
 func TestQueueCreateDescriptor(t *testing.T) {
 	descriptor := (&QueueTool{Kind: "queue_create"}).Descriptor()
-	if descriptor.SystemPromptGuidance != "Use queue when there are task with large count of input such as checking files manually one by one. Optionally create multiple publisher and multiple consumer for better throughput." {
+	if descriptor.SystemPromptGuidance != "When a task have many work item, use queue and multiple worker subagent. Publisher and consumer can be spawned at the same time." {
 		t.Fatalf("SystemPromptGuidance = %q", descriptor.SystemPromptGuidance)
 	}
 	if got := string(descriptor.Schema); !strings.Contains(got, `"pattern":"^[a-z0-9]+(-[a-z0-9]+)*$"`) {

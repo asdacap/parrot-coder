@@ -126,8 +126,12 @@ func TestAgentToolsContract(t *testing.T) {
 	}
 	call := CallContext{SessionID: "root", Agent: "build", ToolCallID: "call-1"}
 	spawn := tools[agentSpawnID]
-	if description := spawn.Descriptor().Description; !strings.Contains(description, "final result will automatically be sent to the caller") || !strings.Contains(description, "blocked") || !strings.Contains(description, "interrupt") {
+	spawnDescriptor := spawn.Descriptor()
+	if description := spawnDescriptor.Description; !strings.Contains(description, "final result will automatically be sent to the caller") || !strings.Contains(description, "blocked") || !strings.Contains(description, "interrupt") {
 		t.Fatalf("agent_spawn description = %q", description)
+	}
+	if guidance := spawnDescriptor.SystemPromptGuidance; guidance != "Do not duplicate work with agent_spawn. If an agent is already handling the work and is still running, wait for it to finish instead of spawning another agent for the same work." {
+		t.Fatalf("agent_spawn SystemPromptGuidance = %q", guidance)
 	}
 	if schema := string(spawn.JSONSchema()); !strings.Contains(schema, "friendly name for easy identification") || !strings.Contains(schema, "inherit the parent's complete selector") || strings.Contains(schema, "UI name") {
 		t.Fatalf("agent_spawn schema = %s", schema)
@@ -174,8 +178,12 @@ func TestAgentToolsContract(t *testing.T) {
 	if schema := string(send.JSONSchema()); !strings.Contains(schema, `"session_id"`) || !strings.Contains(schema, "friendly name") {
 		t.Fatalf("agent_send schema = %s", schema)
 	}
-	if description := send.Descriptor().Description; !strings.Contains(description, "direct parent or descendant") || !strings.Contains(description, "friendly name") {
+	sendDescriptor := send.Descriptor()
+	if description := sendDescriptor.Description; !strings.Contains(description, "direct parent or descendant") || !strings.Contains(description, "friendly name") {
 		t.Fatalf("agent_send description = %q", description)
+	}
+	if sendDescriptor.SystemPromptGuidance != "" {
+		t.Fatalf("agent_send SystemPromptGuidance = %q", sendDescriptor.SystemPromptGuidance)
 	}
 	request, err := send.DescribeRequest(json.RawMessage(`{"session_id":"parent","message":"status"}`))
 	if err != nil || request != `Send input to agent session "parent"` {
