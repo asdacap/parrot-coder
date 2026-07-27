@@ -28,6 +28,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/process"
 	"github.com/amirulashraf/parrot-coder/internal/session"
+	"github.com/amirulashraf/parrot-coder/internal/systemcontext"
 	managedtask "github.com/amirulashraf/parrot-coder/internal/task"
 	"github.com/amirulashraf/parrot-coder/internal/tool"
 )
@@ -61,18 +62,18 @@ func TestManagedTaskControllerPreservesTaskStateWhenWaitIsCanceled(t *testing.T)
 
 func TestAgentRecursionLimitPolicy(t *testing.T) {
 	modeProfiles := []agent.Profile{
-		agent.NewProfile(mode.BuildID, "build", nil, 64, 3, false, nil, nil),
-		agent.NewProfile(mode.PlanID, "plan", nil, 24, 1, true, nil, nil),
-		agent.NewProfile(mode.QueryID, "query", nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.BuildID, "build", "usage", nil, 64, 3, false, nil, nil),
+		agent.NewProfile(mode.PlanID, "plan", "usage", nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.QueryID, "query", "usage", nil, 24, 1, true, nil, nil),
 	}
 	modes, err := mode.NewRegistry(mode.Builtins(modeProfiles...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	agents, err := agent.NewRegistry(
-		agent.NewProfile(agent.ExplorerID, "explorer", nil, 32, 3, true, nil, nil),
-		agent.NewProfile(agent.ReviewID, "review", nil, 32, 3, true, nil, nil),
-		agent.NewProfile(agent.WorkerID, "worker", nil, 64, 3, false, nil, nil),
+		agent.NewProfile(agent.ExplorerID, "explorer", "usage", nil, 32, 3, true, nil, nil),
+		agent.NewProfile(agent.ReviewID, "review", "usage", nil, 32, 3, true, nil, nil),
+		agent.NewProfile(agent.WorkerID, "worker", "usage", nil, 64, 3, false, nil, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -329,6 +330,38 @@ func TestOpenDiscoversSkillsCommandsAndNeedsNoOptionalConfig(t *testing.T) {
 	if err != nil || expansion.Prompt != "Check this" {
 		t.Fatalf("command expansion = %#v, %v", expansion, err)
 	}
+}
+
+func TestConfiguredSubagentUsageReachesSystemContext(t *testing.T) {
+	profiles := []agent.Profile{
+		configuredProfile(agent.ExplorerID, config.Profile{Prompt: "explore", Usage: "Investigate focused questions.", MaxTurns: 1, Status: "status"}),
+		configuredProfile(agent.ReviewID, config.Profile{Prompt: "review", Usage: "Review requested changes.", MaxTurns: 1, Status: "status"}),
+		configuredProfile(agent.WorkerID, config.Profile{Prompt: "work", Usage: "Implement scoped work.", MaxTurns: 1, Status: "status"}),
+	}
+	registry, err := agent.NewRegistry(profiles...)
+	if err != nil {
+		t.Fatal(err)
+	}
+	subagents := make([]systemcontext.Subagent, 0, len(profiles))
+	for _, profile := range registry.List() {
+		subagents = append(subagents, systemcontext.Subagent{ID: profile.ID(), Usage: profile.Usage()})
+	}
+	root := t.TempDir()
+	sources, err := systemcontext.Builtins(systemcontext.BuiltinOptions{ProjectRoot: root, WorkingDirectory: root, Subagents: subagents})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range sources {
+		if source.Key() != "runtime:subagents" {
+			continue
+		}
+		observation, observeErr := source.Observe(context.Background())
+		if observeErr != nil || !strings.Contains(observation.Text, "- worker: Implement scoped work.") {
+			t.Fatalf("subagent context = %#v, %v", observation, observeErr)
+		}
+		return
+	}
+	t.Fatal("subagent context source is absent")
 }
 
 func TestOpenUsesConfiguredProfilesAndDefault(t *testing.T) {

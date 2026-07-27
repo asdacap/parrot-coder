@@ -13,13 +13,13 @@ func TestNewPreservesValuesAndDefensiveCopies(t *testing.T) {
 	sandboxRules := []security.Rule{{Path: "/workspace", Action: security.ActionAllowWrite}}
 	statusProvider := status.Static{ProviderKey: "profile:test", Text: "test status"}
 
-	profile := New("test", "test prompt", hardRules, 12, 2, true, sandboxRules, statusProvider)
+	profile := New("test", "test prompt", "test usage", hardRules, 12, 2, true, sandboxRules, statusProvider)
 	hardRules[0] = "mutated input"
 	sandboxRules[0].Path = "/mutated-input"
 
 	gotHardRules := profile.HardRules()
 	gotRules := profile.Rules()
-	if profile.ID() != "test" || profile.Prompt() != "test prompt" || profile.MaxTurns() != 12 || profile.RecursionLimit() != 2 || !profile.IsReadOnly() {
+	if profile.ID() != "test" || profile.Prompt() != "test prompt" || profile.Usage() != "test usage" || profile.MaxTurns() != 12 || profile.RecursionLimit() != 2 || !profile.IsReadOnly() {
 		t.Fatalf("profile values = (%q, %q, %d, %d, %t), want constructor values", profile.ID(), profile.Prompt(), profile.MaxTurns(), profile.RecursionLimit(), profile.IsReadOnly())
 	}
 	if len(gotHardRules) != 1 || gotHardRules[0] != "original rule" {

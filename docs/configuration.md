@@ -102,6 +102,7 @@ default_profile: build
 profiles:
   # Override one field while inheriting the rest from predefined_config.yaml.
   worker:
+    usage: Delegate independently scoped implementation work.
     max_turns: 96
 subagents:
   max_concurrent: 64
@@ -116,6 +117,14 @@ value replaces the complete lower-precedence prompt rather than appending to it;
 project configuration may override it. Therefore, an override that should retain
 the predefined Parrot identity or child-agent guidance must include that text
 explicitly.
+
+Each profile also has a required `usage` field. Like the other profile fields,
+`usage` is inherited from the predefined profile definition and can be overridden
+at higher precedence. It is concise selection guidance: the available subagent
+profiles and their usage are included in the parent agent's system context so it
+can choose an appropriate profile for delegation. The selected child receives its
+own profile prompt, hard rules, and status; those longer fields are not exposed as
+subagent selection guidance.
 
 The predefined prompt identifies Parrot and instructs it not to duplicate work
 with `agent_spawn`: if an agent is already handling the work and remains running,

@@ -59,6 +59,7 @@ type Subagents struct {
 // Profile configures one foreground mode or child agent profile.
 type Profile struct {
 	Prompt         string        `json:"prompt"`
+	Usage          string        `json:"usage"`
 	HardRules      []string      `json:"hard_rules"`
 	MaxTurns       int           `json:"max_turns"`
 	RecursionLimit int           `json:"recursion_limit"`
@@ -444,6 +445,9 @@ func validateProfiles(defaultProfile string, profiles map[string]Profile) error 
 		required[id] = true
 		if strings.TrimSpace(profile.Prompt) == "" {
 			return fmt.Errorf("%s.prompt is required", path)
+		}
+		if strings.TrimSpace(profile.Usage) == "" {
+			return fmt.Errorf("%s.usage is required", path)
 		}
 		if profile.MaxTurns <= 0 {
 			return fmt.Errorf("%s.max_turns must be greater than zero", path)

@@ -137,18 +137,28 @@ func (s *ModelAliasesSource) Observe(context.Context) (Observation, error) {
 	return Observation{Available: true, Text: strings.TrimSuffix(text.String(), "\n")}, nil
 }
 
+// Subagent describes a profile available for delegated work.
+type Subagent struct {
+	ID    string
+	Usage string
+}
+
 type SubagentsSource struct {
-	Available []string
+	Available []Subagent
 }
 
 func (SubagentsSource) Key() string { return "runtime:subagents" }
 
 func (s SubagentsSource) Observe(context.Context) (Observation, error) {
-	agents := "none"
-	if len(s.Available) > 0 {
-		agents = strings.Join(s.Available, ", ")
+	if len(s.Available) == 0 {
+		return Observation{Available: true, Text: "Available subagents: none"}, nil
 	}
-	return Observation{Available: true, Text: "Available subagents: " + agents}, nil
+	var text strings.Builder
+	text.WriteString("Available subagents; delegate according to their configured usage:\n")
+	for _, agent := range s.Available {
+		fmt.Fprintf(&text, "- %s: %s\n", agent.ID, agent.Usage)
+	}
+	return Observation{Available: true, Text: strings.TrimSuffix(text.String(), "\n")}, nil
 }
 
 type FileSource struct {
@@ -197,7 +207,7 @@ type BuiltinOptions struct {
 	ProjectID                     string
 	AvailableCLIUtilities         []string
 	AvailableOptionalCLIUtilities []string
-	Subagents                     []string
+	Subagents                     []Subagent
 	ModelAliases                  *ModelAliasesSource
 	Now                           func() time.Time
 }

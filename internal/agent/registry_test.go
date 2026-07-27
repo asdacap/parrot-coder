@@ -16,11 +16,11 @@ type mutableProfile struct{ Profile }
 
 func testProfiles() []Profile {
 	return []Profile{
-		NewProfile(BuildID, "build", []string{"rule"}, 64, 3, false, nil, nil),
-		NewProfile(PlanID, "plan", []string{"rule"}, 24, 1, true, nil, nil),
-		NewProfile(ExplorerID, "explorer", []string{"rule"}, 32, 3, true, nil, status.Static{ProviderKey: "profile:explorer"}),
-		NewProfile(ReviewID, "review", []string{"rule"}, 32, 3, true, nil, status.Static{ProviderKey: "profile:review"}),
-		NewProfile(WorkerID, "worker", []string{"rule"}, 64, 3, false, nil, status.Static{ProviderKey: "profile:worker"}),
+		NewProfile(BuildID, "build", "usage", []string{"rule"}, 64, 3, false, nil, nil),
+		NewProfile(PlanID, "plan", "usage", []string{"rule"}, 24, 1, true, nil, nil),
+		NewProfile(ExplorerID, "explorer", "usage", []string{"rule"}, 32, 3, true, nil, status.Static{ProviderKey: "profile:explorer"}),
+		NewProfile(ReviewID, "review", "usage", []string{"rule"}, 32, 3, true, nil, status.Static{ProviderKey: "profile:review"}),
+		NewProfile(WorkerID, "worker", "usage", []string{"rule"}, 64, 3, false, nil, status.Static{ProviderKey: "profile:worker"}),
 	}
 }
 
@@ -134,17 +134,17 @@ func TestListDoesNotExposeProfileSliceStorage(t *testing.T) {
 }
 
 func TestRegistrySnapshotsProfilesAndRejectsTypedNil(t *testing.T) {
-	source := &mutableProfile{Profile: NewProfile("original", "prompt", []string{"rule"}, 2, 1, true, nil, nil)}
+	source := &mutableProfile{Profile: NewProfile("original", "prompt", "original usage", []string{"rule"}, 2, 1, true, nil, nil)}
 	registry, err := NewRegistry(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source.Profile = NewProfile("mutated", "changed", nil, 99, 99, false, nil, nil)
+	source.Profile = NewProfile("mutated", "changed", "mutated usage", nil, 99, 99, false, nil, nil)
 	stored, err := registry.Get("original")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if stored.ID() != "original" || stored.Prompt() != "prompt" || stored.MaxTurns() != 2 || stored.RecursionLimit() != 1 || !stored.IsReadOnly() || !reflect.DeepEqual(stored.HardRules(), []string{"rule"}) {
+	if stored.ID() != "original" || stored.Prompt() != "prompt" || stored.Usage() != "original usage" || stored.MaxTurns() != 2 || stored.RecursionLimit() != 1 || !stored.IsReadOnly() || !reflect.DeepEqual(stored.HardRules(), []string{"rule"}) {
 		t.Fatalf("registered profile changed through source: %#v", stored)
 	}
 
@@ -155,7 +155,7 @@ func TestRegistrySnapshotsProfilesAndRejectsTypedNil(t *testing.T) {
 }
 
 func TestReadOnlyProfileIsReadOnly(t *testing.T) {
-	registry, err := NewRegistry(NewProfile("readonly", "read", nil, 1, 0, true, nil, nil))
+	registry, err := NewRegistry(NewProfile("readonly", "read", "usage", nil, 1, 0, true, nil, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

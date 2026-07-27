@@ -338,9 +338,9 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: subagents: %w", err)
 	}
-	subagentIDs := make([]string, 0, len(subagentProfiles))
+	subagents := make([]systemcontext.Subagent, 0, len(subagentProfiles))
 	for _, p := range taskAgents.List() {
-		subagentIDs = append(subagentIDs, p.ID())
+		subagents = append(subagents, systemcontext.Subagent{ID: p.ID(), Usage: p.Usage()})
 	}
 	identity, err := processidentity.Load(paths.State)
 	if err != nil {
@@ -480,7 +480,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		AgentPrompt:        loaded.Config.Prompt,
 		ToolSystemGuidance: toolSystemGuidance,
 		Skills:             skillMetadata(skills),
-		Subagents:          subagentIDs,
+		Subagents:          subagents,
 		ModelAliases:       modelAliasesSource,
 		ConfigDir:          paths.Config, ConfigPath: filepath.Join(paths.Config, config.FileName), PredefinedConfigPath: filepath.Join(paths.Config, config.PredefinedFileName), ProjectRoot: info.Root, WorkingDirectory: cwd, ProjectID: info.ID,
 		AvailableCLIUtilities: availableCLIUtilities, AvailableOptionalCLIUtilities: availableOptionalCLIUtilities,
@@ -615,7 +615,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 }
 
 func configuredProfile(id string, configured config.Profile) agent.Profile {
-	return agent.NewProfile(id, configured.Prompt, configured.HardRules, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules), statusinfo.Static{ProviderKey: "profile:" + id, Text: configured.Status})
+	return agent.NewProfile(id, configured.Prompt, configured.Usage, configured.HardRules, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules), statusinfo.Static{ProviderKey: "profile:" + id, Text: configured.Status})
 }
 
 // Project configuration may select models and override model metadata, but it

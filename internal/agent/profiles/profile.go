@@ -18,6 +18,7 @@ type Profile interface {
 
 	ID() string
 	Prompt() string
+	Usage() string
 	HardRules() []string
 	MaxTurns() int
 	RecursionLimit() int
@@ -27,6 +28,7 @@ type Profile interface {
 type profile struct {
 	id             string
 	prompt         string
+	usage          string
 	hardRules      []string
 	maxTurns       int
 	recursionLimit int
@@ -36,10 +38,11 @@ type profile struct {
 }
 
 // New constructs an immutable Profile.
-func New(id, prompt string, hardRules []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule, statusProvider status.Provider) Profile {
+func New(id, prompt, usage string, hardRules []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule, statusProvider status.Provider) Profile {
 	return profile{
 		id:             id,
 		prompt:         prompt,
+		usage:          usage,
 		hardRules:      append([]string(nil), hardRules...),
 		maxTurns:       maxTurns,
 		recursionLimit: recursionLimit,
@@ -51,6 +54,7 @@ func New(id, prompt string, hardRules []string, maxTurns, recursionLimit int, re
 
 func (p profile) ID() string              { return p.id }
 func (p profile) Prompt() string          { return p.prompt }
+func (p profile) Usage() string           { return p.usage }
 func (p profile) MaxTurns() int           { return p.maxTurns }
 func (p profile) RecursionLimit() int     { return p.recursionLimit }
 func (p profile) IsReadOnly() bool        { return p.readOnly }

@@ -237,12 +237,17 @@ func TestFileSourceRejectsOversizedInput(t *testing.T) {
 }
 
 func TestSubagentsSourceListsAvailableSubagents(t *testing.T) {
-	observation, err := (SubagentsSource{Available: []string{"explorer", "review", "worker"}}).Observe(context.Background())
+	observation, err := (SubagentsSource{Available: []Subagent{
+		{ID: "explorer", Usage: "investigate"},
+		{ID: "review", Usage: "review changes"},
+		{ID: "worker", Usage: "implement"},
+	}}).Observe(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if observation.Text != "Available subagents: explorer, review, worker" {
-		t.Fatalf("baseline = %q", observation.Text)
+	want := "Available subagents; delegate according to their configured usage:\n- explorer: investigate\n- review: review changes\n- worker: implement"
+	if observation.Text != want {
+		t.Fatalf("baseline = %q, want %q", observation.Text, want)
 	}
 }
 
@@ -261,14 +266,14 @@ func TestBuiltinsIncludeSubagentsSource(t *testing.T) {
 	sources, err := Builtins(BuiltinOptions{
 		ProjectRoot:      root,
 		WorkingDirectory: root,
-		Subagents:        []string{"explorer", "worker"},
+		Subagents:        []Subagent{{ID: "explorer", Usage: "investigate"}, {ID: "worker", Usage: "implement"}},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	snapshot := observeSources(t, sources)
 	observation, ok := snapshot["runtime:subagents"]
-	if !ok || observation.Text != "Available subagents: explorer, worker" {
+	if !ok || observation.Text != "Available subagents; delegate according to their configured usage:\n- explorer: investigate\n- worker: implement" {
 		t.Fatalf("subagent observation = %#v", observation)
 	}
 }

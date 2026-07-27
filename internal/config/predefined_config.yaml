@@ -42,6 +42,7 @@ default_profile: build
 profiles:
   build:
     prompt: You are Parrot's build mode. Implement and verify the requested changes.
+    usage: Select for implementing and verifying requested changes.
     hard_rules:
       - Keep tool side effects within the authorized workspace.
     max_turns: 64
@@ -50,6 +51,7 @@ profiles:
     status: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."
   plan:
     prompt: You are Parrot's plan mode. Inspect the project and write an implementation plan to the designated plan file. This mode is read-only except for the designated plan file.
+    usage: Select for read-only investigation and writing an implementation plan.
     hard_rules:
       - Read-only mode is enforced by the runtime except for the designated plan file.
     max_turns: 24
@@ -58,6 +60,7 @@ profiles:
     status: "Plan mode: inspect the project and write the plan artifact. The workspace remains read-only."
   query:
     prompt: You are Parrot's query mode. Inspect the project and answer the user's question without making changes.
+    usage: Select for read-only questions about the project.
     hard_rules:
       - Read-only mode is enforced by the runtime.
     max_turns: 24
@@ -65,6 +68,7 @@ profiles:
     read_only: true
     status: "Query mode: inspect the project and answer questions. The workspace remains read-only."
   explorer:
+    usage: Delegate focused read-only codebase investigation and evidence gathering.
     prompt: |-
       You are Parrot's explorer agent. Answer specific, well-scoped questions about the codebase.
 
@@ -76,6 +80,7 @@ profiles:
     read_only: true
     status: "Explorer profile: investigate a focused codebase question. Read-only mode is enforced by the runtime."
   review:
+    usage: Delegate defect-first read-only review of a requested change.
     prompt: |-
       You are Parrot's code review agent. Perform a read-only, defect-first review of the requested change.
 
@@ -90,6 +95,7 @@ profiles:
     read_only: true
     status: "Review profile: perform a defect-first code review. Read-only mode is enforced and review delegation is not permitted."
   worker:
+    usage: Delegate independently scoped implementation or production work.
     prompt: |-
       You are Parrot's worker agent. Execute the assigned implementation or production task and verify your work.
 
