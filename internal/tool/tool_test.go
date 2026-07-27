@@ -298,6 +298,51 @@ func TestDefinitionsCarryNoPresentationDetail(t *testing.T) {
 	}
 }
 
+func TestSnapshotOnly(t *testing.T) {
+	r := NewRegistry()
+	for _, id := range []string{"a", "b", "c"} {
+		if err := r.Register(testTool{id: id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot := r.Materialize()
+
+	for _, test := range []struct {
+		name    string
+		allowed []string
+		want    []string
+	}{
+		{name: "nil allows all", want: []string{"a", "b", "c"}},
+		{name: "empty allows none", allowed: []string{}, want: []string{}},
+		{name: "allowlist intersects known tools", allowed: []string{"c", "unknown", "a", "a"}, want: []string{"a", "c"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			filtered := snapshot.Only(test.allowed)
+			definitions := filtered.Definitions()
+			if len(definitions) != len(test.want) {
+				t.Fatalf("definitions = %#v, want IDs %v", definitions, test.want)
+			}
+			for i, id := range test.want {
+				if definitions[i].ID != id {
+					t.Fatalf("definitions = %#v, want IDs %v", definitions, test.want)
+				}
+			}
+		})
+	}
+
+	filtered := snapshot.Only([]string{"a"})
+	if len(snapshot.Definitions()) != 3 {
+		t.Fatal("original snapshot was modified")
+	}
+	executor := Executor{Snapshot: filtered}
+	if _, err := executor.Execute(context.Background(), "b", json.RawMessage(`{"value":"x"}`), CallContext{}); err == nil {
+		t.Fatal("tool outside allowlist was executable")
+	}
+	if _, err := executor.Execute(context.Background(), "a", json.RawMessage(`{"value":"x"}`), CallContext{}); err != nil {
+		t.Fatalf("allowed tool was rejected: %v", err)
+	}
+}
+
 func TestSnapshotWithout(t *testing.T) {
 	r := NewRegistry()
 	for _, id := range []string{"a", "b", "c", "d"} {

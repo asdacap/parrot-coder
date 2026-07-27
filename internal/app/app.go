@@ -616,7 +616,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 }
 
 func configuredProfile(id string, configured config.Profile) agent.Profile {
-	return agent.NewProfile(id, configured.Prompt, configured.Usage, configured.HardRules, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules), statusinfo.Static{ProviderKey: "profile:" + id, Text: configured.Status})
+	return agent.NewProfile(id, configured.Prompt, configured.Usage, configured.HardRules, configured.AllowedTools, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules), statusinfo.Static{ProviderKey: "profile:" + id, Text: configured.Status})
 }
 
 // Project configuration may select models and override model metadata, but it
@@ -634,7 +634,7 @@ func validateConfigTrust(loaded config.Result) error {
 		}
 		restricted := strings.HasPrefix(field, "mcp.") || field == "default_profile" ||
 			field == "sandbox_rules" || strings.HasPrefix(field, "sandbox_rules.") ||
-			strings.HasPrefix(field, "profiles.") && (strings.Contains(field, ".sandbox_rules") || strings.HasSuffix(field, ".read_only")) ||
+			strings.HasPrefix(field, "profiles.") && (strings.Contains(field, ".sandbox_rules") || strings.Contains(field, ".allowed_tools") || strings.HasSuffix(field, ".read_only")) ||
 			field == "web_fetch.allow_private"
 		if strings.HasPrefix(field, "providers.") {
 			parts := strings.Split(field, ".")

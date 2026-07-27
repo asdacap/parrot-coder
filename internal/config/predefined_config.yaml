@@ -39,6 +39,9 @@ default_profile: build
 
 # Foreground modes and child-agent profiles. Higher-precedence configuration can
 # override individual fields while inheriting the rest of each definition.
+# Optional allowed_tools semantics: omitted allows every otherwise-available
+# tool, a nonempty list allows only those IDs, and [] allows no tools. No
+# predefined profile sets an allowlist.
 profiles:
   build:
     prompt: You are Parrot's build mode. Implement and verify the requested changes.

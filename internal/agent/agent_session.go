@@ -972,6 +972,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
 		r.securityProfile.AddCapability(security.Rule{Path: r.user.queues.Directory(), Action: security.ActionAllowRead})
 	}
+	activeTools := r.toolSnapshot.Only(profile.AllowedTools())
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -1047,7 +1048,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			return err
 		}
 
-		definitions := toolDefinitions(r.toolSnapshot)
+		definitions := toolDefinitions(activeTools)
 		turn++
 		maxTurnsReached := turn >= profile.MaxTurns()
 		instructions := runnerInstructions(systemPrompt, epoch.SummaryPrompt, scratchPath, r.user.queues.Directory(), maxTurnsReached)
@@ -1117,7 +1118,7 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 			if turn >= profile.MaxTurns() {
 				return errors.New("agent: provider returned tools after max-turn tool omission")
 			}
-			if err := r.executeTools(ctx, selected, profile, calls); err != nil {
+			if err := r.executeTools(ctx, selected, profile, activeTools, calls); err != nil {
 				return err
 			}
 			if r.goals != nil {
@@ -1380,8 +1381,9 @@ func (r *agentSession) settleTool(ctx context.Context, callID, status string, re
 	return r.store.SettleToolWithOutput(ctx, callID, status, result.Text, errorText, tail)
 }
 
-func (r *agentSession) executeTools(ctx context.Context, selected session.AgentSessionDto, profile Profile, calls []completedCall) error {
+func (r *agentSession) executeTools(ctx context.Context, selected session.AgentSessionDto, profile Profile, activeTools tool.Snapshot, calls []completedCall) error {
 	executor := r.toolExecutor
+	executor.Snapshot = activeTools
 	statusQuery := r.statusQuery(selected, profile)
 	sem := make(chan struct{}, r.config.MaxConcurrentTools)
 	outcomes := make([]toolOutcome, len(calls))

@@ -380,6 +380,26 @@ func (s Snapshot) Definitions() []Definition {
 	return out
 }
 
+// Only returns a new Snapshot containing only the specified tool IDs.
+// A nil allowlist leaves the Snapshot unchanged, while a non-nil empty
+// allowlist removes every tool.
+func (s Snapshot) Only(allowed []string) Snapshot {
+	if allowed == nil {
+		return s
+	}
+	allowlist := make(map[string]struct{}, len(allowed))
+	for _, id := range allowed {
+		allowlist[id] = struct{}{}
+	}
+	tools := make(map[string]Tool, len(allowlist))
+	for id, t := range s.tools {
+		if _, ok := allowlist[id]; ok {
+			tools[id] = t
+		}
+	}
+	return Snapshot{tools: tools, definitions: definitions(tools)}
+}
+
 // Without returns a new Snapshot with the specified tool IDs removed.
 // It returns the same Snapshot when the blacklist is empty.
 func (s Snapshot) Without(blacklisted []string) Snapshot {

@@ -682,9 +682,9 @@ func testPlanCompletedDto() v1.PlanCompletedDto {
 func testModeList(t *testing.T) v1.ModeList {
 	t.Helper()
 	registry, err := mode.NewRegistry(mode.Builtins(
-		agent.NewProfile(mode.BuildID, "build", "usage", nil, 64, 3, false, nil, nil),
-		agent.NewProfile(mode.PlanID, "plan", "usage", nil, 24, 1, true, nil, nil),
-		agent.NewProfile(mode.QueryID, "query", "usage", nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.BuildID, "build", "usage", nil, nil, 64, 3, false, nil, nil),
+		agent.NewProfile(mode.PlanID, "plan", "usage", nil, nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.QueryID, "query", "usage", nil, nil, 24, 1, true, nil, nil),
 	)...)
 	if err != nil {
 		t.Fatal(err)

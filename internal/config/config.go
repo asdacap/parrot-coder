@@ -64,6 +64,7 @@ type Profile struct {
 	RecursionLimit int           `json:"recursion_limit"`
 	ReadOnly       bool          `json:"read_only"`
 	Status         string        `json:"status"`
+	AllowedTools   []string      `json:"allowed_tools,omitempty"`
 	SandboxRules   []SandboxRule `json:"sandbox_rules,omitempty"`
 }
 
@@ -469,6 +470,19 @@ func validateProfiles(defaultProfile string, profiles map[string]Profile) error 
 		}
 		if strings.TrimSpace(profile.Status) == "" {
 			return fmt.Errorf("%s.status is required", path)
+		}
+		allowedTools := make(map[string]struct{}, len(profile.AllowedTools))
+		for index, id := range profile.AllowedTools {
+			if id == "" {
+				return fmt.Errorf("%s.allowed_tools.%d must not be empty", path, index)
+			}
+			if strings.TrimSpace(id) != id {
+				return fmt.Errorf("%s.allowed_tools.%d must not have surrounding whitespace", path, index)
+			}
+			if _, exists := allowedTools[id]; exists {
+				return fmt.Errorf("%s.allowed_tools.%d duplicates %q", path, index, id)
+			}
+			allowedTools[id] = struct{}{}
 		}
 		for index, rule := range profile.SandboxRules {
 			if strings.TrimSpace(rule.Path) == "" {

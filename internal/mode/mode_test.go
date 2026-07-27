@@ -22,9 +22,9 @@ func (p profileWithRules) Rules() []security.Rule { return append([]security.Rul
 
 func testModeProfiles() []agent.Profile {
 	return []agent.Profile{
-		agent.NewProfile(BuildID, "build", "usage", []string{"rule"}, 64, 3, false, nil, status.Static{ProviderKey: "profile:build"}),
-		agent.NewProfile(PlanID, "plan profile", "usage", []string{"rule"}, 24, 1, true, nil, status.Static{ProviderKey: "profile:plan"}),
-		agent.NewProfile(QueryID, "query", "usage", []string{"rule"}, 24, 1, true, nil, status.Static{ProviderKey: "profile:query"}),
+		agent.NewProfile(BuildID, "build", "usage", []string{"rule"}, nil, 64, 3, false, nil, status.Static{ProviderKey: "profile:build"}),
+		agent.NewProfile(PlanID, "plan profile", "usage", []string{"rule"}, nil, 24, 1, true, nil, status.Static{ProviderKey: "profile:plan"}),
+		agent.NewProfile(QueryID, "query", "usage", []string{"rule"}, nil, 24, 1, true, nil, status.Static{ProviderKey: "profile:query"}),
 	}
 }
 

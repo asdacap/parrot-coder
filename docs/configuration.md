@@ -104,6 +104,10 @@ profiles:
   worker:
     usage: Delegate independently scoped implementation work.
     max_turns: 96
+    # Omit for all otherwise-available tools; [] allows none.
+    allowed_tools:
+      - exec_command
+      - read
 tool_blacklist:
   web_fetch: true
 subagents:
@@ -198,15 +202,28 @@ defaults to `build` in `predefined_config.yaml`.
 The `profiles` map configures the foreground profiles `build`, `plan`, and
 `query`, plus the child-agent profiles `explorer`, `review`, and `worker`.
 Each entry supports `prompt`, `hard_rules`, `max_turns`, `recursion_limit`,
-`read_only`, `status`, and ordered `sandbox_rules`. A profile prompt or status
-must be non-empty, `max_turns` must be positive, and `recursion_limit` cannot be
-negative. `default_profile`, profile `read_only` values, and profile sandbox
-rules are security policy and require global configuration. Profile sandbox
-rules use the same `path` and `rule` fields as the top-level sandbox rules.
+`read_only`, `status`, ordered `sandbox_rules`, and `allowed_tools`. A profile
+prompt or status must be non-empty, `max_turns` must be positive, and
+`recursion_limit` cannot be negative. `default_profile`, profile `read_only`
+values, profile sandbox rules, and profile tool restrictions are security
+policy and require global configuration. Project configuration cannot set
+`allowed_tools`. Profile sandbox rules use the same `path` and `rule` fields as
+the top-level sandbox rules.
+
+When `allowed_tools` is omitted, the profile allows every tool otherwise
+available to the session. A nonempty list allows only the specified tool IDs,
+and an explicit `allowed_tools: []` allows no tools. This restriction intersects
+with `tool_blacklist` and session-level tool availability; it cannot restore a
+tool excluded by either. Blank or whitespace-only IDs and duplicate IDs cause a
+configuration error. Unknown IDs are valid but remain unavailable unless a tool
+with that ID exists in the session. No predefined profile has an allowlist,
+including `review`; its hard rule against delegating reviews is an instruction
+rather than a built-in default tool restriction.
 
 Profile entries merge recursively across configuration scopes. For example,
 setting only `profiles.worker.max_turns` retains the predefined worker prompt,
-hard rules, security policy, status, and recursion limit. The generated
+hard rules, security policy, status, recursion limit, and omitted
+`allowed_tools` policy. The generated
 `predefined_config.yaml` contains the complete defaults and remains the source
 of runtime profile values; `parrot.yaml` only needs to contain overrides.
 

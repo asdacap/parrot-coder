@@ -20,6 +20,7 @@ type Profile interface {
 	Prompt() string
 	Usage() string
 	HardRules() []string
+	AllowedTools() []string
 	MaxTurns() int
 	RecursionLimit() int
 	Status() status.Provider
@@ -30,6 +31,7 @@ type profile struct {
 	prompt         string
 	usage          string
 	hardRules      []string
+	allowedTools   []string
 	maxTurns       int
 	recursionLimit int
 	readOnly       bool
@@ -38,12 +40,13 @@ type profile struct {
 }
 
 // New constructs an immutable Profile.
-func New(id, prompt, usage string, hardRules []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule, statusProvider status.Provider) Profile {
+func New(id, prompt, usage string, hardRules, allowedTools []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule, statusProvider status.Provider) Profile {
 	return profile{
 		id:             id,
 		prompt:         prompt,
 		usage:          usage,
 		hardRules:      append([]string(nil), hardRules...),
+		allowedTools:   cloneStrings(allowedTools),
 		maxTurns:       maxTurns,
 		recursionLimit: recursionLimit,
 		readOnly:       readOnly,
@@ -60,4 +63,12 @@ func (p profile) RecursionLimit() int     { return p.recursionLimit }
 func (p profile) IsReadOnly() bool        { return p.readOnly }
 func (p profile) Status() status.Provider { return p.statusProvider }
 func (p profile) HardRules() []string     { return append([]string(nil), p.hardRules...) }
+func (p profile) AllowedTools() []string  { return cloneStrings(p.allowedTools) }
 func (p profile) Rules() []security.Rule  { return append([]security.Rule(nil), p.sandboxRules...) }
+
+func cloneStrings(value []string) []string {
+	if value == nil {
+		return nil
+	}
+	return append(make([]string, 0, len(value)), value...)
+}

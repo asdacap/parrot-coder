@@ -63,18 +63,18 @@ func TestManagedTaskControllerPreservesTaskStateWhenWaitIsCanceled(t *testing.T)
 
 func TestAgentRecursionLimitPolicy(t *testing.T) {
 	modeProfiles := []agent.Profile{
-		agent.NewProfile(mode.BuildID, "build", "usage", nil, 64, 3, false, nil, nil),
-		agent.NewProfile(mode.PlanID, "plan", "usage", nil, 24, 1, true, nil, nil),
-		agent.NewProfile(mode.QueryID, "query", "usage", nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.BuildID, "build", "usage", nil, nil, 64, 3, false, nil, nil),
+		agent.NewProfile(mode.PlanID, "plan", "usage", nil, nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.QueryID, "query", "usage", nil, nil, 24, 1, true, nil, nil),
 	}
 	modes, err := mode.NewRegistry(mode.Builtins(modeProfiles...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	agents, err := agent.NewRegistry(
-		agent.NewProfile(agent.ExplorerID, "explorer", "usage", nil, 32, 3, true, nil, nil),
-		agent.NewProfile(agent.ReviewID, "review", "usage", nil, 32, 3, true, nil, nil),
-		agent.NewProfile(agent.WorkerID, "worker", "usage", nil, 64, 3, false, nil, nil),
+		agent.NewProfile(agent.ExplorerID, "explorer", "usage", nil, nil, 32, 3, true, nil, nil),
+		agent.NewProfile(agent.ReviewID, "review", "usage", nil, nil, 32, 3, true, nil, nil),
+		agent.NewProfile(agent.WorkerID, "worker", "usage", nil, nil, 64, 3, false, nil, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -352,6 +352,20 @@ func TestOpenDiscoversSkillsCommandsAndNeedsNoOptionalConfig(t *testing.T) {
 	expansion, err := runtime.Commands.Expand("check", "this")
 	if err != nil || expansion.Prompt != "Check this" {
 		t.Fatalf("command expansion = %#v, %v", expansion, err)
+	}
+}
+
+func TestConfiguredProfilePreservesAllowedTools(t *testing.T) {
+	configured := []string{"read", "rg"}
+	profile := configuredProfile("restricted", config.Profile{Prompt: "prompt", Usage: "usage", AllowedTools: configured, MaxTurns: 1, Status: "status"})
+	configured[0] = "mutated"
+	allowed := profile.AllowedTools()
+	if !reflect.DeepEqual(allowed, []string{"read", "rg"}) {
+		t.Fatalf("AllowedTools() = %#v", allowed)
+	}
+	allowed[0] = "mutated"
+	if !reflect.DeepEqual(profile.AllowedTools(), []string{"read", "rg"}) {
+		t.Fatal("configured profile exposed allowed tool storage")
 	}
 }
 
@@ -848,6 +862,8 @@ func TestProjectConfigCannotIntroduceExternalCapabilities(t *testing.T) {
 		"sandbox_rules.0.path",
 		"sandbox_rules.0.rule",
 		"profiles.worker.sandbox_rules.0.path",
+		"profiles.worker.allowed_tools",
+		"profiles.worker.allowed_tools.0",
 		"profiles.worker.read_only",
 		"default_profile",
 	} {
