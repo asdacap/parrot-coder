@@ -2508,14 +2508,108 @@ func TestRunnerCancellationDuringProviderStreamDropsUnexecutedToolCalls(t *testi
 	}
 }
 
+type lifecycleMode struct {
+	profile  Profile
+	starts   atomic.Int32
+	finishes atomic.Int32
+}
+
+func (m *lifecycleMode) OnTurnStart(string) (TurnProfile, error) {
+	m.starts.Add(1)
+	return NewTurnProfile(m.profile), nil
+}
+func (m *lifecycleMode) OnTurnFinish(sessionID, messageID string) ([]event.BrokerEvent, error) {
+	m.finishes.Add(1)
+	return []event.BrokerEvent{{Name: event.PlanCompleted, Payload: event.PlanCompletedPayload{SessionID: sessionID, MessageID: messageID, Markdown: "plan"}}}, nil
+}
+
+type fixedModeResolver struct{ mode Mode }
+
+func (r fixedModeResolver) Get(string) (Mode, error) { return r.mode, nil }
+
+type recordingEventBroker struct {
+	mu    sync.Mutex
+	items []event.BrokerEvent
+}
+
+func (b *recordingEventBroker) Publish(item event.BrokerEvent) func() {
+	b.mu.Lock()
+	b.items = append(b.items, item)
+	b.mu.Unlock()
+	return func() {}
+}
+func (b *recordingEventBroker) names() []event.Name {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	result := make([]event.Name, len(b.items))
+	for i, item := range b.items {
+		result[i] = item.Name
+	}
+	return result
+}
+
+func TestAgentSessionInvokesModeLifecycleOnce(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		provider   *fakeProvider
+		wantFinish int32
+	}{
+		{name: "success", provider: &fakeProvider{stream: func(int, context.Context, protocol.Request) (provider.Stream, error) {
+			return events(protocol.Event{Type: protocol.EventTextDelta, Text: "done"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
+		}}, wantFinish: 1},
+		{name: "provider failure", provider: &fakeProvider{stream: func(int, context.Context, protocol.Request) (provider.Stream, error) {
+			return nil, errors.New("provider failed")
+		}}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newRunnerHarness(t, test.provider, nil)
+			profile, err := h.runner.profiles.GetProfile(BuildID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lifecycle := &lifecycleMode{profile: profile}
+			h.runner.modes = fixedModeResolver{mode: lifecycle}
+			broker := &recordingEventBroker{}
+			h.runner.events = broker
+			_, _ = h.runner.Prompt(t.Context(), "work")
+			if lifecycle.starts.Load() != 1 || lifecycle.finishes.Load() != test.wantFinish {
+				t.Fatalf("lifecycle calls = start %d, finish %d", lifecycle.starts.Load(), lifecycle.finishes.Load())
+			}
+			names := broker.names()
+			planIndex, finishedIndex := -1, -1
+			for i, name := range names {
+				if name == event.PlanCompleted {
+					planIndex = i
+				}
+				if name == event.TurnFinished {
+					finishedIndex = i
+				}
+			}
+			if test.wantFinish == 1 && (planIndex < 0 || finishedIndex < 0 || planIndex >= finishedIndex) {
+				t.Fatalf("event order = %#v", names)
+			}
+			if test.wantFinish == 0 && planIndex >= 0 {
+				t.Fatalf("failure events = %#v", names)
+			}
+		})
+	}
+}
+
 type preparedProfileResolver struct{ base Profile }
 
 func (*preparedProfileResolver) GetProfile(string) (Profile, error) {
-	return nil, errors.New("GetProfile called before PrepareTurn")
+	return nil, errors.New("GetProfile called before mode lifecycle")
 }
-func (r *preparedProfileResolver) PrepareTurn(string, string) (TurnProfile, error) {
-	return NewTurnProfile(r.base, security.Rule{Path: "/tmp/plan.md", Action: security.ActionAllowWrite}), nil
+func (r *preparedProfileResolver) Get(string) (Mode, error) {
+	return preparedProfileMode{base: r.base}, nil
 }
+
+type preparedProfileMode struct{ base Profile }
+
+func (m preparedProfileMode) OnTurnStart(string) (TurnProfile, error) {
+	return NewTurnProfile(m.base, security.Rule{Path: "/tmp/plan.md", Action: security.ActionAllowWrite}), nil
+}
+func (preparedProfileMode) OnTurnFinish(string, string) ([]event.BrokerEvent, error) { return nil, nil }
 
 type profileCaptureTool struct {
 	fakeTool
@@ -2549,6 +2643,7 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 	h := newRunnerHarness(t, fake, []Profile{base}, &fakeTool{id: "status"}, capture)
 	resolver := &preparedProfileResolver{base: base}
 	h.runner.profiles = resolver
+	h.runner.modes = resolver
 	h.admit(t, "user", "plan", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)

@@ -43,12 +43,6 @@ type Expansion struct {
 	Subtask              bool
 }
 
-type TurnComplete struct {
-	Session   v1.Session
-	Mode      string
-	MessageID string
-}
-
 type TurnCompleteDialog struct {
 	Markdown     string
 	Prompt       string
@@ -96,7 +90,7 @@ type Config struct {
 	CommitError        func(string)
 	Expand             func(string, string) (Expansion, error)
 	Slash              func(string, string) (bool, int)
-	OnTurnComplete     func(TurnComplete) *TurnCompleteDialog
+	OnTurnComplete     func(v1.PlanCompletedDto) *TurnCompleteDialog
 }
 
 type Result struct {

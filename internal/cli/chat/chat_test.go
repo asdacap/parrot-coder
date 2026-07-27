@@ -20,7 +20,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/app"
 	"github.com/amirulashraf/parrot-coder/internal/auth"
 	"github.com/amirulashraf/parrot-coder/internal/cli/chatview"
-	"github.com/amirulashraf/parrot-coder/internal/cli/enhancedchat"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	configpkg "github.com/amirulashraf/parrot-coder/internal/config"
@@ -478,13 +477,9 @@ type effortSwitchAPI struct {
 
 type agentModeAPI struct {
 	apiClient
-	agents            v1.AgentList
-	modes             v1.ModeList
-	completion        v1.TurnCompletion
-	completionErr     error
-	completionSession string
-	completionMessage string
-	updates           []v1.UpdateSessionSelectionRequest
+	agents  v1.AgentList
+	modes   v1.ModeList
+	updates []v1.UpdateSessionSelectionRequest
 }
 
 type catalogOnlyAPI struct {
@@ -619,47 +614,16 @@ func (a *agentModeAPI) Agents(context.Context) (v1.AgentList, error) { return a.
 
 func (a *agentModeAPI) Modes(context.Context) (v1.ModeList, error) { return a.modes, nil }
 
-func (a *agentModeAPI) TurnCompletion(_ context.Context, sessionID, messageID string) (v1.TurnCompletion, error) {
-	a.completionSession = sessionID
-	a.completionMessage = messageID
-	return a.completion, a.completionErr
-}
-
 func (a *agentModeAPI) UpdateSessionSelection(_ context.Context, _ string, request v1.UpdateSessionSelectionRequest) (v1.SessionSelection, error) {
 	a.updates = append(a.updates, request)
 	return v1.SessionSelection{Agent: request.Agent}, nil
 }
 
-func TestPlanTurnCompleteUsesWrittenArtifact(t *testing.T) {
-	result := mode.TurnCompleteResult{Dialog: &mode.TurnCompleteDialog{Markdown: "# Written plan\n\n- change code", Prompt: "Plan complete: "}}
-	raw, err := json.Marshal(result)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, test := range []struct {
-		name       string
-		completion v1.TurnCompletion
-		err        error
-		wantPlan   string
-		wantError  bool
-	}{
-		{name: "artifact", completion: v1.TurnCompletion{TurnComplete: raw}, wantPlan: result.Dialog.Markdown},
-		{name: "empty result is authoritative"},
-		{name: "retrieval error", err: errors.New("artifact unavailable"), wantError: true},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			api := &agentModeAPI{modes: testModeList(t), completion: test.completion, completionErr: test.err}
-			var output bytes.Buffer
-			shell := &chatShell{ctx: context.Background(), api: api, stderr: &output}
-
-			dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.PlanID, Session: v1.Session{ID: "session"}, MessageID: "message"})
-			if (dialog != nil) != (test.wantPlan != "") || dialog != nil && dialog.Markdown != test.wantPlan || api.completionSession != "session" || api.completionMessage != "message" {
-				t.Fatalf("dialog=%#v completion request=%q/%q", dialog, api.completionSession, api.completionMessage)
-			}
-			if strings.Contains(output.String(), "artifact unavailable") != test.wantError {
-				t.Fatalf("error output = %q", output.String())
-			}
-		})
+func TestPlanTurnCompleteUsesEventArtifact(t *testing.T) {
+	shell := &chatShell{ctx: context.Background(), api: &agentModeAPI{}}
+	dialog := shell.onTurnComplete(v1.PlanCompletedDto{Markdown: "# Written plan\n\n- change code", Dialog: &v1.TurnCompleteDialogDto{Prompt: "Plan complete: "}})
+	if dialog == nil || dialog.Markdown != "# Written plan\n\n- change code" {
+		t.Fatalf("dialog = %#v", dialog)
 	}
 }
 
@@ -678,7 +642,7 @@ func TestPlanTurnCompletePolicy(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			api := &agentModeAPI{modes: testModeList(t)}
 			shell := &chatShell{ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: mode.PlanID}, selection: chatSelection{agent: mode.PlanID}}
-			dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.PlanID})
+			dialog := shell.onTurnComplete(testPlanCompletedDto())
 			if dialog == nil || dialog.Handle == nil || len(dialog.Context) != 1 || len(dialog.Choices) != 3 || dialog.CustomChoice != "feedback" || dialog.CustomPrompt != "plan feedback: " {
 				t.Fatalf("dialog = %#v", dialog)
 			}
@@ -699,13 +663,22 @@ func TestPlanTurnCompletePolicy(t *testing.T) {
 	}
 
 	shell := &chatShell{ctx: context.Background(), api: &agentModeAPI{modes: testModeList(t)}}
-	if dialog := shell.onTurnComplete(enhancedchat.TurnComplete{Mode: mode.BuildID}); dialog != nil {
+	if dialog := shell.onTurnComplete(v1.PlanCompletedDto{}); dialog != nil {
 		t.Fatalf("build completion dialog = %#v", dialog)
 	}
 }
 
-// testModeList builds a v1.ModeList from the built-in mode registry, carrying
-// each mode's declared turn-complete behavior as the backend would.
+func testPlanCompletedDto() v1.PlanCompletedDto {
+	return v1.PlanCompletedDto{Dialog: &v1.TurnCompleteDialogDto{
+		Prompt: "Plan complete: ", Context: []string{"Review the plan before implementation."},
+		Choices: []v1.DialogChoiceDto{
+			{Value: "yes", Description: "Implement the approved plan", Aliases: []string{"y"}, Action: v1.ChoiceActionDto{Agent: mode.BuildID, Prompt: "Implement the approved plan."}},
+			{Value: "no", Description: "Stop after planning", Aliases: []string{"n"}},
+		},
+		CustomChoice: "feedback", CustomDescription: "Provide feedback and revise the plan", CustomPrompt: "plan feedback: ", EmptyMessage: "enter yes, no, or feedback",
+	}}
+}
+
 func testModeList(t *testing.T) v1.ModeList {
 	t.Helper()
 	registry, err := mode.NewRegistry(mode.Builtins(
@@ -720,15 +693,7 @@ func testModeList(t *testing.T) v1.ModeList {
 	out := v1.ModeList{Items: make([]v1.Mode, len(items))}
 	for i, item := range items {
 		profile := item.Profile()
-		entry := v1.Mode{ID: item.ID(), ReadOnly: profile.IsReadOnly(), MaxTurns: profile.MaxTurns()}
-		if result := item.OnTurnComplete(); result != (mode.TurnCompleteResult{}) {
-			raw, err := json.Marshal(result)
-			if err != nil {
-				t.Fatal(err)
-			}
-			entry.TurnComplete = raw
-		}
-		out.Items[i] = entry
+		out.Items[i] = v1.Mode{ID: item.ID(), ReadOnly: profile.IsReadOnly(), MaxTurns: profile.MaxTurns()}
 	}
 	return out
 }

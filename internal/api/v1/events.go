@@ -56,6 +56,7 @@ const (
 	EventSessionCompactionCompleted  = "session.compaction.completed"
 	EventSessionCompactionFinished   = "session.compaction.finished"
 	EventSessionCompactionRetry      = "session.compaction.retry"
+	EventPlanCompleted               = "plan.completed"
 )
 
 // Event is used for both durable and disposable live events. SessionID always
@@ -199,6 +200,40 @@ type TodoUpdated struct {
 	Todos []Todo `json:"todos"`
 }
 
+// PlanCompletedDto is the transient turn-specific approval policy emitted by a
+// mode after producing a plan. SessionID and MessageID correlate the policy to
+// the producer and its terminal assistant response.
+type PlanCompletedDto struct {
+	SessionID string                 `json:"session_id"`
+	MessageID string                 `json:"message_id"`
+	Markdown  string                 `json:"markdown"`
+	Dialog    *TurnCompleteDialogDto `json:"dialog,omitempty"`
+	Agent     string                 `json:"agent,omitempty"`
+	Prompt    string                 `json:"prompt,omitempty"`
+}
+
+type TurnCompleteDialogDto struct {
+	Prompt            string            `json:"prompt"`
+	Context           []string          `json:"context,omitempty"`
+	Choices           []DialogChoiceDto `json:"choices,omitempty"`
+	CustomChoice      string            `json:"custom_choice,omitempty"`
+	CustomDescription string            `json:"custom_description,omitempty"`
+	CustomPrompt      string            `json:"custom_prompt,omitempty"`
+	EmptyMessage      string            `json:"empty_message,omitempty"`
+}
+
+type DialogChoiceDto struct {
+	Value       string          `json:"value"`
+	Description string          `json:"description,omitempty"`
+	Aliases     []string        `json:"aliases,omitempty"`
+	Action      ChoiceActionDto `json:"action,omitempty"`
+}
+
+type ChoiceActionDto struct {
+	Agent  string `json:"agent,omitempty"`
+	Prompt string `json:"prompt,omitempty"`
+}
+
 type EventDefinition struct {
 	Name    string `json:"name"`
 	Durable bool   `json:"durable"`
@@ -253,6 +288,7 @@ var EventManifest = []EventDefinition{
 	{Name: EventSessionCompactionCompleted, Durable: true, Payload: "CompactionEvent"},
 	{Name: EventSessionCompactionFinished, Durable: true, Payload: "CompactionEvent"},
 	{Name: EventSessionCompactionRetry, Durable: true, Payload: "object"},
+	{Name: EventPlanCompleted, Payload: "PlanCompletedDto"},
 }
 
 func KnownEvent(name string) bool {
@@ -310,6 +346,8 @@ func DecodeEventData(event Event) (any, error) {
 		target = &ToolOutputDelta{}
 	case EventCodeDisplay:
 		target = &CodeDisplay{}
+	case EventPlanCompleted:
+		target = &PlanCompletedDto{}
 	default:
 		if !KnownEvent(event.Type) {
 			return nil, errors.New("v1: unknown event type")

@@ -262,6 +262,7 @@ type enhancedChatRuntime struct {
 	completedActivities []enhancedActivityItem
 	turnCompleteID      string
 	lastCompleteID      string
+	planCompletions     map[string]v1.PlanCompletedDto
 	borderCommitted     bool
 	contextTokens       int
 	runtimeUsage        chatview.RuntimeActivityUsage

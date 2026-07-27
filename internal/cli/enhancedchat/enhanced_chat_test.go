@@ -742,11 +742,11 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 			renderer := terminal.NewLiveRenderer(&output, terminal.RendererConfig{TTY: true})
 			editor := terminal.NewEditorIO(bytes.NewBuffer(nil), nil)
 			calls := 0
-			var completed TurnComplete
+			var completed v1.PlanCompletedDto
 			shell := &chatShell{
 				ctx: context.Background(), api: api, current: v1.Session{ID: "session", Agent: "custom"}, selection: chatSelection{agent: "custom"},
 				renderer: renderer, editor: editor,
-				config: &Config{OnTurnComplete: func(item TurnComplete) *TurnCompleteDialog {
+				config: &Config{OnTurnComplete: func(item v1.PlanCompletedDto) *TurnCompleteDialog {
 					calls++
 					completed = item
 					if !strings.Contains(output.String(), "finished plan") {
@@ -760,7 +760,14 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 					}}
 				}},
 			}
-			runtime := &enhancedChatRuntime{shell: shell, busy: true, idleSeen: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
+			runtime := &enhancedChatRuntime{shell: shell, busy: true, knownMessages: map[string]bool{}, events: make(chan enhancedSessionEvent, 1)}
+			if test.wantCallback {
+				plan, _ := json.Marshal(v1.PlanCompletedDto{SessionID: "session", MessageID: "assistant", Markdown: "# Written plan\n\n- change code", Dialog: &v1.TurnCompleteDialogDto{Prompt: "continue? "}})
+				if err := runtime.handleEvent(v1.Event{Type: v1.EventPlanCompleted, SessionID: "session", Data: plan}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			runtime.idleSeen = true
 			payload, _ := json.Marshal(map[string]string{"message_id": "assistant"})
 			if err := runtime.handleEvent(v1.Event{Type: test.eventType, Data: payload}); err != nil {
 				t.Fatal(err)
@@ -772,7 +779,7 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 				}
 				return
 			}
-			if calls != 1 || completed.Session.ID != "session" || completed.Mode != "custom" || completed.MessageID != "assistant" || runtime.modal == nil || runtime.modal.kind != "turn_complete" {
+			if calls != 1 || completed.SessionID != "session" || completed.MessageID != "assistant" || runtime.modal == nil || runtime.modal.kind != "turn_complete" {
 				t.Fatalf("calls=%d completed=%#v modal=%#v", calls, completed, runtime.modal)
 			}
 			printed := output.String()
@@ -796,7 +803,7 @@ func TestEnhancedTurnCompleteCallbackRunsOnceOnlyForSuccessfulNewTurns(t *testin
 	}
 
 	calls := 0
-	shell := &chatShell{ctx: context.Background(), api: &enhancedQueueAPI{}, current: v1.Session{ID: "restored"}, config: &Config{OnTurnComplete: func(TurnComplete) *TurnCompleteDialog {
+	shell := &chatShell{ctx: context.Background(), api: &enhancedQueueAPI{}, current: v1.Session{ID: "restored"}, config: &Config{OnTurnComplete: func(v1.PlanCompletedDto) *TurnCompleteDialog {
 		calls++
 		return nil
 	}}}

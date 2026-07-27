@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
+	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 	"github.com/amirulashraf/parrot-coder/internal/status"
 )
@@ -65,7 +66,7 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	}
 	baseRule := security.Rule{Path: "/protected", Action: security.ActionDenyWrite}
 	plan.(*planMode).profile = profileWithRules{Profile: plan.Profile(), rules: []security.Rule{baseRule}}
-	prepared, err := r.PrepareTurn(PlanID, "session")
+	prepared, err := plan.OnTurnStart("session")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,7 +86,7 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	if err := os.Chmod(path, 0o400); err != nil {
 		t.Fatal(err)
 	}
-	revised, err := r.PrepareTurn(PlanID, "session")
+	revised, err := plan.OnTurnStart("session")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -102,32 +103,32 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	}
 }
 
-func TestOnTurnCompleteDeclaresDialogPerMode(t *testing.T) {
-	r := testModeRegistry(t)
-	items := r.List()
-	// Build mode declares no turn-complete behavior.
-	if result := items[0].OnTurnComplete(); result != (TurnCompleteResult{}) {
-		t.Fatalf("build mode turn-complete = %#v, want zero", result)
+func TestModesFinishAndPlanEvent(t *testing.T) {
+	r, err := NewRegistryWithPlanDirectory(t.TempDir(), testModeProfiles()...)
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Query mode declares no turn-complete behavior.
-	if result := items[2].OnTurnComplete(); result != (TurnCompleteResult{}) {
-		t.Fatalf("query mode turn-complete = %#v, want zero", result)
+	for _, id := range []string{BuildID, QueryID} {
+		item, _ := r.Get(id)
+		events, err := item.OnTurnFinish("session", "message")
+		if err != nil || len(events) != 0 {
+			t.Fatalf("%s finish = %#v, %v", id, events, err)
+		}
 	}
-	// Plan mode declares an approval dialog with a transition to build.
-	plan := items[1].OnTurnComplete()
-	if plan.Dialog == nil {
-		t.Fatalf("plan mode has no dialog: %#v", plan)
+	plan, _ := r.Get(PlanID)
+	prepared, err := plan.OnTurnStart("session")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if plan.Dialog.Prompt != "Plan complete: " || len(plan.Dialog.Context) != 1 || len(plan.Dialog.Choices) != 2 {
-		t.Fatalf("plan dialog = %#v", plan.Dialog)
+	if err := os.WriteFile(prepared.CapabilityRules()[0].Path, []byte("  # Plan\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if plan.Dialog.Choices[0].Value != "yes" || plan.Dialog.Choices[0].Action.Agent != BuildID || plan.Dialog.Choices[0].Action.Prompt != "Implement the approved plan." {
-		t.Fatalf("approve choice = %#v", plan.Dialog.Choices[0])
+	events, err := plan.OnTurnFinish("session", "message")
+	if err != nil || len(events) != 1 {
+		t.Fatalf("plan finish = %#v, %v", events, err)
 	}
-	if plan.Dialog.Choices[1].Value != "no" || plan.Dialog.Choices[1].Action.Agent != "" || plan.Dialog.Choices[1].Action.Prompt != "" {
-		t.Fatalf("decline choice = %#v", plan.Dialog.Choices[1])
-	}
-	if plan.Dialog.CustomChoice != "feedback" || plan.Dialog.CustomPrompt != "plan feedback: " || plan.Dialog.EmptyMessage != "enter yes, no, or feedback" {
-		t.Fatalf("plan dialog custom = %#v", plan.Dialog)
+	payload, ok := events[0].Payload.(event.PlanCompletedPayload)
+	if !ok || payload.SessionID != "session" || payload.MessageID != "message" || payload.Markdown != "# Plan" || payload.Dialog.Choices[0].Action.Agent != BuildID {
+		t.Fatalf("plan payload = %#v", events[0].Payload)
 	}
 }

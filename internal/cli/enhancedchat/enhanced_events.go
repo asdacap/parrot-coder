@@ -33,6 +33,7 @@ func (r *enhancedChatRuntime) ensureStream(sessionID string) error {
 		r.contextTokens = 0
 		r.lastCompleteID = ""
 		r.turnCompleteID = ""
+		r.planCompletions = make(map[string]v1.PlanCompletedDto)
 		// Activity identities are unique per tree, but the old session's activity
 		// tree is meaningless to the new one. Rebuild it rather than carry stale nodes.
 		r.resetRuntimeActivityTracker()
@@ -485,6 +486,23 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 		default:
 			r.status = status.Kind
 		}
+	case v1.EventPlanCompleted:
+		payload, err := v1.DecodeEventData(item)
+		if err != nil {
+			return err
+		}
+		completed := *payload.(*v1.PlanCompletedDto)
+		// Descendant events are projected onto ancestor subscriptions. Approval is
+		// interactive only for the producer currently being viewed.
+		if item.SessionID != r.shell.current.ID || completed.SessionID != r.shell.current.ID || completed.MessageID == "" {
+			break
+		}
+		if r.planCompletions == nil {
+			r.planCompletions = make(map[string]v1.PlanCompletedDto)
+		}
+		if completed.MessageID != r.turnCompleteID {
+			r.planCompletions[completed.MessageID] = completed
+		}
 	case v1.EventSessionInputAdmitted:
 		payload, err := v1.DecodeEventData(item)
 		if err != nil {
@@ -563,6 +581,8 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			r.completeAssistantActivity(payload.MessageID, status)
 			if item.Type == v1.EventSessionAssistantComplete {
 				r.lastCompleteID = payload.MessageID
+			} else {
+				delete(r.planCompletions, payload.MessageID)
 			}
 		}
 		if err := r.commitCompletedAssistants(payload.MessageID); err != nil {
@@ -586,13 +606,15 @@ func (r *enhancedChatRuntime) settleIdle() error {
 	r.idleSeen = false
 	r.status = ""
 	r.interruptCount = 0
-	var callback func(TurnComplete) *TurnCompleteDialog
+	var callback func(v1.PlanCompletedDto) *TurnCompleteDialog
 	if r.shell != nil && r.shell.config != nil {
 		callback = r.shell.config.OnTurnComplete
 	}
-	if callback != nil && r.lastCompleteID != "" && r.turnCompleteID != r.lastCompleteID && r.modal == nil {
+	completed, pending := r.planCompletions[r.lastCompleteID]
+	if callback != nil && pending && r.lastCompleteID != "" && r.turnCompleteID != r.lastCompleteID && r.modal == nil {
+		delete(r.planCompletions, r.lastCompleteID)
 		r.turnCompleteID = r.lastCompleteID
-		dialog := callback(TurnComplete{Session: r.shell.current, Mode: r.shell.selection.agent, MessageID: r.lastCompleteID})
+		dialog := callback(completed)
 		if dialog == nil {
 			return nil
 		}

@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
+	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/security"
 )
 
@@ -26,61 +27,8 @@ const (
 type Mode interface {
 	ID() string
 	Profile() agent.Profile
-	// OnTurnComplete declares what the runtime should do after a turn in this
-	// mode completes. The zero value means "do nothing." A mode may present a
-	// Dialog for the user to choose, or directly transition without a dialog.
-	// The mode owns this behavior; callers must not branch on the mode's ID.
-	OnTurnComplete() TurnCompleteResult
-	PrepareTurn(string) (agent.TurnProfile, error)
-	CompleteTurn(string, string) (TurnCompleteResult, error)
-}
-
-// TurnCompleteResult is what a mode wants the runtime to do after a turn
-// completes. The zero value means "do nothing."
-type TurnCompleteResult struct {
-	// Dialog presents choices to the user. When nil, the runtime performs
-	// the result's Agent and Prompt fields directly.
-	Dialog *TurnCompleteDialog
-	// Agent switches the session to this mode. Empty means stay.
-	Agent string
-	// Prompt is injected as the next user message. Empty means no prompt.
-	Prompt string
-}
-
-// TurnCompleteDialog describes a choice prompt shown after a turn completes.
-// Each choice carries its own action; the runtime performs the selected
-// choice's action.
-type TurnCompleteDialog struct {
-	Prompt            string
-	Markdown          string
-	Context           []string
-	Choices           []DialogChoice
-	CustomChoice      string
-	CustomDescription string
-	CustomPrompt      string
-	// EmptyMessage is the validation error shown when the user submits an
-	// empty response.
-	EmptyMessage string
-}
-
-// DialogChoice is one selectable option in a turn-complete dialog.
-type DialogChoice struct {
-	Value       string
-	Description string
-	// Aliases are additional accepted values (case-insensitive) for typed
-	// input, e.g. "y" for "yes".
-	Aliases []string
-	// Action describes what the runtime does when this choice is selected.
-	// An empty action stops the run.
-	Action ChoiceAction
-}
-
-// ChoiceAction describes what the runtime does when a dialog choice is
-// selected: switch to Agent (if non-empty), inject Prompt (if non-empty).
-// An empty action stops the run.
-type ChoiceAction struct {
-	Agent  string
-	Prompt string
+	OnTurnStart(string) (agent.TurnProfile, error)
+	OnTurnFinish(string, string) ([]event.BrokerEvent, error)
 }
 
 type builtin struct {
@@ -94,15 +42,12 @@ type profileWithPrompt struct {
 
 func (p profileWithPrompt) Prompt() string { return p.prompt }
 
-func (m builtin) ID() string                       { return m.profile.ID() }
-func (m builtin) Profile() agent.Profile           { return m.profile }
-func (builtin) OnTurnComplete() TurnCompleteResult { return TurnCompleteResult{} }
-func (m builtin) PrepareTurn(string) (agent.TurnProfile, error) {
+func (m builtin) ID() string             { return m.profile.ID() }
+func (m builtin) Profile() agent.Profile { return m.profile }
+func (m builtin) OnTurnStart(string) (agent.TurnProfile, error) {
 	return agent.NewTurnProfile(m.profile), nil
 }
-func (builtin) CompleteTurn(string, string) (TurnCompleteResult, error) {
-	return TurnCompleteResult{}, nil
-}
+func (builtin) OnTurnFinish(string, string) ([]event.BrokerEvent, error) { return nil, nil }
 
 // planMode extends builtin with a turn-complete dialog that lets the user
 // approve, decline, or provide feedback on the plan.
@@ -113,25 +58,22 @@ type planMode struct {
 	files     map[string]string
 }
 
-func planCompletion(markdown string) TurnCompleteResult {
-	return TurnCompleteResult{Dialog: &TurnCompleteDialog{
-		Markdown: markdown,
-		Prompt:   "Plan complete: ",
-		Context:  []string{"Review the plan before implementation."},
-		Choices: []DialogChoice{
-			{Value: "yes", Description: "Implement the approved plan", Aliases: []string{"y"}, Action: ChoiceAction{Agent: BuildID, Prompt: "Implement the approved plan."}},
+func planCompletion() event.TurnCompleteDialog {
+	return event.TurnCompleteDialog{
+		Prompt:  "Plan complete: ",
+		Context: []string{"Review the plan before implementation."},
+		Choices: []event.DialogChoice{
+			{Value: "yes", Description: "Implement the approved plan", Aliases: []string{"y"}, Action: event.ChoiceAction{Agent: BuildID, Prompt: "Implement the approved plan."}},
 			{Value: "no", Description: "Stop after planning", Aliases: []string{"n"}},
 		},
 		CustomChoice:      "feedback",
 		CustomDescription: "Provide feedback and revise the plan",
 		CustomPrompt:      "plan feedback: ",
 		EmptyMessage:      "enter yes, no, or feedback",
-	}}
+	}
 }
 
-func (m *planMode) OnTurnComplete() TurnCompleteResult { return planCompletion("") }
-
-func (m *planMode) PrepareTurn(sessionID string) (agent.TurnProfile, error) {
+func (m *planMode) OnTurnStart(sessionID string) (agent.TurnProfile, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := os.MkdirAll(m.directory, 0o700); err != nil {
@@ -159,22 +101,24 @@ func (m *planMode) PrepareTurn(sessionID string) (agent.TurnProfile, error) {
 	return agent.NewTurnProfile(profile, security.Rule{Path: path, Action: security.ActionAllowWrite}), nil
 }
 
-func (m *planMode) CompleteTurn(sessionID, _ string) (TurnCompleteResult, error) {
+func (m *planMode) OnTurnFinish(sessionID, messageID string) ([]event.BrokerEvent, error) {
 	m.mu.Lock()
 	path := m.files[sessionID]
 	m.mu.Unlock()
 	if path == "" {
-		return TurnCompleteResult{}, nil
+		return nil, nil
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return TurnCompleteResult{}, fmt.Errorf("mode: read plan: %w", err)
+		return nil, fmt.Errorf("mode: read plan: %w", err)
 	}
 	plan := strings.TrimSpace(string(data))
 	if plan == "" {
-		return TurnCompleteResult{}, nil
+		return nil, nil
 	}
-	return planCompletion(plan), nil
+	return []event.BrokerEvent{{Name: event.PlanCompleted, Payload: event.PlanCompletedPayload{
+		SessionID: sessionID, MessageID: messageID, Markdown: plan, Dialog: planCompletion(),
+	}}}, nil
 }
 
 func Builtins(profiles ...agent.Profile) []Mode {
@@ -245,22 +189,6 @@ func (r *Registry) List() []Mode {
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].ID() < result[j].ID() })
 	return result
-}
-
-func (r *Registry) PrepareTurn(id, sessionID string) (agent.TurnProfile, error) {
-	item, err := r.Get(id)
-	if err != nil {
-		return agent.TurnProfile{}, err
-	}
-	return item.PrepareTurn(sessionID)
-}
-
-func (r *Registry) CompleteTurn(id, sessionID, messageID string) (TurnCompleteResult, error) {
-	item, err := r.Get(id)
-	if err != nil {
-		return TurnCompleteResult{}, err
-	}
-	return item.CompleteTurn(sessionID, messageID)
 }
 
 func (r *Registry) GetProfile(id string) (agent.Profile, error) {
