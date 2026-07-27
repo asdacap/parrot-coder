@@ -24,3 +24,4 @@
 - Calling a method is better than hooking up a mutable state and a callback and then doing the whole orchestration of making the mutable state in sync. Just call a method from the original source when you need it.
 - Prefer noop than nil.
 - The slash command is meant to be interactive. It there are incomplete option, show selectbox rather than requiring the user to type it in.
+- Config with natural key should be a dictionary keyed by the natural key

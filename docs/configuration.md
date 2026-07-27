@@ -41,7 +41,7 @@ prompt: |-
   You are Parrot Coder, a local coding agent.
 model: provider/model/effort-variant # optional final segment
 model_aliases:
-  - name: low_llm
+  low_llm:
     model_string: provider/fast-model
     usage: Routine and simple tasks where speed and low cost matter most.
 inline_diff: true # false selects side-by-side diff blocks
@@ -104,6 +104,8 @@ profiles:
   worker:
     usage: Delegate independently scoped implementation work.
     max_turns: 96
+tool_blacklist:
+  web_fetch: true
 subagents:
   max_concurrent: 64
   max_concurrent_per_parent: 16
@@ -164,20 +166,28 @@ complex work. Their `model_string` values are empty by default and may be set to
 any canonical `provider/model[/variant]` selector. An empty value leaves an alias
 unconfigured.
 
-Alias names must be nonempty, unique, contain no `/`, and have no surrounding
-whitespace. `usage` must be nonempty. A nonempty `model_string` must have at
+Alias mapping keys must be nonempty, contain no `/`, and have no surrounding
+whitespace. YAML mapping keys are unique. `usage` must be nonempty. A nonempty `model_string` must have at
 least a provider and model, with no empty segments or surrounding whitespace.
 Model IDs may contain slashes, just as in the top-level `model` selector.
 
-The alias list is an array, so a higher-precedence `model_aliases` value replaces
-the complete lower-precedence list rather than merging aliases by name. Include
-all aliases you want to retain when overriding the defaults. Interactive alias
-configuration writes the complete effective list to the global config and does
-not modify project files. Use `/model-alias` with no arguments for a guided
+The alias dictionary merges recursively across configuration scopes. A
+higher-precedence file can override only `model_aliases.low_llm.model_string`
+while retaining that alias's inherited `usage` and every other alias. Interactive
+alias configuration writes only the selected alias's `model_string` to the global
+config and does not materialize inherited fields or modify project files. Use
+`/model-alias` with no arguments for a guided
 alias, model, and effort selection; `/model-alias low_llm` to select the model
 and effort for that alias; or `/model-alias low_llm provider/model[/variant]` to
 configure it directly. Configured aliases become available to the running agent
 immediately.
+
+### Tool blacklist
+
+`tool_blacklist` is a dictionary keyed by tool ID. A `true` value disables that
+tool. Entries merge by key across configuration scopes, and a higher-precedence
+`false` explicitly re-enables a tool blacklisted by a lower-precedence file.
+Keys must be nonempty and have no surrounding whitespace.
 
 ### Profiles
 

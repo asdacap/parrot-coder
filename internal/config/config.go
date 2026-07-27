@@ -26,25 +26,24 @@ const (
 
 // Config is the typed configuration consumed by later application phases.
 type Config struct {
-	Prompt                     string              `json:"prompt,omitempty"`
-	DefaultModel               string              `json:"model,omitempty"`
-	ModelAliases               []ModelAlias        `json:"model_aliases,omitempty"`
-	InlineDiff                 bool                `json:"inline_diff,omitempty"`
-	PermissionRequestTimeoutMS int                 `json:"permission_request_timeout_ms,omitempty"`
-	Providers                  map[string]Provider `json:"providers,omitempty"`
-	MCP                        map[string]MCP      `json:"mcp,omitempty"`
-	WebFetch                   WebFetch            `json:"web_fetch,omitempty"`
-	Subagents                  Subagents           `json:"subagents,omitempty"`
-	DefaultProfile             string              `json:"default_profile,omitempty"`
-	Profiles                   map[string]Profile  `json:"profiles,omitempty"`
-	ToolBlacklist              []string            `json:"tool_blacklist,omitempty"`
-	SandboxRules               []SandboxRule       `json:"sandbox_rules,omitempty"`
+	Prompt                     string                `json:"prompt,omitempty"`
+	DefaultModel               string                `json:"model,omitempty"`
+	ModelAliases               map[string]ModelAlias `json:"model_aliases,omitempty"`
+	InlineDiff                 bool                  `json:"inline_diff,omitempty"`
+	PermissionRequestTimeoutMS int                   `json:"permission_request_timeout_ms,omitempty"`
+	Providers                  map[string]Provider   `json:"providers,omitempty"`
+	MCP                        map[string]MCP        `json:"mcp,omitempty"`
+	WebFetch                   WebFetch              `json:"web_fetch,omitempty"`
+	Subagents                  Subagents             `json:"subagents,omitempty"`
+	DefaultProfile             string                `json:"default_profile,omitempty"`
+	Profiles                   map[string]Profile    `json:"profiles,omitempty"`
+	ToolBlacklist              map[string]bool       `json:"tool_blacklist,omitempty"`
+	SandboxRules               []SandboxRule         `json:"sandbox_rules,omitempty"`
 }
 
 // ModelAlias gives a stable name to a model selector for a particular class of
 // work. An empty ModelString leaves the alias available for user configuration.
 type ModelAlias struct {
-	Name        string `json:"name"`
 	ModelString string `json:"model_string"`
 	Usage       string `json:"usage"`
 }
@@ -300,12 +299,18 @@ func Load(options Options) (Result, error) {
 		typed.MCP = make(map[string]MCP)
 	}
 	if typed.ModelAliases == nil {
-		typed.ModelAliases = []ModelAlias{}
+		typed.ModelAliases = make(map[string]ModelAlias)
+	}
+	if typed.ToolBlacklist == nil {
+		typed.ToolBlacklist = make(map[string]bool)
 	}
 	if typed.Profiles == nil {
 		typed.Profiles = make(map[string]Profile)
 	}
 	if err := validateModelAliases(typed.ModelAliases); err != nil {
+		return Result{}, err
+	}
+	if err := validateToolBlacklist(typed.ToolBlacklist); err != nil {
 		return Result{}, err
 	}
 	if err := validateSubagents(typed.Subagents); err != nil {
@@ -385,23 +390,18 @@ func selectorHasConfiguredVariant(selector string, providersValue any) bool {
 	return false
 }
 
-func validateModelAliases(aliases []ModelAlias) error {
-	seen := make(map[string]struct{}, len(aliases))
-	for index, alias := range aliases {
-		prefix := fmt.Sprintf("model_aliases[%d]", index)
-		if alias.Name == "" {
-			return fmt.Errorf("%s.name must not be empty", prefix)
+func validateModelAliases(aliases map[string]ModelAlias) error {
+	for name, alias := range aliases {
+		prefix := "model_aliases." + name
+		if name == "" {
+			return errors.New("model_aliases key must not be empty")
 		}
-		if strings.TrimSpace(alias.Name) != alias.Name {
-			return fmt.Errorf("%s.name must not have surrounding whitespace", prefix)
+		if strings.TrimSpace(name) != name {
+			return fmt.Errorf("model alias name %q must not have surrounding whitespace", name)
 		}
-		if strings.Contains(alias.Name, "/") {
-			return fmt.Errorf("%s.name must not contain '/'", prefix)
+		if strings.Contains(name, "/") {
+			return fmt.Errorf("model alias name %q must not contain '/'", name)
 		}
-		if _, exists := seen[alias.Name]; exists {
-			return fmt.Errorf("model alias name %q must be unique", alias.Name)
-		}
-		seen[alias.Name] = struct{}{}
 		if alias.Usage == "" {
 			return fmt.Errorf("%s.usage must not be empty", prefix)
 		}
@@ -419,6 +419,18 @@ func validateModelAliases(aliases []ModelAlias) error {
 			if segment == "" {
 				return fmt.Errorf("%s.model_string must not contain empty path segments", prefix)
 			}
+		}
+	}
+	return nil
+}
+
+func validateToolBlacklist(blacklist map[string]bool) error {
+	for id := range blacklist {
+		if id == "" {
+			return errors.New("tool_blacklist key must not be empty")
+		}
+		if strings.TrimSpace(id) != id {
+			return fmt.Errorf("tool_blacklist key %q must not have surrounding whitespace", id)
 		}
 	}
 	return nil
@@ -642,10 +654,10 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 # Default model selected as provider/model, optionally followed by /variant.
 # model: provider/model/high
 
-# Stable aliases for model selectors. The entire list replaces lower-precedence
-# aliases when configured.
+# Stable aliases for model selectors. Alias entries and their fields merge by
+# key across configuration layers, so partial overrides inherit other fields.
 # model_aliases:
-#   - name: low_llm
+#   low_llm:
 #     model_string: provider/model/low
 #     usage: Fast, inexpensive tasks
 
@@ -665,9 +677,10 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 #   explorer:
 #     recursion_limit: 2
 
-# Tool blacklist: tools listed here are disabled and not available to the model.
+# Tool blacklist keyed by tool ID. True disables a tool; false in a
+# higher-precedence layer re-enables an inherited blacklist entry.
 # tool_blacklist:
-#   - web_fetch
+#   web_fetch: true
 
 # Child-agent concurrency and nesting limits. Defaults are defined in predefined_config.yaml.
 # subagents:
@@ -797,12 +810,11 @@ func writeDefaultConfig(path string) error {
 	return os.WriteFile(path, []byte(defaultConfigYAML), 0o600)
 }
 
-// UpdateModelAliases replaces the top-level model_aliases list while preserving
-// comments and unrelated fields. Callers should pass the complete merged list,
-// because configured lists replace lower-precedence aliases rather than merging
-// by name. If path does not exist, it is created.
-func UpdateModelAliases(path string, aliases []ModelAlias) error {
-	if err := validateModelAliases(aliases); err != nil {
+// UpdateModelAlias updates one alias model selector while preserving comments,
+// unrelated fields, and inherited alias configuration. If path does not exist,
+// it is created.
+func UpdateModelAlias(path, name, model string) error {
+	if err := validateModelAliases(map[string]ModelAlias{name: {ModelString: model, Usage: "configured"}}); err != nil {
 		return err
 	}
 	data, err := os.ReadFile(path)
@@ -827,18 +839,21 @@ func UpdateModelAliases(path string, aliases []ModelAlias) error {
 		return errors.New("config root must be a mapping")
 	}
 
-	sequence := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-	for _, alias := range aliases {
-		sequence.Content = append(sequence.Content, &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map", Content: []*yaml.Node{
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "name"},
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: alias.Name},
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "model_string"},
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: alias.ModelString},
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: "usage"},
-			{Kind: yaml.ScalarNode, Tag: "!!str", Value: alias.Usage},
-		}})
+	aliases := mappingValue(root, "model_aliases")
+	if aliases == nil {
+		aliases = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		setTopLevelNode(root, "model_aliases", aliases)
+	} else if aliases.Kind != yaml.MappingNode {
+		return errors.New("model_aliases must be a mapping")
 	}
-	if !setTopLevelNode(root, "model_aliases", sequence) {
+	alias := mappingValue(aliases, name)
+	if alias == nil {
+		alias = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		aliases.Content = append(aliases.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: name}, alias)
+	} else if alias.Kind != yaml.MappingNode {
+		return fmt.Errorf("model_aliases.%s must be a mapping", name)
+	}
+	if !setMappingScalar(alias, "model_string", model) {
 		return nil
 	}
 	out, err := yaml.Marshal(&doc)
@@ -852,6 +867,30 @@ func UpdateModelAliases(path string, aliases []ModelAlias) error {
 		return fmt.Errorf("write model alias update: %w", err)
 	}
 	return nil
+}
+
+func mappingValue(node *yaml.Node, key string) *yaml.Node {
+	for i := 0; i < len(node.Content)-1; i += 2 {
+		if node.Content[i].Value == key {
+			return node.Content[i+1]
+		}
+	}
+	return nil
+}
+
+func setMappingScalar(node *yaml.Node, key, value string) bool {
+	if existing := mappingValue(node, key); existing != nil {
+		if existing.Kind == yaml.ScalarNode && existing.Value == value {
+			return false
+		}
+		existing.Kind, existing.Tag, existing.Value, existing.Content = yaml.ScalarNode, "!!str", value, nil
+		return true
+	}
+	node.Content = append(node.Content,
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: key},
+		&yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: value},
+	)
+	return true
 }
 
 func setTopLevelNode(root *yaml.Node, key string, value *yaml.Node) bool {

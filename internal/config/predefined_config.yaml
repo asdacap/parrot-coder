@@ -15,16 +15,16 @@ model: ""
 # Stable aliases for choosing an appropriate model by task complexity. Empty
 # model_string values are intended to be configured by the user.
 model_aliases:
-  - name: low_llm
+  low_llm:
     model_string: ""
     usage: mechanical, single file task, text or code processing when no suitable cli tool available.
-  - name: medium_llm
+  medium_llm:
     model_string: ""
     usage: Decently capable, specific clear task, component level task, two or three file window
-  - name: high_llm
+  high_llm:
     model_string: ""
     usage: General purpose, agent spawner, tactical decision making and planning, debugging, colaborator
-  - name: xhigh_llm
+  xhigh_llm:
     model_string: ""
     usage: Strategic, multiple module, multiple party and subagent planning, high level vision and strategic alignment, ambiguous and open ended requirement, should always spawn worker for actual work or exploration, last resort when all other agent failed such as on very hard debugging or optimization task
 
@@ -107,9 +107,10 @@ profiles:
     read_only: false
     status: "Worker profile: execute delegated work within the assigned ownership boundaries and verify it."
 
-# Tool blacklist: tools listed here are disabled and not available to the model.
+# Tool blacklist keyed by tool ID. True disables a tool; false in a
+# higher-precedence layer re-enables an inherited blacklist entry.
 # tool_blacklist:
-#   - web_fetch
+#   web_fetch: true
 
 # Child-agent concurrency and nesting limits.
 subagents:

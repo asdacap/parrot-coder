@@ -258,14 +258,15 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 		return nil, fmt.Errorf("app: config: %w", err)
 	}
 	startupWarnings := make([]string, 0)
-	for _, alias := range loaded.Config.ModelAliases {
+	for name, alias := range loaded.Config.ModelAliases {
 		if alias.ModelString != "" {
 			continue
 		}
-		warning := fmt.Sprintf("model alias %q is not configured; set model_aliases[].model_string in parrot.yaml", alias.Name)
+		warning := fmt.Sprintf("model alias %q is not configured; set model_aliases.%s.model_string in parrot.yaml", name, name)
 		startupWarnings = append(startupWarnings, warning)
-		diagnostics.Warn("model_alias_unconfigured", "alias", alias.Name)
+		diagnostics.Warn("model_alias_unconfigured", "alias", name)
 	}
+	sort.Strings(startupWarnings)
 	if err := validateConfigTrust(loaded); err != nil {
 		return nil, err
 	}
@@ -470,7 +471,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: register built-in tools: %w", err)
 	}
-	toolProviders = toolProviders.Without(loaded.Config.ToolBlacklist)
+	toolProviders = toolProviders.Without(enabledToolBlacklist(loaded.Config.ToolBlacklist))
 	toolSystemGuidance := toolProviders.SystemPromptGuidance()
 	availableCLIUtilities, _ := process.InspectCLIUtilities(nil)
 	availableOptionalCLIUtilities := process.InspectOptionalCLIUtilities(nil)
@@ -934,20 +935,43 @@ func (h resumeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 // model/usage listings) sees the new providers on its next resolution, so a
 // credential change takes effect without restarting the chat. A build failure
 // leaves the existing providers in place; the error is returned to the caller.
-func systemContextAliases(configured []config.ModelAlias) []systemcontext.ModelAlias {
-	aliases := make([]systemcontext.ModelAlias, len(configured))
-	for i, alias := range configured {
-		aliases[i] = systemcontext.ModelAlias{Name: alias.Name, ModelString: alias.ModelString, Usage: alias.Usage}
+func systemContextAliases(configured map[string]config.ModelAlias) []systemcontext.ModelAlias {
+	names := sortedAliasNames(configured)
+	aliases := make([]systemcontext.ModelAlias, len(names))
+	for i, name := range names {
+		alias := configured[name]
+		aliases[i] = systemcontext.ModelAlias{Name: name, ModelString: alias.ModelString, Usage: alias.Usage}
 	}
 	return aliases
 }
 
-func agentAliases(configured []config.ModelAlias) []agent.ModelAlias {
-	aliases := make([]agent.ModelAlias, len(configured))
-	for i, alias := range configured {
-		aliases[i] = agent.ModelAlias{Name: alias.Name, ModelString: alias.ModelString}
+func agentAliases(configured map[string]config.ModelAlias) []agent.ModelAlias {
+	names := sortedAliasNames(configured)
+	aliases := make([]agent.ModelAlias, len(names))
+	for i, name := range names {
+		aliases[i] = agent.ModelAlias{Name: name, ModelString: configured[name].ModelString}
 	}
 	return aliases
+}
+
+func sortedAliasNames(configured map[string]config.ModelAlias) []string {
+	names := make([]string, 0, len(configured))
+	for name := range configured {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
+func enabledToolBlacklist(configured map[string]bool) []string {
+	tools := make([]string, 0, len(configured))
+	for id, disabled := range configured {
+		if disabled {
+			tools = append(tools, id)
+		}
+	}
+	sort.Strings(tools)
+	return tools
 }
 
 // ConfigureModelAlias validates and persistently updates an existing alias,
@@ -956,23 +980,21 @@ func (a *App) ConfigureModelAlias(name, model string) error {
 	if a == nil || a.providers == nil {
 		return errors.New("app: provider registry is unavailable")
 	}
-	next := append([]config.ModelAlias(nil), a.Config.Config.ModelAliases...)
-	found := false
-	for i := range next {
-		if next[i].Name == name {
-			next[i].ModelString = model
-			found = true
-			break
-		}
-	}
+	alias, found := a.Config.Config.ModelAliases[name]
 	if !found {
 		return fmt.Errorf("app: unknown model alias %q", name)
 	}
+	next := make(map[string]config.ModelAlias, len(a.Config.Config.ModelAliases))
+	for aliasName, configured := range a.Config.Config.ModelAliases {
+		next[aliasName] = configured
+	}
+	alias.ModelString = model
+	next[name] = alias
 	previous := agentAliases(a.Config.Config.ModelAliases)
 	if err := a.providers.InstallAliases(agentAliases(next)); err != nil {
 		return fmt.Errorf("app: model alias %q: %w", name, err)
 	}
-	if err := config.UpdateModelAliases(filepath.Join(a.Paths.Config, config.FileName), next); err != nil {
+	if err := config.UpdateModelAlias(filepath.Join(a.Paths.Config, config.FileName), name, model); err != nil {
 		_ = a.providers.InstallAliases(previous)
 		return fmt.Errorf("app: persist model alias %q: %w", name, err)
 	}

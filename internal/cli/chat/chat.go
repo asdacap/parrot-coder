@@ -434,7 +434,7 @@ func command(ctx context.Context, config Config) int {
 	shell := &chatShell{
 		ctx: ctx, api: api, current: current, selection: selection, options: options,
 		projectID: runtime.Project.ID, projectRoot: runtime.Project.Root, configDir: runtime.Paths.Config, claimRequest: claimRequest, commands: runtime.Commands,
-		modelAliases: append([]configpkg.ModelAlias(nil), runtime.Config.Config.ModelAliases...), configureModelAlias: runtime.ConfigureModelAlias,
+		modelAliases: runtime.Config.Config.ModelAliases, configureModelAlias: runtime.ConfigureModelAlias,
 		build: config.Build, credentials: runtime.Credentials, handler: runtime.Handler,
 		reloadProviders: func(ctx context.Context) error { return runtime.ReloadProviders(ctx) },
 		models:          models.Items, presentation: chatview.NewPresentations(toolList),
@@ -1428,7 +1428,7 @@ type chatShell struct {
 	configDir           string
 	claimRequest        v1.ClaimSessionRequest
 	commands            *customcommand.Registry
-	modelAliases        []configpkg.ModelAlias
+	modelAliases        map[string]configpkg.ModelAlias
 	configureModelAlias func(string, string) error
 	build               BuildInfo
 	credentials         auth.Store
@@ -2684,10 +2684,14 @@ func (s *chatShell) modelAliasAction(argument string) {
 		return
 	}
 	if len(fields) == 0 {
-		aliases := append([]configpkg.ModelAlias(nil), s.modelAliases...)
-		sort.Slice(aliases, func(i, j int) bool { return aliases[i].Name < aliases[j].Name })
-		candidates := make([]terminal.Candidate, 0, len(aliases))
-		for _, alias := range aliases {
+		names := make([]string, 0, len(s.modelAliases))
+		for name := range s.modelAliases {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		candidates := make([]terminal.Candidate, 0, len(names))
+		for _, name := range names {
+			alias := s.modelAliases[name]
 			status := alias.ModelString
 			if status == "" {
 				status = "not configured"
@@ -2696,7 +2700,7 @@ func (s *chatShell) modelAliasAction(argument string) {
 			if alias.Usage != "" {
 				description = alias.Usage + "; " + status
 			}
-			candidates = append(candidates, terminal.Candidate{Value: alias.Name, Description: description})
+			candidates = append(candidates, terminal.Candidate{Value: name, Description: description})
 		}
 		if len(candidates) == 0 {
 			s.commit("no model aliases configured")
@@ -2709,14 +2713,8 @@ func (s *chatShell) modelAliasAction(argument string) {
 		}
 		fields = []string{picked.Value}
 	}
-	aliasIndex := -1
-	for i, alias := range s.modelAliases {
-		if alias.Name == fields[0] {
-			aliasIndex = i
-			break
-		}
-	}
-	if aliasIndex < 0 {
+	alias, found := s.modelAliases[fields[0]]
+	if !found {
 		s.commitError(fmt.Sprintf("unknown model alias %q", fields[0]))
 		return
 	}
@@ -2749,7 +2747,8 @@ func (s *chatShell) modelAliasAction(argument string) {
 		s.commitError(err.Error())
 		return
 	}
-	s.modelAliases[aliasIndex].ModelString = model
+	alias.ModelString = model
+	s.modelAliases[fields[0]] = alias
 	s.commitStatus(fmt.Sprintf("✓ Model alias configured: %s = %s", fields[0], model))
 }
 

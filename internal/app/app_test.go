@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"sync"
@@ -1401,6 +1402,24 @@ func TestBrokerRelaysSubagentEventsAndProgress(t *testing.T) {
 	}
 	if len(progress) != 1 || progress[0].Usage.TotalTokens != 42 {
 		t.Fatalf("progress = %#v", progress)
+	}
+}
+
+func TestConfigMapConversionsAreDeterministic(t *testing.T) {
+	aliases := map[string]config.ModelAlias{
+		"zeta":  {ModelString: "provider/zeta", Usage: "later"},
+		"alpha": {ModelString: "provider/alpha", Usage: "first"},
+	}
+	agentItems := agentAliases(aliases)
+	contextItems := systemContextAliases(aliases)
+	if len(agentItems) != 2 || agentItems[0].Name != "alpha" || agentItems[1].Name != "zeta" {
+		t.Fatalf("agent aliases = %#v", agentItems)
+	}
+	if len(contextItems) != 2 || contextItems[0].Name != "alpha" || contextItems[1].Name != "zeta" {
+		t.Fatalf("system-context aliases = %#v", contextItems)
+	}
+	if got := enabledToolBlacklist(map[string]bool{"zeta": true, "enabled": false, "alpha": true}); !reflect.DeepEqual(got, []string{"alpha", "zeta"}) {
+		t.Fatalf("enabled tool blacklist = %#v", got)
 	}
 }
 

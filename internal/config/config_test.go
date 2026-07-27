@@ -102,8 +102,13 @@ providers:
         reasoning: true
         output:
           - text
+tool_blacklist:
+  monitor: true
+  inherited: true
 `)
 	writeFile(t, projectFile, `model: openai/large/high
+tool_blacklist:
+  inherited: false
 providers:
   openai:
     models:
@@ -117,8 +122,7 @@ providers:
         max_tokens: 500
 inline_diff: false
 tool_blacklist:
-  - monitor
-  - web_fetch
+  web_fetch: true
 `)
 
 	result, err := Load(Options{ConfigDir: configDir, ProjectRoot: project, CWD: nested})
@@ -150,7 +154,7 @@ tool_blacklist:
 	if result.Config.InlineDiff || result.Provenance["inline_diff"] != nestedFile {
 		t.Fatalf("InlineDiff = %v, provenance = %q", result.Config.InlineDiff, result.Provenance["inline_diff"])
 	}
-	if got := result.Config.ToolBlacklist; len(got) != 2 || got[0] != "monitor" || got[1] != "web_fetch" {
+	if got := result.Config.ToolBlacklist; len(got) != 3 || !got["monitor"] || !got["web_fetch"] || got["inherited"] {
 		t.Fatalf("ToolBlacklist = %#v", got)
 	}
 }
@@ -282,7 +286,7 @@ func TestLoadSubagentDefaultsMergeAndValidation(t *testing.T) {
 	}
 }
 
-func TestLoadModelAliasDefaultsReplacementAndValidation(t *testing.T) {
+func TestLoadModelAliasDefaultsMergeAndValidation(t *testing.T) {
 	root := t.TempDir()
 	result, err := Load(Options{ProjectRoot: root, CWD: root})
 	if err != nil {
@@ -292,43 +296,63 @@ func TestLoadModelAliasDefaultsReplacementAndValidation(t *testing.T) {
 	if len(result.Config.ModelAliases) != len(wantNames) {
 		t.Fatalf("ModelAliases = %#v", result.Config.ModelAliases)
 	}
-	for index, alias := range result.Config.ModelAliases {
-		if alias.Name != wantNames[index] || alias.ModelString != "" || alias.Usage == "" {
-			t.Fatalf("ModelAliases[%d] = %#v", index, alias)
+	for _, name := range wantNames {
+		alias := result.Config.ModelAliases[name]
+		if alias.ModelString != "" || alias.Usage == "" {
+			t.Fatalf("ModelAliases[%s] = %#v", name, alias)
 		}
 	}
-	if result.Provenance["model_aliases.0.name"] != PredefinedFileName {
+	if result.Provenance["model_aliases.low_llm.model_string"] != PredefinedFileName {
 		t.Fatalf("alias provenance = %#v", result.Provenance)
 	}
 
 	path := filepath.Join(root, FileName)
 	writeFile(t, path, `model_aliases:
-  - name: custom
+  low_llm:
     model_string: local/team/code/high
+  custom:
+    model_string: local/custom
     usage: Project-specific work
 `)
 	result, err = Load(Options{ProjectRoot: root, CWD: root})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := result.Config.ModelAliases; len(got) != 1 || got[0].Name != "custom" || got[0].ModelString != "local/team/code/high" {
-		t.Fatalf("replacement ModelAliases = %#v", got)
+	if got := result.Config.ModelAliases; len(got) != 5 || got["low_llm"].ModelString != "local/team/code/high" || got["low_llm"].Usage == "" || got["custom"].ModelString != "local/custom" {
+		t.Fatalf("merged ModelAliases = %#v", got)
 	}
 
 	for _, test := range []struct {
 		name, aliases, want string
 	}{
-		{name: "empty name", aliases: "  - name: ''\n    model_string: ''\n    usage: work\n", want: "name must not be empty"},
-		{name: "name whitespace", aliases: "  - name: ' low'\n    model_string: ''\n    usage: work\n", want: "surrounding whitespace"},
-		{name: "name slash", aliases: "  - name: low/llm\n    model_string: ''\n    usage: work\n", want: "must not contain '/'"},
-		{name: "duplicate", aliases: "  - name: same\n    model_string: ''\n    usage: one\n  - name: same\n    model_string: ''\n    usage: two\n", want: "must be unique"},
-		{name: "empty usage", aliases: "  - name: low\n    model_string: ''\n    usage: ''\n", want: "usage must not be empty"},
-		{name: "model whitespace", aliases: "  - name: low\n    model_string: ' local/code'\n    usage: work\n", want: "surrounding whitespace"},
-		{name: "missing provider", aliases: "  - name: low\n    model_string: code\n    usage: work\n", want: "must be provider/model"},
-		{name: "empty segment", aliases: "  - name: low\n    model_string: local//code\n    usage: work\n", want: "empty path segments"},
+		{name: "empty name", aliases: "  '':\n    model_string: ''\n    usage: work\n", want: "key must not be empty"},
+		{name: "name whitespace", aliases: "  ' low':\n    model_string: ''\n    usage: work\n", want: "surrounding whitespace"},
+		{name: "name slash", aliases: "  low/llm:\n    model_string: ''\n    usage: work\n", want: "must not contain '/'"},
+		{name: "duplicate", aliases: "  same:\n    model_string: ''\n    usage: one\n  same:\n    model_string: ''\n    usage: two\n", want: "duplicate object key"},
+		{name: "empty usage", aliases: "  low:\n    model_string: ''\n    usage: ''\n", want: "usage must not be empty"},
+		{name: "model whitespace", aliases: "  low:\n    model_string: ' local/code'\n    usage: work\n", want: "surrounding whitespace"},
+		{name: "missing provider", aliases: "  low:\n    model_string: code\n    usage: work\n", want: "must be provider/model"},
+		{name: "empty segment", aliases: "  low:\n    model_string: local//code\n    usage: work\n", want: "empty path segments"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			writeFile(t, path, "model_aliases:\n"+test.aliases)
+			if _, err := Load(Options{ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestLoadValidatesToolBlacklistKeys(t *testing.T) {
+	for _, test := range []struct {
+		name, key, want string
+	}{
+		{name: "empty", key: "''", want: "must not be empty"},
+		{name: "surrounding whitespace", key: "' web_fetch'", want: "surrounding whitespace"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeFile(t, filepath.Join(root, FileName), "tool_blacklist:\n  "+test.key+": true\n")
 			if _, err := Load(Options{ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Load error = %v, want %q", err, test.want)
 			}
@@ -741,27 +765,23 @@ func TestUpdateDefaultSelectionPreservesConfigAndClearsLegacyVariant(t *testing.
 	}
 }
 
-func TestUpdateModelAliasesPreservesConfigAndCreatesFile(t *testing.T) {
-	aliases := []ModelAlias{
-		{Name: "low_llm", ModelString: "local/fast", Usage: "Routine work"},
-		{Name: "high_llm", ModelString: "local/team/code/high", Usage: "Difficult work"},
-	}
+func TestUpdateModelAliasPreservesConfigAndCreatesFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", FileName)
-	if err := UpdateModelAliases(path, aliases); err != nil {
+	if err := UpdateModelAlias(path, "low_llm", "local/fast"); err != nil {
 		t.Fatal(err)
 	}
 	created, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"model_aliases:", "name: low_llm", "model_string: local/fast", "usage: Difficult work"} {
+	for _, want := range []string{"model_aliases:", "low_llm:", "model_string: local/fast"} {
 		if !strings.Contains(string(created), want) {
 			t.Errorf("created config missing %q: %q", want, created)
 		}
 	}
 
-	writeFile(t, path, "# keep this comment\nmodel: old/model\nmodel_aliases:\n  - name: old\n    model_string: old/model\n    usage: Old usage\nweb_fetch:\n  allow_private: false\n")
-	if err := UpdateModelAliases(path, aliases); err != nil {
+	writeFile(t, path, "# keep this comment\nmodel: old/model\nmodel_aliases:\n  old:\n    model_string: old/model\n    usage: Old usage\n  low_llm:\n    # preserve alias comment\n    usage: Routine work\nweb_fetch:\n  allow_private: false\n")
+	if err := UpdateModelAlias(path, "low_llm", "local/team/code/high"); err != nil {
 		t.Fatal(err)
 	}
 	updated, err := os.ReadFile(path)
@@ -769,13 +789,10 @@ func TestUpdateModelAliasesPreservesConfigAndCreatesFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := string(updated)
-	for _, want := range []string{"# keep this comment", "model: old/model", "name: high_llm", "web_fetch:", "allow_private: false"} {
+	for _, want := range []string{"# keep this comment", "model: old/model", "old:", "usage: Old usage", "# preserve alias comment", "model_string: local/team/code/high", "web_fetch:", "allow_private: false"} {
 		if !strings.Contains(output, want) {
 			t.Errorf("updated config missing %q: %q", want, output)
 		}
-	}
-	if strings.Contains(output, "name: old") {
-		t.Fatalf("updated config retained old aliases: %q", output)
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -784,8 +801,8 @@ func TestUpdateModelAliasesPreservesConfigAndCreatesFile(t *testing.T) {
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("config mode = %o, want 600", info.Mode().Perm())
 	}
-	if err := UpdateModelAliases(path, []ModelAlias{{Name: "bad/name", Usage: "work"}}); err == nil {
-		t.Fatal("UpdateModelAliases accepted invalid aliases")
+	if err := UpdateModelAlias(path, "bad/name", "local/code"); err == nil {
+		t.Fatal("UpdateModelAlias accepted an invalid alias")
 	}
 }
 

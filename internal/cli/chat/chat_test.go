@@ -523,7 +523,7 @@ func TestModelAliasSlashConfiguresExistingAlias(t *testing.T) {
 				ctx: context.Background(), api: api, stdout: &stdout, stderr: &stderr,
 				reader:       bufio.NewReader(strings.NewReader(test.input)),
 				selection:    chatSelection{provider: "active", model: "unchanged", variant: "old", agent: "build"},
-				modelAliases: []configpkg.ModelAlias{{Name: "low_llm", Usage: "routine work"}},
+				modelAliases: map[string]configpkg.ModelAlias{"low_llm": {Usage: "routine work"}},
 				configureModelAlias: func(name, model string) error {
 					configuredName, configuredModel = name, model
 					return nil
@@ -532,7 +532,7 @@ func TestModelAliasSlashConfiguresExistingAlias(t *testing.T) {
 
 			shell.modelAliasAction(test.argument)
 
-			if configuredName != "low_llm" || configuredModel != test.wantModel || shell.modelAliases[0].ModelString != test.wantModel {
+			if configuredName != "low_llm" || configuredModel != test.wantModel || shell.modelAliases["low_llm"].ModelString != test.wantModel {
 				t.Fatalf("configured = %q %q, aliases = %#v", configuredName, configuredModel, shell.modelAliases)
 			}
 			if got := shell.selection.canonicalModel(); got != "active/unchanged/old" {
@@ -556,7 +556,7 @@ func TestModelAliasSlashSkipsEffortForModelWithoutVariantsAndHandlesEmptyAliases
 	configuredModel := ""
 	shell := &chatShell{
 		ctx: context.Background(), api: api, stdout: &stdout, stderr: &stderr,
-		reader: bufio.NewReader(strings.NewReader("1\n1\n")), modelAliases: []configpkg.ModelAlias{{Name: "low_llm"}},
+		reader: bufio.NewReader(strings.NewReader("1\n1\n")), modelAliases: map[string]configpkg.ModelAlias{"low_llm": {}},
 		configureModelAlias: func(_ string, model string) error { configuredModel = model; return nil },
 	}
 
@@ -582,7 +582,7 @@ func TestModelAliasSlashCancelAndUnknownAlias(t *testing.T) {
 		configured := false
 		shell := &chatShell{
 			ctx: context.Background(), api: api, stdout: &stdout, stderr: &stderr,
-			reader: bufio.NewReader(strings.NewReader(input)), modelAliases: []configpkg.ModelAlias{{Name: "low_llm"}},
+			reader: bufio.NewReader(strings.NewReader(input)), modelAliases: map[string]configpkg.ModelAlias{"low_llm": {}},
 			configureModelAlias: func(string, string) error { configured = true; return nil },
 		}
 
@@ -593,7 +593,7 @@ func TestModelAliasSlashCancelAndUnknownAlias(t *testing.T) {
 	}
 
 	var stderr bytes.Buffer
-	shell := &chatShell{stderr: &stderr, modelAliases: []configpkg.ModelAlias{{Name: "low_llm"}}}
+	shell := &chatShell{stderr: &stderr, modelAliases: map[string]configpkg.ModelAlias{"low_llm": {}}}
 	shell.modelAliasAction("unknown provider/model")
 	if !strings.Contains(stderr.String(), `unknown model alias "unknown"`) {
 		t.Fatalf("unknown alias stderr=%q", stderr.String())
