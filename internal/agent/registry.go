@@ -14,8 +14,6 @@ import (
 )
 
 const (
-	BuildID    = profiles.BuildID
-	PlanID     = profiles.PlanID
 	ExploreID  = "explore"
 	ExplorerID = profiles.ExplorerID
 	ReviewID   = profiles.ReviewID

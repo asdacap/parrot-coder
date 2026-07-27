@@ -45,7 +45,7 @@ func TestNewPreservesValuesAndDefensiveCopies(t *testing.T) {
 }
 
 func TestStableProfileIDs(t *testing.T) {
-	if BuildID != "build" || PlanID != "plan" || ExplorerID != "explorer" || ReviewID != "review" || WorkerID != "worker" {
-		t.Fatalf("profile IDs changed: %q %q %q %q %q", BuildID, PlanID, ExplorerID, ReviewID, WorkerID)
+	if ExplorerID != "explorer" || ReviewID != "review" || WorkerID != "worker" {
+		t.Fatalf("profile IDs changed: %q %q %q", ExplorerID, ReviewID, WorkerID)
 	}
 }

@@ -7,6 +7,11 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
+const (
+	BuildID = "build"
+	PlanID  = "plan"
+)
+
 type mutableProfile struct{ Profile }
 
 func testProfiles() []Profile {

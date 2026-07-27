@@ -17,6 +17,7 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -180,8 +181,8 @@ func (selectionResolver) Resolve(selector string) (provider.Provider, provider.M
 func testAgentRegistry(t *testing.T) *agent.Registry {
 	t.Helper()
 	registry, err := agent.NewRegistry(
-		agent.NewProfile(agent.BuildID, "build", nil, 64, 3, false, nil, nil),
-		agent.NewProfile(agent.PlanID, "plan", nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.BuildID, "build", nil, 64, 3, false, nil, nil),
+		agent.NewProfile(mode.PlanID, "plan", nil, 24, 1, true, nil, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
