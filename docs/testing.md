@@ -51,6 +51,15 @@ go test -count=20 ./internal/event ./internal/session ./internal/agent \
 Tests use local fixtures and bounded subprocesses. A failure under `-race` is a
 release blocker even when the ordinary suite passes.
 
+The PTY input-polling test requires process and terminal behavior unavailable in
+some sandboxes, so the normal test suite skips it. Run it explicitly outside a
+sandbox with:
+
+```sh
+PARROT_RUN_PTY_TEST=1 go test ./internal/process \
+  -run '^TestPersistentProcessPTYInputPollingOwnershipAndCleanup$'
+```
+
 ## Fuzzing
 
 Each native target has deterministic seeds and performs no external network

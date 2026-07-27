@@ -495,6 +495,10 @@ func TestStartFailureClosesLargeOutput(t *testing.T) {
 }
 
 func TestPersistentProcessPTYInputPollingOwnershipAndCleanup(t *testing.T) {
+	if os.Getenv("PARROT_RUN_PTY_TEST") != "1" {
+		t.Skip("set PARROT_RUN_PTY_TEST=1 to run the sandbox-incompatible PTY test")
+	}
+
 	runner := testRunner(t, Config{TerminationGrace: 50 * time.Millisecond})
 	result, err := runner.RunPersistent(context.Background(), PersistentRequest{
 		Shell: "/bin/sh", Command: `printf ready; read value; printf ':got:%s' "$value"`,

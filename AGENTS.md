@@ -6,7 +6,7 @@
 
 - Use nix flake please
 - Whenever a dependency changes (`go.mod`/`go.sum` touched), the `vendorHash` in `flake.nix` goes stale and `nix run` breaks with an "inconsistent vendoring" error. Always re-run `nix run .# -- --version` after a dependency change, and if it fails, refresh `vendorHash`: set it to `sha256-AAAA...A=` (43 `A`s), run the build, and paste the `got:` hash back in.
-- TestPersistentProcessPTYInputPollingOwnershipAndCleanup will fail in sandbox. Just leave it.
+- TestPersistentProcessPTYInputPollingOwnershipAndCleanup is skipped by default because it fails in sandbox. Agents do not need to run it. It can be run manually outside the sandbox with `PARROT_RUN_PTY_TEST=1` when needed.
 
 # Coding guideline
 
