@@ -5,6 +5,12 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
+const (
+	ExplorerID = "explorer"
+	ReviewID   = "review"
+	WorkerID   = "worker"
+)
+
 // Profile describes an agent's instructions, limits, status, and security
 // policy.
 type Profile interface {

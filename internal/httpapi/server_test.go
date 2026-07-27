@@ -17,6 +17,7 @@ import (
 	v1 "github.com/amirulashraf/parrot-coder/internal/api/v1"
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	"github.com/amirulashraf/parrot-coder/internal/event"
+	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/queue"
 	"github.com/amirulashraf/parrot-coder/internal/session"
@@ -177,16 +178,25 @@ func (selectionResolver) Resolve(selector string) (provider.Provider, provider.M
 	return nil, provider.Model{ID: strings.TrimPrefix(selector, "local/")}, nil, nil
 }
 
+func testAgentRegistry(t *testing.T) *agent.Registry {
+	t.Helper()
+	registry, err := agent.NewRegistry(
+		agent.NewProfile(mode.BuildID, "build", nil, 64, 3, false, nil, nil),
+		agent.NewProfile(mode.PlanID, "plan", nil, 24, 1, true, nil, nil),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return registry
+}
+
 func newSelectionBackend(t *testing.T) (*DomainBackend, agent.UserSession) {
 	t.Helper()
 	db := store.NewRegistry(t.TempDir(), "host-test")
 	t.Cleanup(func() { _ = db.Close() })
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
-	agents, err := agent.NewRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	agents := testAgentRegistry(t)
 	userSession := newTestUserSession(t, sessions, agents)
 	return &DomainBackend{AgentSessions: newTestSessionController(nil, userSession), Goals: session.NewGoalService(db, repository), Agents: agents, ProviderResolver: selectionResolver{}}, userSession
 }
@@ -694,10 +704,7 @@ func TestPromptExactRetryThroughHTTP(t *testing.T) {
 	defer db.Close()
 	repository := event.NewRepository(db)
 	sessions := session.NewService(db, repository)
-	agents, err := agent.NewRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
+	agents := testAgentRegistry(t)
 	userSession := newTestUserSession(t, sessions, agents)
 	created, err := userSession.CreateSelected(ctx, session.CreateParams{Title: "test"}, session.Selection{Agent: "build", Model: "local/code"})
 	if err != nil {

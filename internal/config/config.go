@@ -35,6 +35,8 @@ type Config struct {
 	MCP                        map[string]MCP      `json:"mcp,omitempty"`
 	WebFetch                   WebFetch            `json:"web_fetch,omitempty"`
 	Subagents                  Subagents           `json:"subagents,omitempty"`
+	DefaultProfile             string              `json:"default_profile,omitempty"`
+	Profiles                   map[string]Profile  `json:"profiles,omitempty"`
 	ToolBlacklist              []string            `json:"tool_blacklist,omitempty"`
 	SandboxRules               []SandboxRule       `json:"sandbox_rules,omitempty"`
 }
@@ -52,6 +54,17 @@ type Subagents struct {
 	MaxConcurrent          int `json:"max_concurrent"`
 	MaxConcurrentPerParent int `json:"max_concurrent_per_parent"`
 	MaxDepth               int `json:"max_depth"`
+}
+
+// Profile configures one foreground mode or child agent profile.
+type Profile struct {
+	Prompt         string        `json:"prompt"`
+	HardRules      []string      `json:"hard_rules"`
+	MaxTurns       int           `json:"max_turns"`
+	RecursionLimit int           `json:"recursion_limit"`
+	ReadOnly       bool          `json:"read_only"`
+	Status         string        `json:"status"`
+	SandboxRules   []SandboxRule `json:"sandbox_rules,omitempty"`
 }
 
 // SandboxRule is one ordered filesystem rule applied to the sandbox. Rule
@@ -288,10 +301,16 @@ func Load(options Options) (Result, error) {
 	if typed.ModelAliases == nil {
 		typed.ModelAliases = []ModelAlias{}
 	}
+	if typed.Profiles == nil {
+		typed.Profiles = make(map[string]Profile)
+	}
 	if err := validateModelAliases(typed.ModelAliases); err != nil {
 		return Result{}, err
 	}
 	if err := validateSubagents(typed.Subagents); err != nil {
+		return Result{}, err
+	}
+	if err := validateProfiles(typed.DefaultProfile, typed.Profiles); err != nil {
 		return Result{}, err
 	}
 	if typed.PermissionRequestTimeoutMS <= 0 {
@@ -399,6 +418,56 @@ func validateModelAliases(aliases []ModelAlias) error {
 			if segment == "" {
 				return fmt.Errorf("%s.model_string must not contain empty path segments", prefix)
 			}
+		}
+	}
+	return nil
+}
+
+func validateProfiles(defaultProfile string, profiles map[string]Profile) error {
+	if defaultProfile == "" {
+		return errors.New("default_profile is required")
+	}
+	if _, ok := profiles[defaultProfile]; !ok {
+		return fmt.Errorf("default_profile %q is not configured in profiles", defaultProfile)
+	}
+	switch defaultProfile {
+	case "build", "plan", "query":
+	default:
+		return fmt.Errorf("default_profile %q is not a foreground profile", defaultProfile)
+	}
+	required := map[string]bool{"build": false, "plan": false, "query": false, "explorer": false, "review": false, "worker": false}
+	for id, profile := range profiles {
+		path := "profiles." + id
+		if _, ok := required[id]; !ok {
+			return fmt.Errorf("%s is not a supported profile", path)
+		}
+		required[id] = true
+		if strings.TrimSpace(profile.Prompt) == "" {
+			return fmt.Errorf("%s.prompt is required", path)
+		}
+		if profile.MaxTurns <= 0 {
+			return fmt.Errorf("%s.max_turns must be greater than zero", path)
+		}
+		if profile.RecursionLimit < 0 {
+			return fmt.Errorf("%s.recursion_limit must not be negative", path)
+		}
+		if strings.TrimSpace(profile.Status) == "" {
+			return fmt.Errorf("%s.status is required", path)
+		}
+		for index, rule := range profile.SandboxRules {
+			if strings.TrimSpace(rule.Path) == "" {
+				return fmt.Errorf("%s.sandbox_rules.%d.path is required", path, index)
+			}
+			switch rule.Rule {
+			case "allow_write", "deny_read", "allow_read", "deny_write":
+			default:
+				return fmt.Errorf("%s.sandbox_rules.%d.rule is invalid", path, index)
+			}
+		}
+	}
+	for id, configured := range required {
+		if !configured {
+			return fmt.Errorf("profiles.%s is required", id)
 		}
 	}
 	return nil
@@ -581,6 +650,16 @@ const defaultConfigYAML = `# Parrot Coder configuration file.
 
 # Positive number of milliseconds to wait for a permission request response.
 # permission_request_timeout_ms: 30000
+
+# Default foreground profile. Profile defaults and definitions are in predefined_config.yaml.
+# default_profile: build
+
+# Override individual built-in profile fields; unspecified fields inherit their defaults.
+# profiles:
+#   worker:
+#     max_turns: 96
+#   explorer:
+#     recursion_limit: 2
 
 # Tool blacklist: tools listed here are disabled and not available to the model.
 # tool_blacklist:

@@ -13,7 +13,6 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/agent"
 	"github.com/amirulashraf/parrot-coder/internal/security"
-	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 const (
@@ -178,22 +177,25 @@ func (m *planMode) CompleteTurn(sessionID, _ string) (TurnCompleteResult, error)
 	return planCompletion(plan), nil
 }
 
-func Builtins() []Mode { return BuiltinsWithPlanDirectory(filepath.Join(os.TempDir(), "parrot-plans")) }
+func Builtins(profiles ...agent.Profile) []Mode {
+	return BuiltinsWithPlanDirectory(filepath.Join(os.TempDir(), "parrot-plans"), profiles...)
+}
 
-func BuiltinsWithPlanDirectory(directory string) []Mode {
-	return []Mode{
-		builtin{profile: agent.NewProfile(BuildID, "You are Parrot's build mode. Implement and verify the requested changes.", []string{"Keep tool side effects within the authorized workspace."}, 64, 3, false, nil, status.Static{ProviderKey: "profile:build-mode", Text: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."})},
-		&planMode{builtin: builtin{profile: agent.NewProfile(PlanID, "You are Parrot's plan mode. Inspect the project and write an implementation plan to the designated plan file. This mode is read-only except for the designated plan file.", []string{"Read-only mode is enforced by the runtime except for the designated plan file."}, 24, 1, true, nil, status.Static{ProviderKey: "profile:plan-mode", Text: "Plan mode: inspect the project and write the plan artifact. The workspace remains read-only."})}, directory: directory, files: make(map[string]string)},
-		builtin{profile: agent.NewProfile(QueryID, "You are Parrot's query mode. Inspect the project and answer the user's question without making changes.", []string{"Read-only mode is enforced by the runtime."}, 24, 1, true, nil, status.Static{ProviderKey: "profile:query-mode", Text: "Query mode: inspect the project and answer questions. The workspace remains read-only."})},
+func BuiltinsWithPlanDirectory(directory string, profiles ...agent.Profile) []Mode {
+	items := make([]Mode, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile != nil && profile.ID() == PlanID {
+			items = append(items, &planMode{builtin: builtin{profile: profile}, directory: directory, files: make(map[string]string)})
+			continue
+		}
+		items = append(items, builtin{profile: profile})
 	}
+	return items
 }
 
 type Registry struct{ items map[string]Mode }
 
 func NewRegistry(modes ...Mode) (*Registry, error) {
-	if len(modes) == 0 {
-		modes = Builtins()
-	}
 	r := &Registry{items: make(map[string]Mode, len(modes))}
 	for _, item := range modes {
 		if item == nil {
@@ -224,14 +226,11 @@ func nilProfile(profile agent.Profile) bool {
 	}
 }
 
-func NewRegistryWithPlanDirectory(directory string) (*Registry, error) {
-	return NewRegistry(BuiltinsWithPlanDirectory(directory)...)
+func NewRegistryWithPlanDirectory(directory string, profiles ...agent.Profile) (*Registry, error) {
+	return NewRegistry(BuiltinsWithPlanDirectory(directory, profiles...)...)
 }
 
 func (r *Registry) Get(id string) (Mode, error) {
-	if id == "" {
-		id = BuildID
-	}
 	item, ok := r.items[id]
 	if !ok {
 		return nil, fmt.Errorf("mode: unknown mode %q", id)

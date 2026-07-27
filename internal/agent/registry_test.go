@@ -3,12 +3,34 @@ package agent
 import (
 	"reflect"
 	"testing"
+
+	"github.com/amirulashraf/parrot-coder/internal/status"
+)
+
+const (
+	BuildID = "build"
+	PlanID  = "plan"
 )
 
 type mutableProfile struct{ Profile }
 
+func testProfiles() []Profile {
+	return []Profile{
+		NewProfile(BuildID, "build", []string{"rule"}, 64, 3, false, nil, nil),
+		NewProfile(PlanID, "plan", []string{"rule"}, 24, 1, true, nil, nil),
+		NewProfile(ExplorerID, "explorer", []string{"rule"}, 32, 3, true, nil, status.Static{ProviderKey: "profile:explorer"}),
+		NewProfile(ReviewID, "review", []string{"rule"}, 32, 3, true, nil, status.Static{ProviderKey: "profile:review"}),
+		NewProfile(WorkerID, "worker", []string{"rule"}, 64, 3, false, nil, status.Static{ProviderKey: "profile:worker"}),
+	}
+}
+
+func testSubagentProfiles() []Profile {
+	profiles := testProfiles()
+	return profiles[2:]
+}
+
 func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
-	registry, err := NewRegistry()
+	registry, err := NewRegistry(testProfiles()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +79,7 @@ func TestBuiltinProfilesEnforceHardToolRestrictions(t *testing.T) {
 }
 
 func TestSubagentsIncludeExplorerWorkerAndDedicatedReviewProfiles(t *testing.T) {
-	registry, err := NewRegistry(Subagents()...)
+	registry, err := NewRegistry(testSubagentProfiles()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +115,7 @@ func TestSubagentsIncludeExplorerWorkerAndDedicatedReviewProfiles(t *testing.T) 
 }
 
 func TestListDoesNotExposeProfileSliceStorage(t *testing.T) {
-	registry, err := NewRegistry()
+	registry, err := NewRegistry(testProfiles()...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +168,7 @@ func TestReadOnlyProfileIsReadOnly(t *testing.T) {
 // The review profile allows all read-only tools consistently. This verifies
 // that the profile correctly identifies itself as read-only.
 func TestReviewProfileIsReadOnly(t *testing.T) {
-	registry, err := NewRegistry()
+	registry, err := NewRegistry(testProfiles()...)
 	if err != nil {
 		t.Fatal(err)
 	}

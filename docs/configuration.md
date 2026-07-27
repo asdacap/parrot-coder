@@ -98,6 +98,11 @@ sandbox_rules:
     rule: deny_read
 web_fetch:
   allow_private: false
+default_profile: build
+profiles:
+  # Override one field while inheriting the rest from predefined_config.yaml.
+  worker:
+    max_turns: 96
 subagents:
   max_concurrent: 64
   max_concurrent_per_parent: 16
@@ -164,13 +169,34 @@ not modify project files. Use `/model-alias` to list aliases,
 `/model-alias low_llm provider/model[/variant]` to configure one directly.
 Configured aliases become available to the running agent immediately.
 
+### Profiles
+
+`default_profile` selects the foreground mode used when neither `--mode` nor its
+legacy `--agent` alias is passed. It must name `build`, `plan`, or `query` and
+defaults to `build` in `predefined_config.yaml`.
+
+The `profiles` map configures the foreground profiles `build`, `plan`, and
+`query`, plus the child-agent profiles `explorer`, `review`, and `worker`.
+Each entry supports `prompt`, `hard_rules`, `max_turns`, `recursion_limit`,
+`read_only`, `status`, and ordered `sandbox_rules`. A profile prompt or status
+must be non-empty, `max_turns` must be positive, and `recursion_limit` cannot be
+negative. `default_profile`, profile `read_only` values, and profile sandbox
+rules are security policy and require global configuration. Profile sandbox
+rules use the same `path` and `rule` fields as the top-level sandbox rules.
+
+Profile entries merge recursively across configuration scopes. For example,
+setting only `profiles.worker.max_turns` retains the predefined worker prompt,
+hard rules, security policy, status, and recursion limit. The generated
+`predefined_config.yaml` contains the complete defaults and remains the source
+of runtime profile values; `parrot.yaml` only needs to contain overrides.
+
 ### Subagents
 
 `subagents.max_concurrent` limits child-agent turns running across the process.
 `subagents.max_concurrent_per_parent` limits child-agent turns owned by one
 parent session. `subagents.max_depth` limits the total number of nested
 child-agent levels. All three values must be positive, and the per-parent limit
-must not exceed the global limit. Their defaults are `8`, `4`, and `4`,
+must not exceed the global limit. Their defaults are `64`, `16`, and `4`,
 respectively. The nesting limit is independent of each profile's same-agent
 recursion policy.
 

@@ -578,6 +578,9 @@ func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tool
 	if err != nil {
 		t.Fatal(err)
 	}
+	if len(profiles) == 0 {
+		profiles = testProfiles()
+	}
 	agents, err := NewRegistry(profiles...)
 	if err != nil {
 		t.Fatal(err)
@@ -2574,7 +2577,7 @@ func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {
 		}
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
-	h := newRunnerHarness(t, fake, []Profile{Builtins()[1]}, mutation)
+	h := newRunnerHarness(t, fake, []Profile{NewProfile(PlanID, "plan", nil, 24, 1, true, nil, nil)}, mutation)
 	h.admit(t, "user", "plan", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)

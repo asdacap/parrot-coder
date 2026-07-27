@@ -372,6 +372,52 @@ func TestLoadSubagentDefaults(t *testing.T) {
 	}
 }
 
+func TestLoadProfileDefaultsOverridesAndValidation(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, FileName)
+	result, err := Load(Options{ProjectRoot: root, CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker := result.Config.Profiles["worker"]
+	if result.Config.DefaultProfile != "build" || worker.MaxTurns != 64 || worker.RecursionLimit != 3 || worker.ReadOnly || worker.Prompt == "" || worker.Status == "" {
+		t.Fatalf("profile defaults = default %q, worker %#v", result.Config.DefaultProfile, worker)
+	}
+	if result.Provenance["default_profile"] != PredefinedFileName || result.Provenance["profiles.worker.max_turns"] != PredefinedFileName {
+		t.Fatalf("profile provenance = %#v", result.Provenance)
+	}
+
+	writeFile(t, path, "default_profile: query\nprofiles:\n  worker:\n    max_turns: 96\n")
+	result, err = Load(Options{ProjectRoot: root, CWD: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	worker = result.Config.Profiles["worker"]
+	if result.Config.DefaultProfile != "query" || worker.MaxTurns != 96 || worker.Prompt == "" || worker.RecursionLimit != 3 {
+		t.Fatalf("merged profiles = default %q, worker %#v", result.Config.DefaultProfile, worker)
+	}
+	if result.Provenance["default_profile"] != path || result.Provenance["profiles.worker.max_turns"] != path || result.Provenance["profiles.worker.prompt"] != PredefinedFileName {
+		t.Fatalf("merged profile provenance = %#v", result.Provenance)
+	}
+
+	for _, test := range []struct {
+		config string
+		want   string
+	}{
+		{config: "default_profile: worker\n", want: "not a foreground profile"},
+		{config: "default_profile: missing\n", want: "is not configured"},
+		{config: "profiles:\n  worker:\n    max_turns: 0\n", want: "profiles.worker.max_turns"},
+		{config: "profiles:\n  worker:\n    recursion_limit: -1\n", want: "profiles.worker.recursion_limit"},
+		{config: "profiles:\n  worker:\n    prompt: '   '\n", want: "profiles.worker.prompt"},
+		{config: "profiles:\n  worker:\n    sandbox_rules:\n      - path: /tmp\n        rule: execute\n", want: "profiles.worker.sandbox_rules.0.rule"},
+	} {
+		writeFile(t, path, test.config)
+		if _, err := Load(Options{ProjectRoot: root, CWD: root}); err == nil || !strings.Contains(err.Error(), test.want) {
+			t.Fatalf("Load(%q) error = %v, want %q", test.config, err, test.want)
+		}
+	}
+}
+
 func TestLoadPermissionRequestTimeoutDefaultOverrideAndValidation(t *testing.T) {
 	root := t.TempDir()
 	result, err := Load(Options{ProjectRoot: root, CWD: root})
