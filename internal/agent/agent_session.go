@@ -1332,15 +1332,11 @@ func (r *agentSession) statusQuery(selected session.AgentSessionDto, profile Pro
 }
 
 func (r *agentSession) publishStatusPromptInjected() {
-	if r.live != nil {
-		r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
-	}
+	r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventStatusPromptInjected, Text: "Status prompt injected"})
 }
 
 func (r *agentSession) publishMaxTurnsReached(maxTurns int) {
-	if r.live != nil {
-		r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventMaxTurnsReached, Text: fmt.Sprintf("Maximum turn limit reached (%d); producing final response", maxTurns)})
-	}
+	r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventMaxTurnsReached, Text: fmt.Sprintf("Maximum turn limit reached (%d); producing final response", maxTurns)})
 }
 
 // prepareQueueNotification delivers one monitored queue item only after a
@@ -1431,9 +1427,7 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		return nil, "", err
 	}
 	stream, err := provider.StreamWithRetry(ctx, client, request, func(notice provider.RetryNotice) {
-		if r.live != nil {
-			r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventProviderRetry, Text: notice.String()})
-		}
+		r.live.PublishProtocol(r.dto.ID, protocol.Event{Type: protocol.EventProviderRetry, Text: notice.String()})
 	})
 	if err != nil {
 		finishErr := r.finishOnCleanup(assistant.ID, nil, protocol.FinishError, err.Error(), "error")
@@ -1471,10 +1465,8 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 			item.Usage.InputCost = float64(item.Usage.InputTokens) * model.InputPrice
 			item.Usage.OutputCost = float64(item.Usage.OutputTokens) * model.OutputPrice
 		}
-		if r.live != nil {
-			item.MessageID = assistant.ID
-			r.live.PublishProtocol(r.dto.ID, item)
-		}
+		item.MessageID = assistant.ID
+		r.live.PublishProtocol(r.dto.ID, item)
 		switch item.Type {
 		case protocol.EventTextDelta:
 			text.WriteString(item.Text)
