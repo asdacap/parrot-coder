@@ -108,18 +108,18 @@ func TestManagedTaskControllerPreservesTaskStateWhenWaitIsCanceled(t *testing.T)
 
 func TestAgentRecursionLimitPolicy(t *testing.T) {
 	modeProfiles := []agent.Profile{
-		agent.NewProfile(mode.BuildID, "build", "usage", nil, nil, 64, 3, false, nil, nil),
-		agent.NewProfile(mode.PlanID, "plan", "usage", nil, nil, 24, 1, true, nil, nil),
-		agent.NewProfile(mode.QueryID, "query", "usage", nil, nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.BuildID, "build", "usage", nil, nil, 64, 3, false, nil),
+		agent.NewProfile(mode.PlanID, "plan", "usage", nil, nil, 24, 1, true, nil),
+		agent.NewProfile(mode.QueryID, "query", "usage", nil, nil, 24, 1, true, nil),
 	}
 	modes, err := mode.NewRegistry(mode.Builtins(modeProfiles...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	agents, err := agent.NewRegistry(
-		agent.NewProfile(agent.ExplorerID, "explorer", "usage", nil, nil, 32, 3, true, nil, nil),
-		agent.NewProfile(agent.ReviewID, "review", "usage", nil, nil, 32, 3, true, nil, nil),
-		agent.NewProfile(agent.WorkerID, "worker", "usage", nil, nil, 64, 3, false, nil, nil),
+		agent.NewProfile(agent.ExplorerID, "explorer", "usage", nil, nil, 32, 3, true, nil),
+		agent.NewProfile(agent.ReviewID, "review", "usage", nil, nil, 32, 3, true, nil),
+		agent.NewProfile(agent.WorkerID, "worker", "usage", nil, nil, 64, 3, false, nil),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -402,7 +402,7 @@ func TestOpenDiscoversSkillsCommandsAndNeedsNoOptionalConfig(t *testing.T) {
 
 func TestConfiguredProfilePreservesAllowedTools(t *testing.T) {
 	configured := []string{"read", "rg"}
-	profile := configuredProfile("restricted", config.Profile{Prompt: "prompt", Usage: "usage", AllowedTools: configured, MaxTurns: 1, Status: "status"})
+	profile := configuredProfile("restricted", config.Profile{Prompt: "prompt", Usage: "usage", AllowedTools: configured, MaxTurns: 1})
 	configured[0] = "mutated"
 	allowed := profile.AllowedTools()
 	if !reflect.DeepEqual(allowed, []string{"read", "rg"}) {
@@ -416,9 +416,9 @@ func TestConfiguredProfilePreservesAllowedTools(t *testing.T) {
 
 func TestConfiguredSubagentUsageReachesSystemContext(t *testing.T) {
 	profiles := []agent.Profile{
-		configuredProfile(agent.ExplorerID, config.Profile{Prompt: "explore", Usage: "Investigate focused questions.", MaxTurns: 1, Status: "status"}),
-		configuredProfile(agent.ReviewID, config.Profile{Prompt: "review", Usage: "Review requested changes.", MaxTurns: 1, Status: "status"}),
-		configuredProfile(agent.WorkerID, config.Profile{Prompt: "work", Usage: "Implement scoped work.", MaxTurns: 1, Status: "status"}),
+		configuredProfile(agent.ExplorerID, config.Profile{Prompt: "explore", Usage: "Investigate focused questions.", MaxTurns: 1}),
+		configuredProfile(agent.ReviewID, config.Profile{Prompt: "review", Usage: "Review requested changes.", MaxTurns: 1}),
+		configuredProfile(agent.WorkerID, config.Profile{Prompt: "work", Usage: "Implement scoped work.", MaxTurns: 1}),
 	}
 	registry, err := agent.NewRegistry(profiles...)
 	if err != nil {

@@ -85,20 +85,27 @@ func TestActiveTasksStatus(t *testing.T) {
 		active []task.Active
 		want   string
 	}{
-		{name: "none", want: "Active tasks: none"},
 		{
-			name: "stable concise list",
+			name: "none",
+			want: "Active subagents: none\n\nActive processes: none",
+		},
+		{
+			name: "partitioned sorted concise lists",
 			active: []task.Active{
 				{SessionID: "ses_z", Kind: task.KindAgent, Status: "pending", StartedAt: startedAt, Agent: "worker", Turn: 3, Depth: 2},
+				{ProcessID: "proc_z", SessionID: "other-session", Kind: task.KindShell, Status: "waiting", StartedAt: startedAt},
+				{SessionID: "ses_a", Kind: task.KindAgent, Status: "running", StartedAt: startedAt, Turn: 1, Depth: 0},
 				{ProcessID: "proc_a", SessionID: "other-session", Kind: task.KindShell, Status: "running", StartedAt: startedAt},
 			},
-			want: "Active tasks:\n- proc_a (shell, running)\n- ses_z (agent, pending, agent: worker, turn: 3, depth: 2)",
+			want: "Active subagents:\n- ses_a (running, turn: 1, depth: 0)\n- ses_z (pending, agent: worker, turn: 3, depth: 2)\n\nActive processes:\n- proc_a (running)\n- proc_z (waiting)",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			var gotSession string
+			calls := 0
 			provider := NewActiveTasks(activeTaskListerFunc(func(sessionID string) []task.Active {
+				calls++
 				gotSession = sessionID
 				return test.active
 			}))
@@ -109,8 +116,8 @@ func TestActiveTasksStatus(t *testing.T) {
 			if provider.Key() != "runtime:tasks" {
 				t.Fatalf("key = %q", provider.Key())
 			}
-			if gotSession != "session" {
-				t.Fatalf("ListActive session = %q", gotSession)
+			if gotSession != "session" || calls != 1 {
+				t.Fatalf("ListActive(%q) calls = %d", gotSession, calls)
 			}
 			if !observation.Available || observation.Text != test.want {
 				t.Fatalf("observation = %#v, want text %q", observation, test.want)

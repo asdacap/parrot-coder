@@ -634,7 +634,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 }
 
 func configuredProfile(id string, configured config.Profile) agent.Profile {
-	return agent.NewProfile(id, configured.Prompt, configured.Usage, configured.HardRules, configured.AllowedTools, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules), statusinfo.Static{ProviderKey: "profile:" + id, Text: configured.Status})
+	return agent.NewProfile(id, configured.Prompt, configured.Usage, configured.HardRules, configured.AllowedTools, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules))
 }
 
 // Project configuration may select models and override model metadata, but it

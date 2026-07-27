@@ -10,7 +10,6 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/agent/profiles"
 	"github.com/amirulashraf/parrot-coder/internal/security"
-	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 const (
@@ -22,8 +21,8 @@ const (
 
 type Profile = profiles.Profile
 
-func NewProfile(id, prompt, usage string, hardRules, allowedTools []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule, statusProvider status.Provider) Profile {
-	return profiles.New(id, prompt, usage, hardRules, allowedTools, maxTurns, recursionLimit, readOnly, sandboxRules, statusProvider)
+func NewProfile(id, prompt, usage string, hardRules, allowedTools []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule) Profile {
+	return profiles.New(id, prompt, usage, hardRules, allowedTools, maxTurns, recursionLimit, readOnly, sandboxRules)
 }
 
 // TurnProfile combines a reusable profile with capabilities granted while
@@ -72,7 +71,7 @@ func (r *Registry) Register(profile Profile) error {
 	if nilProfile(profile) {
 		return errors.New("agent: ID, prompt, and positive max turns are required")
 	}
-	profile = NewProfile(profile.ID(), profile.Prompt(), profile.Usage(), profile.HardRules(), profile.AllowedTools(), profile.MaxTurns(), profile.RecursionLimit(), profile.IsReadOnly(), profile.Rules(), profile.Status())
+	profile = NewProfile(profile.ID(), profile.Prompt(), profile.Usage(), profile.HardRules(), profile.AllowedTools(), profile.MaxTurns(), profile.RecursionLimit(), profile.IsReadOnly(), profile.Rules())
 	if profile.ID() == "" || profile.Prompt() == "" || profile.MaxTurns() <= 0 {
 		return errors.New("agent: ID, prompt, and positive max turns are required")
 	}

@@ -181,8 +181,8 @@ func (selectionResolver) Resolve(selector string) (provider.Provider, provider.M
 func testAgentRegistry(t *testing.T) *agent.Registry {
 	t.Helper()
 	registry, err := agent.NewRegistry(
-		agent.NewProfile(mode.BuildID, "build", "usage", nil, nil, 64, 3, false, nil, nil),
-		agent.NewProfile(mode.PlanID, "plan", "usage", nil, nil, 24, 1, true, nil, nil),
+		agent.NewProfile(mode.BuildID, "build", "usage", nil, nil, 64, 3, false, nil),
+		agent.NewProfile(mode.PlanID, "plan", "usage", nil, nil, 24, 1, true, nil),
 	)
 	if err != nil {
 		t.Fatal(err)

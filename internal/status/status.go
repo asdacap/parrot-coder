@@ -55,27 +55,57 @@ func NewActiveTasks(tasks activeTaskLister) ActiveTasks { return ActiveTasks{tas
 
 func (ActiveTasks) Key() string { return "runtime:tasks" }
 func (p ActiveTasks) Observe(_ context.Context, query Query) (Observation, error) {
-	if p.tasks == nil {
-		return Observation{Available: true, Text: "Active tasks: none"}, nil
+	var active []task.Active
+	if p.tasks != nil {
+		active = p.tasks.ListActive(query.SessionID)
 	}
-	active := append([]task.Active(nil), p.tasks.ListActive(query.SessionID)...)
-	sort.Slice(active, func(i, j int) bool { return activeIdentifier(active[i]) < activeIdentifier(active[j]) })
-	if len(active) == 0 {
-		return Observation{Available: true, Text: "Active tasks: none"}, nil
-	}
-	lines := make([]string, 1, len(active)+1)
-	lines[0] = "Active tasks:"
+	agents, processes := partitionActiveTasks(active)
+	return Observation{Available: true, Text: strings.Join([]string{
+		formatActiveSubagents(agents),
+		formatActiveProcesses(processes),
+	}, "\n\n")}, nil
+}
+
+func partitionActiveTasks(active []task.Active) (agents, processes []task.Active) {
 	for _, item := range active {
-		details := []string{string(item.Kind), item.Status}
 		if item.Kind == task.KindAgent {
-			if item.Agent != "" {
-				details = append(details, "agent: "+item.Agent)
-			}
-			details = append(details, fmt.Sprintf("turn: %d", item.Turn), fmt.Sprintf("depth: %d", item.Depth))
+			agents = append(agents, item)
+		} else if item.Kind == task.KindShell {
+			processes = append(processes, item)
 		}
+	}
+	sort.Slice(agents, func(i, j int) bool { return activeIdentifier(agents[i]) < activeIdentifier(agents[j]) })
+	sort.Slice(processes, func(i, j int) bool { return activeIdentifier(processes[i]) < activeIdentifier(processes[j]) })
+	return agents, processes
+}
+
+func formatActiveSubagents(agents []task.Active) string {
+	if len(agents) == 0 {
+		return "Active subagents: none"
+	}
+	lines := make([]string, 1, len(agents)+1)
+	lines[0] = "Active subagents:"
+	for _, item := range agents {
+		details := []string{item.Status}
+		if item.Agent != "" {
+			details = append(details, "agent: "+item.Agent)
+		}
+		details = append(details, fmt.Sprintf("turn: %d", item.Turn), fmt.Sprintf("depth: %d", item.Depth))
 		lines = append(lines, fmt.Sprintf("- %s (%s)", activeIdentifier(item), strings.Join(details, ", ")))
 	}
-	return Observation{Available: true, Text: strings.Join(lines, "\n")}, nil
+	return strings.Join(lines, "\n")
+}
+
+func formatActiveProcesses(processes []task.Active) string {
+	if len(processes) == 0 {
+		return "Active processes: none"
+	}
+	lines := make([]string, 1, len(processes)+1)
+	lines[0] = "Active processes:"
+	for _, item := range processes {
+		lines = append(lines, fmt.Sprintf("- %s (%s)", activeIdentifier(item), item.Status))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func activeIdentifier(item task.Active) string {

@@ -61,7 +61,6 @@ profiles:
     max_turns: 64
     recursion_limit: 3
     read_only: false
-    status: "Build mode: implement and verify requested changes. Workspace writes are permitted through the active security policy."
   plan:
     prompt: You are Parrot's plan mode. Inspect the project and write the complete implementation plan to the designated canonical plan file. This mode is read-only except for its designated plan-artifact directory.
     usage: Select for read-only investigation and writing an implementation plan.
@@ -70,7 +69,6 @@ profiles:
     max_turns: 24
     recursion_limit: 1
     read_only: true
-    status: "Plan mode: inspect the project and write the plan artifact. The workspace remains read-only."
   query:
     prompt: You are Parrot's query mode. Inspect the project and answer the user's question without making changes.
     usage: Select for read-only questions about the project.
@@ -79,7 +77,6 @@ profiles:
     max_turns: 24
     recursion_limit: 1
     read_only: true
-    status: "Query mode: inspect the project and answer questions. The workspace remains read-only."
   explorer:
     usage: Delegate focused read-only codebase investigation and evidence gathering.
     prompt: |-
@@ -91,7 +88,6 @@ profiles:
     max_turns: 32
     recursion_limit: 3
     read_only: true
-    status: "Explorer profile: investigate a focused codebase question. Read-only mode is enforced by the runtime."
   review:
     usage: Delegate defect-first read-only review of a requested change.
     prompt: |-
@@ -106,7 +102,6 @@ profiles:
     max_turns: 32
     recursion_limit: 3
     read_only: true
-    status: "Review profile: perform a defect-first code review. Read-only mode is enforced and review delegation is not permitted."
   worker:
     usage: Delegate independently scoped implementation or production work.
     prompt: |-
@@ -118,7 +113,6 @@ profiles:
     max_turns: 64
     recursion_limit: 3
     read_only: false
-    status: "Worker profile: execute delegated work within the assigned ownership boundaries and verify it."
 
 # Tool blacklist keyed by tool ID. True disables a tool; false in a
 # higher-precedence layer re-enables an inherited blacklist entry.

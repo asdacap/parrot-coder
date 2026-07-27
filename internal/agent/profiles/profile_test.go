@@ -1,20 +1,17 @@
 package profiles
 
 import (
-	"context"
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/security"
-	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 func TestNewPreservesValuesAndDefensiveCopies(t *testing.T) {
 	hardRules := []string{"original rule"}
 	allowedTools := []string{"read", "rg"}
 	sandboxRules := []security.Rule{{Path: "/workspace", Action: security.ActionAllowWrite}}
-	statusProvider := status.Static{ProviderKey: "profile:test", Text: "test status"}
 
-	profile := New("test", "test prompt", "test usage", hardRules, allowedTools, 12, 2, true, sandboxRules, statusProvider)
+	profile := New("test", "test prompt", "test usage", hardRules, allowedTools, 12, 2, true, sandboxRules)
 	hardRules[0] = "mutated input"
 	allowedTools[0] = "mutated_input"
 	sandboxRules[0].Path = "/mutated-input"
@@ -41,19 +38,11 @@ func TestNewPreservesValuesAndDefensiveCopies(t *testing.T) {
 	if profile.HardRules()[0] != "original rule" || profile.AllowedTools()[0] != "read" || profile.Rules()[0].Path != "/workspace" {
 		t.Fatal("slice accessor exposed profile storage")
 	}
-
-	if profile.Status() != statusProvider {
-		t.Fatalf("Status() = %#v, want supplied provider", profile.Status())
-	}
-	observation, err := profile.Status().Observe(context.Background(), status.Query{})
-	if err != nil || !observation.Available || observation.Text != "test status" {
-		t.Fatalf("status observation = %#v, %v, want available test status", observation, err)
-	}
 }
 
 func TestAllowedToolsPreservesOptionalAndEmptySemantics(t *testing.T) {
-	unrestricted := New("all", "prompt", "usage", nil, nil, 1, 0, false, nil, nil)
-	none := New("none", "prompt", "usage", nil, []string{}, 1, 0, false, nil, nil)
+	unrestricted := New("all", "prompt", "usage", nil, nil, 1, 0, false, nil)
+	none := New("none", "prompt", "usage", nil, []string{}, 1, 0, false, nil)
 	if unrestricted.AllowedTools() != nil {
 		t.Fatalf("unrestricted AllowedTools() = %#v, want nil", unrestricted.AllowedTools())
 	}

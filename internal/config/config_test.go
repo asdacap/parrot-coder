@@ -159,6 +159,28 @@ tool_blacklist:
 	}
 }
 
+func TestLoadLegacyProfileStatusCompatibility(t *testing.T) {
+	root := t.TempDir()
+	global := filepath.Join(root, "global", FileName)
+	project := filepath.Join(root, "project")
+	projectFile := filepath.Join(project, FileName)
+	writeFile(t, global, "profiles:\n  worker:\n    status: global status\n")
+	writeFile(t, projectFile, "profiles:\n  worker:\n    status: project status\n")
+
+	result, err := Load(Options{ConfigDir: filepath.Dir(global), ProjectRoot: project, CWD: project})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := result.Provenance["profiles.worker.status"]; exists {
+		t.Fatalf("legacy profile status remained in provenance: %#v", result.Provenance)
+	}
+
+	writeFile(t, projectFile, "profiles:\n  worker:\n    unexpected: value\n")
+	if _, err := Load(Options{ConfigDir: filepath.Dir(global), ProjectRoot: project, CWD: project}); err == nil || !strings.Contains(err.Error(), "unexpected") {
+		t.Fatalf("Load error = %v, want unknown profile field rejection", err)
+	}
+}
+
 func TestLoadLegacyVariantCompatibility(t *testing.T) {
 	for _, test := range []struct {
 		name    string
@@ -473,7 +495,7 @@ func TestLoadProfileDefaultsOverridesAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := result.Config.Profiles["worker"]
-	if result.Config.DefaultProfile != "build" || worker.MaxTurns != 64 || worker.RecursionLimit != 3 || worker.ReadOnly || worker.Prompt == "" || worker.Usage == "" || worker.Status == "" || worker.AllowedTools != nil {
+	if result.Config.DefaultProfile != "build" || worker.MaxTurns != 64 || worker.RecursionLimit != 3 || worker.ReadOnly || worker.Prompt == "" || worker.Usage == "" || worker.AllowedTools != nil {
 		t.Fatalf("profile defaults = default %q, worker %#v", result.Config.DefaultProfile, worker)
 	}
 	if result.Provenance["default_profile"] != PredefinedFileName || result.Provenance["profiles.worker.max_turns"] != PredefinedFileName || result.Provenance["profiles.worker.usage"] != PredefinedFileName {
