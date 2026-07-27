@@ -86,6 +86,7 @@ type userSession struct {
 	queues             QueueManager
 	stateDirectories   UserSessionStateDirectories
 	profiles           ProfileResolver
+	modes              ModeResolver
 	providers          ProviderResolver
 	toolProviders      tool.Providers
 	toolAuthorizer     tool.Authorizer
@@ -114,10 +115,26 @@ type userSession struct {
 
 var _ UserSession = (*userSession)(nil)
 
-// NewUserSession creates a user runtime with its own agent-session repository.
+// NewUserSession creates a user runtime whose lifecycle follows its profiles.
 func NewUserSession(
 	ctx context.Context, sessions SessionRuntime, systemContext SystemContextPrompt, queues QueueManager, config UserSessionConfig,
 	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
+	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
+	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
+	live LivePublisher, events event.EventBroker, compactor Compactor, goals *session.GoalService, status StatusObserver,
+	toolPanicLogger func(context.Context, string, string, any, []byte), childTasks *managedtask.Manager,
+	childAgentIdentity func(string) string, childAgentRecursionLimit func(string) int, childNameGenerator func() string,
+	onChildDiscard func(string), observers ...LifecycleObserver,
+) (UserSession, error) {
+	return NewUserSessionWithModes(ctx, sessions, systemContext, queues, config, stateDirectories, profiles, NewProfileModeResolver(profiles), providers,
+		toolProviders, toolAuthorizer, toolErrorAdvisor, workspace, outputs, processes, live, events, compactor, goals, status, toolPanicLogger,
+		childTasks, childAgentIdentity, childAgentRecursionLimit, childNameGenerator, onChildDiscard, observers...)
+}
+
+// NewUserSessionWithModes creates a user runtime with an explicit lifecycle resolver.
+func NewUserSessionWithModes(
+	ctx context.Context, sessions SessionRuntime, systemContext SystemContextPrompt, queues QueueManager, config UserSessionConfig,
+	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, modes ModeResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
 	live LivePublisher, events event.EventBroker, compactor Compactor, goals *session.GoalService, status StatusObserver,
@@ -131,7 +148,7 @@ func NewUserSession(
 	if sessions == nil || systemContext == nil || queues == nil {
 		return nil, errors.New("agent: session persistence, system context prompt, and queue manager are required")
 	}
-	if stateDirectories == nil || profiles == nil || providers == nil {
+	if stateDirectories == nil || profiles == nil || modes == nil || providers == nil {
 		return nil, errors.New("agent: session dependencies are required")
 	}
 	if !toolProviders.Valid() {
@@ -148,14 +165,14 @@ func NewUserSession(
 		toolPanicLogger = func(context.Context, string, string, any, []byte) {}
 	}
 	created := &userSession{config: config, sessions: sessions, systemContext: systemContext, queues: queues,
-		stateDirectories: stateDirectories, profiles: profiles, providers: providers, toolProviders: toolProviders,
+		stateDirectories: stateDirectories, profiles: profiles, modes: modes, providers: providers, toolProviders: toolProviders,
 		toolAuthorizer: toolAuthorizer, toolErrorAdvisor: toolErrorAdvisor, workspace: workspace, outputs: outputs,
 		processes: processes, live: live, compactor: compactor, goals: goals, statusObserver: status,
 		toolPanicLogger: toolPanicLogger, identityFor: childAgentIdentity, recursionLimitFor: childAgentRecursionLimit, childNameGenerator: childNameGenerator,
 		childTasks: childTasks, events: events, onChildDiscard: onChildDiscard, childTurns: newChildTurnSemaphore(config.MaxConcurrentChildTurns)}
 	applyChildDefaults(&created.config)
 	applyChildCollaboratorDefaults(created)
-	repository, err := newAgentSessionRepository(ctx, created, config.AgentSession, created.stateDirectories, created.profiles, created.providers, created.toolProviders, created.toolAuthorizer, created.toolErrorAdvisor,
+	repository, err := newAgentSessionRepository(ctx, created, config.AgentSession, created.stateDirectories, created.profiles, created.modes, created.providers, created.toolProviders, created.toolAuthorizer, created.toolErrorAdvisor,
 		created.workspace, created.outputs, created.processes, created.live, created.events, created.compactor, created.goals, created.statusObserver, created.toolPanicLogger, config.MaxConcurrentChildTurnsPerParent, observers...)
 	if err != nil {
 		return nil, err
@@ -308,6 +325,7 @@ type agentSessionRepository struct {
 	config                  AgentSessionConfig
 	stateDirectories        UserSessionStateDirectories
 	profiles                ProfileResolver
+	modes                   ModeResolver
 	providers               ProviderResolver
 	toolProviders           tool.Providers
 	toolAuthorizer          tool.Authorizer
@@ -333,7 +351,7 @@ type agentSessionRepository struct {
 
 func newAgentSessionRepository(
 	ctx context.Context, user *userSession, config AgentSessionConfig,
-	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
+	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, modes ModeResolver, providers ProviderResolver,
 	toolProviders tool.Providers, toolAuthorizer tool.Authorizer, toolErrorAdvisor tool.ErrorAdvisor,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
 	live LivePublisher, events event.EventBroker, compactor Compactor, goals *session.GoalService, status StatusObserver,
@@ -344,7 +362,7 @@ func newAgentSessionRepository(
 		return nil, fmt.Errorf("agent: list sessions: %w", err)
 	}
 	repository := &agentSessionRepository{
-		user: user, config: config, stateDirectories: stateDirectories, profiles: profiles, providers: providers,
+		user: user, config: config, stateDirectories: stateDirectories, profiles: profiles, modes: modes, providers: providers,
 		toolProviders: toolProviders, toolAuthorizer: toolAuthorizer, toolErrorAdvisor: toolErrorAdvisor,
 		workspace: workspace, outputs: outputs, processes: processes, live: live, events: events, compactor: compactor,
 		goals: goals, status: status, toolPanicLogger: toolPanicLogger, observers: observers, maxConcurrentChildTurns: maxConcurrentChildTurns,
@@ -644,7 +662,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 	}
 	candidate := newAgentSession(
 		dto, parent, user, r, store, systemContext, r.config,
-		r.stateDirectories, r.profiles, r.providers, r.workspace, r.outputs, r.processes,
+		r.stateDirectories, r.profiles, r.modes, r.providers, r.workspace, r.outputs, r.processes,
 		r.live, r.compactor, r.goals, r.status, r.toolPanicLogger,
 		r.maxConcurrentChildTurns, r.observers, maxChildPromptBytes, maxChildResultBytes, r.events,
 	)

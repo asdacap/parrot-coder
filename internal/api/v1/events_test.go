@@ -76,6 +76,11 @@ func TestDecodeSessionInputEventData(t *testing.T) {
 			want:  &v1.ProcessEvent{SessionID: "ses_parent", ProcessID: "proc_1", Name: "tests", Status: "failed", Error: "boom"},
 		},
 		{
+			name:  "plan completed",
+			event: v1.Event{Type: v1.EventPlanCompleted, Data: json.RawMessage(`{"session_id":"ses_main","message_id":"msg_1","markdown":"# Plan","dialog":{"prompt":"Plan complete: ","choices":[{"value":"yes","aliases":["y"],"action":{"agent":"build","prompt":"Implement the approved plan."}}],"empty_message":"choose"}}`)},
+			want:  &v1.PlanCompletedDto{SessionID: "ses_main", MessageID: "msg_1", Markdown: "# Plan", Dialog: &v1.TurnCompleteDialogDto{Prompt: "Plan complete: ", Choices: []v1.DialogChoiceDto{{Value: "yes", Aliases: []string{"y"}, Action: v1.ChoiceActionDto{Agent: "build", Prompt: "Implement the approved plan."}}}, EmptyMessage: "choose"}},
+		},
+		{
 			name:  "compaction completed",
 			event: v1.Event{Type: v1.EventSessionCompactionCompleted, Data: json.RawMessage(`{"attempt_id":"cmpa_1","status":"completed","record_id":"cmpr_1","source_epoch_id":"ctx_1","target_epoch_id":"ctx_2","history_cutoff":42}`)},
 			want:  &v1.CompactionEvent{AttemptID: "cmpa_1", Status: "completed", RecordID: "cmpr_1", SourceEpochID: "ctx_1", TargetEpochID: "ctx_2", HistoryCutoff: 42},
@@ -194,6 +199,7 @@ func TestEventManifestUsesCanonicalNamesAndTypedPayloads(t *testing.T) {
 		v1.EventSessionToolRunning, v1.EventSessionToolSuccess, v1.EventSessionToolFailure,
 		v1.EventSessionToolInterrupted, v1.EventSessionRuntimeRepaired, v1.EventSessionCompactionStarted,
 		v1.EventSessionCompactionCompleted, v1.EventSessionCompactionFinished, v1.EventSessionCompactionRetry,
+		v1.EventPlanCompleted,
 	}
 	if len(v1.EventManifest) != len(canonical) {
 		t.Fatalf("manifest size = %d, canonical event count = %d", len(v1.EventManifest), len(canonical))
@@ -231,6 +237,7 @@ func TestEventManifestUsesCanonicalNamesAndTypedPayloads(t *testing.T) {
 		v1.EventSessionCompactionStarted:   "CompactionEvent",
 		v1.EventSessionCompactionCompleted: "CompactionEvent",
 		v1.EventSessionCompactionFinished:  "CompactionEvent",
+		v1.EventPlanCompleted:              "PlanCompletedDto",
 	}
 	for _, definition := range v1.EventManifest {
 		if payload, ok := want[definition.Name]; ok {

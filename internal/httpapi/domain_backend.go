@@ -679,26 +679,6 @@ func (b *DomainBackend) ListAgents(context.Context) (v1.AgentList, error) {
 	return out, nil
 }
 
-func (b *DomainBackend) CompleteTurn(ctx context.Context, sessionID, messageID string) (v1.TurnCompletion, error) {
-	runtime, err := b.AgentSessions.Get(sessionID)
-	if err != nil {
-		return v1.TurnCompletion{}, err
-	}
-	selected, err := runtime.Details(ctx)
-	if err != nil {
-		return v1.TurnCompletion{}, err
-	}
-	result, err := b.Modes.CompleteTurn(selected.Agent, sessionID, messageID)
-	if err != nil {
-		return v1.TurnCompletion{}, err
-	}
-	if result == (mode.TurnCompleteResult{}) {
-		return v1.TurnCompletion{}, nil
-	}
-	raw, err := json.Marshal(result)
-	return v1.TurnCompletion{TurnComplete: raw}, err
-}
-
 func (b *DomainBackend) ListModes(context.Context) (v1.ModeList, error) {
 	out := v1.ModeList{Items: []v1.Mode{}}
 	if b.Modes == nil {
@@ -706,13 +686,7 @@ func (b *DomainBackend) ListModes(context.Context) (v1.ModeList, error) {
 	}
 	for _, item := range b.Modes.List() {
 		profile := item.Profile()
-		entry := v1.Mode{ID: item.ID(), ReadOnly: profile.IsReadOnly(), MaxTurns: profile.MaxTurns()}
-		if result := item.OnTurnComplete(); result != (mode.TurnCompleteResult{}) {
-			if raw, err := json.Marshal(result); err == nil {
-				entry.TurnComplete = raw
-			}
-		}
-		out.Items = append(out.Items, entry)
+		out.Items = append(out.Items, v1.Mode{ID: item.ID(), ReadOnly: profile.IsReadOnly(), MaxTurns: profile.MaxTurns()})
 	}
 	return out, nil
 }

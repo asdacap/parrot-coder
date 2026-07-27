@@ -12,6 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/amirulashraf/parrot-coder/internal/compaction"
+	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/protocol"
 	"github.com/amirulashraf/parrot-coder/internal/provider"
 	"github.com/amirulashraf/parrot-coder/internal/queue"
@@ -93,6 +94,32 @@ type Compactor interface {
 type ProfileResolver interface {
 	GetProfile(string) (Profile, error)
 }
+
+// Mode owns the lifecycle policy for one outer turn.
+type Mode interface {
+	OnTurnStart(string) (TurnProfile, error)
+	OnTurnFinish(string, string) ([]event.BrokerEvent, error)
+}
+
+type ModeResolver interface {
+	Get(string) (Mode, error)
+}
+
+type profileModeResolver struct{ profiles ProfileResolver }
+
+func NewProfileModeResolver(profiles ProfileResolver) ModeResolver {
+	return profileModeResolver{profiles: profiles}
+}
+func (r profileModeResolver) Get(id string) (Mode, error) {
+	profile, err := r.profiles.GetProfile(id)
+	return NewProfileMode(profile), err
+}
+
+type profileMode struct{ profile Profile }
+
+func NewProfileMode(profile Profile) Mode                                    { return profileMode{profile: profile} }
+func (m profileMode) OnTurnStart(string) (TurnProfile, error)                { return NewTurnProfile(m.profile), nil }
+func (profileMode) OnTurnFinish(string, string) ([]event.BrokerEvent, error) { return nil, nil }
 
 type AgentSessionConfig struct {
 	ToolMaxInputBytes  int

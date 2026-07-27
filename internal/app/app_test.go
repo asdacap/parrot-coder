@@ -106,6 +106,28 @@ func (f appDrainerFunc) Drain(ctx context.Context, sessionID string) error {
 	return f(ctx, sessionID)
 }
 
+func TestPublishAgentTurnEventProjectsPlanCompletion(t *testing.T) {
+	live := event.NewBroker(nil, nil)
+	events, unsubscribe := live.Subscribe("session", 1)
+	defer unsubscribe()
+	payload := event.PlanCompletedPayload{
+		SessionID: "session", MessageID: "message", Markdown: "# Plan",
+		Dialog: event.TurnCompleteDialog{Prompt: "Plan complete: ", Choices: []event.DialogChoice{{Value: "yes", Aliases: []string{"y"}, Action: event.ChoiceAction{Agent: "build", Prompt: "Implement the approved plan."}}}},
+	}
+
+	publishAgentTurnEvent(live, agent.NewCompletionNotifier(), event.BrokerEvent{Name: event.PlanCompleted, Payload: payload})()
+
+	item := <-events
+	decoded, err := v1.DecodeEventData(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	completed := decoded.(*v1.PlanCompletedDto)
+	if item.Type != v1.EventPlanCompleted || item.SessionID != "session" || completed.SessionID != "session" || completed.MessageID != "message" || completed.Markdown != "# Plan" || completed.Dialog == nil || len(completed.Dialog.Choices) != 1 || completed.Dialog.Choices[0].Action.Agent != "build" {
+		t.Fatalf("projected event = %#v, payload = %#v", item, completed)
+	}
+}
+
 func TestStatusDrainerPublishesOnlyLifecycleCompletion(t *testing.T) {
 	live := event.NewBroker(nil, nil)
 	events, unsubscribe := live.Subscribe("session", 2)

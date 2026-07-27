@@ -513,11 +513,11 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	if err != nil {
 		return nil, fmt.Errorf("app: user session status registry: %w", err)
 	}
-	userSession, err := agent.NewUserSession(ctx, sessions, contextRegistry, queues, agent.UserSessionConfig{
+	userSession, err := agent.NewUserSessionWithModes(ctx, sessions, contextRegistry, queues, agent.UserSessionConfig{
 		MaxConcurrentChildTurns:          loaded.Config.Subagents.MaxConcurrent,
 		MaxConcurrentChildTurnsPerParent: loaded.Config.Subagents.MaxConcurrentPerParent,
 		MaxChildDepth:                    loaded.Config.Subagents.MaxDepth, ProjectID: info.ID, DefaultSelection: defaultSelection,
-	}, stateDirectories, profileResolver, providerRegistry, toolProviders, permissions, pathErrorAdvisor,
+	}, stateDirectories, profileResolver, profileResolver, providerRegistry, toolProviders, permissions, pathErrorAdvisor,
 		ws, outputs, processes, live, live, compactionService, goals, userStatusRegistry, toolPanicLogger(), tasks,
 		func(id string) string {
 			profile, resolveErr := profileResolver.GetProfile(id)
@@ -1345,8 +1345,26 @@ func publishAgentTurnEvent(live *event.Broker, notifications *agent.CompletionNo
 		if status, ok := item.Payload.(agent.Status); ok {
 			notifications.Notify(status)
 		}
+	case event.PlanCompleted:
+		if completed, ok := item.Payload.(event.PlanCompletedPayload); ok {
+			publishPlanCompleted(live, completed)
+		}
 	}
 	return stop
+}
+
+func publishPlanCompleted(live *event.Broker, completed event.PlanCompletedPayload) {
+	choices := make([]v1.DialogChoiceDto, len(completed.Dialog.Choices))
+	for i, choice := range completed.Dialog.Choices {
+		choices[i] = v1.DialogChoiceDto{Value: choice.Value, Description: choice.Description, Aliases: choice.Aliases, Action: v1.ChoiceActionDto{Agent: choice.Action.Agent, Prompt: choice.Action.Prompt}}
+	}
+	dialog := &v1.TurnCompleteDialogDto{
+		Prompt: completed.Dialog.Prompt, Context: completed.Dialog.Context, Choices: choices,
+		CustomChoice: completed.Dialog.CustomChoice, CustomDescription: completed.Dialog.CustomDescription,
+		CustomPrompt: completed.Dialog.CustomPrompt, EmptyMessage: completed.Dialog.EmptyMessage,
+	}
+	data, _ := json.Marshal(v1.PlanCompletedDto{SessionID: completed.SessionID, MessageID: completed.MessageID, Markdown: completed.Markdown, Dialog: dialog})
+	live.PublishEvent(v1.Event{Type: v1.EventPlanCompleted, SessionID: completed.SessionID, Data: data})
 }
 
 func publishTurnProgress(live *event.Broker, status agent.Status) {
@@ -1399,12 +1417,12 @@ type combinedProfileResolver struct {
 	agents *agent.Registry
 }
 
-func (r combinedProfileResolver) PrepareTurn(id, sessionID string) (agent.TurnProfile, error) {
-	if _, err := r.modes.Get(id); err == nil {
-		return r.modes.PrepareTurn(id, sessionID)
+func (r combinedProfileResolver) Get(id string) (agent.Mode, error) {
+	if selected, err := r.modes.Get(id); err == nil {
+		return selected, nil
 	}
 	profile, err := r.agents.GetProfile(id)
-	return agent.NewTurnProfile(profile), err
+	return agent.NewProfileMode(profile), err
 }
 
 func (r combinedProfileResolver) GetProfile(id string) (agent.Profile, error) {

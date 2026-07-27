@@ -34,6 +34,7 @@ type agentSession struct {
 	config                 AgentSessionConfig
 	stateDirectories       UserSessionStateDirectories
 	profiles               ProfileResolver
+	modes                  ModeResolver
 	providers              ProviderResolver
 	workspace              *workspace.Workspace
 	outputs                *tool.OutputStore
@@ -59,6 +60,7 @@ type agentSession struct {
 	toolExecutor           tool.Executor
 	maxChildPromptBytes    int
 	maxChildResultBytes    int
+	latestAssistantID      string
 }
 
 type LifecycleObserver interface {
@@ -105,6 +107,8 @@ type turnState struct {
 	messageID     string
 	result        Status
 	releaseQuota  func()
+	mode          Mode
+	profile       Profile
 }
 
 type TurnWorkingEvent struct {
@@ -628,6 +632,10 @@ func (s *agentSession) runTurn(state *turnState) {
 		s.finishTurn(state, "", context.Canceled, false)
 		return
 	}
+	if err := s.prepareTurn(state); err != nil {
+		s.finishTurn(state, "", err, false)
+		return
+	}
 	s.started()
 	stop := s.events.Publish(event.BrokerEvent{Name: event.TurnWorking, Payload: TurnWorkingEvent{Status: s.Status(), Report: func(progress ChildProgress) { s.reportTurnProgress(state, progress) }}})
 	var err error
@@ -665,7 +673,50 @@ func (s *agentSession) runTurn(state *turnState) {
 			noFinalMessage, err = true, nil
 		}
 	}
+	if err == nil && !noFinalMessage && state.ctx.Err() == nil {
+		s.mu.Lock()
+		messageID := s.latestAssistantID
+		s.mu.Unlock()
+		if messageID == "" {
+			err = ErrNoFinalAssistantMessage
+		} else {
+			var emitted []event.BrokerEvent
+			emitted, err = state.mode.OnTurnFinish(s.ID(), messageID)
+			if err == nil {
+				for _, item := range emitted {
+					s.events.Publish(item)
+				}
+			}
+		}
+	}
 	s.finishTurn(state, output, err, noFinalMessage)
+}
+
+func (s *agentSession) prepareTurn(state *turnState) error {
+	selected, err := s.store.Get(state.ctx)
+	if err != nil {
+		return err
+	}
+	resolved, err := s.modes.Get(selected.Agent)
+	if err != nil {
+		return err
+	}
+	turnProfile, err := resolved.OnTurnStart(s.ID())
+	if err != nil {
+		return err
+	}
+	stateDirectory, err := s.stateDirectories.Prepare(s.ID())
+	if err != nil {
+		return err
+	}
+	state.mode, state.profile = resolved, turnProfile.Profile()
+	s.securityProfile = newAgentSessionSecurityProfile(turnProfile)
+	s.securityProfile.AddCapability(security.Rule{Path: stateDirectory.ScratchPath(), Action: security.ActionAllowWrite})
+	s.securityProfile.AddCapability(security.Rule{Path: s.user.queues.Directory(), Action: security.ActionAllowRead})
+	s.mu.Lock()
+	s.latestAssistantID = ""
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *agentSession) finishTurn(state *turnState, output string, runErr error, noFinalMessage bool) {
@@ -822,7 +873,7 @@ func newAgentSession(
 	store session.AgentSessionStore,
 	systemContext SystemContextPrompt,
 	config AgentSessionConfig,
-	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, providers ProviderResolver,
+	stateDirectories UserSessionStateDirectories, profiles ProfileResolver, modes ModeResolver, providers ProviderResolver,
 	workspace *workspace.Workspace, outputs *tool.OutputStore, processes *process.Runner,
 	live LivePublisher, compactor Compactor, goals *session.GoalService, statusObserver StatusObserver,
 	toolPanicLogger func(context.Context, string, string, any, []byte),
@@ -841,7 +892,7 @@ func newAgentSession(
 	}
 	return &agentSession{
 		dto: dto, parent: parent, user: user, agentSessionRepository: repository, store: store, systemContext: systemContext, config: config,
-		stateDirectories: stateDirectories, profiles: profiles, providers: providers,
+		stateDirectories: stateDirectories, profiles: profiles, modes: modes, providers: providers,
 		workspace: workspace, outputs: outputs, processes: processes,
 		live: live, compactor: compactor, goals: goals, statusObserver: statusObserver, toolPanicLogger: toolPanicLogger,
 		status: status, events: events, childTurns: newChildTurnSemaphore(maxConcurrentChildTurns), observers: observers,
@@ -898,6 +949,29 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 	}
 	turn := 0
 	var profile Profile
+	r.mu.Lock()
+	if r.turn != nil {
+		profile = r.turn.profile
+	}
+	r.mu.Unlock()
+	if profile == nil {
+		selected, err := r.store.Get(ctx)
+		if err != nil {
+			return err
+		}
+		resolved, err := r.modes.Get(selected.Agent)
+		if err != nil {
+			return err
+		}
+		turnProfile, err := resolved.OnTurnStart(r.ID())
+		if err != nil {
+			return err
+		}
+		profile = turnProfile.Profile()
+		r.securityProfile = newAgentSessionSecurityProfile(turnProfile)
+		r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
+		r.securityProfile.AddCapability(security.Rule{Path: r.user.queues.Directory(), Action: security.ActionAllowRead})
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -919,24 +993,6 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		selected, err := r.store.Get(ctx)
 		if err != nil {
 			return err
-		}
-		if turn == 0 {
-			var turnProfile TurnProfile
-			if preparer, ok := r.profiles.(interface {
-				PrepareTurn(string, string) (TurnProfile, error)
-			}); ok {
-				turnProfile, err = preparer.PrepareTurn(selected.Agent, r.dto.ID)
-			} else {
-				profile, err = r.profiles.GetProfile(selected.Agent)
-				turnProfile = NewTurnProfile(profile)
-			}
-			if err != nil {
-				return err
-			}
-			profile = turnProfile.Profile()
-			r.securityProfile = newAgentSessionSecurityProfile(turnProfile)
-			r.securityProfile.AddCapability(security.Rule{Path: scratchPath, Action: security.ActionAllowWrite})
-			r.securityProfile.AddCapability(security.Rule{Path: r.user.queues.Directory(), Action: security.ActionAllowRead})
 		}
 		providerClient, model, variant, err := r.providers.Resolve(selected.Model)
 		if err != nil {
@@ -1304,6 +1360,9 @@ func (r *agentSession) providerTurn(ctx context.Context, client provider.Provide
 		}
 		return nil, finish, err
 	}
+	r.mu.Lock()
+	r.latestAssistantID = assistant.ID
+	r.mu.Unlock()
 	if r.goals != nil {
 		if _, err := r.goals.AccountUsage(ctx, r.dto.ID, usage); err != nil && !errors.Is(err, session.ErrGoalNotFound) {
 			return nil, finish, err

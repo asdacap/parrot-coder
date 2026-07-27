@@ -27,7 +27,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/client"
 	customcommand "github.com/amirulashraf/parrot-coder/internal/command"
 	configpkg "github.com/amirulashraf/parrot-coder/internal/config"
-	"github.com/amirulashraf/parrot-coder/internal/mode"
 	"github.com/amirulashraf/parrot-coder/internal/processidentity"
 	"github.com/amirulashraf/parrot-coder/internal/terminal"
 )
@@ -1525,23 +1524,15 @@ func (s *chatShell) enhancedConfig() enhancedchat.Config {
 	}
 }
 
-func (s *chatShell) onTurnComplete(completed enhancedchat.TurnComplete) *enhancedchat.TurnCompleteDialog {
-	spec, ok, err := s.turnCompleteSpec(completed)
-	if err != nil {
-		s.commitError("turn completion: " + err.Error())
-		return nil
-	}
-	if !ok {
-		return nil
-	}
-	if spec.Dialog == nil {
+func (s *chatShell) onTurnComplete(completed v1.PlanCompletedDto) *enhancedchat.TurnCompleteDialog {
+	if completed.Dialog == nil {
 		// A mode may transition directly without a dialog.
-		if spec.Agent != "" {
-			_ = s.applyAgent(spec.Agent, false)
+		if completed.Agent != "" {
+			_ = s.applyAgent(completed.Agent, false)
 		}
 		return nil
 	}
-	dialog := spec.Dialog
+	dialog := completed.Dialog
 	choices := make([]terminal.Candidate, 0, len(dialog.Choices)+1)
 	for _, choice := range dialog.Choices {
 		choices = append(choices, terminal.Candidate{Value: choice.Value, Description: choice.Description})
@@ -1554,7 +1545,7 @@ func (s *chatShell) onTurnComplete(completed enhancedchat.TurnComplete) *enhance
 		choices = append(choices, terminal.Candidate{Value: dialog.CustomChoice, Description: description})
 	}
 	return &enhancedchat.TurnCompleteDialog{
-		Markdown: dialog.Markdown, Prompt: dialog.Prompt, Context: dialog.Context,
+		Markdown: completed.Markdown, Prompt: dialog.Prompt, Context: dialog.Context,
 		Choices: choices, CustomChoice: dialog.CustomChoice, CustomPrompt: dialog.CustomPrompt,
 		Handle: func(value string) (enhancedchat.TurnCompleteResult, error) {
 			answer := strings.ToLower(strings.TrimSpace(value))
@@ -1575,52 +1566,6 @@ func (s *chatShell) onTurnComplete(completed enhancedchat.TurnComplete) *enhance
 			return enhancedchat.TurnCompleteResult{Prompt: strings.TrimSpace(value)}, nil
 		},
 	}
-}
-
-// turnCompleteSpec resolves the completed turn's behavior. Newer servers can
-// enrich the mode declaration with turn-specific data such as a written plan;
-// the static declaration remains a compatibility fallback.
-func (s *chatShell) turnCompleteSpec(completed enhancedchat.TurnComplete) (mode.TurnCompleteResult, bool, error) {
-	if completed.Mode == "" {
-		return mode.TurnCompleteResult{}, false, nil
-	}
-	if provider, ok := s.api.(interface {
-		TurnCompletion(context.Context, string, string) (v1.TurnCompletion, error)
-	}); ok && completed.Session.ID != "" && completed.MessageID != "" {
-		completion, err := provider.TurnCompletion(s.ctx, completed.Session.ID, completed.MessageID)
-		if err == nil {
-			if len(completion.TurnComplete) == 0 {
-				return mode.TurnCompleteResult{}, false, nil
-			}
-			var spec mode.TurnCompleteResult
-			if err := json.Unmarshal(completion.TurnComplete, &spec); err != nil {
-				return mode.TurnCompleteResult{}, false, fmt.Errorf("decode result: %w", err)
-			}
-			return spec, true, nil
-		}
-		return mode.TurnCompleteResult{}, false, err
-	}
-	lister, ok := s.api.(interface {
-		Modes(context.Context) (v1.ModeList, error)
-	})
-	if !ok {
-		return mode.TurnCompleteResult{}, false, nil
-	}
-	items, err := lister.Modes(s.ctx)
-	if err != nil {
-		return mode.TurnCompleteResult{}, false, nil
-	}
-	for _, item := range items.Items {
-		if item.ID != completed.Mode || len(item.TurnComplete) == 0 {
-			continue
-		}
-		var spec mode.TurnCompleteResult
-		if err := json.Unmarshal(item.TurnComplete, &spec); err != nil {
-			return mode.TurnCompleteResult{}, false, nil
-		}
-		return spec, true, nil
-	}
-	return mode.TurnCompleteResult{}, false, nil
 }
 
 func containsString(list []string, value string) bool {
