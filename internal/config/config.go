@@ -68,7 +68,6 @@ type Profile struct {
 	MaxTurns       int           `json:"max_turns"`
 	RecursionLimit int           `json:"recursion_limit"`
 	ReadOnly       bool          `json:"read_only"`
-	Status         string        `json:"status"`
 	AllowedTools   []string      `json:"allowed_tools,omitempty"`
 	SandboxRules   []SandboxRule `json:"sandbox_rules,omitempty"`
 }
@@ -282,6 +281,7 @@ func Load(options Options) (Result, error) {
 	// the corresponding features are removed.
 	delete(merged, "snapshot")
 	delete(merged, "lsp")
+	stripLegacyProfileStatuses(merged, provenance)
 	legacyVariant, err := combineLegacyVariant(merged)
 	if err != nil {
 		return Result{}, err
@@ -343,6 +343,29 @@ func Load(options Options) (Result, error) {
 		}
 	}
 	return Result{Config: typed, Sources: sources, Provenance: provenance, LegacyVariant: legacyVariant}, nil
+}
+
+// stripLegacyProfileStatuses removes the retired profile status field at the
+// untyped compatibility boundary. This lets existing configuration continue to
+// load while strict decoding still rejects all other unknown fields.
+func stripLegacyProfileStatuses(merged map[string]any, provenance map[string]string) {
+	profiles, ok := merged["profiles"].(map[string]any)
+	if !ok {
+		return
+	}
+	for id, value := range profiles {
+		profile, ok := value.(map[string]any)
+		if !ok {
+			continue
+		}
+		delete(profile, "status")
+		prefix := "profiles." + id + ".status"
+		for path := range provenance {
+			if path == prefix || strings.HasPrefix(path, prefix+".") {
+				delete(provenance, path)
+			}
+		}
+	}
 }
 
 // combineLegacyVariant migrates the former top-level variant field into the
@@ -499,9 +522,6 @@ func validateProfiles(defaultProfile string, profiles map[string]Profile) error 
 		}
 		if profile.RecursionLimit < 0 {
 			return fmt.Errorf("%s.recursion_limit must not be negative", path)
-		}
-		if strings.TrimSpace(profile.Status) == "" {
-			return fmt.Errorf("%s.status is required", path)
 		}
 		allowedTools := make(map[string]struct{}, len(profile.AllowedTools))
 		for index, id := range profile.AllowedTools {

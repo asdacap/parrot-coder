@@ -9,7 +9,6 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/agent"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/security"
-	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 type profileWithRules struct {
@@ -23,9 +22,9 @@ func (p profileWithRules) Rules() []security.Rule { return append([]security.Rul
 
 func testModeProfiles() []agent.Profile {
 	return []agent.Profile{
-		agent.NewProfile(BuildID, "build", "usage", []string{"rule"}, nil, 64, 3, false, nil, status.Static{ProviderKey: "profile:build"}),
-		agent.NewProfile(PlanID, "plan profile", "usage", []string{"rule"}, nil, 24, 1, true, nil, status.Static{ProviderKey: "profile:plan"}),
-		agent.NewProfile(QueryID, "query", "usage", []string{"rule"}, nil, 24, 1, true, nil, status.Static{ProviderKey: "profile:query"}),
+		agent.NewProfile(BuildID, "build", "usage", []string{"rule"}, nil, 64, 3, false, nil),
+		agent.NewProfile(PlanID, "plan profile", "usage", []string{"rule"}, nil, 24, 1, true, nil),
+		agent.NewProfile(QueryID, "query", "usage", []string{"rule"}, nil, 24, 1, true, nil),
 	}
 }
 
@@ -44,7 +43,7 @@ func TestBuiltinsExposeOnlyForegroundModes(t *testing.T) {
 	if len(items) != 3 || items[0].ID() != BuildID || items[1].ID() != PlanID || items[2].ID() != QueryID {
 		t.Fatalf("modes = %#v", items)
 	}
-	if items[0].Profile().IsReadOnly() || !items[1].Profile().IsReadOnly() || !items[2].Profile().IsReadOnly() || items[0].Profile().Status() == nil || items[1].Profile().Status() == nil || items[2].Profile().Status() == nil {
+	if items[0].Profile().IsReadOnly() || !items[1].Profile().IsReadOnly() || !items[2].Profile().IsReadOnly() {
 		t.Fatal("unexpected mode policies")
 	}
 	if _, err := r.Get("explorer"); err == nil {
@@ -98,9 +97,13 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	if err := os.WriteFile(supporting, []byte("supporting artifact"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	completed, err := r.CompleteTurn(PlanID, "session", "")
-	if err != nil || completed.Dialog == nil || completed.Dialog.Markdown != existingPlan {
+	completed, err := plan.OnTurnFinish("session", "")
+	if err != nil || len(completed) != 1 {
 		t.Fatalf("plan completion = %#v, %v", completed, err)
+	}
+	payload, ok := completed[0].Payload.(event.PlanCompletedPayload)
+	if !ok || payload.Markdown != existingPlan {
+		t.Fatalf("plan completion payload = %#v", completed[0].Payload)
 	}
 	if err := os.Chmod(path, 0o400); err != nil {
 		t.Fatal(err)
@@ -120,7 +123,7 @@ func TestPlanPrepareTurnCreatesWritableArtifactAndPreservesRevisions(t *testing.
 	if data, err := os.ReadFile(path); err != nil || string(data) != existingPlan {
 		t.Fatalf("revised plan contents = %q, %v", data, err)
 	}
-	if _, err := r.PrepareTurn(PlanID, "other-session"); err != nil {
+	if _, err := plan.OnTurnStart("other-session"); err != nil {
 		t.Fatal(err)
 	}
 	if other := plan.(*planMode).files["other-session"]; other == path || filepath.Dir(other) != directory {
@@ -141,11 +144,10 @@ func TestModesFinishAndPlanEvent(t *testing.T) {
 		}
 	}
 	plan, _ := r.Get(PlanID)
-	prepared, err := plan.OnTurnStart("session")
-	if err != nil {
+	if _, err := plan.OnTurnStart("session"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(prepared.CapabilityRules()[0].Path, []byte("  # Plan\n"), 0o600); err != nil {
+	if err := os.WriteFile(plan.(*planMode).files["session"], []byte("  # Plan\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	events, err := plan.OnTurnFinish("session", "message")

@@ -132,8 +132,8 @@ Each profile also has a required `usage` field. Like the other profile fields,
 at higher precedence. It is concise selection guidance: the available subagent
 profiles and their usage are included in the parent agent's system context so it
 can choose an appropriate profile for delegation. The selected child receives its
-own profile prompt, hard rules, and status; those longer fields are not exposed as
-subagent selection guidance.
+own profile prompt and hard rules; those longer fields are not exposed as subagent
+selection guidance.
 
 The predefined prompt identifies Parrot and instructs it not to duplicate work
 with `agent_spawn`: if an agent is already handling the work and remains running,
@@ -228,9 +228,9 @@ defaults to `build` in `predefined_config.yaml`.
 The `profiles` map configures the foreground profiles `build`, `plan`, and
 `query`, plus the child-agent profiles `explorer`, `review`, and `worker`.
 Each entry supports `prompt`, `hard_rules`, `max_turns`, `recursion_limit`,
-`read_only`, `status`, ordered `sandbox_rules`, and `allowed_tools`. A profile
-prompt or status must be non-empty, `max_turns` must be positive, and
-`recursion_limit` cannot be negative. `default_profile`, profile `read_only`
+`read_only`, ordered `sandbox_rules`, and `allowed_tools`. A profile prompt must
+be non-empty, `max_turns` must be positive, and `recursion_limit` cannot be
+negative. `default_profile`, profile `read_only`
 values, profile sandbox rules, and profile tool restrictions are security
 policy and require global configuration. Project configuration cannot set
 `allowed_tools`. Profile sandbox rules use the same `path` and `rule` fields as
@@ -248,8 +248,8 @@ rather than a built-in default tool restriction.
 
 Profile entries merge recursively across configuration scopes. For example,
 setting only `profiles.worker.max_turns` retains the predefined worker prompt,
-hard rules, security policy, status, recursion limit, and omitted
-`allowed_tools` policy. The generated
+hard rules, security policy, recursion limit, and omitted `allowed_tools`
+policy. The generated
 `predefined_config.yaml` contains the complete defaults and remains the source
 of runtime profile values; `parrot.yaml` only needs to contain overrides.
 

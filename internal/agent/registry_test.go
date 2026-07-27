@@ -3,8 +3,6 @@ package agent
 import (
 	"reflect"
 	"testing"
-
-	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 const (
@@ -16,11 +14,11 @@ type mutableProfile struct{ Profile }
 
 func testProfiles() []Profile {
 	return []Profile{
-		NewProfile(BuildID, "build", "usage", []string{"rule"}, nil, 64, 3, false, nil, nil),
-		NewProfile(PlanID, "plan", "usage", []string{"rule"}, nil, 24, 1, true, nil, nil),
-		NewProfile(ExplorerID, "explorer", "usage", []string{"rule"}, nil, 32, 3, true, nil, status.Static{ProviderKey: "profile:explorer"}),
-		NewProfile(ReviewID, "review", "usage", []string{"rule"}, nil, 32, 3, true, nil, status.Static{ProviderKey: "profile:review"}),
-		NewProfile(WorkerID, "worker", "usage", []string{"rule"}, nil, 64, 3, false, nil, status.Static{ProviderKey: "profile:worker"}),
+		NewProfile(BuildID, "build", "usage", []string{"rule"}, nil, 64, 3, false, nil),
+		NewProfile(PlanID, "plan", "usage", []string{"rule"}, nil, 24, 1, true, nil),
+		NewProfile(ExplorerID, "explorer", "usage", []string{"rule"}, nil, 32, 3, true, nil),
+		NewProfile(ReviewID, "review", "usage", []string{"rule"}, nil, 32, 3, true, nil),
+		NewProfile(WorkerID, "worker", "usage", []string{"rule"}, nil, 64, 3, false, nil),
 	}
 }
 
@@ -108,7 +106,7 @@ func TestSubagentsIncludeExplorerWorkerAndDedicatedReviewProfiles(t *testing.T) 
 		if profileErr != nil {
 			t.Fatal(profileErr)
 		}
-		if profile.IsReadOnly() != test.readOnly || profile.Prompt() == "" || profile.MaxTurns() <= 0 || profile.Status() == nil {
+		if profile.IsReadOnly() != test.readOnly || profile.Prompt() == "" || profile.MaxTurns() <= 0 {
 			t.Fatalf("%s profile = %#v", test.id, profile)
 		}
 	}
@@ -134,12 +132,12 @@ func TestListDoesNotExposeProfileSliceStorage(t *testing.T) {
 }
 
 func TestRegistrySnapshotsProfilesAndRejectsTypedNil(t *testing.T) {
-	source := &mutableProfile{Profile: NewProfile("original", "prompt", "original usage", []string{"rule"}, []string{"read"}, 2, 1, true, nil, nil)}
+	source := &mutableProfile{Profile: NewProfile("original", "prompt", "original usage", []string{"rule"}, []string{"read"}, 2, 1, true, nil)}
 	registry, err := NewRegistry(source)
 	if err != nil {
 		t.Fatal(err)
 	}
-	source.Profile = NewProfile("mutated", "changed", "mutated usage", nil, nil, 99, 99, false, nil, nil)
+	source.Profile = NewProfile("mutated", "changed", "mutated usage", nil, nil, 99, 99, false, nil)
 	stored, err := registry.Get("original")
 	if err != nil {
 		t.Fatal(err)
@@ -160,7 +158,7 @@ func TestRegistrySnapshotsProfilesAndRejectsTypedNil(t *testing.T) {
 }
 
 func TestReadOnlyProfileIsReadOnly(t *testing.T) {
-	registry, err := NewRegistry(NewProfile("readonly", "read", "usage", nil, nil, 1, 0, true, nil, nil))
+	registry, err := NewRegistry(NewProfile("readonly", "read", "usage", nil, nil, 1, 0, true, nil))
 	if err != nil {
 		t.Fatal(err)
 	}

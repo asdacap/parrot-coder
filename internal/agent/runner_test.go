@@ -74,13 +74,13 @@ func (*sliceStream) Close() error { return nil }
 
 func events(items ...protocol.Event) provider.Stream { return &sliceStream{events: items} }
 
-func TestProfileInstructionsArePartOfStatusProvider(t *testing.T) {
-	profile := NewProfile("", "profile prompt", "usage", []string{"rule"}, nil, 0, 0, false, nil, statusinfo.Static{ProviderKey: "profile:test", Text: "profile status"})
-	observation, err := newProfileStatus(profile).Observe(context.Background(), statusinfo.Query{})
+func TestProfileInstructionsProvider(t *testing.T) {
+	profile := NewProfile("", "profile prompt", "usage", []string{"rule"}, nil, 0, 0, false, nil)
+	observation, err := newProfileInstructions(profile).Observe(context.Background(), statusinfo.Query{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := observation.Text, "profile prompt\n\nHard rules:\n- rule\n\nprofile status"; got != want {
+	if got, want := observation.Text, "profile prompt\n\nHard rules:\n- rule"; got != want {
 		t.Fatalf("profile status = %q, want %q", got, want)
 	}
 	if got, want := runnerInstructions("baseline", "", "/state/session/ses_test/scratch", "/state/user-session/project/queues", false), "baseline\n\nScratch directory: /state/session/ses_test/scratch\n\nQueues directory (read-only; use queue tools to modify): /state/user-session/project/queues"; got != want {
@@ -196,7 +196,7 @@ func TestStatusQueryRetainsParentIDWhenParentCannotBeLoaded(t *testing.T) {
 	query := runner.statusQuery(session.AgentSessionDto{
 		ParentSessionID: "ses_deleted_parent",
 		Model:           "openai/gpt",
-	}, NewProfile("build", "", "usage", nil, nil, 0, 0, false, nil, nil))
+	}, NewProfile("build", "", "usage", nil, nil, 0, 0, false, nil))
 	if query.ParentSessionID != "ses_deleted_parent" || query.ParentSessionName != "" {
 		t.Fatalf("parent status = %q (%q), want %q with no details", query.ParentSessionID, query.ParentSessionName, "ses_deleted_parent")
 	}
@@ -262,8 +262,8 @@ func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 		return events(protocol.Event{Type: protocol.EventTextDelta, Text: "done"}, protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
 	profiles := []Profile{
-		NewProfile("build", "build prompt", "usage", nil, nil, 10, 0, false, nil, statusinfo.Static{ProviderKey: "profile:mode", Text: "Build mode status"}),
-		NewProfile("plan", "plan prompt", "usage", nil, nil, 10, 0, false, nil, statusinfo.Static{ProviderKey: "profile:mode", Text: "Plan mode status"}),
+		NewProfile("build", "build prompt", "usage", nil, nil, 10, 0, false, nil),
+		NewProfile("plan", "plan prompt", "usage", nil, nil, 10, 0, false, nil),
 	}
 	h := newRunnerHarness(t, fake, profiles)
 	registry, err := statusinfo.NewRegistry(statusinfo.Selection{})
@@ -301,8 +301,8 @@ func TestRunnerAppendsComposedStatusOnlyWhenPending(t *testing.T) {
 	if len(requests) != 3 {
 		t.Fatalf("request count = %d, want 3", len(requests))
 	}
-	buildStatus := "build prompt\n\nBuild mode status\n\nActive profile: build\nModel: fake/model"
-	planStatus := "plan prompt\n\nPlan mode status\n\nActive profile: plan\nModel: fake/model"
+	buildStatus := "build prompt\n\nActive profile: build\nModel: fake/model"
+	planStatus := "plan prompt\n\nActive profile: plan\nModel: fake/model"
 	for index, request := range requests {
 		if !strings.HasPrefix(request.Instructions, "baseline\n\nScratch directory: ") || !strings.HasSuffix(request.Instructions, h.queues.Directory()) || !strings.Contains(request.Instructions, "\n\nQueues directory (read-only; use queue tools to modify): ") {
 			t.Errorf("request %d instructions = %q, want baseline, session scratch, and user-session queues paths", index, request.Instructions)
@@ -2163,7 +2163,7 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 	observations := 0
 	h.runner.statusObserver = statusObserverFunc(func() string {
 		observations++
-		return "Active tasks: none"
+		return "Runtime status: unchanged"
 	})
 	h.admit(t, "user", "run tool", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
@@ -2183,7 +2183,7 @@ func TestRunnerPersistsToolBeforeSideEffectAndContinuesAfterSettlement(t *testin
 		t.Fatalf("provider turns = %d", len(requests))
 	}
 	for index, request := range requests {
-		if !containsRoleText(request.Messages, protocol.RoleSystem, "Active tasks: none") {
+		if !containsRoleText(request.Messages, protocol.RoleSystem, "Runtime status: unchanged") {
 			t.Errorf("request %d lost durable status message: %#v", index, request.Messages)
 		}
 	}
@@ -2639,7 +2639,7 @@ func TestRunnerPreparesProfileBeforeUseAndKeepsItAcrossToolContinuations(t *test
 		}
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
-	base := NewProfile("plan", "plan", "usage", nil, nil, 10, 0, true, nil, nil)
+	base := NewProfile("plan", "plan", "usage", nil, nil, 10, 0, true, nil)
 	h := newRunnerHarness(t, fake, []Profile{base}, &fakeTool{id: "status"}, capture)
 	resolver := &preparedProfileResolver{base: base}
 	h.runner.profiles = resolver
@@ -2684,7 +2684,7 @@ func TestRunnerProfileAllowedToolsFiltersDefinitionsAndExecution(t *testing.T) {
 		}
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
-	profile := NewProfile("restricted", "restricted", "usage", nil, []string{"allowed"}, 3, 0, false, nil, nil)
+	profile := NewProfile("restricted", "restricted", "usage", nil, []string{"allowed"}, 3, 0, false, nil)
 	h := newRunnerHarness(t, fake, []Profile{profile}, allowed, denied)
 	h.admit(t, "user", "restricted", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
@@ -2708,7 +2708,7 @@ func TestRunnerProfileWithEmptyAllowedToolsExposesNoTools(t *testing.T) {
 		}
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
-	profile := NewProfile("none", "none", "usage", nil, []string{}, 2, 0, false, nil, nil)
+	profile := NewProfile("none", "none", "usage", nil, []string{}, 2, 0, false, nil)
 	h := newRunnerHarness(t, fake, []Profile{profile}, &fakeTool{id: "registered"})
 	h.admit(t, "user", "none", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
@@ -2729,7 +2729,7 @@ func TestRunnerPlanDeniesMutationEvenWhenToolIsRegistered(t *testing.T) {
 		}
 		return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 	}}
-	h := newRunnerHarness(t, fake, []Profile{NewProfile(PlanID, "plan", "usage", nil, nil, 24, 1, true, nil, nil)}, mutation)
+	h := newRunnerHarness(t, fake, []Profile{NewProfile(PlanID, "plan", "usage", nil, nil, 24, 1, true, nil)}, mutation)
 	h.admit(t, "user", "plan", session.DeliverySteer)
 	if err := h.runner.drainOnce(context.Background()); err != nil {
 		t.Fatal(err)
@@ -2763,7 +2763,7 @@ func TestRunnerMaxTurnsOmitsToolsAndPublishesNotice(t *testing.T) {
 				}
 				return events(protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop}), nil
 			}}
-			profile := NewProfile("limited", "finish", "usage", nil, nil, maxTurns, 0, false, nil, nil)
+			profile := NewProfile("limited", "finish", "usage", nil, nil, maxTurns, 0, false, nil)
 			h := newRunnerHarness(t, fake, []Profile{profile}, item)
 			live := &recordingPublisher{}
 			h.runner.live = live
