@@ -385,10 +385,11 @@ ones. This matches the mount semantics of the platform sandbox: a later
 `deny_write` on a path already mounted writable remounts it read-only.
 
 `sandbox_rules` requires global configuration; project-scope files cannot
-grant filesystem capabilities. Configured rules also cannot grant write access
-to a read-only profile or remove that profile's narrow explicit write rules
-(such as its designated plan artifact). Writable profiles retain the configured
-ordered-rule behavior.
+grant filesystem capabilities. Plan mode receives a runtime-granted writable
+plan-artifact directory containing its canonical plan file and optional
+referenced artifacts. Configured rules cannot grant write access to a read-only
+profile, widen that plan-directory capability, or override it. Writable profiles
+retain the configured ordered-rule behavior.
 
 ## Credential Rules
 
