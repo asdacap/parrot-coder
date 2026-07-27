@@ -6,6 +6,19 @@ All notable changes to Parrot Coder will be documented in this file.
 
 ### Changed
 
+- Breaking configuration change: removed `profiles.*.status`. Remove `status`
+  from profile configuration; static auxiliary profile status text is no longer
+  injected. Profile prompts and hard rules continue to be injected through the
+  runtime status context. Profiles are now classified with `is_user_agent`:
+  foreground user-agent profiles are selectable as modes, while reusable
+  delegated profiles, including the new read-only `thinker`, are selected
+  through `agent_spawn`.
+- Spawn duplicate-work guidance is now owned by the `agent_spawn` tool rather
+  than the base prompt, so prompt overrides retain it whenever that tool is
+  available. The predefined `xhigh_llm` alias now adds delegation guidance for
+  strategic, exceptionally difficult work: delegate focused exploration or
+  implementation when the active profile permits it, and do not duplicate a
+  task already handled by a running agent.
 - Removed the permission policy engine and the canonical-operation model. The
   OS sandbox is now the only enforcement boundary, and the permission broker
   prompts only for operations it cannot contain: `unrestricted_shell`,

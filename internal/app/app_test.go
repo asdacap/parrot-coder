@@ -108,18 +108,18 @@ func TestManagedTaskControllerPreservesTaskStateWhenWaitIsCanceled(t *testing.T)
 
 func TestAgentRecursionLimitPolicy(t *testing.T) {
 	modeProfiles := []agent.Profile{
-		agent.NewProfile(mode.BuildID, "build", "usage", nil, nil, 64, 3, false, nil),
-		agent.NewProfile(mode.PlanID, "plan", "usage", nil, nil, 24, 1, true, nil),
-		agent.NewProfile(mode.QueryID, "query", "usage", nil, nil, 24, 1, true, nil),
+		agent.NewProfile(mode.BuildID, "build", "usage", nil, nil, 64, 3, false, nil, nil, true),
+		agent.NewProfile(mode.PlanID, "plan", "usage", nil, nil, 24, 1, true, nil, nil, true),
+		agent.NewProfile(mode.QueryID, "query", "usage", nil, nil, 24, 1, true, nil, nil, true),
 	}
 	modes, err := mode.NewRegistry(mode.Builtins(modeProfiles...)...)
 	if err != nil {
 		t.Fatal(err)
 	}
 	agents, err := agent.NewRegistry(
-		agent.NewProfile(agent.ExplorerID, "explorer", "usage", nil, nil, 32, 3, true, nil),
-		agent.NewProfile(agent.ReviewID, "review", "usage", nil, nil, 32, 3, true, nil),
-		agent.NewProfile(agent.WorkerID, "worker", "usage", nil, nil, 64, 3, false, nil),
+		agent.NewProfile(agent.ExplorerID, "explorer", "usage", nil, nil, 32, 3, true, nil, nil, false),
+		agent.NewProfile(agent.ReviewID, "review", "usage", nil, nil, 32, 3, true, nil, nil, false),
+		agent.NewProfile(agent.WorkerID, "worker", "usage", nil, nil, 64, 3, false, nil, nil, false),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -400,9 +400,12 @@ func TestOpenDiscoversSkillsCommandsAndNeedsNoOptionalConfig(t *testing.T) {
 	}
 }
 
-func TestConfiguredProfilePreservesAllowedTools(t *testing.T) {
+func TestConfiguredProfilePreservesAllowedToolsAndHasNoStatusProvider(t *testing.T) {
 	configured := []string{"read", "rg"}
-	profile := configuredProfile("restricted", config.Profile{Prompt: "prompt", Usage: "usage", AllowedTools: configured, MaxTurns: 1})
+	profile := configuredProfile("restricted", config.Profile{Prompt: "prompt", Usage: "usage", AllowedTools: configured, MaxTurns: 1, IsUserAgent: true})
+	if profile.Status() != nil || !profile.IsUserAgent() {
+		t.Fatalf("profile status/user-agent = %#v/%t, want nil/true", profile.Status(), profile.IsUserAgent())
+	}
 	configured[0] = "mutated"
 	allowed := profile.AllowedTools()
 	if !reflect.DeepEqual(allowed, []string{"read", "rg"}) {
@@ -411,6 +414,40 @@ func TestConfiguredProfilePreservesAllowedTools(t *testing.T) {
 	allowed[0] = "mutated"
 	if !reflect.DeepEqual(profile.AllowedTools(), []string{"read", "rg"}) {
 		t.Fatal("configured profile exposed allowed tool storage")
+	}
+}
+
+func TestProjectConfigCannotReclassifyProfiles(t *testing.T) {
+	const projectPath = "/project/parrot.yaml"
+	loaded := config.Result{
+		Sources:    []config.Source{{Path: projectPath, Kind: config.SourceProject}},
+		Provenance: map[string]string{"profiles.worker.is_user_agent": projectPath},
+	}
+	if err := validateConfigTrust(loaded); err == nil || !strings.Contains(err.Error(), "profiles.worker.is_user_agent") {
+		t.Fatalf("validateConfigTrust() = %v, want project profile classification rejection", err)
+	}
+}
+
+func TestPartitionProfilesIsDataDrivenAndDeterministic(t *testing.T) {
+	profiles := map[string]agent.Profile{
+		"zeta-mode":   agent.NewProfile("zeta-mode", "prompt", "usage", nil, nil, 1, 0, false, nil, nil, true),
+		"alpha-mode":  agent.NewProfile("alpha-mode", "prompt", "usage", nil, nil, 1, 0, false, nil, nil, true),
+		"zeta-agent":  agent.NewProfile("zeta-agent", "prompt", "usage", nil, nil, 1, 0, false, nil, nil, false),
+		"alpha-agent": agent.NewProfile("alpha-agent", "prompt", "usage", nil, nil, 1, 0, false, nil, nil, false),
+	}
+	userAgents, subagents := partitionProfiles(profiles)
+	ids := func(items []agent.Profile) []string {
+		result := make([]string, 0, len(items))
+		for _, item := range items {
+			result = append(result, item.ID())
+		}
+		return result
+	}
+	if got := ids(userAgents); !reflect.DeepEqual(got, []string{"alpha-mode", "zeta-mode"}) {
+		t.Fatalf("user agents = %v", got)
+	}
+	if got := ids(subagents); !reflect.DeepEqual(got, []string{"alpha-agent", "zeta-agent"}) {
+		t.Fatalf("subagents = %v", got)
 	}
 }
 
@@ -475,19 +512,29 @@ func TestOpenUsesConfiguredProfilesAndDefault(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	modeIDs := make([]string, 0, len(modes.Items))
+	agentIDs := make([]string, 0, len(agents.Items))
 	var queryTurns, workerTurns int
 	for _, item := range modes.Items {
+		modeIDs = append(modeIDs, item.ID)
 		if item.ID == "query" {
 			queryTurns = item.MaxTurns
 		}
 	}
 	for _, item := range agents.Items {
+		agentIDs = append(agentIDs, item.ID)
 		if item.ID == "worker" {
 			workerTurns = item.MaxTurns
 		}
 	}
 	if queryTurns != 17 || workerTurns != 23 {
 		t.Fatalf("configured max turns = query %d, worker %d", queryTurns, workerTurns)
+	}
+	if !reflect.DeepEqual(modeIDs, []string{"build", "plan", "query"}) {
+		t.Fatalf("mode API IDs = %v", modeIDs)
+	}
+	if !reflect.DeepEqual(agentIDs, []string{"explorer", "review", "thinker", "worker"}) {
+		t.Fatalf("agent API IDs = %v", agentIDs)
 	}
 }
 

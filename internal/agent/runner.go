@@ -208,20 +208,39 @@ func finalTurnInstructions(final bool) string {
 type profileInstructions struct {
 	prompt    string
 	hardRules []string
+	provider  statusinfo.Provider
 }
 
 func newProfileInstructions(profile Profile) statusinfo.Provider {
-	return profileInstructions{prompt: profile.Prompt(), hardRules: profile.HardRules()}
+	return profileInstructions{prompt: profile.Prompt(), hardRules: profile.HardRules(), provider: profile.Status()}
 }
 
-func (profileInstructions) Key() string { return "profile:instructions" }
+func (s profileInstructions) Key() string {
+	if s.provider != nil {
+		return s.provider.Key()
+	}
+	return "profile:instructions"
+}
 
-func (s profileInstructions) Observe(context.Context, statusinfo.Query) (statusinfo.Observation, error) {
+func (s profileInstructions) Observe(ctx context.Context, query statusinfo.Query) (statusinfo.Observation, error) {
+	sections := make([]string, 0, 2)
 	instructions := s.prompt
 	if len(s.hardRules) > 0 {
 		instructions += "\n\nHard rules:\n- " + strings.Join(s.hardRules, "\n- ")
 	}
-	return statusinfo.Observation{Available: instructions != "", Text: instructions}, nil
+	if instructions != "" {
+		sections = append(sections, instructions)
+	}
+	if s.provider != nil {
+		observation, err := s.provider.Observe(ctx, query)
+		if err != nil {
+			return statusinfo.Observation{}, err
+		}
+		if observation.Available && strings.TrimSpace(observation.Text) != "" {
+			sections = append(sections, observation.Text)
+		}
+	}
+	return statusinfo.Observation{Available: len(sections) > 0, Text: strings.Join(sections, "\n\n")}, nil
 }
 
 func finalParts(text, reasoning string, calls []completedCall) []protocol.ContentPart {

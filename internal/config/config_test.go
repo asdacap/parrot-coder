@@ -324,6 +324,10 @@ func TestLoadModelAliasDefaultsMergeAndValidation(t *testing.T) {
 			t.Fatalf("ModelAliases[%s] = %#v", name, alias)
 		}
 	}
+	xhighPrompt := result.Config.ModelAliases["xhigh_llm"].AugmentSystemPrompt
+	if xhighPrompt == nil || !strings.Contains(*xhighPrompt, "active profile permits it") || !strings.Contains(*xhighPrompt, "running agent") {
+		t.Fatalf("xhigh_llm augmentation = %#v", xhighPrompt)
+	}
 	if result.Provenance["model_aliases.low_llm.model_string"] != PredefinedFileName {
 		t.Fatalf("alias provenance = %#v", result.Provenance)
 	}
@@ -382,6 +386,8 @@ model_augment_system_prompts:
 	writeFile(t, projectFile, `model_aliases:
   low_llm:
     augment_system_prompt: ""
+  xhigh_llm:
+    augment_system_prompt: ""
 model_augment_system_prompts:
   provider/model: ""
 `)
@@ -393,6 +399,10 @@ model_augment_system_prompts:
 	aliasPrompt := result.Config.ModelAliases["low_llm"].AugmentSystemPrompt
 	if aliasPrompt == nil || *aliasPrompt != "" {
 		t.Fatalf("explicit empty alias augmentation = %#v, want non-nil empty", aliasPrompt)
+	}
+	xhighPrompt := result.Config.ModelAliases["xhigh_llm"].AugmentSystemPrompt
+	if xhighPrompt == nil || *xhighPrompt != "" {
+		t.Fatalf("explicit empty xhigh_llm augmentation = %#v, want non-nil empty", xhighPrompt)
 	}
 	if got := result.Config.ModelAugmentSystemPrompts; len(got) != 2 || got["provider/model"] != "" || got["provider/team/model/high"] != "variant prompt" {
 		t.Fatalf("ModelAugmentSystemPrompts = %#v", got)
@@ -495,23 +505,37 @@ func TestLoadProfileDefaultsOverridesAndValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 	worker := result.Config.Profiles["worker"]
-	if result.Config.DefaultProfile != "build" || worker.MaxTurns != 64 || worker.RecursionLimit != 3 || worker.ReadOnly || worker.Prompt == "" || worker.Usage == "" || worker.AllowedTools != nil {
+	thinker := result.Config.Profiles["thinker"]
+	if result.Config.DefaultProfile != "build" || worker.MaxTurns != 64 || worker.RecursionLimit != 3 || worker.ReadOnly || worker.IsUserAgent || worker.Prompt == "" || worker.Usage == "" || worker.AllowedTools != nil {
 		t.Fatalf("profile defaults = default %q, worker %#v", result.Config.DefaultProfile, worker)
+	}
+	for _, id := range []string{"build", "plan", "query"} {
+		if !result.Config.Profiles[id].IsUserAgent {
+			t.Fatalf("profiles.%s.is_user_agent = false, want true", id)
+		}
+	}
+	for _, id := range []string{"explorer", "review", "worker", "thinker"} {
+		if result.Config.Profiles[id].IsUserAgent {
+			t.Fatalf("profiles.%s.is_user_agent = true, want false", id)
+		}
+	}
+	if thinker.Prompt == "" || thinker.Usage == "" || !thinker.ReadOnly || thinker.RecursionLimit != 1 || !reflect.DeepEqual(thinker.AllowedTools, []string{"agent_spawn", "agent_send", "wait_agent"}) {
+		t.Fatalf("thinker defaults = %#v", thinker)
 	}
 	if result.Provenance["default_profile"] != PredefinedFileName || result.Provenance["profiles.worker.max_turns"] != PredefinedFileName || result.Provenance["profiles.worker.usage"] != PredefinedFileName {
 		t.Fatalf("profile provenance = %#v", result.Provenance)
 	}
 
-	writeFile(t, path, "default_profile: query\nprofiles:\n  worker:\n    max_turns: 96\n    usage: Custom delegated work.\n    allowed_tools: [read, rg]\n")
+	writeFile(t, path, "default_profile: worker\nprofiles:\n  worker:\n    max_turns: 96\n    usage: Custom delegated work.\n    is_user_agent: true\n    allowed_tools: [read, rg]\n")
 	result, err = Load(Options{ProjectRoot: root, CWD: root})
 	if err != nil {
 		t.Fatal(err)
 	}
 	worker = result.Config.Profiles["worker"]
-	if result.Config.DefaultProfile != "query" || worker.MaxTurns != 96 || worker.Prompt == "" || worker.Usage != "Custom delegated work." || worker.RecursionLimit != 3 || !reflect.DeepEqual(worker.AllowedTools, []string{"read", "rg"}) {
+	if result.Config.DefaultProfile != "worker" || worker.MaxTurns != 96 || worker.Prompt == "" || worker.Usage != "Custom delegated work." || worker.RecursionLimit != 3 || !worker.IsUserAgent || !reflect.DeepEqual(worker.AllowedTools, []string{"read", "rg"}) {
 		t.Fatalf("merged profiles = default %q, worker %#v", result.Config.DefaultProfile, worker)
 	}
-	if result.Provenance["default_profile"] != path || result.Provenance["profiles.worker.max_turns"] != path || result.Provenance["profiles.worker.usage"] != path || result.Provenance["profiles.worker.allowed_tools.0"] != path || result.Provenance["profiles.worker.prompt"] != PredefinedFileName {
+	if result.Provenance["default_profile"] != path || result.Provenance["profiles.worker.max_turns"] != path || result.Provenance["profiles.worker.usage"] != path || result.Provenance["profiles.worker.is_user_agent"] != path || result.Provenance["profiles.worker.allowed_tools.0"] != path || result.Provenance["profiles.worker.prompt"] != PredefinedFileName {
 		t.Fatalf("merged profile provenance = %#v", result.Provenance)
 	}
 
@@ -519,7 +543,7 @@ func TestLoadProfileDefaultsOverridesAndValidation(t *testing.T) {
 		config string
 		want   string
 	}{
-		{config: "default_profile: worker\n", want: "not a foreground profile"},
+		{config: "default_profile: worker\n", want: "not a user agent profile"},
 		{config: "default_profile: missing\n", want: "is not configured"},
 		{config: "profiles:\n  worker:\n    max_turns: 0\n", want: "profiles.worker.max_turns"},
 		{config: "profiles:\n  worker:\n    recursion_limit: -1\n", want: "profiles.worker.recursion_limit"},
@@ -621,10 +645,8 @@ func TestLoadPromptDefaultsAndOverrides(t *testing.T) {
 				t.Fatal(err)
 			}
 			if test.wantPrompt == "" {
-				for _, text := range []string{"You are Parrot Coder", "agent_spawn", "still running", "wait for it"} {
-					if !strings.Contains(result.Config.Prompt, text) {
-						t.Fatalf("predefined prompt missing %q: %q", text, result.Config.Prompt)
-					}
+				if result.Config.Prompt != "You are Parrot Coder, a local coding agent." {
+					t.Fatalf("predefined prompt = %q", result.Config.Prompt)
 				}
 			} else if result.Config.Prompt != test.wantPrompt {
 				t.Fatalf("Prompt = %q, want exact replacement %q", result.Config.Prompt, test.wantPrompt)

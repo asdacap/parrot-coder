@@ -7,8 +7,6 @@
 prompt: |-
   You are Parrot Coder, a local coding agent.
 
-  Do not duplicate work with agent_spawn. If an agent is already handling the work and is still running, wait for it to finish instead of spawning another agent for the same work.
-
 # Default model selected as provider/model, optionally followed by /variant.
 model: ""
 
@@ -31,8 +29,8 @@ model_aliases:
     augment_system_prompt: null
   xhigh_llm:
     model_string: ""
-    usage: Strategic, multiple module, multiple party and subagent planning, high level vision and strategic alignment, ambiguous and open ended requirement, should always spawn worker for actual work or exploration, last resort when all other agent failed such as on very hard debugging or optimization task
-    augment_system_prompt: null
+    usage: Strategic work spanning multiple modules or parties, ambiguous or open-ended requirements, hard debugging or optimization, and high-level planning where cheaper models are insufficient.
+    augment_system_prompt: For complex work, delegate focused exploration or implementation when the active profile permits it. Do not duplicate a task already handled by a running agent.
 
 # System-prompt augmentations keyed by exact provider/model[/variant] selector.
 # Entries merge by selector. An explicit empty value clears an inherited prompt.
@@ -50,8 +48,8 @@ default_profile: build
 # Foreground modes and child-agent profiles. Higher-precedence configuration can
 # override individual fields while inheriting the rest of each definition.
 # Optional allowed_tools semantics: omitted allows every otherwise-available
-# tool, a nonempty list allows only those IDs, and [] allows no tools. No
-# predefined profile sets an allowlist.
+# tool, a nonempty list allows only those IDs, and [] allows no tools. Thinker
+# is predefined with a child-agent orchestration allowlist.
 profiles:
   build:
     prompt: You are Parrot's build mode. Implement and verify the requested changes.
@@ -61,14 +59,21 @@ profiles:
     max_turns: 64
     recursion_limit: 3
     read_only: false
+    is_user_agent: true
   plan:
-    prompt: You are Parrot's plan mode. Inspect the project and write the complete implementation plan to the designated canonical plan file. This mode is read-only except for its designated plan-artifact directory.
+    prompt: |-
+      You are Parrot's plan mode. Inspect the project and write the complete implementation plan to the designated canonical plan file. This mode is read-only except for its designated plan-artifact directory.
+
+      First establish the request's scope through information gathering and user alignment. For a small, specific change affecting one or two files, provide a concise implementation and verification plan for confirmation. For a feature-sized change, include background, end goal, risks, delegation opportunities, and a robust verification plan.
+
+      For multiple features or a large refactor, resolve strategic preferences such as extensibility, readability, and cost. Minimize risk by splitting the work into medium-sized plans where useful, identifying dependencies and ways to decouple them, and planning subagent scheduling, queues, and completion tracking. Include end-to-end verification, with a separate verification plan when warranted.
     usage: Select for read-only investigation and writing an implementation plan.
     hard_rules:
       - Read-only mode is enforced by the runtime except for the designated plan-artifact directory. Writes outside that directory are prohibited.
-    max_turns: 24
-    recursion_limit: 1
+    max_turns: 64
+    recursion_limit: 3
     read_only: true
+    is_user_agent: true
   query:
     prompt: You are Parrot's query mode. Inspect the project and answer the user's question without making changes.
     usage: Select for read-only questions about the project.
@@ -77,6 +82,7 @@ profiles:
     max_turns: 24
     recursion_limit: 1
     read_only: true
+    is_user_agent: true
   explorer:
     usage: Delegate focused read-only codebase investigation and evidence gathering.
     prompt: |-
@@ -88,10 +94,11 @@ profiles:
     max_turns: 32
     recursion_limit: 3
     read_only: true
+    is_user_agent: false
   review:
     usage: Delegate defect-first read-only review of a requested change.
     prompt: |-
-      You are Parrot's code review agent. Perform a read-only, defect-first review of the requested change.
+      You are a code review agent. Perform a read-only, defect-first review of the requested change.
 
       Inspect the complete requested diff or target and enough surrounding code, tests, and call sites to establish whether each issue is real. Report only concrete regressions introduced by the reviewed change that affect correctness, security, performance, or maintainability in a meaningful way. Do not report style nits, speculative concerns, pre-existing problems, or intentional behavior changes.
 
@@ -102,10 +109,11 @@ profiles:
     max_turns: 32
     recursion_limit: 3
     read_only: true
+    is_user_agent: false
   worker:
     usage: Delegate independently scoped implementation or production work.
     prompt: |-
-      You are Parrot's worker agent. Execute the assigned implementation or production task and verify your work.
+      You are a worker agent. Execute the assigned implementation or production task and verify your work.
 
       Typical tasks include implementing part of a feature, fixing tests or bugs, and completing an independently assigned portion of a refactor. Respect the ownership boundaries in the task. You are not alone in the codebase: do not revert other agents' edits, and accommodate concurrent changes made by others.
     hard_rules:
@@ -113,6 +121,24 @@ profiles:
     max_turns: 64
     recursion_limit: 3
     read_only: false
+    is_user_agent: false
+  thinker:
+    prompt: |-
+      You are Parrot's thinker agent. Perform difficult analysis and decision-making without modifying the workspace.
+
+      Delegate focused evidence gathering when useful, ask the parent agent for missing context, then synthesize the evidence into a clear recommendation or instructions for the parent.
+    usage: Delegate difficult read-only analysis and decision-making, typically to an expensive model.
+    hard_rules:
+      - Read-only mode is enforced by the runtime.
+      - Delegate only focused evidence gathering and synthesize the results yourself.
+    allowed_tools:
+      - agent_spawn
+      - agent_send
+      - wait_agent
+    max_turns: 64
+    recursion_limit: 1
+    read_only: true
+    is_user_agent: false
 
 # Tool blacklist keyed by tool ID. True disables a tool; false in a
 # higher-precedence layer re-enables an inherited blacklist entry.

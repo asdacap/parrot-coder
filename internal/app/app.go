@@ -305,14 +305,7 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	for id, configured := range loaded.Config.Profiles {
 		profiles[id] = configuredProfile(id, configured)
 	}
-	modeProfiles := make([]agent.Profile, 0, 3)
-	for _, id := range []string{mode.BuildID, mode.PlanID, mode.QueryID} {
-		profile, ok := profiles[id]
-		if !ok {
-			return nil, fmt.Errorf("app: required mode profile %q is not configured", id)
-		}
-		modeProfiles = append(modeProfiles, profile)
-	}
+	modeProfiles, subagentProfiles := partitionProfiles(profiles)
 	modes, err := mode.NewRegistryWithPlanDirectory(filepath.Join(paths.State, "plan"), modeProfiles...)
 	if err != nil {
 		return nil, fmt.Errorf("app: agents: %w", err)
@@ -326,14 +319,6 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 	}
 	if _, err := modes.Get(agentID); err != nil {
 		return nil, fmt.Errorf("app: %w", err)
-	}
-	subagentProfiles := make([]agent.Profile, 0, 3)
-	for _, id := range []string{agent.ExplorerID, agent.ReviewID, agent.WorkerID} {
-		profile, ok := profiles[id]
-		if !ok {
-			return nil, fmt.Errorf("app: required subagent profile %q is not configured", id)
-		}
-		subagentProfiles = append(subagentProfiles, profile)
 	}
 	taskAgents, err := agent.NewRegistry(subagentProfiles...)
 	if err != nil {
@@ -634,7 +619,24 @@ func Open(ctx context.Context, options Options) (_ *App, err error) {
 }
 
 func configuredProfile(id string, configured config.Profile) agent.Profile {
-	return agent.NewProfile(id, configured.Prompt, configured.Usage, configured.HardRules, configured.AllowedTools, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules))
+	return agent.NewProfile(id, configured.Prompt, configured.Usage, configured.HardRules, configured.AllowedTools, configured.MaxTurns, configured.RecursionLimit, configured.ReadOnly, convertSandboxRules(configured.SandboxRules), nil, configured.IsUserAgent)
+}
+
+func partitionProfiles(profiles map[string]agent.Profile) (userAgents, subagents []agent.Profile) {
+	ids := make([]string, 0, len(profiles))
+	for id := range profiles {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		profile := profiles[id]
+		if profile.IsUserAgent() {
+			userAgents = append(userAgents, profile)
+		} else {
+			subagents = append(subagents, profile)
+		}
+	}
+	return userAgents, subagents
 }
 
 // Project configuration may select models and override model metadata, but it
@@ -652,7 +654,7 @@ func validateConfigTrust(loaded config.Result) error {
 		}
 		restricted := strings.HasPrefix(field, "mcp.") || field == "default_profile" ||
 			field == "sandbox_rules" || strings.HasPrefix(field, "sandbox_rules.") ||
-			strings.HasPrefix(field, "profiles.") && (strings.Contains(field, ".sandbox_rules") || strings.Contains(field, ".allowed_tools") || strings.HasSuffix(field, ".read_only")) ||
+			strings.HasPrefix(field, "profiles.") && (strings.Contains(field, ".sandbox_rules") || strings.Contains(field, ".allowed_tools") || strings.HasSuffix(field, ".read_only") || strings.HasSuffix(field, ".is_user_agent")) ||
 			field == "web_fetch.allow_private"
 		if strings.HasPrefix(field, "providers.") {
 			parts := strings.Split(field, ".")

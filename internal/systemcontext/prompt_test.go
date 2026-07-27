@@ -213,6 +213,61 @@ func TestModelAugmentProviderPrecedenceAndExplicitEmpty(t *testing.T) {
 	}
 }
 
+func TestModelAugmentProviderUsesRequestModelSelectionBeforeResolvingSessionModel(t *testing.T) {
+	alias := "alias guidance"
+	resolver := &promptTestResolver{resolutions: map[string]ModelResolution{
+		"session-selector": {CanonicalBase: "p/m", CanonicalSelector: "p/m/medium"},
+	}}
+	provider, err := NewModelAugmentProvider("model:selection", map[string]string{
+		"p/m":      "base guidance",
+		"p/m/high": "variant guidance",
+	}, map[string]*string{"xhigh_llm": &alias}, resolver.resolve)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name      string
+		model     ModelSelection
+		want      string
+		wantCalls int
+	}{
+		{
+			name:  "requested alias overrides canonical model",
+			model: ModelSelection{RequestedSelector: "xhigh_llm", CanonicalBase: "p/m", CanonicalSelector: "p/m/high"},
+			want:  "alias guidance",
+		},
+		{
+			name:  "canonical variant avoids resolution",
+			model: ModelSelection{RequestedSelector: "unresolved", CanonicalBase: "p/m", CanonicalSelector: "p/m/high"},
+			want:  "variant guidance",
+		},
+		{
+			name:  "canonical base avoids resolution",
+			model: ModelSelection{RequestedSelector: "unresolved", CanonicalBase: "p/m", CanonicalSelector: "p/other"},
+			want:  "base guidance",
+		},
+		{
+			name:      "empty request resolves materialized session selector",
+			model:     ModelSelection{},
+			want:      "base guidance",
+			wantCalls: 1,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			resolver.calls = 0
+			prompt, err := provider.MaterializeSystemPrompt(promptTestSession{model: "session-selector"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			text, err := prompt.GetSystemPrompt(context.Background(), test.model)
+			if err != nil || text != test.want || resolver.calls != test.wantCalls {
+				t.Fatalf("text = %q, err = %v, resolver calls = %d; want %q, %d", text, err, resolver.calls, test.want, test.wantCalls)
+			}
+		})
+	}
+}
+
 func TestModelAugmentProviderValidatesAndPropagatesResolutionErrors(t *testing.T) {
 	resolver := &promptTestResolver{err: errors.New("unknown selector")}
 	for _, test := range []struct {

@@ -4,14 +4,16 @@ import (
 	"testing"
 
 	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 func TestNewPreservesValuesAndDefensiveCopies(t *testing.T) {
 	hardRules := []string{"original rule"}
 	allowedTools := []string{"read", "rg"}
 	sandboxRules := []security.Rule{{Path: "/workspace", Action: security.ActionAllowWrite}}
+	statusProvider := status.Static{ProviderKey: "profile:test", Text: "runtime status"}
 
-	profile := New("test", "test prompt", "test usage", hardRules, allowedTools, 12, 2, true, sandboxRules)
+	profile := New("test", "test prompt", "test usage", hardRules, allowedTools, 12, 2, true, sandboxRules, statusProvider, true)
 	hardRules[0] = "mutated input"
 	allowedTools[0] = "mutated_input"
 	sandboxRules[0].Path = "/mutated-input"
@@ -19,7 +21,7 @@ func TestNewPreservesValuesAndDefensiveCopies(t *testing.T) {
 	gotHardRules := profile.HardRules()
 	gotAllowedTools := profile.AllowedTools()
 	gotRules := profile.Rules()
-	if profile.ID() != "test" || profile.Prompt() != "test prompt" || profile.Usage() != "test usage" || profile.MaxTurns() != 12 || profile.RecursionLimit() != 2 || !profile.IsReadOnly() {
+	if profile.ID() != "test" || profile.Prompt() != "test prompt" || profile.Usage() != "test usage" || profile.MaxTurns() != 12 || profile.RecursionLimit() != 2 || !profile.IsReadOnly() || !profile.IsUserAgent() || profile.Status() != statusProvider {
 		t.Fatalf("profile values = (%q, %q, %d, %d, %t), want constructor values", profile.ID(), profile.Prompt(), profile.MaxTurns(), profile.RecursionLimit(), profile.IsReadOnly())
 	}
 	if len(gotHardRules) != 1 || gotHardRules[0] != "original rule" {
@@ -41,8 +43,8 @@ func TestNewPreservesValuesAndDefensiveCopies(t *testing.T) {
 }
 
 func TestAllowedToolsPreservesOptionalAndEmptySemantics(t *testing.T) {
-	unrestricted := New("all", "prompt", "usage", nil, nil, 1, 0, false, nil)
-	none := New("none", "prompt", "usage", nil, []string{}, 1, 0, false, nil)
+	unrestricted := New("all", "prompt", "usage", nil, nil, 1, 0, false, nil, nil, false)
+	none := New("none", "prompt", "usage", nil, []string{}, 1, 0, false, nil, nil, false)
 	if unrestricted.AllowedTools() != nil {
 		t.Fatalf("unrestricted AllowedTools() = %#v, want nil", unrestricted.AllowedTools())
 	}
@@ -52,7 +54,7 @@ func TestAllowedToolsPreservesOptionalAndEmptySemantics(t *testing.T) {
 }
 
 func TestStableProfileIDs(t *testing.T) {
-	if ExplorerID != "explorer" || ReviewID != "review" || WorkerID != "worker" {
-		t.Fatalf("profile IDs changed: %q %q %q", ExplorerID, ReviewID, WorkerID)
+	if ExplorerID != "explorer" || ReviewID != "review" || ThinkerID != "thinker" || WorkerID != "worker" {
+		t.Fatalf("profile IDs changed: %q %q %q %q", ExplorerID, ReviewID, ThinkerID, WorkerID)
 	}
 }

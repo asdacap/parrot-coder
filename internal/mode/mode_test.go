@@ -9,6 +9,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/agent"
 	"github.com/amirulashraf/parrot-coder/internal/event"
 	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/status"
 )
 
 type profileWithRules struct {
@@ -22,9 +23,9 @@ func (p profileWithRules) Rules() []security.Rule { return append([]security.Rul
 
 func testModeProfiles() []agent.Profile {
 	return []agent.Profile{
-		agent.NewProfile(BuildID, "build", "usage", []string{"rule"}, nil, 64, 3, false, nil),
-		agent.NewProfile(PlanID, "plan profile", "usage", []string{"rule"}, nil, 24, 1, true, nil),
-		agent.NewProfile(QueryID, "query", "usage", []string{"rule"}, nil, 24, 1, true, nil),
+		agent.NewProfile(BuildID, "build", "usage", []string{"rule"}, nil, 64, 3, false, nil, status.Static{ProviderKey: "profile:build"}, true),
+		agent.NewProfile(PlanID, "plan profile", "usage", []string{"rule"}, nil, 24, 1, true, nil, status.Static{ProviderKey: "profile:plan"}, true),
+		agent.NewProfile(QueryID, "query", "usage", []string{"rule"}, nil, 24, 1, true, nil, status.Static{ProviderKey: "profile:query"}, true),
 	}
 }
 

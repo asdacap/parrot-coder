@@ -1,14 +1,19 @@
 package profiles
 
-import "github.com/amirulashraf/parrot-coder/internal/security"
+import (
+	"github.com/amirulashraf/parrot-coder/internal/security"
+	"github.com/amirulashraf/parrot-coder/internal/status"
+)
 
 const (
 	ExplorerID = "explorer"
 	ReviewID   = "review"
+	ThinkerID  = "thinker"
 	WorkerID   = "worker"
 )
 
-// Profile describes an agent's instructions, limits, and security policy.
+// Profile describes an agent's instructions, limits, foreground classification,
+// security policy, and optional runtime status provider.
 type Profile interface {
 	security.SecurityProfile
 
@@ -19,6 +24,8 @@ type Profile interface {
 	AllowedTools() []string
 	MaxTurns() int
 	RecursionLimit() int
+	IsUserAgent() bool
+	Status() status.Provider
 }
 
 type profile struct {
@@ -30,11 +37,13 @@ type profile struct {
 	maxTurns       int
 	recursionLimit int
 	readOnly       bool
+	isUserAgent    bool
 	sandboxRules   []security.Rule
+	statusProvider status.Provider
 }
 
 // New constructs an immutable Profile.
-func New(id, prompt, usage string, hardRules, allowedTools []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule) Profile {
+func New(id, prompt, usage string, hardRules, allowedTools []string, maxTurns, recursionLimit int, readOnly bool, sandboxRules []security.Rule, statusProvider status.Provider, isUserAgent bool) Profile {
 	return profile{
 		id:             id,
 		prompt:         prompt,
@@ -44,19 +53,23 @@ func New(id, prompt, usage string, hardRules, allowedTools []string, maxTurns, r
 		maxTurns:       maxTurns,
 		recursionLimit: recursionLimit,
 		readOnly:       readOnly,
+		isUserAgent:    isUserAgent,
 		sandboxRules:   append([]security.Rule(nil), sandboxRules...),
+		statusProvider: statusProvider,
 	}
 }
 
-func (p profile) ID() string             { return p.id }
-func (p profile) Prompt() string         { return p.prompt }
-func (p profile) Usage() string          { return p.usage }
-func (p profile) MaxTurns() int          { return p.maxTurns }
-func (p profile) RecursionLimit() int    { return p.recursionLimit }
-func (p profile) IsReadOnly() bool       { return p.readOnly }
-func (p profile) HardRules() []string    { return append([]string(nil), p.hardRules...) }
-func (p profile) AllowedTools() []string { return cloneStrings(p.allowedTools) }
-func (p profile) Rules() []security.Rule { return append([]security.Rule(nil), p.sandboxRules...) }
+func (p profile) ID() string              { return p.id }
+func (p profile) Prompt() string          { return p.prompt }
+func (p profile) Usage() string           { return p.usage }
+func (p profile) MaxTurns() int           { return p.maxTurns }
+func (p profile) RecursionLimit() int     { return p.recursionLimit }
+func (p profile) IsReadOnly() bool        { return p.readOnly }
+func (p profile) IsUserAgent() bool       { return p.isUserAgent }
+func (p profile) Status() status.Provider { return p.statusProvider }
+func (p profile) HardRules() []string     { return append([]string(nil), p.hardRules...) }
+func (p profile) AllowedTools() []string  { return cloneStrings(p.allowedTools) }
+func (p profile) Rules() []security.Rule  { return append([]security.Rule(nil), p.sandboxRules...) }
 
 func cloneStrings(value []string) []string {
 	if value == nil {

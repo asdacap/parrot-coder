@@ -132,13 +132,14 @@ Each profile also has a required `usage` field. Like the other profile fields,
 at higher precedence. It is concise selection guidance: the available subagent
 profiles and their usage are included in the parent agent's system context so it
 can choose an appropriate profile for delegation. The selected child receives its
-own profile prompt and hard rules; those longer fields are not exposed as subagent
-selection guidance.
+own profile prompt and hard rules; those longer fields are not exposed as
+subagent selection guidance.
 
-The predefined prompt identifies Parrot and instructs it not to duplicate work
-with `agent_spawn`: if an agent is already handling the work and remains running,
-Parrot should wait for that agent instead of spawning another one for the same
-work.
+The duplicate-work rule for `agent_spawn` is tool-owned system guidance, not a
+requirement on the base `prompt`: do not spawn another agent for work an active
+agent is already handling; wait for that agent instead. Therefore a custom
+`prompt` does not need to repeat that rule, and disabling `agent_spawn` also
+removes its guidance.
 
 `inline_diff` controls changed-file blocks in the enhanced terminal. It defaults
 to `true`, which renders each context, deletion, and addition on its own
@@ -171,7 +172,12 @@ model suited to a class of work without hard-coding a provider. Parrot defines
 `low_llm`, `medium_llm`, `high_llm`, and `xhigh_llm` for progressively more
 complex work. Their `model_string` values are empty by default and may be set to
 any canonical `provider/model[/variant]` selector. An empty value leaves an alias
-unconfigured.
+unconfigured. `xhigh_llm` is reserved for strategic or exceptionally difficult
+work; its predefined augmentation instructs the selected agent to delegate to a
+subagent for focused exploration or implementation when the active profile
+permits it, and not to duplicate a task already handled by a running agent.
+Override `xhigh_llm.augment_system_prompt` with a nonempty value to replace that
+instruction, or with `""` to suppress it.
 
 Alias mapping keys must be nonempty, contain no `/`, and have no surrounding
 whitespace. YAML mapping keys are unique. `usage` must be nonempty. A nonempty
@@ -222,19 +228,27 @@ Keys must be nonempty and have no surrounding whitespace.
 ### Profiles
 
 `default_profile` selects the foreground mode used when neither `--mode` nor its
-legacy `--agent` alias is passed. It must name `build`, `plan`, or `query` and
-defaults to `build` in `predefined_config.yaml`.
+legacy `--agent` alias is passed. It must name a profile with
+`is_user_agent: true` and defaults to `build` in `predefined_config.yaml`.
 
-The `profiles` map configures the foreground profiles `build`, `plan`, and
-`query`, plus the child-agent profiles `explorer`, `review`, and `worker`.
+The `profiles` map configures foreground user-agent profiles and reusable
+child-agent profiles. `is_user_agent` classifies each profile: `true` makes it a
+foreground profile selectable by `--mode` and eligible for `default_profile`;
+`false` makes it available only to `agent_spawn`. The predefined foreground
+profiles are `build`, `plan`, and `query`; `explorer`, `review`, `worker`, and
+`thinker` are child-agent profiles. `thinker` is a read-only, expensive-model
+profile intended for hard decisions: it gathers evidence through subagents or
+questions to its parent and coordinates that investigation rather than doing
+workspace implementation itself.
+
 Each entry supports `prompt`, `hard_rules`, `max_turns`, `recursion_limit`,
-`read_only`, ordered `sandbox_rules`, and `allowed_tools`. A profile prompt must
-be non-empty, `max_turns` must be positive, and `recursion_limit` cannot be
-negative. `default_profile`, profile `read_only`
-values, profile sandbox rules, and profile tool restrictions are security
-policy and require global configuration. Project configuration cannot set
-`allowed_tools`. Profile sandbox rules use the same `path` and `rule` fields as
-the top-level sandbox rules.
+`read_only`, `is_user_agent`, ordered `sandbox_rules`, and `allowed_tools`. A
+profile prompt must be non-empty, `max_turns` must be positive, and
+`recursion_limit` cannot be negative. `default_profile`, profile `read_only`
+values, profile classification, profile sandbox rules, and profile tool
+restrictions are security policy and require global configuration. Project
+configuration cannot set `allowed_tools`. Profile sandbox rules use the same
+`path` and `rule` fields as the top-level sandbox rules.
 
 When `allowed_tools` is omitted, the profile allows every tool otherwise
 available to the session. A nonempty list allows only the specified tool IDs,
@@ -248,8 +262,8 @@ rather than a built-in default tool restriction.
 
 Profile entries merge recursively across configuration scopes. For example,
 setting only `profiles.worker.max_turns` retains the predefined worker prompt,
-hard rules, security policy, recursion limit, and omitted `allowed_tools`
-policy. The generated
+hard rules, security policy, `is_user_agent` classification, recursion limit,
+and omitted `allowed_tools` policy. The generated
 `predefined_config.yaml` contains the complete defaults and remains the source
 of runtime profile values; `parrot.yaml` only needs to contain overrides.
 
@@ -460,8 +474,9 @@ optional. Names contain only ASCII letters, digits, `_`, or `-`.
 
 ## Built-in subagents
 
-Parrot includes the reusable child-agent profiles `explorer`, `worker`, and
-`review`. Start them with `agent_spawn`, which returns the child `session_id`.
+Parrot includes the reusable child-agent profiles `explorer`, `worker`, `review`,
+and `thinker` (all `is_user_agent: false`). Start them with `agent_spawn`, which
+returns the child `session_id`.
 `agent_send` accepts either that `session_id` or the friendly name assigned by
 `agent_spawn`. Delivered content is prefixed with the sender's trusted friendly
 name, falling back to its canonical `session_id` when no name is available. A
@@ -516,6 +531,16 @@ child agent with `agent_spawn`, wait for it with `wait_agent`, and return its
 output.
 
 ## Migration
+
+### Profile status removal
+
+Profile `status` is no longer a configuration field. Remove every `status:`
+entry from `profiles` in global and project configuration; profile status text
+is no longer injected into system context. This removes only the static
+auxiliary status text: profile prompts and hard rules continue to be injected
+through the runtime status context. For compatibility, existing `status`
+entries are ignored while loading and removed from provenance. Profile prompts,
+hard rules, and usage remain the supported ways to describe a profile.
 
 Parrot upgrades state from earlier layouts automatically:
 

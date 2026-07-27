@@ -68,6 +68,7 @@ type Profile struct {
 	MaxTurns       int           `json:"max_turns"`
 	RecursionLimit int           `json:"recursion_limit"`
 	ReadOnly       bool          `json:"read_only"`
+	IsUserAgent    bool          `json:"is_user_agent"`
 	AllowedTools   []string      `json:"allowed_tools,omitempty"`
 	SandboxRules   []SandboxRule `json:"sandbox_rules,omitempty"`
 }
@@ -496,15 +497,14 @@ func validateProfiles(defaultProfile string, profiles map[string]Profile) error 
 	if defaultProfile == "" {
 		return errors.New("default_profile is required")
 	}
-	if _, ok := profiles[defaultProfile]; !ok {
+	profile, ok := profiles[defaultProfile]
+	if !ok {
 		return fmt.Errorf("default_profile %q is not configured in profiles", defaultProfile)
 	}
-	switch defaultProfile {
-	case "build", "plan", "query":
-	default:
-		return fmt.Errorf("default_profile %q is not a foreground profile", defaultProfile)
+	if !profile.IsUserAgent {
+		return fmt.Errorf("default_profile %q is not a user agent profile", defaultProfile)
 	}
-	required := map[string]bool{"build": false, "plan": false, "query": false, "explorer": false, "review": false, "worker": false}
+	required := map[string]bool{"build": false, "plan": false, "query": false, "explorer": false, "review": false, "worker": false, "thinker": false}
 	for id, profile := range profiles {
 		path := "profiles." + id
 		if _, ok := required[id]; !ok {
