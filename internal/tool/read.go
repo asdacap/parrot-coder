@@ -12,6 +12,8 @@ import (
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type ReadConfig struct {
@@ -21,10 +23,11 @@ type ReadConfig struct {
 }
 type ReadTool struct {
 	BasePresentation
-	Config ReadConfig
+	Config    ReadConfig
+	Workspace *workspace.Workspace
 }
 
-func NewReadTool(config ReadConfig) *ReadTool {
+func NewReadTool(config ReadConfig, ws *workspace.Workspace) *ReadTool {
 	if config.MaxLines <= 0 {
 		config.MaxLines = 2000
 	}
@@ -34,7 +37,7 @@ func NewReadTool(config ReadConfig) *ReadTool {
 	if config.MaxEntries <= 0 {
 		config.MaxEntries = 2000
 	}
-	return &ReadTool{Config: config}
+	return &ReadTool{Config: config, Workspace: ws}
 }
 func (*ReadTool) ID() string { return "read" }
 func (*ReadTool) Presentation() Presentation {
@@ -85,14 +88,14 @@ type readPlan struct {
 }
 
 func (t *ReadTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if call.Workspace == nil {
+	if t.Workspace == nil {
 		return Plan{}, errors.New("workspace is required")
 	}
 	var input readInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	path, err := call.Workspace.ResolveReadOnly(input.Path)
+	path, err := t.Workspace.ResolveReadOnly(input.Path)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -102,7 +105,7 @@ func (t *ReadTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 func (t *ReadTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 
 	p := plan.Data.(readPlan)
-	revalidated, err := call.Workspace.ResolveReadOnly(p.Input.Path)
+	revalidated, err := t.Workspace.ResolveReadOnly(p.Input.Path)
 	if err != nil {
 		return Result{}, err
 	}

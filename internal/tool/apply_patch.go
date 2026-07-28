@@ -14,11 +14,12 @@ import (
 
 type ApplyPatchTool struct {
 	BasePresentation
-	Changes *change.Service
+	Changes   *change.Service
+	Workspace *workspace.Workspace
 }
 
-func NewApplyPatchTool(changes *change.Service) *ApplyPatchTool {
-	return &ApplyPatchTool{Changes: changes}
+func NewApplyPatchTool(changes *change.Service, ws *workspace.Workspace) *ApplyPatchTool {
+	return &ApplyPatchTool{Changes: changes, Workspace: ws}
 }
 
 func (*ApplyPatchTool) ID() string { return "apply_patch" }
@@ -112,10 +113,7 @@ func patchFormat(raw json.RawMessage) (change.PatchFormat, error) {
 
 func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
 	service := t.Changes
-	if service == nil {
-		service = call.Changes
-	}
-	if service == nil || call.Workspace == nil {
+	if service == nil || t.Workspace == nil {
 		return Plan{}, errors.New("apply_patch: change service and workspace are required")
 	}
 	var input struct {
@@ -128,7 +126,7 @@ func (t *ApplyPatchTool) Plan(ctx context.Context, raw json.RawMessage, call Cal
 	if err != nil {
 		return Plan{}, err
 	}
-	scoped := patchWorkspace(call.Workspace, call.SecurityProfile)
+	scoped := patchWorkspace(t.Workspace, call.SecurityProfile)
 	planned, err := service.PlanPatch(ctx, scoped, input.PatchText, format)
 	if err != nil {
 		return Plan{}, err
@@ -168,5 +166,5 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, plan Plan, call CallContex
 			return Result{}, errors.New("apply_patch is not permitted by the current security profile")
 		}
 	}
-	return executeMutation(ctx, t.Changes, plan, call)
+	return executeMutation(ctx, t.Changes, t.Workspace, plan)
 }

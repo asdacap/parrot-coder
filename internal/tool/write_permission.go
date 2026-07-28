@@ -11,15 +11,18 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type WritePermissionTool struct {
 	BasePresentation
-	Runner *process.Runner
+	Runner    *process.Runner
+	Workspace *workspace.Workspace
+	SessionID string
 }
 
-func NewWritePermissionTool(runner *process.Runner) *WritePermissionTool {
-	return &WritePermissionTool{Runner: runner}
+func NewWritePermissionTool(runner *process.Runner, ws *workspace.Workspace, sessionID string) *WritePermissionTool {
+	return &WritePermissionTool{Runner: runner, Workspace: ws, SessionID: sessionID}
 }
 
 func (*WritePermissionTool) ID() string { return "request_write_permission" }
@@ -69,10 +72,10 @@ func (*WritePermissionTool) DescribeRequest(raw json.RawMessage) (string, error)
 }
 
 func (t *WritePermissionTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if call.Workspace == nil {
+	if t.Workspace == nil {
 		return Plan{}, errors.New("request_write_permission: workspace is required")
 	}
-	if call.SessionID == "" {
+	if t.SessionID == "" {
 		return Plan{}, errors.New("request_write_permission: session is required")
 	}
 	var input writePermissionInput
@@ -94,7 +97,7 @@ func (t *WritePermissionTool) Plan(_ context.Context, raw json.RawMessage, call 
 	if err != nil {
 		return Plan{}, fmt.Errorf("request_write_permission: stat path: %w", err)
 	}
-	relative, relErr := filepath.Rel(call.Workspace.Root(), input.ResolvedPath)
+	relative, relErr := filepath.Rel(t.Workspace.Root(), input.ResolvedPath)
 	if relErr == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
 		return Plan{}, errors.New("request_write_permission: workspace paths are already writable; protected workspace metadata cannot be granted")
 	}
@@ -116,9 +119,6 @@ func (t *WritePermissionTool) Execute(_ context.Context, plan Plan, call CallCon
 	}
 	runner := t.Runner
 	if runner == nil {
-		runner = call.Processes
-	}
-	if runner == nil {
 		return Result{}, errors.New("request_write_permission: process runner is required")
 	}
 	input := plan.Data.(writePermissionInput)
@@ -126,7 +126,7 @@ func (t *WritePermissionTool) Execute(_ context.Context, plan Plan, call CallCon
 	if err != nil || resolved != input.ResolvedPath {
 		return Result{}, errors.New("request_write_permission: path changed after approval")
 	}
-	if err := runner.AllowWrite(call.SessionID, input.ResolvedPath); err != nil {
+	if err := runner.AllowWrite(t.SessionID, input.ResolvedPath); err != nil {
 		return Result{}, err
 	}
 	text := "Sandboxed shell writes allowed for this session: " + input.ResolvedPath

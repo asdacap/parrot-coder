@@ -41,38 +41,53 @@ func BuiltinProviders(services BuiltinServices) (Providers, error) {
 	if services.Skills == nil || services.WebFetch == nil || services.Agents == nil || services.Status == nil {
 		return Providers{}, errors.New("tool: built-in services are required")
 	}
-	constructors := []func() Tool{
-		func() Tool { return NewReadTool(ReadConfig{}) },
-		func() Tool { return NewShowToUserTool(ReadConfig{}) },
-		func() Tool { return NewGlobTool(GlobConfig{}) },
-		func() Tool { return NewRgTool(RgConfig{}) },
-		func() Tool { return NewApplyPatchTool(services.Changes) },
-		func() Tool { return NewExecCommandTool(services.Processes) },
-		func() Tool { return NewWritePermissionTool(services.Processes) },
-		func() Tool { return NewWriteStdinTool(services.Processes) },
-		func() Tool { return NewTodoReadTool(services.Todos) },
-		func() Tool { return NewTodoWriteTool(services.Todos) },
-		func() Tool { return NewGetGoalTool(services.Goals) },
-		func() Tool { return NewCreateGoalTool(services.Goals) },
-		func() Tool { return NewUpdateGoalTool(services.Goals) },
-		func() Tool { return NewQuestionTool(services.Questions) },
-		func() Tool { return NewSkillTool(services.Skills) },
-		func() Tool { return NewWebFetchTool(services.WebFetch) },
-		func() Tool { return NewGitDiffTool() },
-		func() Tool { return NewSetConfigTool(services.ConfigDir) },
+	constructors := []struct {
+		prototype Tool
+		create    func(AgentSession) Tool
+	}{
+		{NewReadTool(ReadConfig{}, nil), func(s AgentSession) Tool { return NewReadTool(ReadConfig{}, s.Workspace()) }},
+		{NewShowToUserTool(ReadConfig{}, nil), func(s AgentSession) Tool { return NewShowToUserTool(ReadConfig{}, s.Workspace()) }},
+		{NewGlobTool(GlobConfig{}, nil), func(s AgentSession) Tool { return NewGlobTool(GlobConfig{}, s.Workspace()) }},
+		{NewRgTool(RgConfig{}, nil), func(s AgentSession) Tool { return NewRgTool(RgConfig{}, s.Workspace()) }},
+		{NewApplyPatchTool(services.Changes, nil), func(s AgentSession) Tool { return NewApplyPatchTool(services.Changes, s.Workspace()) }},
+		{NewExecCommandTool(services.Processes, nil, ""), func(s AgentSession) Tool { return NewExecCommandTool(services.Processes, s.Workspace(), s.SessionID()) }},
+		{NewWritePermissionTool(services.Processes, nil, ""), func(s AgentSession) Tool {
+			return NewWritePermissionTool(services.Processes, s.Workspace(), s.SessionID())
+		}},
+		{NewWriteStdinTool(services.Processes, ""), func(s AgentSession) Tool { return NewWriteStdinTool(services.Processes, s.SessionID()) }},
+		{NewTodoReadTool(services.Todos, ""), func(s AgentSession) Tool { return NewTodoReadTool(services.Todos, s.SessionID()) }},
+		{NewTodoWriteTool(services.Todos, ""), func(s AgentSession) Tool { return NewTodoWriteTool(services.Todos, s.SessionID()) }},
+		{NewGetGoalTool(services.Goals, ""), func(s AgentSession) Tool { return NewGetGoalTool(services.Goals, s.SessionID()) }},
+		{NewCreateGoalTool(services.Goals, ""), func(s AgentSession) Tool { return NewCreateGoalTool(services.Goals, s.SessionID()) }},
+		{NewUpdateGoalTool(services.Goals, ""), func(s AgentSession) Tool { return NewUpdateGoalTool(services.Goals, s.SessionID()) }},
+		{NewQuestionTool(services.Questions, ""), func(s AgentSession) Tool { return NewQuestionTool(services.Questions, s.SessionID()) }},
+		{NewSkillTool(services.Skills), func(AgentSession) Tool { return NewSkillTool(services.Skills) }},
+		{NewWebFetchTool(services.WebFetch), func(AgentSession) Tool { return NewWebFetchTool(services.WebFetch) }},
+		{NewGitDiffTool(nil), func(s AgentSession) Tool { return NewGitDiffTool(s.Workspace()) }},
+		{NewSetConfigTool(services.ConfigDir), func(AgentSession) Tool { return NewSetConfigTool(services.ConfigDir) }},
 	}
 	for _, kind := range []string{"task_list_active", "task_interrupt"} {
 		kind := kind
-		constructors = append(constructors, func() Tool { return &TaskTool{Kind: kind, Controller: services.Tasks} })
+		constructors = append(constructors, struct {
+			prototype Tool
+			create    func(AgentSession) Tool
+		}{&TaskTool{Kind: kind, Controller: services.Tasks}, func(s AgentSession) Tool {
+			return &TaskTool{Kind: kind, Controller: services.Tasks, SessionID: s.SessionID()}
+		}})
 	}
 	for _, kind := range []managedtask.Kind{managedtask.KindShell, managedtask.KindAgent} {
 		kind := kind
-		constructors = append(constructors, func() Tool { return &WaitTool{Kind: kind, Controller: services.Tasks} })
+		constructors = append(constructors, struct {
+			prototype Tool
+			create    func(AgentSession) Tool
+		}{&WaitTool{Kind: kind, Controller: services.Tasks}, func(s AgentSession) Tool {
+			return &WaitTool{Kind: kind, Controller: services.Tasks, SessionID: s.SessionID()}
+		}})
 	}
 	items := make([]ToolProvider, 0, len(constructors)+8+len(services.MCPTools))
 	for _, constructor := range constructors {
 		constructor := constructor
-		items = append(items, providerFor(constructor))
+		items = append(items, providerForState(constructor.prototype, constructor.create))
 	}
 	for _, kind := range []string{"queue_create", "queue_info", "queue_listen", "queue_push", "queue_take"} {
 		kind := kind
@@ -123,8 +138,11 @@ type sessionTool struct {
 
 func (t *sessionTool) UnwrapTool() Tool { return t.Tool }
 
-func providerFor(constructor func() Tool) ToolProvider {
-	return &ProviderFunc{ToolDescriptor: DescriptorOf(constructor()), CreateTool: func(AgentSession) (Tool, error) {
-		return &sessionTool{Tool: constructor()}, nil
+func providerForState(prototype Tool, constructor func(AgentSession) Tool) ToolProvider {
+	return &ProviderFunc{ToolDescriptor: DescriptorOf(prototype), CreateTool: func(state AgentSession) (Tool, error) {
+		if state == nil || state.SessionID() == "" || state.Workspace() == nil {
+			return nil, errors.New("agent session ID and workspace are required")
+		}
+		return &sessionTool{Tool: constructor(state)}, nil
 	}}
 }

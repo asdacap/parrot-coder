@@ -11,11 +11,14 @@ import (
 
 type GetGoalTool struct {
 	BasePresentation
-	Service *session.GoalService
+	Service   *session.GoalService
+	SessionID string
 }
 
-func NewGetGoalTool(service *session.GoalService) *GetGoalTool { return &GetGoalTool{Service: service} }
-func (*GetGoalTool) ID() string                                { return "get_goal" }
+func NewGetGoalTool(service *session.GoalService, sessionID string) *GetGoalTool {
+	return &GetGoalTool{Service: service, SessionID: sessionID}
+}
+func (*GetGoalTool) ID() string { return "get_goal" }
 func (t *GetGoalTool) Descriptor() Descriptor {
 	return Descriptor{ID: t.ID(), Description: "Get the current goal for this session, including status, budget, usage, and remaining tokens.", Schema: t.JSONSchema(), Presentation: t.Presentation()}
 }
@@ -28,12 +31,11 @@ func (*GetGoalTool) JSONSchema() json.RawMessage {
 func (t *GetGoalTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
 	return NewPlan(t.ID(), raw, nil, nil, nil)
 }
-func (t *GetGoalTool) Execute(ctx context.Context, _ Plan, call CallContext) (Result, error) {
-
-	if t.Service == nil || call.SessionID == "" {
+func (t *GetGoalTool) Execute(ctx context.Context, _ Plan, _ CallContext) (Result, error) {
+	if t.Service == nil || t.SessionID == "" {
 		return Result{}, errors.New("get_goal: service and session are required")
 	}
-	goal, err := t.Service.Get(ctx, call.SessionID)
+	goal, err := t.Service.Get(ctx, t.SessionID)
 	if errors.Is(err, session.ErrGoalNotFound) {
 		return Result{Text: "no goal set", ModelText: "no goal set"}, nil
 	}
@@ -45,7 +47,8 @@ func (t *GetGoalTool) Execute(ctx context.Context, _ Plan, call CallContext) (Re
 
 type CreateGoalTool struct {
 	BasePresentation
-	Service *session.GoalService
+	Service   *session.GoalService
+	SessionID string
 }
 
 type createGoalInput struct {
@@ -53,8 +56,8 @@ type createGoalInput struct {
 	TokenBudget *int64 `json:"token_budget,omitempty"`
 }
 
-func NewCreateGoalTool(service *session.GoalService) *CreateGoalTool {
-	return &CreateGoalTool{Service: service}
+func NewCreateGoalTool(service *session.GoalService, sessionID string) *CreateGoalTool {
+	return &CreateGoalTool{Service: service, SessionID: sessionID}
 }
 func (*CreateGoalTool) ID() string { return "create_goal" }
 func (t *CreateGoalTool) Descriptor() Descriptor {
@@ -77,12 +80,12 @@ func (t *CreateGoalTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 	}
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
-func (t *CreateGoalTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if t.Service == nil || call.SessionID == "" {
+func (t *CreateGoalTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Result, error) {
+	if t.Service == nil || t.SessionID == "" {
 		return Result{}, errors.New("create_goal: service and session are required")
 	}
 	input := plan.Data.(createGoalInput)
-	goal, err := t.Service.Create(ctx, call.SessionID, input.Objective, input.TokenBudget)
+	goal, err := t.Service.Create(ctx, t.SessionID, input.Objective, input.TokenBudget)
 	if err != nil {
 		return Result{}, err
 	}
@@ -91,15 +94,16 @@ func (t *CreateGoalTool) Execute(ctx context.Context, plan Plan, call CallContex
 
 type UpdateGoalTool struct {
 	BasePresentation
-	Service *session.GoalService
+	Service   *session.GoalService
+	SessionID string
 }
 
 type updateGoalInput struct {
 	Status session.GoalStatus `json:"status"`
 }
 
-func NewUpdateGoalTool(service *session.GoalService) *UpdateGoalTool {
-	return &UpdateGoalTool{Service: service}
+func NewUpdateGoalTool(service *session.GoalService, sessionID string) *UpdateGoalTool {
+	return &UpdateGoalTool{Service: service, SessionID: sessionID}
 }
 func (*UpdateGoalTool) ID() string { return "update_goal" }
 func (t *UpdateGoalTool) Descriptor() Descriptor {
@@ -122,11 +126,11 @@ func (t *UpdateGoalTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 	}
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
-func (t *UpdateGoalTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	if t.Service == nil || call.SessionID == "" {
+func (t *UpdateGoalTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Result, error) {
+	if t.Service == nil || t.SessionID == "" {
 		return Result{}, errors.New("update_goal: service and session are required")
 	}
-	goal, err := t.Service.UpdateAgentStatus(ctx, call.SessionID, plan.Data.(updateGoalInput).Status)
+	goal, err := t.Service.UpdateAgentStatus(ctx, t.SessionID, plan.Data.(updateGoalInput).Status)
 	if err != nil {
 		return Result{}, err
 	}

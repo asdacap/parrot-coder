@@ -10,17 +10,20 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 // ShowToUserTool presents a bounded text-file range to the user as source code.
 type ShowToUserTool struct {
 	BasePresentation
-	Config ReadConfig
+	Config    ReadConfig
+	Workspace *workspace.Workspace
 }
 
-func NewShowToUserTool(config ReadConfig) *ShowToUserTool {
-	read := NewReadTool(config)
-	return &ShowToUserTool{Config: read.Config}
+func NewShowToUserTool(config ReadConfig, ws *workspace.Workspace) *ShowToUserTool {
+	read := NewReadTool(config, ws)
+	return &ShowToUserTool{Config: read.Config, Workspace: ws}
 }
 
 func (*ShowToUserTool) ID() string { return "show_to_user" }
@@ -58,7 +61,7 @@ func (*ShowToUserTool) ErrorAdvice(raw json.RawMessage) (ErrorAdvice, error) {
 }
 
 func (t *ShowToUserTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if call.Workspace == nil {
+	if t.Workspace == nil {
 		return Plan{}, errors.New("workspace is required")
 	}
 	var input readInput
@@ -71,7 +74,7 @@ func (t *ShowToUserTool) Plan(_ context.Context, raw json.RawMessage, call CallC
 	if input.Limit > t.Config.MaxLines {
 		return Plan{}, errors.New("line limit exceeded")
 	}
-	path, err := call.Workspace.ResolveReadOnly(input.Path)
+	path, err := t.Workspace.ResolveReadOnly(input.Path)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -80,7 +83,7 @@ func (t *ShowToUserTool) Plan(_ context.Context, raw json.RawMessage, call CallC
 
 func (t *ShowToUserTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	p := plan.Data.(readPlan)
-	path, err := call.Workspace.ResolveReadOnly(p.Input.Path)
+	path, err := t.Workspace.ResolveReadOnly(p.Input.Path)
 	if err != nil {
 		return Result{}, err
 	}

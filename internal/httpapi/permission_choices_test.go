@@ -11,8 +11,8 @@ import (
 // A reply must be one of the answers the requesting tool declared, and a reason
 // is accepted only for a choice which asks for one.
 func TestReplyMatchesDeclaredChoices(t *testing.T) {
-	write := tool.ChoicesFor(tool.NewWritePermissionTool(nil))
-	ordinary := tool.ChoicesFor(tool.NewReadTool(tool.ReadConfig{}))
+	write := tool.ChoicesFor(tool.NewWritePermissionTool(nil, nil, ""))
+	ordinary := tool.ChoicesFor(tool.NewReadTool(tool.ReadConfig{}, nil))
 
 	for _, test := range []struct {
 		name     string

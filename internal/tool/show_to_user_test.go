@@ -25,12 +25,12 @@ func TestShowToUserDisplaysBoundedRawSource(t *testing.T) {
 		t.Fatal(err)
 	}
 	recorder := &displayRecorder{}
-	item := NewShowToUserTool(ReadConfig{MaxLines: 20, MaxBytes: 1024})
-	plan, err := item.Plan(context.Background(), json.RawMessage(`{"path":"main.go","offset":2,"limit":2}`), CallContext{Workspace: ws})
+	item := NewShowToUserTool(ReadConfig{MaxLines: 20, MaxBytes: 1024}, ws)
+	plan, err := item.Plan(context.Background(), json.RawMessage(`{"path":"main.go","offset":2,"limit":2}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := item.Execute(context.Background(), plan, CallContext{Workspace: ws, Displays: recorder})
+	result, err := item.Execute(context.Background(), plan, CallContext{Displays: recorder})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestShowToUserRejectsInvalidFilesAndDoesNotPublishFailures(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "huge"), []byte(strings.Repeat("x", 100)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	item := NewShowToUserTool(ReadConfig{MaxLines: 10, MaxBytes: 32})
+	item := NewShowToUserTool(ReadConfig{MaxLines: 10, MaxBytes: 32}, ws)
 	recorder := &displayRecorder{}
 	for _, test := range []struct {
 		name, input string
@@ -71,9 +71,9 @@ func TestShowToUserRejectsInvalidFilesAndDoesNotPublishFailures(t *testing.T) {
 		{name: "negative range", input: `{"path":"binary","offset":-1}`},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			plan, planErr := item.Plan(context.Background(), json.RawMessage(test.input), CallContext{Workspace: ws})
+			plan, planErr := item.Plan(context.Background(), json.RawMessage(test.input), CallContext{})
 			if planErr == nil {
-				_, planErr = item.Execute(context.Background(), plan, CallContext{Workspace: ws, Displays: recorder})
+				_, planErr = item.Execute(context.Background(), plan, CallContext{Displays: recorder})
 			}
 			if planErr == nil {
 				t.Fatal("invalid show_to_user succeeded")

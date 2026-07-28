@@ -47,16 +47,17 @@ type AgentChildren interface {
 
 type AgentTool struct {
 	BasePresentation
-	Kind     string
-	Children AgentChildren // retained for direct construction in focused tests
-	Session  AgentSession
-	Agents   AgentLookup
+	Kind           string
+	Children       AgentChildren // retained for direct construction in focused tests
+	Session        AgentSession
+	AgentSessionID string
+	Agents         AgentLookup
 }
 
-func NewAgentTools(children AgentChildren, agents AgentLookup) []Tool {
+func NewAgentTools(children AgentChildren, agents AgentLookup, sessionID string) []Tool {
 	return []Tool{
-		&AgentTool{Kind: agentSpawnID, Children: children, Agents: agents},
-		&AgentTool{Kind: agentSendID, Children: children, Agents: agents},
+		&AgentTool{Kind: agentSpawnID, Children: children, AgentSessionID: sessionID, Agents: agents},
+		&AgentTool{Kind: agentSendID, Children: children, AgentSessionID: sessionID, Agents: agents},
 	}
 }
 
@@ -121,7 +122,11 @@ func decodeAgentInput(raw json.RawMessage) (agentInput, error) {
 }
 
 func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if t.Session == nil && t.Children == nil || call.SessionID == "" || call.Agent == "" {
+	sessionID := t.AgentSessionID
+	if t.Session != nil {
+		sessionID = t.Session.SessionID()
+	}
+	if t.Session == nil && t.Children == nil || sessionID == "" || call.Agent == "" {
 		return Plan{}, errors.New("agent: manager, session, and caller agent are required")
 	}
 	input, err := decodeAgentInput(raw)
@@ -155,14 +160,14 @@ func (t *AgentTool) Plan(_ context.Context, raw json.RawMessage, call CallContex
 		if err != nil {
 			return Plan{}, err
 		}
-		target, err := t.resolve(call.SessionID, input.SessionID)
+		target, err := t.resolve(sessionID, input.SessionID)
 		if err != nil {
 			return Plan{}, err
 		}
 		task := target.Agent.Status()
 		input.SessionID = task.SessionID
 		input.Target = target
-		input.SenderName = call.SessionID
+		input.SenderName = sessionID
 		if t.Session != nil {
 			if name := t.Session.SessionName(); name != "" {
 				input.SenderName = name
@@ -194,7 +199,7 @@ func (t *AgentTool) Execute(ctx context.Context, plan Plan, call CallContext) (R
 		if t.Session != nil {
 			child, err = t.Session.CreateAgent(ctx, call.Agent, input.Prompt, input.Agent, input.Model, input.Name)
 		} else {
-			child, err = t.Children.Create(ctx, call.SessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name)
+			child, err = t.Children.Create(ctx, t.AgentSessionID, call.Agent, input.Prompt, input.Agent, input.Model, input.Name)
 		}
 		if err != nil {
 			return Result{}, err

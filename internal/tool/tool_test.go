@@ -191,9 +191,9 @@ func TestExecutorDiagnosticsOmitInputAndOutput(t *testing.T) {
 	if err := registry.Register(testTool{id: "test"}); err != nil {
 		t.Fatal(err)
 	}
-	executor := Executor{Snapshot: registry.Materialize()}
+	executor := Executor{Snapshot: registry.Materialize(), SessionID: "ses_test"}
 	const secret = "sensitive-tool-input"
-	call := CallContext{SessionID: "ses_test", ToolCallID: "call_test"}
+	call := CallContext{ToolCallID: "call_test"}
 	if _, err := executor.Execute(context.Background(), "test", json.RawMessage(`{"value":"`+secret+`"}`), call); err != nil {
 		t.Fatal(err)
 	}
@@ -229,8 +229,8 @@ func TestExecutorStoresOversizedOutput(t *testing.T) {
 	}
 	r := NewRegistry()
 	_ = r.Register(outputTestTool{})
-	e := Executor{Snapshot: r.Materialize(), MaxOutputBytes: 4}
-	result, err := e.Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{Outputs: store, SessionID: "ses_test"})
+	e := Executor{Snapshot: r.Materialize(), Outputs: store, SessionID: "ses_test", MaxOutputBytes: 4}
+	result, err := e.Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestExecutorReportsLossyOutputWhenStorageFails(t *testing.T) {
 	}
 	r := NewRegistry()
 	_ = r.Register(outputTestTool{})
-	result, err := (Executor{Snapshot: r.Materialize(), MaxOutputBytes: 4}).Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{Outputs: store})
+	result, err := (Executor{Snapshot: r.Materialize(), Outputs: store, MaxOutputBytes: 4}).Execute(context.Background(), "output_test", json.RawMessage(`{}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,23 +502,23 @@ func toolHarness(t *testing.T) (*workspace.Workspace, Executor, CallContext) {
 		t.Fatal(err)
 	}
 	r := NewRegistry()
-	rg := NewRgTool(RgConfig{MaxLineBytes: 128})
+	rg := NewRgTool(RgConfig{MaxLineBytes: 128}, w)
 	rg.command = cliRgCommand{}
-	for _, item := range []Tool{NewReadTool(ReadConfig{MaxLines: 20, MaxBytes: 128, MaxEntries: 20}), NewGlobTool(GlobConfig{}), rg} {
+	for _, item := range []Tool{NewReadTool(ReadConfig{MaxLines: 20, MaxBytes: 128, MaxEntries: 20}, w), NewGlobTool(GlobConfig{}, w), rg} {
 		if err := r.Register(item); err != nil {
 			t.Fatal(err)
 		}
 	}
 	broker := permission.NewBroker(true, nil, time.Second)
-	call := CallContext{Workspace: w}
-	return w, Executor{Snapshot: r.Materialize(), Permissions: broker, MaxOutputBytes: 4096}, call
+	call := CallContext{}
+	return w, Executor{Snapshot: r.Materialize(), Permissions: broker, Workspace: w, MaxOutputBytes: 4096}, call
 }
 
 // Approval is reserved for operations the sandbox cannot contain. Every other
 // tool plans no permission request at all, so it is never prompted.
 func TestOnlySandboxEscapingToolsRequestApproval(t *testing.T) {
 	_, ws, _ := workspaceToolHarness(t)
-	call := CallContext{Workspace: ws, SessionID: "s"}
+	call := CallContext{}
 	content := []byte("hello\n")
 	if err := os.WriteFile(filepath.Join(ws.Root(), "a.txt"), content, 0o600); err != nil {
 		t.Fatal(err)
@@ -531,14 +531,14 @@ func TestOnlySandboxEscapingToolsRequestApproval(t *testing.T) {
 		input string
 		want  int
 	}{
-		{name: "read", tool: NewReadTool(ReadConfig{}), input: `{"path":"a.txt"}`},
-		{name: "rg", tool: NewRgTool(RgConfig{}), input: `{"pattern":"hello"}`},
-		{name: "glob", tool: NewGlobTool(GlobConfig{}), input: `{"pattern":"*.txt"}`},
-		{name: "exec_command sandboxed", tool: NewExecCommandTool(nil), input: `{"cmd":"true","shell":"/bin/sh"}`},
+		{name: "read", tool: NewReadTool(ReadConfig{}, ws), input: `{"path":"a.txt"}`},
+		{name: "rg", tool: NewRgTool(RgConfig{}, ws), input: `{"pattern":"hello"}`},
+		{name: "glob", tool: NewGlobTool(GlobConfig{}, ws), input: `{"pattern":"*.txt"}`},
+		{name: "exec_command sandboxed", tool: NewExecCommandTool(nil, ws, "s"), input: `{"cmd":"true","shell":"/bin/sh"}`},
 
-		{name: "exec_command unsandboxed", tool: NewExecCommandTool(nil), input: `{"cmd":"true","shell":"/bin/sh","sandbox_permissions":"disable_sandbox","justification":"needs the host"}`, want: 1},
+		{name: "exec_command unsandboxed", tool: NewExecCommandTool(nil, ws, "s"), input: `{"cmd":"true","shell":"/bin/sh","sandbox_permissions":"disable_sandbox","justification":"needs the host"}`, want: 1},
 		{name: "set_config", tool: NewSetConfigTool(t.TempDir()), input: `{"key":"model","value":"openai/gpt-4","operation":"set"}`, want: 1},
-		{name: "request_write_permission", tool: NewWritePermissionTool(nil), input: `{"path":"` + grantable + `"}`, want: 1},
+		{name: "request_write_permission", tool: NewWritePermissionTool(nil, ws, "s"), input: `{"path":"` + grantable + `"}`, want: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			planned, err := test.tool.Plan(context.Background(), json.RawMessage(test.input), call)
@@ -577,7 +577,7 @@ func TestReadBinaryHugeLineAndSymlinkSwap(t *testing.T) {
 		outside := t.TempDir()
 		_ = os.WriteFile(inside, []byte("safe"), 0o600)
 		_ = os.WriteFile(filepath.Join(outside, "file"), []byte("secret"), 0o600)
-		read := NewReadTool(ReadConfig{})
+		read := NewReadTool(ReadConfig{}, w)
 		p, err := read.Plan(context.Background(), json.RawMessage(`{"path":"inside"}`), call)
 		if err != nil {
 			t.Fatal(err)
@@ -593,14 +593,14 @@ func TestReadBinaryHugeLineAndSymlinkSwap(t *testing.T) {
 }
 
 func TestReadAndRgExplicitExternalPaths(t *testing.T) {
-	_, executor, call := toolHarness(t)
+	w, executor, call := toolHarness(t)
 	external := t.TempDir()
 	path := filepath.Join(external, "outside.txt")
 	if err := os.WriteFile(path, []byte("external match\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	readTool := NewReadTool(ReadConfig{})
-	rgTool := NewRgTool(RgConfig{})
+	readTool := NewReadTool(ReadConfig{}, w)
+	rgTool := NewRgTool(RgConfig{}, w)
 	readPlan, err := readTool.Plan(context.Background(), json.RawMessage(fmt.Sprintf(`{"path":%q}`, path)), call)
 	if err != nil {
 		t.Fatal(err)
@@ -665,9 +665,9 @@ func TestRgMatchesAndTruncatesOversizedLines(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(w.Root(), "oversized.txt"), []byte(content), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	grep := NewRgTool(RgConfig{MaxLineBytes: 8})
+	grep := NewRgTool(RgConfig{MaxLineBytes: 8}, w)
 	grep.command = cliRgCommand{}
-	call := CallContext{Workspace: w}
+	call := CallContext{}
 	plan, err := grep.Plan(context.Background(), json.RawMessage(`{"pattern":"needle","path":"oversized.txt"}`), call)
 	if err != nil {
 		t.Fatal(err)
@@ -748,7 +748,7 @@ func TestRgIncludeFiltersCandidateFiles(t *testing.T) {
 		})
 	}
 
-	grep := NewRgTool(RgConfig{})
+	grep := NewRgTool(RgConfig{}, w)
 	if !strings.Contains(string(grep.JSONSchema()), `"include"`) {
 		t.Fatalf("grep schema does not expose include: %s", grep.JSONSchema())
 	}
@@ -776,7 +776,7 @@ func TestRgPrefersAvailableCommandAndFallsBackInternally(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(w.Root(), "file.txt"), []byte("internal match[\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	call := CallContext{Workspace: w}
+	call := CallContext{}
 
 	for _, test := range []struct {
 		name      string
@@ -789,7 +789,7 @@ func TestRgPrefersAvailableCommandAndFallsBackInternally(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			command := &fakeRgCommand{available: test.available}
-			tool := NewRgTool(RgConfig{})
+			tool := NewRgTool(RgConfig{}, w)
 			tool.command = command
 			plan, err := tool.Plan(context.Background(), json.RawMessage(`{"pattern":"match["}`), call)
 			if err != nil {
@@ -836,7 +836,11 @@ func TestCliRgCommandSearch(t *testing.T) {
 }
 
 func TestRgDefaultLimits(t *testing.T) {
-	rg := NewRgTool(RgConfig{})
+	w, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rg := NewRgTool(RgConfig{}, w)
 	if rg.Config.MaxFiles != 100000 {
 		t.Fatalf("MaxFiles = %d, want 100000", rg.Config.MaxFiles)
 	}

@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type GlobConfig struct {
@@ -20,10 +22,11 @@ type GlobConfig struct {
 }
 type GlobTool struct {
 	BasePresentation
-	Config GlobConfig
+	Config    GlobConfig
+	Workspace *workspace.Workspace
 }
 
-func NewGlobTool(config GlobConfig) *GlobTool {
+func NewGlobTool(config GlobConfig, ws *workspace.Workspace) *GlobTool {
 	if config.MaxResults <= 0 {
 		config.MaxResults = 1000
 	}
@@ -33,7 +36,7 @@ func NewGlobTool(config GlobConfig) *GlobTool {
 	if config.Timeout <= 0 {
 		config.Timeout = 5 * time.Second
 	}
-	return &GlobTool{Config: config}
+	return &GlobTool{Config: config, Workspace: ws}
 }
 func (*GlobTool) ID() string { return "glob" }
 func (*GlobTool) Presentation() Presentation {
@@ -72,7 +75,7 @@ type globPlan struct {
 }
 
 func (t *GlobTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if call.Workspace == nil {
+	if t.Workspace == nil {
 		return Plan{}, errors.New("workspace is required")
 	}
 	var input globInput
@@ -83,7 +86,7 @@ func (t *GlobTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 	if err != nil {
 		return Plan{}, err
 	}
-	root, err := call.Workspace.ResolveRead(".")
+	root, err := t.Workspace.ResolveRead(".")
 	if err != nil {
 		return Plan{}, err
 	}
@@ -92,7 +95,7 @@ func (t *GlobTool) Plan(ctx context.Context, raw json.RawMessage, call CallConte
 func (t *GlobTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 
 	p := plan.Data.(globPlan)
-	revalidated, err := call.Workspace.ResolveRead(".")
+	revalidated, err := t.Workspace.ResolveRead(".")
 	if err != nil || revalidated != p.Root {
 		return Result{}, errors.New("glob root changed after planning")
 	}
@@ -120,7 +123,7 @@ func (t *GlobTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		}
 		rel = filepath.ToSlash(rel)
 		if p.Regex.MatchString(rel) {
-			if _, err := call.Workspace.ResolveRead(path); err != nil {
+			if _, err := t.Workspace.ResolveRead(path); err != nil {
 				return nil
 			}
 			results = append(results, rel+map[bool]string{true: "/"}[d.IsDir()])

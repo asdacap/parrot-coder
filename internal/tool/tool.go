@@ -15,13 +15,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/amirulashraf/parrot-coder/internal/change"
 	"github.com/amirulashraf/parrot-coder/internal/diagnostics"
 	"github.com/amirulashraf/parrot-coder/internal/permission"
-	"github.com/amirulashraf/parrot-coder/internal/process"
-	"github.com/amirulashraf/parrot-coder/internal/question"
 	"github.com/amirulashraf/parrot-coder/internal/security"
-	"github.com/amirulashraf/parrot-coder/internal/session"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
@@ -42,13 +38,6 @@ type DisplayPublisher interface {
 }
 
 type CallContext struct {
-	Workspace       *workspace.Workspace
-	Outputs         *OutputStore
-	SessionID       string
-	Changes         *change.Service
-	Processes       *process.Runner
-	Todos           *session.TodoService
-	Questions       *question.Broker
 	Agent           string
 	ToolCallID      string
 	Output          io.Writer
@@ -119,6 +108,7 @@ type AgentSession interface {
 	SessionID() string
 	SessionName() string
 	IsSubagent() bool
+	Workspace() *workspace.Workspace
 	Queues() QueueService
 	CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error)
 	ResolveAgent(string) (ResolvedAgent, error)
@@ -453,6 +443,9 @@ type Executor struct {
 	Snapshot       Snapshot
 	Permissions    Authorizer
 	ErrorAdvisor   ErrorAdvisor
+	Workspace      *workspace.Workspace
+	Outputs        *OutputStore
+	SessionID      string
 	MaxInputBytes  int
 	MaxOutputBytes int
 }
@@ -460,7 +453,7 @@ type Executor struct {
 func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, call CallContext) (result Result, err error) {
 	started := time.Now()
 	diagnostics.Event("tool_execution_started",
-		"session_id", call.SessionID, "tool_call_id", call.ToolCallID, "tool", id, "input_bytes", len(raw),
+		"session_id", e.SessionID, "tool_call_id", call.ToolCallID, "tool", id, "input_bytes", len(raw),
 	)
 	defer func() {
 		if recovered := recover(); recovered != nil {
@@ -474,7 +467,7 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 			status = "error"
 		}
 		attributes := []any{
-			"session_id", call.SessionID, "tool_call_id", call.ToolCallID, "tool", id,
+			"session_id", e.SessionID, "tool_call_id", call.ToolCallID, "tool", id,
 			"status", status, "duration_ms", time.Since(started).Milliseconds(), "output_bytes", len(result.Text),
 		}
 		if err != nil {
@@ -523,9 +516,9 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 		}
 	}
 	for _, request := range p.Permissions {
-		request.SessionID = call.SessionID
-		if call.Workspace != nil {
-			request.Workspace = call.Workspace.Root()
+		request.SessionID = e.SessionID
+		if e.Workspace != nil {
+			request.Workspace = e.Workspace.Root()
 		}
 		if e.Permissions == nil {
 			return Result{}, errors.New("permission broker is required")
@@ -556,11 +549,11 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	// responsibility. Spilling is the exception: the executor wrote the file and
 	// is the only party holding its path, so it replaces the model copy to report
 	// what it did. Without this the model receives a preview it cannot act on.
-	if len(result.Text) > max && call.Outputs != nil {
+	if len(result.Text) > max && e.Outputs != nil {
 		if result.Metadata == nil {
 			result.Metadata = make(map[string]any)
 		}
-		stored, storeErr := call.Outputs.Store(ctx, call.SessionID, strings.NewReader(result.Text))
+		stored, storeErr := e.Outputs.Store(ctx, e.SessionID, strings.NewReader(result.Text))
 		if storeErr != nil {
 			result.Metadata["output_lossy"] = true
 			result.ModelText = modelText(result.ModelText) +
@@ -574,7 +567,7 @@ func (e Executor) Execute(ctx context.Context, id string, raw json.RawMessage, c
 	}
 	if len(result.ModelText) > max {
 		diagnostics.Warn("tool_model_text_unbounded",
-			"session_id", call.SessionID, "tool_call_id", call.ToolCallID, "tool", id,
+			"session_id", e.SessionID, "tool_call_id", call.ToolCallID, "tool", id,
 			"model_text_bytes", len(result.ModelText), "limit_bytes", max,
 		)
 	}
