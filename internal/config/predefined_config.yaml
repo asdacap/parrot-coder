@@ -56,7 +56,7 @@ profiles:
     usage: Select for implementing and verifying requested changes.
     hard_rules:
       - Keep tool side effects within the authorized workspace.
-    max_turns: 64
+    max_turns: 1024
     recursion_limit: 3
     read_only: false
     is_user_agent: true
@@ -74,7 +74,7 @@ profiles:
     usage: Select for read-only investigation and writing an implementation plan.
     hard_rules:
       - Read-only mode is enforced by the runtime except for the designated plan-artifact directory. Writes outside that directory are prohibited.
-    max_turns: 64
+    max_turns: 1024
     recursion_limit: 3
     read_only: true
     is_user_agent: true
@@ -83,7 +83,7 @@ profiles:
     usage: Select for read-only questions about the project.
     hard_rules:
       - Read-only mode is enforced by the runtime.
-    max_turns: 24
+    max_turns: 8
     recursion_limit: 1
     read_only: true
     is_user_agent: true
@@ -122,7 +122,7 @@ profiles:
       Typical tasks include implementing part of a feature, fixing tests or bugs, and completing an independently assigned portion of a refactor. Respect the ownership boundaries in the task. You are not alone in the codebase: do not revert other agents' edits, and accommodate concurrent changes made by others.
     hard_rules:
       - Keep tool side effects within the authorized workspace.
-    max_turns: 64
+    max_turns: 128
     recursion_limit: 3
     read_only: false
     is_user_agent: false
@@ -139,7 +139,7 @@ profiles:
       - agent_spawn
       - agent_send
       - wait_agent
-    max_turns: 64
+    max_turns: 256
     recursion_limit: 1
     read_only: true
     is_user_agent: false
