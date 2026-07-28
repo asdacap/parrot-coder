@@ -225,14 +225,35 @@ func TestBuiltinsRejectWorkingDirectoryOutsideCanonicalRoot(t *testing.T) {
 	}
 }
 
-func TestFileSourceRejectsOversizedInput(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "AGENTS.md")
-	if err := os.WriteFile(path, []byte("12345"), 0o600); err != nil {
+func TestFileSourceRejectsUnsafeInput(t *testing.T) {
+	dir := t.TempDir()
+	regular := filepath.Join(dir, "regular")
+	if err := os.WriteFile(regular, []byte("12345"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	source := FileSource{SourceKey: "agents:test", Path: path, Label: "test", MaxBytes: 4}
-	if _, err := source.Observe(context.Background()); err == nil {
-		t.Fatal("oversized context file was accepted")
+	outside := filepath.Join(t.TempDir(), "outside")
+	if err := os.WriteFile(outside, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlink := filepath.Join(dir, "symlink")
+	if err := os.Symlink(outside, symlink); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name  string
+		path  string
+		limit int64
+	}{
+		{name: "oversized", path: regular, limit: 4},
+		{name: "symlink", path: symlink},
+		{name: "non-regular", path: dir},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			source := FileSource{SourceKey: "agents:test", Path: test.path, Label: "test", MaxBytes: test.limit}
+			if _, err := source.Observe(context.Background()); err == nil {
+				t.Fatalf("unsafe context source %q was accepted", test.path)
+			}
+		})
 	}
 }
 
