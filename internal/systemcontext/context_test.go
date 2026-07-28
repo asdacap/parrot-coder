@@ -3,6 +3,7 @@ package systemcontext
 import (
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -41,6 +42,27 @@ func TestRegistryRejectsInvalidAndDuplicateSourcesAndRendersStableKeyOrder(t *te
 	}
 	if prompt != "A\n\nZ" {
 		t.Fatalf("prompt = %q", prompt)
+	}
+}
+
+func TestRegistryObservationReportsAgentsFilesFromSameSnapshot(t *testing.T) {
+	agent := &testSource{key: "agents:project", observation: Observation{Available: true, Text: "instructions", Path: "/work/AGENTS.md"}}
+	registry, err := NewRegistry(agent, &testSource{key: "runtime:test", observation: Observation{Available: true, Text: "runtime", Path: "/not/agents"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	observation, err := registry.ObserveSystemPrompt(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := observation.Text, "instructions\n\nruntime"; got != want {
+		t.Fatalf("Text = %q, want %q", got, want)
+	}
+	if got, want := observation.AgentsFiles, []string{"/work/AGENTS.md"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("AgentsFiles = %#v, want %#v", got, want)
+	}
+	if !agent.observed {
+		t.Fatal("AGENTS.md source was not observed")
 	}
 }
 

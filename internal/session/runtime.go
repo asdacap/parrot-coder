@@ -57,6 +57,19 @@ type AgentSessionStore interface {
 	RecordCompactionRetry(context.Context, string, string) error
 }
 
+// RecordContextObservation records metadata from the exact system-prompt
+// snapshot supplied to a provider turn.
+func (s *agentSessionStore) RecordContextObservation(ctx context.Context, agentsFiles []string) error {
+	data, err := json.Marshal(struct {
+		AgentsFiles []string `json:"agents_files"`
+	}{AgentsFiles: append([]string{}, agentsFiles...)})
+	if err != nil {
+		return err
+	}
+	_, err = s.events.Append(ctx, s.sessionID, []event.NewEvent{{Type: v1.EventSessionContextObserved, Data: data}}, nil)
+	return err
+}
+
 func (s *agentSessionStore) SetSelection(ctx context.Context, selection Selection) error {
 	if selection.Agent == "" || selection.Model == "" {
 		return ErrSelectionRequired

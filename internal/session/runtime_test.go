@@ -14,6 +14,32 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/store"
 )
 
+func TestRecordContextObservationSerializesEmptyAgentsFiles(t *testing.T) {
+	ctx, _, repository, service, sessionID := newService(t)
+	recorder, ok := service.GetSession(sessionID).(interface {
+		RecordContextObservation(context.Context, []string) error
+	})
+	if !ok {
+		t.Fatal("session store does not record context observations")
+	}
+	if err := recorder.RecordContextObservation(ctx, nil); err != nil {
+		t.Fatal(err)
+	}
+	items, err := repository.List(ctx, sessionID, -1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, item := range items {
+		if item.Type == v1.EventSessionContextObserved {
+			if got, want := string(item.Data), `{"agents_files":[]}`; got != want {
+				t.Fatalf("context observation = %s, want %s", got, want)
+			}
+			return
+		}
+	}
+	t.Fatal("session.context.observed event was not recorded")
+}
+
 func TestStatusPromptPendingTracksInitialTurnAndModeChanges(t *testing.T) {
 	ctx, _, repository, service, sessionID := newService(t)
 	if err := service.GetSession(sessionID).SetSelection(ctx, session.Selection{Agent: "build", Model: "local/code"}); err != nil {

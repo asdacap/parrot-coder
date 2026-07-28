@@ -21,6 +21,20 @@ type SystemPrompt interface {
 	GetSystemPrompt(context.Context, ModelSelection) (string, error)
 }
 
+// PromptObservation is the atomic context snapshot used for one provider turn.
+type PromptObservation struct {
+	Text        string
+	AgentsFiles []string
+}
+
+// ObservedSystemPrompt optionally exposes metadata from the same observation
+// that produced the provider instructions. SystemPrompt implementations which
+// do not need observation metadata remain compatible with SystemPrompt.
+type ObservedSystemPrompt interface {
+	SystemPrompt
+	ObserveSystemPrompt(context.Context, ModelSelection) (PromptObservation, error)
+}
+
 // AgentSession is the session capability needed to materialize system prompts.
 // Tool guidance is already materialized so this package need not depend on tools.
 type AgentSession interface {
@@ -103,19 +117,32 @@ type keyedSystemPrompt struct {
 type compositeSystemPrompt struct{ prompts []keyedSystemPrompt }
 
 func (p compositeSystemPrompt) GetSystemPrompt(ctx context.Context, model ModelSelection) (string, error) {
+	observation, err := p.ObserveSystemPrompt(ctx, model)
+	return observation.Text, err
+}
+
+func (p compositeSystemPrompt) ObserveSystemPrompt(ctx context.Context, model ModelSelection) (PromptObservation, error) {
 	sections := make([]string, 0, len(p.prompts))
+	agentsFiles := make([]string, 0)
 	var failures []error
 	for _, product := range p.prompts {
-		text, err := product.prompt.GetSystemPrompt(ctx, model)
+		observation := PromptObservation{}
+		var err error
+		if observed, ok := product.prompt.(ObservedSystemPrompt); ok {
+			observation, err = observed.ObserveSystemPrompt(ctx, model)
+		} else {
+			observation.Text, err = product.prompt.GetSystemPrompt(ctx, model)
+		}
 		if err != nil {
 			failures = append(failures, fmt.Errorf("%s: %w", product.key, err))
 			continue
 		}
-		if strings.TrimSpace(text) != "" {
-			sections = append(sections, text)
+		if strings.TrimSpace(observation.Text) != "" {
+			sections = append(sections, observation.Text)
 		}
+		agentsFiles = append(agentsFiles, observation.AgentsFiles...)
 	}
-	return strings.Join(sections, "\n\n"), errors.Join(failures...)
+	return PromptObservation{Text: strings.Join(sections, "\n\n"), AgentsFiles: agentsFiles}, errors.Join(failures...)
 }
 
 type staticSystemPrompt string

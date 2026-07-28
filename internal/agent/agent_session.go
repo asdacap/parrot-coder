@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -61,6 +62,8 @@ type agentSession struct {
 	toolExecutor           tool.Executor
 	maxChildPromptBytes    int
 	maxChildResultBytes    int
+	observedAgentsFiles    []string
+	contextObserved        bool
 }
 
 type LifecycleObserver interface {
@@ -1208,9 +1211,28 @@ func (r *agentSession) drainOnce(ctx context.Context) (runErr error) {
 		if r.systemPrompt == nil {
 			return errors.New("agent: system prompt is required")
 		}
-		systemPrompt, err := r.systemPrompt.GetSystemPrompt(ctx, promptModel)
-		if err != nil {
-			return err
+		systemPrompt := ""
+		if observed, ok := r.systemPrompt.(systemcontext.ObservedSystemPrompt); ok {
+			observation, err := observed.ObserveSystemPrompt(ctx, promptModel)
+			if err != nil {
+				return err
+			}
+			systemPrompt = observation.Text
+			if recorder, ok := r.store.(interface {
+				RecordContextObservation(context.Context, []string) error
+			}); ok && (!r.contextObserved || !slices.Equal(r.observedAgentsFiles, observation.AgentsFiles)) {
+				if err := recorder.RecordContextObservation(ctx, observation.AgentsFiles); err != nil {
+					return err
+				}
+				r.observedAgentsFiles = append(r.observedAgentsFiles[:0], observation.AgentsFiles...)
+				r.contextObserved = true
+			}
+		} else {
+			var err error
+			systemPrompt, err = r.systemPrompt.GetSystemPrompt(ctx, promptModel)
+			if err != nil {
+				return err
+			}
 		}
 
 		definitions := toolDefinitions(activeTools)

@@ -541,7 +541,7 @@ func (r *enhancedChatRuntime) handleEvent(item v1.Event) error {
 			return err
 		}
 		r.updateToolOutput(payload.(*v1.ToolOutputDelta))
-	case v1.EventSessionContextInitialized, v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
+	case v1.EventSessionContextInitialized, v1.EventSessionContextObserved, v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
 		for _, line := range agentsLoadedActivities(item) {
 			if r.shell != nil && r.shell.renderer != nil {
 				if err := r.shell.renderer.CommitStyled(terminal.MutedText(line)); err != nil {

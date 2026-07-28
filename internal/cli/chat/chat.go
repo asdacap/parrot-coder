@@ -975,7 +975,7 @@ func streamTurn(ctx context.Context, api apiClient, sessionID, prompt string, op
 					return streamResult{err: err}
 				}
 			}
-			if options.format != "jsonl" && (item.Type == v1.EventSessionContextInitialized || item.Type == v1.EventSessionContextChanged || item.Type == v1.EventSessionContextReplaced) {
+			if options.format != "jsonl" && (item.Type == v1.EventSessionContextInitialized || item.Type == v1.EventSessionContextObserved && options.chat || item.Type == v1.EventSessionContextChanged || item.Type == v1.EventSessionContextReplaced) {
 				activityTracker.live = nil
 				if err := writeAgentsLoadedActivity(options, item); err != nil {
 					return streamResult{err: err}

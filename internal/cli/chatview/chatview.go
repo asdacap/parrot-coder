@@ -995,7 +995,7 @@ func isRuntimeActivityContentEvent(eventType string) bool {
 		v1.EventSessionToolFailure, v1.EventSessionToolInterrupted, v1.EventToolOutputDelta,
 		v1.EventCodeDisplay, v1.EventSessionAssistantStarted, v1.EventSessionAssistantComplete,
 		v1.EventSessionAssistantError, v1.EventSessionAssistantInterrupted, v1.EventSessionContextInitialized,
-		v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
+		v1.EventSessionContextObserved, v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
 		return true
 	default:
 		return false
@@ -1443,7 +1443,7 @@ func (t *RuntimeActivityTracker) apply(item v1.Event, thinking bool) ([]RuntimeA
 			line = status.Message
 		}
 		return []RuntimeActivityReport{{ID: scope + "status:" + status.MessageID, Line: t.eventLine(node, StatusNoticeIcon+" "+line), Terminal: true, EmitPlain: true, Style: terminal.TextStyleMuted}}, nil
-	case v1.EventSessionContextInitialized, v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
+	case v1.EventSessionContextInitialized, v1.EventSessionContextObserved, v1.EventSessionContextChanged, v1.EventSessionContextReplaced:
 		lines := AgentsLoadedActivities(item)
 		reports := make([]RuntimeActivityReport, 0, len(lines))
 		for i, line := range lines {

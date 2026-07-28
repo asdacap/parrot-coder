@@ -39,8 +39,13 @@ func (r *Registry) MaterializeSystemPrompt(AgentSession) (SystemPrompt, error) {
 
 type registrySystemPrompt struct{ registry *Registry }
 
-func (p *registrySystemPrompt) GetSystemPrompt(ctx context.Context, _ ModelSelection) (string, error) {
-	return p.registry.GetSystemPrompt(ctx, ModelSelection{})
+func (p *registrySystemPrompt) GetSystemPrompt(ctx context.Context, model ModelSelection) (string, error) {
+	observation, err := p.ObserveSystemPrompt(ctx, model)
+	return observation.Text, err
+}
+
+func (p *registrySystemPrompt) ObserveSystemPrompt(ctx context.Context, _ ModelSelection) (PromptObservation, error) {
+	return p.registry.ObserveSystemPrompt(ctx)
 }
 
 func NewRegistry(sources ...Source) (*Registry, error) {
@@ -74,8 +79,15 @@ func validKey(key string) bool {
 // GetSystemPrompt observes every source and renders available context in stable
 // key order.
 func (r *Registry) GetSystemPrompt(ctx context.Context, _ ModelSelection) (string, error) {
+	observation, err := r.ObserveSystemPrompt(ctx)
+	return observation.Text, err
+}
+
+// ObserveSystemPrompt returns prompt text and source metadata from one atomic
+// observation of the registry.
+func (r *Registry) ObserveSystemPrompt(ctx context.Context) (PromptObservation, error) {
 	if r == nil {
-		return "", errors.New("systemcontext: registry is unavailable")
+		return PromptObservation{}, errors.New("systemcontext: registry is unavailable")
 	}
 	r.mu.RLock()
 	keys := make([]string, 0, len(r.sources))
@@ -110,6 +122,7 @@ func (r *Registry) GetSystemPrompt(ctx context.Context, _ ModelSelection) (strin
 		observed[result.key] = result
 	}
 	sections := make([]string, 0, len(keys))
+	agentsFiles := make([]string, 0)
 	failures := make([]error, 0)
 	for _, key := range keys {
 		result := observed[key]
@@ -123,7 +136,10 @@ func (r *Registry) GetSystemPrompt(ctx context.Context, _ ModelSelection) (strin
 		}
 		if strings.TrimSpace(result.observation.Text) != "" {
 			sections = append(sections, result.observation.Text)
+			if strings.HasPrefix(key, "agents:") && result.observation.Path != "" {
+				agentsFiles = append(agentsFiles, result.observation.Path)
+			}
 		}
 	}
-	return strings.Join(sections, "\n\n"), errors.Join(failures...)
+	return PromptObservation{Text: strings.Join(sections, "\n\n"), AgentsFiles: agentsFiles}, errors.Join(failures...)
 }

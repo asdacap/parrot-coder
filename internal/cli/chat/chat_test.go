@@ -914,6 +914,24 @@ func TestAgentsLoadedActivityMentionsSourcePath(t *testing.T) {
 	}
 }
 
+func TestAgentsLoadedObservedActivity(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		data string
+		want []string
+	}{
+		{name: "loaded", data: `{"agents_files":["/work/AGENTS.md"]}`, want: []string{"✓ Loaded AGENTS.md from /work/AGENTS.md"}},
+		{name: "initial empty", data: `{"agents_files":[]}`, want: []string{"No AGENTS.md files loaded"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			observed := v1.Event{Type: v1.EventSessionContextObserved, Data: json.RawMessage(test.data)}
+			if got := agentsLoadedActivities(observed); !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("agentsLoadedActivities(observed) = %#v, want %#v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAgentsLoadedActivitiesMentionsWhenNoFilesWereLoaded(t *testing.T) {
 	initialized := v1.Event{Type: v1.EventSessionContextInitialized, Data: json.RawMessage(`{"agents_files":[]}`)}
 	if got, want := agentsLoadedActivities(initialized), []string{"No AGENTS.md files loaded"}; !reflect.DeepEqual(got, want) {
