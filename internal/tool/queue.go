@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/amirulashraf/parrot-coder/internal/queue"
 )
@@ -12,7 +13,8 @@ import (
 type QueueService interface {
 	Create(name, description string) (queue.Info, error)
 	Push(name string, items []string, direction queue.Direction) (queue.Info, error)
-	Take(name string, count int, direction queue.Direction) ([]string, queue.Info, error)
+	TakeContext(context.Context, string, int, queue.Direction) ([]string, queue.Info, error)
+	TryTake(string, int, queue.Direction) ([]string, queue.Info, bool, error)
 	Get(name string) (queue.Info, error)
 	List() ([]queue.Info, error)
 	Monitor(name string, enabled bool) (queue.Info, error)
@@ -25,15 +27,29 @@ type QueueTool struct {
 }
 
 type queueInput struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Items       []string        `json:"items,omitempty"`
-	Count       *int            `json:"count,omitempty"`
-	Direction   queue.Direction `json:"direction,omitempty"`
-	Enabled     *bool           `json:"enabled,omitempty"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description,omitempty"`
+	Items        []string        `json:"items,omitempty"`
+	Count        *int            `json:"count,omitempty"`
+	Direction    queue.Direction `json:"direction,omitempty"`
+	Enabled      *bool           `json:"enabled,omitempty"`
+	YieldAfterMS *int64          `json:"yield_after_ms,omitempty"`
 }
 
+const (
+	defaultQueueTakeYieldAfter = 30 * time.Second
+	queueTakePollInterval      = 10 * time.Millisecond
+	maxQueueTakeYieldAfterMS   = int64(^uint64(0)>>1) / int64(time.Millisecond)
+)
+
 func (t *QueueTool) ID() string { return t.Kind }
+
+func (t *QueueTool) Presentation() Presentation {
+	if t.Kind == "queue_push" || t.Kind == "queue_take" {
+		return Presentation{Label: LabelSpec{Fields: []LabelField{{Names: []string{"name"}}}}}
+	}
+	return t.BasePresentation.Presentation()
+}
 
 func (t *QueueTool) Descriptor() Descriptor {
 	descriptor := Descriptor{ID: t.ID(), Description: t.Description(), Schema: t.JSONSchema(), Presentation: t.Presentation()}
@@ -50,7 +66,7 @@ func (t *QueueTool) Description() string {
 	case "queue_push":
 		return "Push strings onto an existing shared user-session queue. Direction defaults to back."
 	case "queue_take":
-		return "Remove and return strings from an existing shared user-session queue. Count defaults to one and direction defaults to front."
+		return "Remove and return strings from an existing shared user-session queue. If the queue is empty, wait until an item is available or yield_after_ms elapses. Count defaults to one, direction defaults to front, and yield_after_ms defaults to 30000. The queue does not need to fill count before returning."
 	case "queue_listen":
 		return "Enable or disable idle notification delivery from an existing shared user-session queue. Listening remains enabled after each FIFO delivery."
 	default:
@@ -76,7 +92,7 @@ func (t *QueueTool) JSONSchema() json.RawMessage {
 		properties += `,"items":{"type":"array","items":{"type":"string"},"description":"String items to enqueue."},"direction":{"type":"string","enum":["front","back"],"description":"Queue end; defaults to back."}`
 		required += `,"items"`
 	case "queue_take":
-		properties += `,"count":{"type":"integer","minimum":1,"description":"Maximum number of items to take; defaults to one."},"direction":{"type":"string","enum":["front","back"],"description":"Queue end; defaults to front."}`
+		properties += `,"count":{"type":"integer","minimum":1,"description":"Maximum number of items to take; defaults to one."},"direction":{"type":"string","enum":["front","back"],"description":"Queue end; defaults to front."},"yield_after_ms":{"type":"integer","minimum":0,"description":"Wait this many milliseconds for at least one item before yielding; defaults to 30000."}`
 	case "queue_listen":
 		properties += `,"enabled":{"type":"boolean","description":"Whether to listen to this queue; defaults to true."}`
 	}
@@ -90,6 +106,9 @@ func (t *QueueTool) Plan(ctx context.Context, raw json.RawMessage, _ CallContext
 	var input queueInput
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
+	}
+	if input.YieldAfterMS != nil && (*input.YieldAfterMS < 0 || *input.YieldAfterMS > maxQueueTakeYieldAfterMS) {
+		return Plan{}, fmt.Errorf("%s: yield_after_ms must be between 0 and %d", t.ID(), maxQueueTakeYieldAfterMS)
 	}
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
@@ -115,7 +134,11 @@ func (t *QueueTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Resu
 		if input.Count != nil {
 			count = *input.Count
 		}
-		items, info, err = t.Store.Take(input.Name, count, input.Direction)
+		yieldAfter := defaultQueueTakeYieldAfter
+		if input.YieldAfterMS != nil {
+			yieldAfter = time.Duration(*input.YieldAfterMS) * time.Millisecond
+		}
+		items, info, err = t.take(ctx, input.Name, count, input.Direction, yieldAfter)
 	case "queue_info":
 		info, err = t.Store.Get(input.Name)
 	case "queue_listen":
@@ -132,10 +155,13 @@ func (t *QueueTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Resu
 	}
 	output := struct {
 		queue.Info
-		Items []string `json:"items,omitempty"`
+		Items *[]string `json:"items,omitempty"`
 	}{Info: info}
 	if t.Kind == "queue_take" {
-		output.Items = items
+		if items == nil {
+			items = []string{}
+		}
+		output.Items = &items
 	}
 	data, err := json.Marshal(output)
 	if err != nil {
@@ -143,4 +169,46 @@ func (t *QueueTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Resu
 	}
 	text := string(data)
 	return Result{Text: text, ModelText: text, Metadata: map[string]any{"queue": info.Name, "size": info.Size}}, nil
+}
+
+func (t *QueueTool) take(ctx context.Context, name string, count int, direction queue.Direction, yieldAfter time.Duration) ([]string, queue.Info, error) {
+	waitCtx, cancel := context.WithTimeout(ctx, yieldAfter)
+	defer cancel()
+	lastInfo := queue.Info{Name: name}
+	for {
+		items, info, err := t.Store.TakeContext(waitCtx, name, count, direction)
+		if err == nil || (!errors.Is(err, queue.ErrEmpty) && !errors.Is(err, context.DeadlineExceeded)) {
+			return items, info, err
+		}
+		if errors.Is(err, queue.ErrEmpty) {
+			lastInfo = info
+		}
+		if waitCtx.Err() != nil {
+			return t.finalTake(ctx, name, count, direction, lastInfo)
+		}
+		timer := time.NewTimer(queueTakePollInterval)
+		select {
+		case <-waitCtx.Done():
+			timer.Stop()
+			return t.finalTake(ctx, name, count, direction, lastInfo)
+		case <-timer.C:
+		}
+	}
+}
+
+func (t *QueueTool) finalTake(ctx context.Context, name string, count int, direction queue.Direction, lastInfo queue.Info) ([]string, queue.Info, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, queue.Info{}, err
+	}
+	items, info, acquired, err := t.Store.TryTake(name, count, direction)
+	if err == nil && acquired {
+		return items, info, nil
+	}
+	if err != nil && !errors.Is(err, queue.ErrEmpty) {
+		return nil, info, err
+	}
+	if errors.Is(err, queue.ErrEmpty) {
+		lastInfo = info
+	}
+	return nil, lastInfo, nil
 }

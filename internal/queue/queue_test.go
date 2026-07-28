@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -84,6 +85,47 @@ func TestQueueLifecycleDirectionsAndJSONL(t *testing.T) {
 	}
 	if _, err := os.Stat(wantPath); err != nil {
 		t.Fatalf("empty queue was not retained: %v", err)
+	}
+}
+
+func TestTakeContextBoundsFilesystemLockWait(t *testing.T) {
+	queues := newStore(t, filepath.Join(t.TempDir(), "queues"))
+	if _, err := queues.Create("locked-work", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(queues.Directory(), "locked-work.jsonl.lock"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	started := time.Now()
+	if _, _, err := queues.TakeContext(ctx, "locked-work", 1, ""); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("TakeContext() error = %v, want deadline exceeded", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("TakeContext() exceeded bounded wait: %s", elapsed)
+	}
+	started = time.Now()
+	if _, _, acquired, err := queues.TryTake("locked-work", 1, ""); err != nil || acquired {
+		t.Fatalf("TryTake() = acquired %v, error %v", acquired, err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("TryTake() blocked for %s", elapsed)
+	}
+	if err := os.Remove(filepath.Join(queues.Directory(), "locked-work.jsonl.lock")); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	if _, err := queues.Push("locked-work", []string{"retained"}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := queues.TakeContext(ctx, "locked-work", 1, ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled TakeContext() error = %v", err)
+	}
+	info, err := queues.Get("locked-work")
+	if err != nil || info.Size != 1 {
+		t.Fatalf("canceled TakeContext() mutated queue: %#v, %v", info, err)
 	}
 }
 

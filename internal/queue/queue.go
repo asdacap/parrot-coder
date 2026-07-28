@@ -4,6 +4,7 @@ package queue
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -160,26 +161,70 @@ func (s *Store) Push(name string, pushed []string, direction Direction) (Info, e
 // Take removes and returns up to count items from direction. The empty direction
 // removes from the front, making default Push and Take FIFO. Empty queues are retained.
 func (s *Store) Take(name string, count int, direction Direction) ([]string, Info, error) {
-	if count <= 0 {
-		return nil, Info{}, ErrInvalidCount
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	return s.TakeContext(ctx, name, count, direction)
+}
+
+// TakeContext is Take with context-aware waiting for in-process and filesystem locks.
+func (s *Store) TakeContext(ctx context.Context, name string, count int, direction Direction) ([]string, Info, error) {
+	direction, err := validateTake(count, direction)
+	if err != nil {
+		return nil, Info{}, err
 	}
-	if direction == "" {
-		direction = Front
+	if err := lockMutex(ctx, &s.mu); err != nil {
+		return nil, Info{}, err
 	}
-	if direction != Front && direction != Back {
-		return nil, Info{}, ErrInvalidDirection
-	}
-	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.path(name)
 	if err != nil {
 		return nil, Info{}, err
 	}
-	release, err := lock(path)
+	release, err := lockContext(ctx, path)
 	if err != nil {
 		return nil, Info{}, err
 	}
 	defer release()
+	return take(path, name, count, direction)
+}
+
+// TryTake attempts Take without waiting for in-process or filesystem locks.
+func (s *Store) TryTake(name string, count int, direction Direction) ([]string, Info, bool, error) {
+	direction, err := validateTake(count, direction)
+	if err != nil {
+		return nil, Info{}, false, err
+	}
+	if !s.mu.TryLock() {
+		return nil, Info{}, false, nil
+	}
+	defer s.mu.Unlock()
+	path, err := s.path(name)
+	if err != nil {
+		return nil, Info{}, true, err
+	}
+	release, acquired, err := tryLock(path)
+	if err != nil || !acquired {
+		return nil, Info{}, acquired, err
+	}
+	defer release()
+	items, info, err := take(path, name, count, direction)
+	return items, info, true, err
+}
+
+func validateTake(count int, direction Direction) (Direction, error) {
+	if count <= 0 {
+		return "", ErrInvalidCount
+	}
+	if direction == "" {
+		direction = Front
+	}
+	if direction != Front && direction != Back {
+		return "", ErrInvalidDirection
+	}
+	return direction, nil
+}
+
+func take(path, name string, count int, direction Direction) ([]string, Info, error) {
 	meta, items, err := read(path)
 	if err != nil {
 		return nil, Info{}, err
@@ -371,21 +416,61 @@ func (s *Store) path(name string) (string, error) {
 // lock serializes read-modify-write operations across Store instances and
 // processes. Directory creation is atomic on local filesystems and NFS.
 func lock(path string) (func(), error) {
-	lockPath := path + ".lock"
-	deadline := time.Now().Add(10 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	release, err := lockContext(ctx, path)
+	if errors.Is(err, context.DeadlineExceeded) {
+		return nil, errors.New("queue: timed out acquiring lock")
+	}
+	return release, err
+}
+
+func lockContext(ctx context.Context, path string) (func(), error) {
 	for {
-		if err := os.Mkdir(lockPath, 0o700); err == nil {
-			return func() { _ = os.Remove(lockPath) }, nil
-		} else if !errors.Is(err, fs.ErrExist) {
-			if errors.Is(err, fs.ErrNotExist) {
-				return func() {}, nil
-			}
-			return nil, fmt.Errorf("queue: acquire lock: %w", err)
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
-		if time.Now().After(deadline) {
-			return nil, errors.New("queue: timed out acquiring lock")
+		release, acquired, err := tryLock(path)
+		if err != nil || acquired {
+			return release, err
 		}
-		time.Sleep(10 * time.Millisecond)
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func tryLock(path string) (func(), bool, error) {
+	if err := os.Mkdir(path+".lock", 0o700); err == nil {
+		return func() { _ = os.Remove(path + ".lock") }, true, nil
+	} else if errors.Is(err, fs.ErrExist) {
+		return nil, false, nil
+	} else if errors.Is(err, fs.ErrNotExist) {
+		return func() {}, true, nil
+	} else {
+		return nil, false, fmt.Errorf("queue: acquire lock: %w", err)
+	}
+}
+
+func lockMutex(ctx context.Context, mutex *sync.Mutex) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if mutex.TryLock() {
+			return nil
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
 	}
 }
 
