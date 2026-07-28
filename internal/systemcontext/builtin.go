@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -165,6 +166,7 @@ type FileSource struct {
 	SourceKey string
 	Path      string
 	Label     string
+	RootDir   string
 	MaxBytes  int64
 }
 
@@ -174,12 +176,48 @@ func (s FileSource) Observe(context.Context) (Observation, error) {
 	if max <= 0 {
 		max = 256 << 10
 	}
-	file, err := os.Open(s.Path)
+	info, err := os.Lstat(s.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		return Observation{Available: true, Path: s.Path}, nil
 	}
 	if err != nil {
 		return Observation{Available: false}, err
+	}
+	// Instruction files are deliberately not followed through symlinks. Besides
+	// keeping project discovery inside its declared root, checking the file type
+	// before opening avoids blocking forever on FIFOs and similar special files.
+	if !info.Mode().IsRegular() {
+		return Observation{Available: false}, errors.New("systemcontext: context source is not a regular file")
+	}
+	var file *os.File
+	if s.RootDir == "" {
+		file, err = os.OpenFile(s.Path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	} else {
+		root, openRootErr := os.OpenRoot(s.RootDir)
+		if openRootErr != nil {
+			return Observation{Available: false}, openRootErr
+		}
+		relative, relativeErr := filepath.Rel(s.RootDir, s.Path)
+		if relativeErr == nil {
+			file, err = root.OpenFile(relative, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+		} else {
+			err = relativeErr
+		}
+		closeRootErr := root.Close()
+		if err == nil && closeRootErr != nil {
+			err = closeRootErr
+		}
+	}
+	if err != nil {
+		return Observation{Available: false}, err
+	}
+	openedInfo, err := file.Stat()
+	if err != nil || !openedInfo.Mode().IsRegular() {
+		_ = file.Close()
+		if err != nil {
+			return Observation{Available: false}, err
+		}
+		return Observation{Available: false}, errors.New("systemcontext: opened context source is not a regular file")
 	}
 	data, readErr := io.ReadAll(io.LimitReader(file, max+1))
 	closeErr := file.Close()
@@ -232,10 +270,10 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 	if options.ModelAliases != nil {
 		sources = append(sources, options.ModelAliases)
 	}
-	paths := []struct{ path, key, label string }{}
+	paths := []struct{ path, key, label, root string }{}
 	if options.ConfigDir != "" {
 		path := filepath.Join(options.ConfigDir, "AGENTS.md")
-		paths = append(paths, struct{ path, key, label string }{path, "agents:global", "Global AGENTS.md"})
+		paths = append(paths, struct{ path, key, label, root string }{path, "agents:global", "Global AGENTS.md", options.ConfigDir})
 	}
 	rel, _ := filepath.Rel(root, cwd)
 	dirs := []string{root}
@@ -248,10 +286,10 @@ func Builtins(options BuiltinOptions) ([]Source, error) {
 	}
 	for i, dir := range dirs {
 		path := filepath.Join(dir, "AGENTS.md")
-		paths = append(paths, struct{ path, key, label string }{path, fmt.Sprintf("agents:project-%04d", i), "AGENTS.md at " + dir})
+		paths = append(paths, struct{ path, key, label, root string }{path, fmt.Sprintf("agents:project-%04d", i), "AGENTS.md at " + dir, root})
 	}
 	for _, item := range paths {
-		sources = append(sources, FileSource{SourceKey: item.key, Path: item.path, Label: item.label})
+		sources = append(sources, FileSource{SourceKey: item.key, Path: item.path, Label: item.label, RootDir: item.root})
 	}
 	return sources, nil
 }
