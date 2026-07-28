@@ -827,6 +827,8 @@ func (d statusReporter) LifecycleStarted(sessionID string) {
 	d.userSessionStarted(sessionID)
 }
 
+func (statusReporter) LifecycleTurnFinished(string, string, string, error) {}
+
 func (d statusReporter) LifecycleComplete(sessionID string, err error) {
 	status := v1.SessionStatus{Kind: "idle"}
 	if err == context.Canceled {

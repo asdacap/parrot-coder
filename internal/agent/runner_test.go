@@ -566,6 +566,63 @@ func mustGetAgentSession(t *testing.T, sessions *userSession, id string) AgentSe
 	return created
 }
 
+type recordedLifecycle struct {
+	kind                string
+	sessionID           string
+	initialMessageID    string
+	terminalAssistantID string
+	err                 error
+}
+
+type recordingLifecycleObserver struct {
+	mu      sync.Mutex
+	records []recordedLifecycle
+	done    chan struct{}
+}
+
+func (o *recordingLifecycleObserver) LifecycleStarted(sessionID string) {
+	o.record(recordedLifecycle{kind: "started", sessionID: sessionID})
+}
+
+func (o *recordingLifecycleObserver) LifecycleTurnFinished(sessionID, initialMessageID, terminalAssistantID string, err error) {
+	o.record(recordedLifecycle{kind: "turn finished", sessionID: sessionID, initialMessageID: initialMessageID, terminalAssistantID: terminalAssistantID, err: err})
+}
+
+func (o *recordingLifecycleObserver) LifecycleComplete(sessionID string, err error) {
+	o.record(recordedLifecycle{kind: "complete", sessionID: sessionID, err: err})
+	if o.done != nil {
+		close(o.done)
+	}
+}
+
+func (o *recordingLifecycleObserver) record(record recordedLifecycle) {
+	o.mu.Lock()
+	o.records = append(o.records, record)
+	o.mu.Unlock()
+}
+
+func (o *recordingLifecycleObserver) snapshot() []recordedLifecycle {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]recordedLifecycle(nil), o.records...)
+}
+
+func turnFinishListenerCount(session *agentSession) int {
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return turnFinishListenerCountLocked(session)
+}
+
+func turnFinishListenerCountLocked(session *agentSession) int {
+	count := 0
+	for _, observer := range session.observers {
+		if _, ok := observer.(*turnFinishListener); ok {
+			count++
+		}
+	}
+	return count
+}
+
 func newRunnerHarness(t *testing.T, fake *fakeProvider, profiles []Profile, tools ...tool.Tool) *runnerHarness {
 	t.Helper()
 	ctx := context.Background()
@@ -841,6 +898,55 @@ func TestAgentSessionOwnsTurnQuotaAdmission(t *testing.T) {
 	}
 	if _, err := observation.Wait(t.Context()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestAgentSessionLifecycleObserver(t *testing.T) {
+	fake := &fakeProvider{stream: func(_ int, _ context.Context, _ protocol.Request) (provider.Stream, error) {
+		return events(
+			protocol.Event{Type: protocol.EventTextDelta, Text: "answer"},
+			protocol.Event{Type: protocol.EventFinish, FinishReason: protocol.FinishStop},
+		), nil
+	}}
+	h := newRunnerHarness(t, fake, nil)
+	observer := &recordingLifecycleObserver{done: make(chan struct{})}
+	h.runner.mu.Lock()
+	h.runner.observers = append(h.runner.observers, observer)
+	h.runner.mu.Unlock()
+
+	if _, err := h.runner.Send(t.Context(), "msg_lifecycle", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-observer.done:
+	case <-time.After(time.Second):
+		t.Fatal("lifecycle completion was not observed")
+	}
+
+	records := observer.snapshot()
+	if len(records) != 3 {
+		t.Fatalf("lifecycle records = %#v, want start, turn finish, complete", records)
+	}
+	if records[0].kind != "started" || records[1].kind != "turn finished" || records[2].kind != "complete" {
+		t.Fatalf("lifecycle order = %#v", records)
+	}
+	for _, record := range records {
+		if record.sessionID != h.sessionID || record.err != nil {
+			t.Fatalf("lifecycle record = %#v", record)
+		}
+	}
+	if records[1].initialMessageID != "msg_lifecycle" || records[1].terminalAssistantID == "" {
+		t.Fatalf("turn finish record = %#v", records[1])
+	}
+
+	aborted := &recordingLifecycleObserver{}
+	h.runner.mu.Lock()
+	h.runner.observers = []LifecycleObserver{aborted}
+	state := h.runner.newTurnLocked("msg_aborted", nil, false)
+	h.runner.mu.Unlock()
+	h.runner.abortTurn(state)
+	if got := aborted.snapshot(); len(got) != 1 || got[0].kind != "turn finished" || got[0].initialMessageID != "msg_aborted" || !errors.Is(got[0].err, context.Canceled) {
+		t.Fatalf("aborted lifecycle records = %#v", got)
 	}
 }
 
@@ -1371,11 +1477,7 @@ func TestPromptWaitsForItsOwnAdmittedMessage(t *testing.T) {
 		answer, err := h.runner.Prompt(t.Context(), "awaited")
 		result <- turnFinishResult{content: answer, err: err}
 	}()
-	waitForAgentSession(t, func() bool {
-		h.runner.mu.Lock()
-		defer h.runner.mu.Unlock()
-		return len(h.runner.turnFinishListeners) == 1
-	})
+	waitForAgentSession(t, func() bool { return turnFinishListenerCount(h.runner) == 1 })
 	close(releaseFirst)
 
 	got := <-result
@@ -1416,7 +1518,7 @@ func TestCanceledJoinedPromptDoesNotInterruptSharedTurn(t *testing.T) {
 	waitForAgentSession(t, func() bool {
 		h.runner.mu.Lock()
 		defer h.runner.mu.Unlock()
-		return len(h.runner.turnFinishListeners) == 1 && h.runner.turn.wake
+		return turnFinishListenerCountLocked(h.runner) == 1 && h.runner.turn.wake
 	})
 	cancel()
 	if err := <-result; !errors.Is(err, context.Canceled) {
@@ -1451,15 +1553,12 @@ func TestCanceledPromptRemovesTurnFinishListener(t *testing.T) {
 	if err := <-result; !errors.Is(err, context.Canceled) {
 		t.Fatalf("Prompt() error = %v, want context.Canceled", err)
 	}
-	h.runner.mu.Lock()
-	listeners := len(h.runner.turnFinishListeners)
-	h.runner.mu.Unlock()
-	if listeners != 0 {
+	if listeners := turnFinishListenerCount(h.runner); listeners != 0 {
 		t.Fatalf("turn finish listeners = %d, want 0", listeners)
 	}
 	// A later notification must remain safe after the canceled listener has
 	// unregistered itself.
-	h.runner.notifyTurnFinishListeners("", "", nil)
+	h.runner.turnFinished("", "", nil)
 }
 
 func TestPromptAcceptsEmptyFinalAssistantAfterGoalCompletionTool(t *testing.T) {
