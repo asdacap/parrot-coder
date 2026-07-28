@@ -25,6 +25,7 @@ var (
 	ErrAlreadyExists    = errors.New("queue: already exists")
 	ErrInvalidName      = errors.New("queue: name must contain only lowercase ASCII alphanumeric words separated by hyphens")
 	ErrInvalidDirection = errors.New("queue: direction must be front or back")
+	ErrInvalidCount     = errors.New("queue: count must be positive")
 	ErrEmpty            = errors.New("queue: empty")
 )
 
@@ -111,8 +112,9 @@ func (s *Store) Create(name, description string) (Info, error) {
 	return Info{Path: path, Name: name, Description: description}, nil
 }
 
-// Push inserts item at direction. The empty direction appends at the back.
-func (s *Store) Push(name, item string, direction Direction) (Info, error) {
+// Push inserts items at direction. The empty direction appends at the back.
+// Front insertion behaves like sequentially pushing each item to the front.
+func (s *Store) Push(name string, pushed []string, direction Direction) (Info, error) {
 	if direction == "" {
 		direction = Back
 	}
@@ -138,10 +140,16 @@ func (s *Store) Push(name, item string, direction Direction) (Info, error) {
 		return Info{}, errors.New("queue: metadata name does not match path")
 	}
 	if direction == Front {
-		meta.DeliveryID = ""
-		items = append([]string{item}, items...)
+		if len(pushed) > 0 {
+			meta.DeliveryID = ""
+			front := make([]string, len(pushed))
+			for index, item := range pushed {
+				front[len(pushed)-index-1] = item
+			}
+			items = append(front, items...)
+		}
 	} else {
-		items = append(items, item)
+		items = append(items, pushed...)
 	}
 	if err := write(path, meta, items); err != nil {
 		return Info{}, err
@@ -149,49 +157,60 @@ func (s *Store) Push(name, item string, direction Direction) (Info, error) {
 	return info(path, meta, len(items)), nil
 }
 
-// Take removes and returns an item from direction. The empty direction removes
-// from the front, making default Push and Take FIFO. Empty queues are retained.
-func (s *Store) Take(name string, direction Direction) (string, Info, error) {
+// Take removes and returns up to count items from direction. The empty direction
+// removes from the front, making default Push and Take FIFO. Empty queues are retained.
+func (s *Store) Take(name string, count int, direction Direction) ([]string, Info, error) {
+	if count <= 0 {
+		return nil, Info{}, ErrInvalidCount
+	}
 	if direction == "" {
 		direction = Front
 	}
 	if direction != Front && direction != Back {
-		return "", Info{}, ErrInvalidDirection
+		return nil, Info{}, ErrInvalidDirection
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	path, err := s.path(name)
 	if err != nil {
-		return "", Info{}, err
+		return nil, Info{}, err
 	}
 	release, err := lock(path)
 	if err != nil {
-		return "", Info{}, err
+		return nil, Info{}, err
 	}
 	defer release()
 	meta, items, err := read(path)
 	if err != nil {
-		return "", Info{}, err
+		return nil, Info{}, err
 	}
 	if meta.Name != name {
-		return "", Info{}, errors.New("queue: metadata name does not match path")
+		return nil, Info{}, errors.New("queue: metadata name does not match path")
 	}
 	if len(items) == 0 {
-		return "", info(path, meta, 0), ErrEmpty
+		return nil, info(path, meta, 0), ErrEmpty
 	}
-	index := 0
-	if direction == Back {
-		index = len(items) - 1
-	}
-	item := items[index]
-	items = append(items[:index], items[index+1:]...)
-	if index == 0 {
+	count = min(count, len(items))
+	var taken []string
+	if direction == Front {
+		taken = append([]string(nil), items[:count]...)
+		items = items[count:]
 		meta.DeliveryID = ""
+	} else {
+		start := len(items) - count
+		taken = make([]string, count)
+		for index := range count {
+			taken[index] = items[len(items)-index-1]
+		}
+		items = items[:start]
+		if start == 0 {
+			meta.DeliveryID = ""
+		}
 	}
 	if err := write(path, meta, items); err != nil {
-		return "", Info{}, err
+		return nil, Info{}, err
 	}
-	return item, info(path, meta, len(items)), nil
+	return taken, info(path, meta, len(items)), nil
 }
 
 // Monitor enables or disables idle notification delivery for a queue.

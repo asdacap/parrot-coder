@@ -60,24 +60,25 @@ func TestQueueLifecycleDirectionsAndJSONL(t *testing.T) {
 	}
 
 	for _, push := range []struct {
-		item string
-		dir  Direction
-	}{{"one", ""}, {"three", Back}, {"zero", Front}, {"two", Front}} {
-		if _, err := queues.Push("build-work-now", push.item, push.dir); err != nil {
-			t.Fatalf("Push(%q, %q): %v", push.item, push.dir, err)
+		items []string
+		dir   Direction
+	}{{[]string{"one", "three"}, ""}, {[]string{"zero", "two"}, Front}} {
+		if _, err := queues.Push("build-work-now", push.items, push.dir); err != nil {
+			t.Fatalf("Push(%q, %q): %v", push.items, push.dir, err)
 		}
 	}
 	for _, take := range []struct {
-		dir  Direction
-		want string
-		size int
-	}{{Back, "three", 3}, {"", "two", 2}, {Front, "zero", 1}, {Back, "one", 0}} {
-		got, info, err := queues.Take("build-work-now", take.dir)
-		if err != nil || got != take.want || info.Size != take.size {
-			t.Fatalf("Take(%q) = %q, %#v, %v; want %q size %d", take.dir, got, info, err, take.want, take.size)
+		count int
+		dir   Direction
+		want  []string
+		size  int
+	}{{2, Back, []string{"three", "one"}, 2}, {5, "", []string{"two", "zero"}, 0}} {
+		got, info, err := queues.Take("build-work-now", take.count, take.dir)
+		if err != nil || !reflect.DeepEqual(got, take.want) || info.Size != take.size {
+			t.Fatalf("Take(%d, %q) = %q, %#v, %v; want %q size %d", take.count, take.dir, got, info, err, take.want, take.size)
 		}
 	}
-	_, emptyInfo, err := queues.Take("build-work-now", "")
+	_, emptyInfo, err := queues.Take("build-work-now", 1, "")
 	if !errors.Is(err, ErrEmpty) || emptyInfo.Size != 0 {
 		t.Fatalf("empty Take() = %#v, %v", emptyInfo, err)
 	}
@@ -98,7 +99,7 @@ func TestValidationAndExplicitCreation(t *testing.T) {
 			t.Errorf("Create(%q) error = %v", name, err)
 		}
 	}
-	if _, err := queues.Push("one-two-three", "item", ""); !errors.Is(err, ErrNotFound) {
+	if _, err := queues.Push("one-two-three", []string{"item"}, ""); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Push without Create error = %v, want ErrNotFound", err)
 	}
 	if _, err := queues.Create("one-two-three", ""); err != nil {
@@ -107,11 +108,14 @@ func TestValidationAndExplicitCreation(t *testing.T) {
 	if _, err := queues.Create("one-two-three", "changed"); !errors.Is(err, ErrAlreadyExists) {
 		t.Fatalf("duplicate Create error = %v", err)
 	}
-	if _, err := queues.Push("one-two-three", "item", Direction("side")); !errors.Is(err, ErrInvalidDirection) {
+	if _, err := queues.Push("one-two-three", []string{"item"}, Direction("side")); !errors.Is(err, ErrInvalidDirection) {
 		t.Fatalf("invalid Push direction error = %v", err)
 	}
-	if _, _, err := queues.Take("one-two-three", Direction("side")); !errors.Is(err, ErrInvalidDirection) {
+	if _, _, err := queues.Take("one-two-three", 1, Direction("side")); !errors.Is(err, ErrInvalidDirection) {
 		t.Fatalf("invalid Take direction error = %v", err)
+	}
+	if _, _, err := queues.Take("one-two-three", 0, ""); !errors.Is(err, ErrInvalidCount) {
+		t.Fatalf("invalid Take count error = %v", err)
 	}
 }
 
@@ -126,10 +130,7 @@ func TestListSortedEmptyAndMalformed(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := queues.Push("zebra-work-now", "a", ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := queues.Push("zebra-work-now", "b", ""); err != nil {
+	if _, err := queues.Push("zebra-work-now", []string{"a", "b"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	got, err = queues.List()
@@ -160,10 +161,8 @@ func TestPersistenceAcrossReconstructedStoresAndDirectoryIsolation(t *testing.T)
 	if _, err := first.Create("persist-work-here", "kept"); err != nil {
 		t.Fatal(err)
 	}
-	for _, item := range []string{"one", "two"} {
-		if _, err := first.Push("persist-work-here", item, ""); err != nil {
-			t.Fatal(err)
-		}
+	if _, err := first.Push("persist-work-here", []string{"one", "two"}, ""); err != nil {
+		t.Fatal(err)
 	}
 	if _, err := first.Monitor("persist-work-here", true); err != nil {
 		t.Fatal(err)
@@ -175,8 +174,8 @@ func TestPersistenceAcrossReconstructedStoresAndDirectoryIsolation(t *testing.T)
 		t.Fatalf("reconstructed Get() = %#v, %v", info, err)
 	}
 	for _, want := range []string{"one", "two"} {
-		got, _, err := reconstructed.Take("persist-work-here", "")
-		if err != nil || got != want {
+		got, _, err := reconstructed.Take("persist-work-here", 1, "")
+		if err != nil || len(got) != 1 || got[0] != want {
 			t.Fatalf("reconstructed Take() = %q, %v; want %q", got, err, want)
 		}
 	}
@@ -210,7 +209,7 @@ func TestMonitorPersistenceSelectionAndFIFO(t *testing.T) {
 		}
 	}
 	for _, item := range []struct{ name, value string }{{"zebra-work-now", "zebra"}, {"alpha-work-now", "first"}, {"alpha-work-now", "second"}} {
-		if _, err := queues.Push(item.name, item.value, ""); err != nil {
+		if _, err := queues.Push(item.name, []string{item.value}, ""); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -231,7 +230,7 @@ func TestMonitorPersistenceSelectionAndFIFO(t *testing.T) {
 	if delivered, err := queues.DeliverMonitored(nil); err == nil || delivered {
 		t.Fatalf("nil DeliverMonitored() = %v, %v", delivered, err)
 	}
-	if _, err := queues.Push("alpha-work-now", "retained", ""); err != nil {
+	if _, err := queues.Push("alpha-work-now", []string{"retained"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	var deliveryID string
@@ -251,9 +250,9 @@ func TestMonitorPersistenceSelectionAndFIFO(t *testing.T) {
 	}); delivered || !errors.Is(err, callbackErr) {
 		t.Fatalf("failed DeliverMonitored() = %v, %v", delivered, err)
 	}
-	item, _, err := queues.Take("alpha-work-now", "")
-	if err != nil || item != "retained" {
-		t.Fatalf("retained item = %q, %v", item, err)
+	items, _, err := queues.Take("alpha-work-now", 1, "")
+	if err != nil || len(items) != 1 || items[0] != "retained" {
+		t.Fatalf("retained items = %q, %v", items, err)
 	}
 	info, err := queues.Get("alpha-work-now")
 	if err != nil || !info.Monitored || info.Size != 0 {
@@ -295,7 +294,7 @@ func TestConcurrentMultiProducerMultiConsumerExactlyOnce(t *testing.T) {
 			defer producers.Done()
 			for item := 0; item < itemsPerWorker; item++ {
 				value := fmt.Sprintf("%d-%d", producer, item)
-				if _, err := stores[producer].Push("many-items-here", value, ""); err != nil {
+				if _, err := stores[producer].Push("many-items-here", []string{value}, ""); err != nil {
 					errs <- err
 					return
 				}
@@ -313,9 +312,9 @@ func TestConcurrentMultiProducerMultiConsumerExactlyOnce(t *testing.T) {
 		go func(consumer int) {
 			defer consumers.Done()
 			for {
-				item, _, err := stores[consumer].Take("many-items-here", "")
+				items, _, err := stores[consumer].Take("many-items-here", 1, "")
 				if err == nil {
-					consumed <- item
+					consumed <- items[0]
 					continue
 				}
 				if !errors.Is(err, ErrEmpty) {

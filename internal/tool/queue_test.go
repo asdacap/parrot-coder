@@ -11,13 +11,27 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/queue"
 )
 
-func TestQueueCreateDescriptor(t *testing.T) {
-	descriptor := (&QueueTool{Kind: "queue_create"}).Descriptor()
-	if descriptor.SystemPromptGuidance != "When a task have many work item, use queue and multiple worker subagent. Publisher and consumer can be spawned at the same time." {
-		t.Fatalf("SystemPromptGuidance = %q", descriptor.SystemPromptGuidance)
+func TestQueueDescriptors(t *testing.T) {
+	create := (&QueueTool{Kind: "queue_create"}).Descriptor()
+	if create.SystemPromptGuidance != "When a task have many work item, use queue and multiple worker subagent. Publisher and consumer can be spawned at the same time." {
+		t.Fatalf("SystemPromptGuidance = %q", create.SystemPromptGuidance)
 	}
-	if got := string(descriptor.Schema); !strings.Contains(got, `"pattern":"^[a-z0-9]+(-[a-z0-9]+)*$"`) {
+	if got := string(create.Schema); !strings.Contains(got, `"pattern":"^[a-z0-9]+(-[a-z0-9]+)*$"`) {
 		t.Fatalf("Schema does not allow arbitrary queue name word counts: %s", got)
+	}
+
+	push := (&QueueTool{Kind: "queue_push"}).Descriptor()
+	got := string(push.Schema)
+	if !strings.Contains(got, `"items":{"type":"array","items":{"type":"string"}`) ||
+		!strings.Contains(got, `"required":["name","items"]`) || strings.Contains(got, `"item":`) {
+		t.Fatalf("queue_push schema does not require a string array or exposes singular item: %s", got)
+	}
+
+	take := (&QueueTool{Kind: "queue_take"}).Descriptor()
+	got = string(take.Schema)
+	if !strings.Contains(got, `"count":{"type":"integer","minimum":1`) ||
+		!strings.Contains(got, `"required":["name"]`) {
+		t.Fatalf("queue_take schema does not expose an optional positive count: %s", got)
 	}
 }
 
@@ -41,24 +55,34 @@ func TestQueueToolsLifecycle(t *testing.T) {
 				t.Fatalf("create output = %#v", got)
 			}
 		}},
-		{kind: "queue_push", input: `{"name":"build-work-now","item":"first"}`, check: func(got map[string]any) {
-			if got["size"] != float64(1) {
+		{kind: "queue_push", input: `{"name":"build-work-now","items":["first","second","third"]}`, check: func(got map[string]any) {
+			if got["size"] != float64(3) {
 				t.Fatalf("push output = %#v", got)
 			}
 		}},
 		{kind: "queue_listen", input: `{"name":"build-work-now"}`, check: func(got map[string]any) {
-			if got["size"] != float64(1) || got["monitored"] != true {
+			if got["size"] != float64(3) || got["monitored"] != true {
 				t.Fatalf("listen output = %#v", got)
 			}
 		}},
 		{kind: "queue_info", input: `{"name":"build-work-now"}`, check: func(got map[string]any) {
-			if got["size"] != float64(1) || got["monitored"] != true {
+			if got["size"] != float64(3) || got["monitored"] != true {
 				t.Fatalf("info output = %#v", got)
 			}
 		}},
 		{kind: "queue_take", input: `{"name":"build-work-now"}`, check: func(got map[string]any) {
-			if got["item"] != "first" || got["size"] != float64(0) {
+			items, ok := got["items"].([]any)
+			if !ok || len(items) != 1 || items[0] != "first" || got["size"] != float64(2) {
+				t.Fatalf("default take output = %#v", got)
+			}
+		}},
+		{kind: "queue_take", input: `{"name":"build-work-now","count":5}`, check: func(got map[string]any) {
+			items, ok := got["items"].([]any)
+			if !ok || len(items) != 2 || items[0] != "second" || items[1] != "third" || got["size"] != float64(0) {
 				t.Fatalf("take output = %#v", got)
+			}
+			if _, ok := got["item"]; ok {
+				t.Fatalf("take output exposes singular item = %#v", got)
 			}
 		}},
 	}

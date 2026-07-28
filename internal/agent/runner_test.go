@@ -2230,7 +2230,7 @@ func TestPromptReturnsTerminalResponseBeforeMonitoredQueueResponse(t *testing.T)
 	if _, err := h.queues.Monitor("incoming-work-now", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.queues.Push("incoming-work-now", "queued", ""); err != nil {
+	if _, err := h.queues.Push("incoming-work-now", []string{"queued"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	answer, err := h.runner.Prompt(context.Background(), "direct")
@@ -2270,7 +2270,7 @@ func TestUserSessionSharesQueuesWithChildrenButOnlyRootReceivesNotifications(t *
 	if _, err := h.queues.Monitor("incoming-work-now", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.queues.Push("incoming-work-now", "root only", ""); err != nil {
+	if _, err := h.queues.Push("incoming-work-now", []string{"root only"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := child.Prompt(t.Context(), "child follow-up"); err != nil {
@@ -2336,7 +2336,7 @@ func TestRunnerProcessesMonitoredQueueItemAsSyntheticTurn(t *testing.T) {
 	if _, err := h.queues.Monitor("incoming-work-now", true); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := h.queues.Push("incoming-work-now", "review item 42", ""); err != nil {
+	if _, err := h.queues.Push("incoming-work-now", []string{"review item 42"}, ""); err != nil {
 		t.Fatal(err)
 	}
 	h.admit(t, "user", "initial question", session.DeliverySteer)

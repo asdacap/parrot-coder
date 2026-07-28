@@ -11,8 +11,8 @@ import (
 
 type QueueService interface {
 	Create(name, description string) (queue.Info, error)
-	Push(name, item string, direction queue.Direction) (queue.Info, error)
-	Take(name string, direction queue.Direction) (string, queue.Info, error)
+	Push(name string, items []string, direction queue.Direction) (queue.Info, error)
+	Take(name string, count int, direction queue.Direction) ([]string, queue.Info, error)
 	Get(name string) (queue.Info, error)
 	List() ([]queue.Info, error)
 	Monitor(name string, enabled bool) (queue.Info, error)
@@ -27,7 +27,8 @@ type QueueTool struct {
 type queueInput struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
-	Item        string          `json:"item,omitempty"`
+	Items       []string        `json:"items,omitempty"`
+	Count       *int            `json:"count,omitempty"`
 	Direction   queue.Direction `json:"direction,omitempty"`
 	Enabled     *bool           `json:"enabled,omitempty"`
 }
@@ -47,9 +48,9 @@ func (t *QueueTool) Description() string {
 	case "queue_create":
 		return "Explicitly create a persistent queue shared by agents in the current user session. Queue names may contain lowercase ASCII letters, numbers, and hyphens."
 	case "queue_push":
-		return "Push a string onto an existing shared user-session queue. Direction defaults to back."
+		return "Push strings onto an existing shared user-session queue. Direction defaults to back."
 	case "queue_take":
-		return "Remove and return a string from an existing shared user-session queue. Direction defaults to front."
+		return "Remove and return strings from an existing shared user-session queue. Count defaults to one and direction defaults to front."
 	case "queue_listen":
 		return "Enable or disable idle notification delivery from an existing shared user-session queue. Listening remains enabled after each FIFO delivery."
 	default:
@@ -72,10 +73,10 @@ func (t *QueueTool) JSONSchema() json.RawMessage {
 	case "queue_create":
 		properties += `,"description":{"type":"string","description":"Optional queue description."}`
 	case "queue_push":
-		properties += `,"item":{"type":"string","description":"String item to enqueue."},"direction":{"type":"string","enum":["front","back"],"description":"Queue end; defaults to back."}`
-		required += `,"item"`
+		properties += `,"items":{"type":"array","items":{"type":"string"},"description":"String items to enqueue."},"direction":{"type":"string","enum":["front","back"],"description":"Queue end; defaults to back."}`
+		required += `,"items"`
 	case "queue_take":
-		properties += `,"direction":{"type":"string","enum":["front","back"],"description":"Queue end; defaults to front."}`
+		properties += `,"count":{"type":"integer","minimum":1,"description":"Maximum number of items to take; defaults to one."},"direction":{"type":"string","enum":["front","back"],"description":"Queue end; defaults to front."}`
 	case "queue_listen":
 		properties += `,"enabled":{"type":"boolean","description":"Whether to listen to this queue; defaults to true."}`
 	}
@@ -102,15 +103,19 @@ func (t *QueueTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Resu
 	}
 	input := plan.Data.(queueInput)
 	var info queue.Info
-	var item string
+	var items []string
 	var err error
 	switch t.Kind {
 	case "queue_create":
 		info, err = t.Store.Create(input.Name, input.Description)
 	case "queue_push":
-		info, err = t.Store.Push(input.Name, input.Item, input.Direction)
+		info, err = t.Store.Push(input.Name, input.Items, input.Direction)
 	case "queue_take":
-		item, info, err = t.Store.Take(input.Name, input.Direction)
+		count := 1
+		if input.Count != nil {
+			count = *input.Count
+		}
+		items, info, err = t.Store.Take(input.Name, count, input.Direction)
 	case "queue_info":
 		info, err = t.Store.Get(input.Name)
 	case "queue_listen":
@@ -127,10 +132,10 @@ func (t *QueueTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Resu
 	}
 	output := struct {
 		queue.Info
-		Item *string `json:"item,omitempty"`
+		Items []string `json:"items,omitempty"`
 	}{Info: info}
 	if t.Kind == "queue_take" {
-		output.Item = &item
+		output.Items = items
 	}
 	data, err := json.Marshal(output)
 	if err != nil {
