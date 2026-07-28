@@ -13,13 +13,16 @@ import (
 
 	"github.com/amirulashraf/parrot-coder/internal/permission"
 	"github.com/amirulashraf/parrot-coder/internal/process"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 const execCommandSchema = `{"type":"object","properties":{"cmd":{"type":"string","description":"Shell command to execute."},"name":{"type":"string","description":"Optional friendly name for the shell task. A name is generated if the command remains running."},"workdir":{"type":"string","description":"Working directory for the command. Defaults to the turn cwd."},"env":{"type":"object","additionalProperties":{"type":"string"},"description":"Environment variables for the command. Values override the default output-hygiene settings."},"tty":{"type":"boolean","description":"True allocates a PTY for the command; false or omitted uses plain pipes."},"yield_time_ms":{"type":"number","description":"Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms. The result will automatically be sent once done after the yield."},"max_output_tokens":{"type":"number","description":"Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy."},"shell":{"type":"string","description":"Shell binary to launch. Defaults to the user's default shell."},"sandbox_permissions":{"type":"string","enum":["current_security_context","disable_sandbox"],"description":"Per-command sandbox override. Defaults to \u0060current_security_context\u0060; use \u0060disable_sandbox\u0060 for unsandboxed execution."},"justification":{"type":"string","description":"User-facing approval question for \u0060disable_sandbox\u0060; omit otherwise."}},"required":["cmd"],"additionalProperties":false}`
 
 type ExecCommandTool struct {
 	BasePresentation
-	Runner *process.Runner
+	Runner    *process.Runner
+	Workspace *workspace.Workspace
+	SessionID string
 }
 
 type execCommandInput struct {
@@ -37,8 +40,8 @@ type execCommandInput struct {
 	ResolvedWorkdir    string            `json:"-"`
 }
 
-func NewExecCommandTool(runner *process.Runner) *ExecCommandTool {
-	return &ExecCommandTool{Runner: runner}
+func NewExecCommandTool(runner *process.Runner, ws *workspace.Workspace, sessionID string) *ExecCommandTool {
+	return &ExecCommandTool{Runner: runner, Workspace: ws, SessionID: sessionID}
 }
 
 func (*ExecCommandTool) ID() string { return "exec_command" }
@@ -83,7 +86,7 @@ func (*ExecCommandTool) DescribeRequest(raw json.RawMessage) (string, error) {
 }
 
 func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if call.Workspace == nil {
+	if t.Workspace == nil {
 		return Plan{}, errors.New("exec_command: workspace is required")
 	}
 	var input execCommandInput
@@ -129,11 +132,9 @@ func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call Call
 	if err != nil || !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
 		return Plan{}, errors.New("exec_command: shell is not an executable regular file")
 	}
-	base := call.Workspace.Root()
+	base := t.Workspace.Root()
 	if t.Runner != nil {
 		base = t.Runner.WorkingDirectory()
-	} else if call.Processes != nil {
-		base = call.Processes.WorkingDirectory()
 	}
 	resolvedWorkdir, err := process.ResolveWorkingDirectory(input.Workdir, base)
 	if err != nil {
@@ -162,9 +163,6 @@ func (t *ExecCommandTool) Plan(_ context.Context, raw json.RawMessage, call Call
 func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	runner := t.Runner
 	if runner == nil {
-		runner = call.Processes
-	}
-	if runner == nil {
 		return Result{}, errors.New("exec_command: process runner is required")
 	}
 	input := plan.Data.(execCommandInput)
@@ -178,7 +176,7 @@ func (t *ExecCommandTool) Execute(ctx context.Context, plan Plan, call CallConte
 	}
 	result, err := runner.RunPersistent(ctx, process.PersistentRequest{
 		Shell: input.ResolvedShell, Command: input.Command, Name: input.Name, Cwd: input.ResolvedWorkdir, Env: input.Env,
-		SessionID: call.SessionID, Yield: time.Duration(input.YieldTimeMS) * time.Millisecond,
+		SessionID: t.SessionID, Yield: time.Duration(input.YieldTimeMS) * time.Millisecond,
 		MaxOutputTokens: input.MaxOutputTokens, TTY: input.TTY, Output: call.Output,
 		Unrestricted:    input.SandboxPermissions == "disable_sandbox",
 		SecurityProfile: call.SecurityProfile,

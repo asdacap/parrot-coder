@@ -1564,7 +1564,7 @@ func (r *agentSession) executeTools(ctx context.Context, selected session.AgentS
 					logger(ctx, r.dto.ID, call.call.Name, recovered, stack)
 				}
 			}
-			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Workspace: r.workspace, Outputs: r.outputs, SessionID: r.dto.ID, Processes: r.processes, Agent: profile.ID(), ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileInstructions(profile), Steer: r.steerSignal()}, onPanic)
+			result, err := executeToolCall(ctx, executor, call, tool.CallContext{Agent: profile.ID(), ToolCallID: call.call.ID, Output: &toolOutputWriter{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, Displays: toolDisplayPublisher{live: r.live, sessionID: r.dto.ID, callID: call.call.ID}, SecurityProfile: r.securityProfile, StatusQuery: statusQuery, StatusProvider: newProfileInstructions(profile), Steer: r.steerSignal()}, onPanic)
 			outcome := toolOutcome{call: call, text: result.Text, modelText: result.ModelText, err: err, interrupted: ctx.Err() != nil}
 			status, errorText := "success", ""
 			if outcome.interrupted {

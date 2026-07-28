@@ -11,11 +11,14 @@ import (
 
 type QuestionTool struct {
 	BasePresentation
-	Broker *question.Broker
+	Broker    *question.Broker
+	SessionID string
 }
 
-func NewQuestionTool(broker *question.Broker) *QuestionTool { return &QuestionTool{Broker: broker} }
-func (*QuestionTool) ID() string                            { return "question" }
+func NewQuestionTool(broker *question.Broker, sessionID string) *QuestionTool {
+	return &QuestionTool{Broker: broker, SessionID: sessionID}
+}
+func (*QuestionTool) ID() string { return "question" }
 func (*QuestionTool) Available(session AgentSession) bool {
 	return session == nil || !session.IsSubagent()
 }
@@ -47,24 +50,22 @@ func (*QuestionTool) DescribeRequest(raw json.RawMessage) (string, error) {
 func (*QuestionTool) JSONSchema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"header":{"type":"string"},"prompt":{"type":"string"},"options":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"label":{"type":"string"},"description":{"type":"string"}},"required":["id","label"],"additionalProperties":false}},"multiple":{"type":"boolean"},"custom":{"type":"boolean"}},"required":["id","prompt"],"additionalProperties":false}}},"required":["questions"],"additionalProperties":false}`)
 }
-func (t *QuestionTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
+func (t *QuestionTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
 	var input question.Request
 	if err := json.Unmarshal(raw, &input); err != nil {
 		return Plan{}, err
 	}
-	input.SessionID = call.SessionID
+	if t.Broker == nil || t.SessionID == "" {
+		return Plan{}, errors.New("question: broker and session are required")
+	}
+	input.SessionID = t.SessionID
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
-func (t *QuestionTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-
-	broker := t.Broker
-	if broker == nil {
-		broker = call.Questions
-	}
-	if broker == nil {
+func (t *QuestionTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Result, error) {
+	if t.Broker == nil {
 		return Result{}, errors.New("question: broker is required")
 	}
-	response, err := broker.Ask(ctx, plan.Data.(question.Request))
+	response, err := t.Broker.Ask(ctx, plan.Data.(question.Request))
 	if err != nil {
 		return Result{}, err
 	}

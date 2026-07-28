@@ -54,12 +54,12 @@ func TestReadReturnsSHA256OnlyForFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws.Root(), "file"), before, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	read := NewReadTool(ReadConfig{})
-	partial, err := read.Plan(ctx, json.RawMessage(`{"path":"file","limit":1}`), CallContext{Workspace: ws})
+	read := NewReadTool(ReadConfig{}, ws)
+	partial, err := read.Plan(ctx, json.RawMessage(`{"path":"file","limit":1}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := read.Execute(ctx, partial, CallContext{Workspace: ws})
+	result, err := read.Execute(ctx, partial, CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,11 +67,11 @@ func TestReadReturnsSHA256OnlyForFiles(t *testing.T) {
 		t.Fatalf("partial read lacks whole-file sha256: %q", result.Text)
 	}
 
-	listingPlan, err := read.Plan(ctx, json.RawMessage(`{"path":"."}`), CallContext{Workspace: ws})
+	listingPlan, err := read.Plan(ctx, json.RawMessage(`{"path":"."}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	listing, err := read.Execute(ctx, listingPlan, CallContext{Workspace: ws})
+	listing, err := read.Execute(ctx, listingPlan, CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,14 +83,14 @@ func TestReadReturnsSHA256OnlyForFiles(t *testing.T) {
 func TestQuestionToolBlocksForReply(t *testing.T) {
 	broker := question.NewBroker(nil)
 	registry := NewRegistry()
-	if err := registry.Register(NewQuestionTool(broker)); err != nil {
+	if err := registry.Register(NewQuestionTool(broker, "session")); err != nil {
 		t.Fatal(err)
 	}
 	executor := Executor{Snapshot: registry.Materialize()}
 	raw := json.RawMessage(`{"questions":[{"id":"q","prompt":"Choose","options":[{"id":"a","label":"A"}]}]}`)
 	done := make(chan error, 1)
 	go func() {
-		result, err := executor.Execute(context.Background(), "question", raw, CallContext{SessionID: "session"})
+		result, err := executor.Execute(context.Background(), "question", raw, CallContext{})
 		if err == nil && (result.Text != `{"answers":[{"question_id":"q","option_ids":["a"]}]}` || result.ModelText != result.Text) {
 			err = errors.New("answer missing from result")
 		}
@@ -113,6 +113,7 @@ func TestQuestionToolBlocksForReply(t *testing.T) {
 }
 
 func TestWritePermissionDescriptionUsesCanonicalPath(t *testing.T) {
+	_, ws, _ := workspaceToolHarness(t)
 	target := filepath.Join(t.TempDir(), "target")
 	if err := os.WriteFile(target, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -121,7 +122,7 @@ func TestWritePermissionDescriptionUsesCanonicalPath(t *testing.T) {
 	if err := os.Symlink(target, alias); err != nil {
 		t.Fatal(err)
 	}
-	description, err := NewWritePermissionTool(nil).DescribeRequest(json.RawMessage(`{"path":"` + alias + `"}`))
+	description, err := NewWritePermissionTool(nil, ws, "session").DescribeRequest(json.RawMessage(`{"path":"` + alias + `"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,7 +137,7 @@ func TestWritePermissionRejectsWorkspacePath(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err := NewWritePermissionTool(nil).Plan(context.Background(), json.RawMessage(`{"path":"`+path+`"}`), CallContext{Workspace: ws, SessionID: "session"})
+	_, err := NewWritePermissionTool(nil, ws, "session").Plan(context.Background(), json.RawMessage(`{"path":"`+path+`"}`), CallContext{})
 	if err == nil || !strings.Contains(err.Error(), "workspace paths are already writable") {
 		t.Fatalf("error = %v", err)
 	}
@@ -144,7 +145,7 @@ func TestWritePermissionRejectsWorkspacePath(t *testing.T) {
 
 func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 	_, ws, changes := workspaceToolHarness(t)
-	tool := NewApplyPatchTool(changes)
+	tool := NewApplyPatchTool(changes, ws)
 	schema := string(tool.JSONSchema())
 	if !strings.Contains(schema, `"required":["patchText"]`) || strings.Contains(schema, `"required":["patch"]`) {
 		t.Fatalf("apply_patch schema is not OpenCode-compatible: %s", schema)
@@ -155,7 +156,7 @@ func TestApplyPatchUsesOpenCodePatchTextParameter(t *testing.T) {
 		}
 	}
 	raw := json.RawMessage(`{"patchText":"file\n<<<<<<< SEARCH\n=======\ncontent\n>>>>>>> REPLACE\n"}`)
-	planned, err := tool.Plan(context.Background(), raw, CallContext{Workspace: ws})
+	planned, err := tool.Plan(context.Background(), raw, CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,12 +202,12 @@ func TestApplyPatchPreservesTargetLineEndings(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			applyPatch := NewApplyPatchTool(changes)
-			plan, err := applyPatch.Plan(ctx, raw, CallContext{Workspace: ws})
+			applyPatch := NewApplyPatchTool(changes, ws)
+			plan, err := applyPatch.Plan(ctx, raw, CallContext{})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := applyPatch.Execute(ctx, plan, CallContext{Workspace: ws}); err != nil {
+			if _, err := applyPatch.Execute(ctx, plan, CallContext{}); err != nil {
 				t.Fatal(err)
 			}
 			got, err := os.ReadFile(path)
@@ -230,7 +231,7 @@ func (p patchSecurityProfile) Rules() []security.Rule { return p.rules }
 
 func TestApplyPatchHonorsOrderedSecurityRules(t *testing.T) {
 	ctx, ws, changes := workspaceToolHarness(t)
-	tool := NewApplyPatchTool(changes)
+	tool := NewApplyPatchTool(changes, ws)
 	workspaceFile := filepath.Join(ws.Root(), "workspace")
 	externalDirectory := t.TempDir()
 	externalFile := filepath.Join(externalDirectory, "plan.md")
@@ -260,11 +261,11 @@ func TestApplyPatchHonorsOrderedSecurityRules(t *testing.T) {
 	}
 
 	allowed := patchSecurityProfile{readOnly: true, rules: []security.Rule{{Path: externalFile, Action: security.ActionAllowWrite}}}
-	planned, err := tool.Plan(ctx, patch(externalFile), CallContext{Workspace: ws, SecurityProfile: allowed})
+	planned, err := tool.Plan(ctx, patch(externalFile), CallContext{SecurityProfile: allowed})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tool.Execute(ctx, planned, CallContext{Workspace: ws, SecurityProfile: allowed}); err != nil {
+	if _, err := tool.Execute(ctx, planned, CallContext{SecurityProfile: allowed}); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(externalFile); got != "new\n" {
@@ -274,14 +275,14 @@ func TestApplyPatchHonorsOrderedSecurityRules(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, err := tool.Plan(ctx, patch(sibling), CallContext{Workspace: ws, SecurityProfile: allowed}); !errors.Is(err, workspace.ErrOutsideRoot) {
+	if _, err := tool.Plan(ctx, patch(sibling), CallContext{SecurityProfile: allowed}); !errors.Is(err, workspace.ErrOutsideRoot) {
 		t.Fatalf("sibling plan error = %v, want ErrOutsideRoot", err)
 	}
-	planned, err = tool.Plan(ctx, patch(externalFile, workspaceFile), CallContext{Workspace: ws, SecurityProfile: allowed})
+	planned, err = tool.Plan(ctx, patch(externalFile, workspaceFile), CallContext{SecurityProfile: allowed})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tool.Execute(ctx, planned, CallContext{Workspace: ws, SecurityProfile: allowed}); err == nil {
+	if _, err := tool.Execute(ctx, planned, CallContext{SecurityProfile: allowed}); err == nil {
 		t.Fatal("mixed authorized and unauthorized patch succeeded")
 	}
 	if got := read(externalFile); got != "old\n" {
@@ -295,20 +296,20 @@ func TestApplyPatchHonorsOrderedSecurityRules(t *testing.T) {
 		{Path: externalDirectory, Action: security.ActionAllowWrite},
 		{Path: externalFile, Action: security.ActionDenyWrite},
 	}}
-	planned, err = tool.Plan(ctx, patch(externalFile), CallContext{Workspace: ws, SecurityProfile: denied})
+	planned, err = tool.Plan(ctx, patch(externalFile), CallContext{SecurityProfile: denied})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tool.Execute(ctx, planned, CallContext{Workspace: ws, SecurityProfile: denied}); err == nil {
+	if _, err := tool.Execute(ctx, planned, CallContext{SecurityProfile: denied}); err == nil {
 		t.Fatal("later deny_write rule was ignored")
 	}
 
 	writable := patchSecurityProfile{}
-	planned, err = tool.Plan(ctx, patch("workspace"), CallContext{Workspace: ws, SecurityProfile: writable})
+	planned, err = tool.Plan(ctx, patch("workspace"), CallContext{SecurityProfile: writable})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := tool.Execute(ctx, planned, CallContext{Workspace: ws, SecurityProfile: writable}); err != nil {
+	if _, err := tool.Execute(ctx, planned, CallContext{SecurityProfile: writable}); err != nil {
 		t.Fatal(err)
 	}
 	if got := read(workspaceFile); got != "new\n" {
@@ -336,7 +337,7 @@ func TestApplyPatchReportsProblematicSearchBlock(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			_, err = NewApplyPatchTool(changes).Plan(ctx, raw, CallContext{Workspace: ws})
+			_, err = NewApplyPatchTool(changes, ws).Plan(ctx, raw, CallContext{})
 			if !errors.Is(err, change.ErrConflict) || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("error = %v, want ErrConflict identifying the problematic SEARCH block", err)
 			}
@@ -363,7 +364,7 @@ func TestApplyPatchPlanReportsAllConflictBlocks(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := NewApplyPatchTool(changes).Plan(ctx, raw, CallContext{Workspace: ws})
+	plan, err := NewApplyPatchTool(changes, ws).Plan(ctx, raw, CallContext{})
 	if !errors.Is(err, change.ErrConflict) {
 		t.Fatalf("error = %v, want ErrConflict", err)
 	}
@@ -389,12 +390,12 @@ func changeAiderBlock(path, search, replace string) string {
 
 func TestApplyPatchFormatParameter(t *testing.T) {
 	_, ws, changes := workspaceToolHarness(t)
-	tool := NewApplyPatchTool(changes)
+	tool := NewApplyPatchTool(changes, ws)
 	if schema := string(tool.JSONSchema()); !strings.Contains(schema, `"enum":["aider","unified"]`) {
 		t.Fatalf("apply_patch schema is missing the format enum: %s", schema)
 	}
 	unified := json.RawMessage(`{"patchText":"--- /dev/null\n+++ b/created\n@@ -0,0 +1 @@\n+content\n","format":"unified"}`)
-	planned, err := tool.Plan(context.Background(), unified, CallContext{Workspace: ws})
+	planned, err := tool.Plan(context.Background(), unified, CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -404,13 +405,13 @@ func TestApplyPatchFormatParameter(t *testing.T) {
 	if described, err := tool.DescribeRequest(unified); err != nil || !strings.Contains(described, "unified diff") {
 		t.Fatalf("describe = %q, %v", described, err)
 	}
-	if _, err := tool.Plan(context.Background(), json.RawMessage(`{"patchText":"x","format":"bogus"}`), CallContext{Workspace: ws}); err == nil {
+	if _, err := tool.Plan(context.Background(), json.RawMessage(`{"patchText":"x","format":"bogus"}`), CallContext{}); err == nil {
 		t.Fatal("unknown format accepted")
 	}
 }
 
 func TestTodoToolSchemaUsesOpenCodeEnums(t *testing.T) {
-	schema := string(NewTodoWriteTool(nil).JSONSchema())
+	schema := string(NewTodoWriteTool(nil, "session").JSONSchema())
 	for _, expected := range []string{`"enum":["pending","in_progress","completed","cancelled"]`, `"enum":["high","medium","low"]`} {
 		if !strings.Contains(schema, expected) {
 			t.Fatalf("todo schema missing %s: %s", expected, schema)

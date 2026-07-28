@@ -10,11 +10,12 @@ import (
 
 type TodoWriteTool struct {
 	BasePresentation
-	Service *session.TodoService
+	Service   *session.TodoService
+	SessionID string
 }
 
-func NewTodoWriteTool(service *session.TodoService) *TodoWriteTool {
-	return &TodoWriteTool{Service: service}
+func NewTodoWriteTool(service *session.TodoService, sessionID string) *TodoWriteTool {
+	return &TodoWriteTool{Service: service, SessionID: sessionID}
 }
 func (*TodoWriteTool) ID() string { return "todowrite" }
 func (*TodoWriteTool) Presentation() Presentation {
@@ -49,15 +50,11 @@ func (t *TodoWriteTool) Plan(_ context.Context, raw json.RawMessage, _ CallConte
 	}
 	return NewPlan(t.ID(), raw, nil, nil, input)
 }
-func (t *TodoWriteTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	service := t.Service
-	if service == nil {
-		service = call.Todos
-	}
-	if service == nil || call.SessionID == "" {
+func (t *TodoWriteTool) Execute(ctx context.Context, plan Plan, _ CallContext) (Result, error) {
+	if t.Service == nil || t.SessionID == "" {
 		return Result{}, errors.New("todowrite: service and session are required")
 	}
-	items, err := service.Replace(ctx, call.SessionID, plan.Data.(todoWriteInput).Todos)
+	items, err := t.Service.Replace(ctx, t.SessionID, plan.Data.(todoWriteInput).Todos)
 	if err != nil {
 		return Result{}, err
 	}

@@ -16,14 +16,14 @@ import (
 func TestDeclaredPresentationReproducesLegacyLabels(t *testing.T) {
 	registry := tool.NewRegistry()
 	for _, item := range []tool.Tool{
-		tool.NewReadTool(tool.ReadConfig{}),
-		tool.NewGlobTool(tool.GlobConfig{}),
-		tool.NewRgTool(tool.RgConfig{}),
-		tool.NewApplyPatchTool(nil),
-		tool.NewExecCommandTool(nil),
-		tool.NewWriteStdinTool(nil),
-		tool.NewTodoWriteTool(nil),
-		tool.NewQuestionTool(nil),
+		tool.NewReadTool(tool.ReadConfig{}, nil),
+		tool.NewGlobTool(tool.GlobConfig{}, nil),
+		tool.NewRgTool(tool.RgConfig{}, nil),
+		tool.NewApplyPatchTool(nil, nil),
+		tool.NewExecCommandTool(nil, nil, ""),
+		tool.NewWriteStdinTool(nil, ""),
+		tool.NewTodoWriteTool(nil, ""),
+		tool.NewQuestionTool(nil, ""),
 		tool.NewSkillTool(nil),
 		tool.NewWebFetchTool(nil),
 	} {
@@ -89,8 +89,8 @@ func TestModelinePresentationSurvivesToolAPIProjection(t *testing.T) {
 func TestDeclaredRenderingMatchesLegacyAndFallsBack(t *testing.T) {
 	registry := tool.NewRegistry()
 	for _, item := range []tool.Tool{
-		tool.NewTodoWriteTool(nil),
-		tool.NewExecCommandTool(nil), tool.NewWriteStdinTool(nil), tool.NewReadTool(tool.ReadConfig{}),
+		tool.NewTodoWriteTool(nil, ""),
+		tool.NewExecCommandTool(nil, nil, ""), tool.NewWriteStdinTool(nil, ""), tool.NewReadTool(tool.ReadConfig{}, nil),
 	} {
 		if err := registry.Register(item); err != nil {
 			t.Fatal(err)

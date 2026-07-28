@@ -16,6 +16,8 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type RgConfig struct {
@@ -27,8 +29,9 @@ type RgConfig struct {
 }
 type RgTool struct {
 	BasePresentation
-	Config  RgConfig
-	command rgCommand
+	Config    RgConfig
+	Workspace *workspace.Workspace
+	command   rgCommand
 }
 
 type rgCommand interface {
@@ -40,7 +43,7 @@ type cliRgCommand struct {
 	path string
 }
 
-func NewRgTool(c RgConfig) *RgTool {
+func NewRgTool(c RgConfig, ws *workspace.Workspace) *RgTool {
 	if c.MaxFiles <= 0 {
 		c.MaxFiles = 100000
 	}
@@ -57,7 +60,7 @@ func NewRgTool(c RgConfig) *RgTool {
 		c.Timeout = 5 * time.Second
 	}
 	path, _ := exec.LookPath("rg")
-	return &RgTool{Config: c, command: cliRgCommand{path: path}}
+	return &RgTool{Config: c, Workspace: ws, command: cliRgCommand{path: path}}
 }
 func (*RgTool) ID() string { return "rg" }
 func (*RgTool) Presentation() Presentation {
@@ -188,7 +191,7 @@ func (r *rgLineReader) drain() error {
 func (r *rgLineReader) truncated() bool { return r.prefixStopped || r.length > r.maxPrefix }
 
 func (t *RgTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if call.Workspace == nil {
+	if t.Workspace == nil {
 		return Plan{}, errors.New("workspace is required")
 	}
 	var input rgInput
@@ -214,7 +217,7 @@ func (t *RgTool) Plan(ctx context.Context, raw json.RawMessage, call CallContext
 	if path == "" {
 		path = "."
 	}
-	root, err := call.Workspace.ResolveReadOnly(path)
+	root, err := t.Workspace.ResolveReadOnly(path)
 	if err != nil {
 		return Plan{}, err
 	}
@@ -233,7 +236,7 @@ func (t *RgTool) Execute(ctx context.Context, plan Plan, call CallContext) (Resu
 	if requestedPath == "" {
 		requestedPath = "."
 	}
-	revalidated, err := call.Workspace.ResolveReadOnly(requestedPath)
+	revalidated, err := t.Workspace.ResolveReadOnly(requestedPath)
 	if err != nil {
 		return Result{}, err
 	}
@@ -269,7 +272,7 @@ func (t *RgTool) Execute(ctx context.Context, plan Plan, call CallContext) (Resu
 				if e != nil || !p.includes(rel) {
 					return nil
 				}
-				resolved, e := call.Workspace.ResolveReadOnlyWithin(p.Root, path)
+				resolved, e := t.Workspace.ResolveReadOnlyWithin(p.Root, path)
 				if e == nil {
 					files = append(files, resolved)
 					if len(files) > t.Config.MaxFiles {
@@ -285,7 +288,7 @@ func (t *RgTool) Execute(ctx context.Context, plan Plan, call CallContext) (Resu
 	}
 	sort.Strings(files)
 	if t.command != nil && t.command.Available() {
-		return t.command.Search(ctx, call.Workspace.Root(), files, p.Input, t.Config)
+		return t.command.Search(ctx, t.Workspace.Root(), files, p.Input, t.Config)
 	}
 	return t.searchInternal(ctx, files, p, call)
 }
@@ -327,7 +330,7 @@ func (t *RgTool) searchInternal(ctx context.Context, files []string, p rgPlan, c
 			}
 			lineNo++
 			if matched {
-				rel, _ := filepath.Rel(call.Workspace.Root(), path)
+				rel, _ := filepath.Rel(t.Workspace.Root(), path)
 				out.WriteString(filepath.ToSlash(rel))
 				out.WriteByte(':')
 				out.WriteString(strconv.Itoa(lineNo))

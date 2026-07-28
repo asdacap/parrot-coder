@@ -30,7 +30,7 @@ func TestQueueToolsLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	call := CallContext{SessionID: "redirected-session"}
+	call := CallContext{}
 	tests := []struct {
 		kind  string
 		input string

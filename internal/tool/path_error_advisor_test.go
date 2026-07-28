@@ -111,13 +111,13 @@ func TestPathErrorAdvisorIntegratesWithWorkspacePathTools(t *testing.T) {
 		tool  Tool
 		input json.RawMessage
 	}{
-		{name: "read", tool: NewReadTool(ReadConfig{}), input: json.RawMessage(`{"path":"old/config.go"}`)},
-		{name: "rg", tool: NewRgTool(RgConfig{}), input: json.RawMessage(`{"pattern":"package","path":"old/config.go"}`)},
-		{name: "apply patch", tool: NewApplyPatchTool(change.NewService(change.Config{})), input: patchInput},
+		{name: "read", tool: NewReadTool(ReadConfig{}, ws), input: json.RawMessage(`{"path":"old/config.go"}`)},
+		{name: "rg", tool: NewRgTool(RgConfig{}, ws), input: json.RawMessage(`{"pattern":"package","path":"old/config.go"}`)},
+		{name: "apply patch", tool: NewApplyPatchTool(change.NewService(change.Config{}), ws), input: patchInput},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := pathErrorAdvisorExecute(t, test.tool, test.input, CallContext{Workspace: ws}, NewPathErrorAdvisor(ws.Root(), nil))
+			err := pathErrorAdvisorExecute(t, test.tool, test.input, CallContext{}, NewPathErrorAdvisor(ws.Root(), nil))
 			if !errors.Is(err, os.ErrNotExist) {
 				t.Fatalf("error identity = %v, want os.ErrNotExist", err)
 			}
@@ -140,7 +140,7 @@ func TestPathErrorAdvisorSuggestsOnlyExactPatchContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = pathErrorAdvisorExecute(t, NewApplyPatchTool(change.NewService(change.Config{})), input, CallContext{Workspace: ws}, NewPathErrorAdvisor(ws.Root(), nil))
+	err = pathErrorAdvisorExecute(t, NewApplyPatchTool(change.NewService(change.Config{}), ws), input, CallContext{}, NewPathErrorAdvisor(ws.Root(), nil))
 	if !strings.Contains(err.Error(), "Files containing the exact requested text:\n- pkg/renamed.go") {
 		t.Fatalf("error lacks exact content advice: %s", err)
 	}

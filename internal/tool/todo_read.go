@@ -9,11 +9,12 @@ import (
 
 type TodoReadTool struct {
 	BasePresentation
-	Service *session.TodoService
+	Service   *session.TodoService
+	SessionID string
 }
 
-func NewTodoReadTool(service *session.TodoService) *TodoReadTool {
-	return &TodoReadTool{Service: service}
+func NewTodoReadTool(service *session.TodoService, sessionID string) *TodoReadTool {
+	return &TodoReadTool{Service: service, SessionID: sessionID}
 }
 func (*TodoReadTool) ID() string { return "todoread" }
 func (t *TodoReadTool) Descriptor() Descriptor {
@@ -28,16 +29,11 @@ func (*TodoReadTool) JSONSchema() json.RawMessage {
 func (t *TodoReadTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
 	return NewPlan(t.ID(), raw, nil, nil, nil)
 }
-func (t *TodoReadTool) Execute(ctx context.Context, _ Plan, call CallContext) (Result, error) {
-
-	service := t.Service
-	if service == nil {
-		service = call.Todos
-	}
-	if service == nil || call.SessionID == "" {
+func (t *TodoReadTool) Execute(ctx context.Context, _ Plan, _ CallContext) (Result, error) {
+	if t.Service == nil || t.SessionID == "" {
 		return Result{}, errors.New("todoread: service and session are required")
 	}
-	items, err := service.List(ctx, call.SessionID)
+	items, err := t.Service.List(ctx, t.SessionID)
 	if err != nil {
 		return Result{}, err
 	}

@@ -1233,7 +1233,7 @@ func TestAgentToolSessionResolvesDirectParentAndDescendantsOnly(t *testing.T) {
 	}
 
 	send := &tool.AgentTool{Kind: "agent_send", Session: session, Agents: func(string) (bool, error) { return false, nil }}
-	call := tool.CallContext{SessionID: subject.ID(), Agent: ExplorerID}
+	call := tool.CallContext{Agent: ExplorerID}
 	plan, err := send.Plan(context.Background(), json.RawMessage(`{"session_id":"direct-parent","message":"report upward"}`), call)
 	if err != nil {
 		t.Fatal(err)
@@ -2456,7 +2456,7 @@ func TestTurnSteerSignalTracksAdmissionAndPromotedSequences(t *testing.T) {
 
 func TestRunnerSteerYieldsTaskWaitAndContinuesWithSteer(t *testing.T) {
 	controller := &blockingTaskController{started: make(chan struct{})}
-	wait := &tool.WaitTool{Kind: managedtask.KindShell, Controller: controller}
+	wait := &tool.WaitTool{Kind: managedtask.KindShell, Controller: controller, SessionID: "session"}
 	fake := &fakeProvider{stream: func(index int, _ context.Context, request protocol.Request) (provider.Stream, error) {
 		if index == 0 {
 			call := protocol.ToolCall{ID: "wait", Name: "wait_process", Input: json.RawMessage(`{"process_id":"proc_test"}`)}

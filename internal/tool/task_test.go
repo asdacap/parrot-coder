@@ -32,12 +32,12 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 		}
 		return managedtask.Result{SessionID: childSessionID, Kind: managedtask.KindAgent, Status: "succeeded", Output: "done"}, nil
 	}}
-	item := &WaitTool{Kind: managedtask.KindAgent, Controller: controller}
-	plan, err := item.Plan(context.Background(), json.RawMessage(`{"session_id":"session-agent"}`), CallContext{SessionID: "session"})
+	item := &WaitTool{Kind: managedtask.KindAgent, Controller: controller, SessionID: "session"}
+	plan, err := item.Plan(context.Background(), json.RawMessage(`{"session_id":"session-agent"}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := item.Execute(context.Background(), plan, CallContext{SessionID: "session"})
+	result, err := item.Execute(context.Background(), plan, CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -52,11 +52,11 @@ func TestWaitTaskReturnsCompletionAndYieldsWithoutFailure(t *testing.T) {
 		<-ctx.Done()
 		return managedtask.Result{SessionID: childSessionID, Kind: managedtask.KindAgent, Status: "running"}, ctx.Err()
 	}
-	plan, err = item.Plan(context.Background(), json.RawMessage(`{"session_id":"session-agent","yield_after_ms":1}`), CallContext{SessionID: "session"})
+	plan, err = item.Plan(context.Background(), json.RawMessage(`{"session_id":"session-agent","yield_after_ms":1}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = item.Execute(context.Background(), plan, CallContext{SessionID: "session"})
+	result, err = item.Execute(context.Background(), plan, CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,8 +93,8 @@ func TestWaitTaskYieldsForNewAndPendingSteer(t *testing.T) {
 				}
 				return result, ctx.Err()
 			}}
-			item := &WaitTool{Kind: test.kind, Controller: controller}
-			plan, err := item.Plan(context.Background(), json.RawMessage(test.raw), CallContext{SessionID: "session"})
+			item := &WaitTool{Kind: test.kind, Controller: controller, SessionID: "session"}
+			plan, err := item.Plan(context.Background(), json.RawMessage(test.raw), CallContext{})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -102,7 +102,7 @@ func TestWaitTaskYieldsForNewAndPendingSteer(t *testing.T) {
 			steer := make(chan struct{})
 			done := make(chan Result, 1)
 			go func() {
-				result, executeErr := item.Execute(context.Background(), plan, CallContext{SessionID: "session", Steer: steer})
+				result, executeErr := item.Execute(context.Background(), plan, CallContext{Steer: steer})
 				if executeErr != nil {
 					t.Errorf("Execute() error = %v", executeErr)
 				}
@@ -117,7 +117,7 @@ func TestWaitTaskYieldsForNewAndPendingSteer(t *testing.T) {
 
 			pending := make(chan struct{})
 			close(pending)
-			result, err = item.Execute(context.Background(), plan, CallContext{SessionID: "session", Steer: pending})
+			result, err = item.Execute(context.Background(), plan, CallContext{Steer: pending})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -134,16 +134,15 @@ func TestWaitTaskRejectsInvalidRequestsAndPropagatesCancellation(t *testing.T) {
 		<-ctx.Done()
 		return managedtask.Result{}, ctx.Err()
 	}}
-	item := &WaitTool{Kind: managedtask.KindAgent, Controller: controller}
+	item := &WaitTool{Kind: managedtask.KindAgent, Controller: controller, SessionID: "session"}
 	for _, test := range []struct {
 		name string
 		raw  string
 		call CallContext
 	}{
-		{name: "missing caller", raw: `{"session_id":"task_agent"}`},
-		{name: "missing task", raw: `{}`, call: CallContext{SessionID: "session"}},
-		{name: "negative yield", raw: `{"session_id":"task_agent","yield_after_ms":-1}`, call: CallContext{SessionID: "session"}},
-		{name: "overflowing yield", raw: `{"session_id":"task_agent","yield_after_ms":9223372036854775807}`, call: CallContext{SessionID: "session"}},
+		{name: "missing task", raw: `{}`, call: CallContext{}},
+		{name: "negative yield", raw: `{"session_id":"task_agent","yield_after_ms":-1}`, call: CallContext{}},
+		{name: "overflowing yield", raw: `{"session_id":"task_agent","yield_after_ms":9223372036854775807}`, call: CallContext{}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := item.Plan(context.Background(), json.RawMessage(test.raw), test.call); err == nil {
@@ -152,13 +151,13 @@ func TestWaitTaskRejectsInvalidRequestsAndPropagatesCancellation(t *testing.T) {
 		})
 	}
 
-	plan, err := item.Plan(context.Background(), json.RawMessage(`{"session_id":"task_agent"}`), CallContext{SessionID: "session"})
+	plan, err := item.Plan(context.Background(), json.RawMessage(`{"session_id":"task_agent"}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := item.Execute(ctx, plan, CallContext{SessionID: "session"}); err != context.Canceled {
+	if _, err := item.Execute(ctx, plan, CallContext{}); err != context.Canceled {
 		t.Fatalf("cancellation error = %v", err)
 	}
 }
@@ -168,12 +167,12 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 	controller := &recordingTaskController{interrupted: managedtask.Active{
 		ProcessID: "proc_test", SessionID: "session", Kind: managedtask.KindShell, Status: "canceled", StartedAt: started,
 	}}
-	list := &TaskTool{Kind: "task_list_active", Controller: controller}
-	plan, err := list.Plan(context.Background(), json.RawMessage(`{}`), CallContext{SessionID: "session"})
+	list := &TaskTool{Kind: "task_list_active", Controller: controller, SessionID: "session"}
+	plan, err := list.Plan(context.Background(), json.RawMessage(`{}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := list.Execute(context.Background(), plan, CallContext{SessionID: "session"})
+	result, err := list.Execute(context.Background(), plan, CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -181,12 +180,12 @@ func TestTaskToolsReturnStableJSONShapes(t *testing.T) {
 		t.Fatalf("empty list = %s", result.Text)
 	}
 
-	interrupt := &TaskTool{Kind: "task_interrupt", Controller: controller}
-	plan, err = interrupt.Plan(context.Background(), json.RawMessage(`{"process_id":"proc_test"}`), CallContext{SessionID: "session"})
+	interrupt := &TaskTool{Kind: "task_interrupt", Controller: controller, SessionID: "session"}
+	plan, err = interrupt.Plan(context.Background(), json.RawMessage(`{"process_id":"proc_test"}`), CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err = interrupt.Execute(context.Background(), plan, CallContext{SessionID: "session"})
+	result, err = interrupt.Execute(context.Background(), plan, CallContext{})
 	if err != nil {
 		t.Fatal(err)
 	}

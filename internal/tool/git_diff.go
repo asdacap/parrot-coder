@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 const maxGitDiffBytes = 4 << 20
@@ -15,10 +17,11 @@ const maxGitDiffBytes = 4 << 20
 // it to inspect changes without receiving the general shell tool.
 type GitDiffTool struct {
 	BasePresentation
+	Workspace *workspace.Workspace
 }
 
-func NewGitDiffTool() Tool        { return &GitDiffTool{} }
-func (t *GitDiffTool) ID() string { return "git_diff" }
+func NewGitDiffTool(ws *workspace.Workspace) Tool { return &GitDiffTool{Workspace: ws} }
+func (t *GitDiffTool) ID() string                 { return "git_diff" }
 func (t *GitDiffTool) Descriptor() Descriptor {
 	return Descriptor{
 		ID:           t.ID(),
@@ -47,7 +50,7 @@ type gitDiffInput struct {
 }
 
 func (t *GitDiffTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if call.Workspace == nil {
+	if t.Workspace == nil {
 		return Plan{}, errors.New("git_diff: workspace is required")
 	}
 	var input gitDiffInput
@@ -73,10 +76,10 @@ func (t *GitDiffTool) Plan(_ context.Context, raw json.RawMessage, call CallCont
 
 func (t *GitDiffTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
 	input, ok := plan.Data.(gitDiffInput)
-	if !ok || call.Workspace == nil {
+	if !ok || t.Workspace == nil {
 		return Result{}, errors.New("git_diff: incompatible plan or missing workspace")
 	}
-	root := call.Workspace.Root()
+	root := t.Workspace.Root()
 	var output string
 	var truncated bool
 	var err error

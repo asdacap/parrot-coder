@@ -717,7 +717,7 @@ func (r *agentSessionRepository) bind(dto session.AgentSessionDto, parent AgentS
 		return nil, err
 	}
 	candidate.toolSnapshot = snapshot
-	candidate.toolExecutor = tool.Executor{Snapshot: snapshot, Permissions: r.toolAuthorizer, ErrorAdvisor: r.toolErrorAdvisor, MaxInputBytes: r.config.ToolMaxInputBytes, MaxOutputBytes: r.config.ToolMaxOutputBytes}
+	candidate.toolExecutor = tool.Executor{Snapshot: snapshot, Permissions: r.toolAuthorizer, ErrorAdvisor: r.toolErrorAdvisor, Workspace: r.workspace, Outputs: r.outputs, SessionID: dto.ID, MaxInputBytes: r.config.ToolMaxInputBytes, MaxOutputBytes: r.config.ToolMaxOutputBytes}
 	if systemPromptProvider == nil {
 		systemPromptProvider = emptySystemPrompt{}
 	}
@@ -754,9 +754,10 @@ func (s agentSystemContextSession) ToolSystemGuidance() string {
 
 type agentToolSession struct{ session *agentSession }
 
-func (s agentToolSession) SessionID() string   { return s.session.ID() }
-func (s agentToolSession) SessionName() string { return s.session.Name() }
-func (s agentToolSession) IsSubagent() bool    { return s.session.Parent() != nil }
+func (s agentToolSession) SessionID() string               { return s.session.ID() }
+func (s agentToolSession) SessionName() string             { return s.session.Name() }
+func (s agentToolSession) IsSubagent() bool                { return s.session.Parent() != nil }
+func (s agentToolSession) Workspace() *workspace.Workspace { return s.session.workspace }
 func (s agentToolSession) Queues() tool.QueueService {
 	if s.session == nil || s.session.user == nil {
 		return nil

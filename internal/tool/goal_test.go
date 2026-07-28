@@ -20,7 +20,7 @@ func TestGetGoalWithoutGoal(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	result, err := NewGetGoalTool(session.NewGoalService(registry, repository)).Execute(ctx, Plan{}, CallContext{SessionID: created.ID})
+	result, err := NewGetGoalTool(session.NewGoalService(registry, repository), created.ID).Execute(ctx, Plan{}, CallContext{})
 	if err != nil || result.Text != "no goal set" {
 		t.Fatalf("result = %#v, error = %v", result, err)
 	}

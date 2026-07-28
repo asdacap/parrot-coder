@@ -143,8 +143,8 @@ func TestGitDiffToolReadsUncommittedChangesAndRejectsOptionRefs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	item := NewGitDiffTool()
-	call := CallContext{Workspace: ws}
+	item := NewGitDiffTool(ws)
+	call := CallContext{}
 	plan, err := item.Plan(context.Background(), json.RawMessage(`{"target":"uncommitted"}`), call)
 	if err != nil {
 		t.Fatal(err)

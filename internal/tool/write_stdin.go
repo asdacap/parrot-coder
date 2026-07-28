@@ -14,7 +14,8 @@ const writeStdinSchema = `{"type":"object","properties":{"process_id":{"type":"s
 
 type WriteStdinTool struct {
 	BasePresentation
-	Runner *process.Runner
+	Runner    *process.Runner
+	SessionID string
 }
 
 type writeStdinInput struct {
@@ -24,8 +25,8 @@ type writeStdinInput struct {
 	MaxOutputTokens *int   `json:"max_output_tokens"`
 }
 
-func NewWriteStdinTool(runner *process.Runner) *WriteStdinTool {
-	return &WriteStdinTool{Runner: runner}
+func NewWriteStdinTool(runner *process.Runner, sessionID string) *WriteStdinTool {
+	return &WriteStdinTool{Runner: runner, SessionID: sessionID}
 }
 
 func (*WriteStdinTool) ID() string { return "write_stdin" }
@@ -82,16 +83,12 @@ func (t *WriteStdinTool) Plan(_ context.Context, raw json.RawMessage, _ CallCont
 }
 
 func (t *WriteStdinTool) Execute(ctx context.Context, plan Plan, call CallContext) (Result, error) {
-	runner := t.Runner
-	if runner == nil {
-		runner = call.Processes
-	}
-	if runner == nil {
-		return Result{}, errors.New("write_stdin: process runner is required")
+	if t.Runner == nil || t.SessionID == "" {
+		return Result{}, errors.New("write_stdin: process runner and session are required")
 	}
 	input := plan.Data.(writeStdinInput)
-	result, err := runner.WritePersistent(ctx, process.PersistentWriteRequest{
-		SessionID: call.SessionID, ProcessID: input.ProcessID, Chars: input.Chars,
+	result, err := t.Runner.WritePersistent(ctx, process.PersistentWriteRequest{
+		SessionID: t.SessionID, ProcessID: input.ProcessID, Chars: input.Chars,
 		Yield:           time.Duration(input.YieldTimeMS) * time.Millisecond,
 		MaxOutputTokens: input.MaxOutputTokens, Output: call.Output,
 	})

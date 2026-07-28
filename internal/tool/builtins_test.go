@@ -12,6 +12,7 @@ import (
 	"github.com/amirulashraf/parrot-coder/internal/skill"
 	statusinfo "github.com/amirulashraf/parrot-coder/internal/status"
 	"github.com/amirulashraf/parrot-coder/internal/webfetch"
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type recordingErrorAdvisor struct{ advice ErrorAdvice }
@@ -22,9 +23,10 @@ func (a *recordingErrorAdvisor) Advise(_ context.Context, err error, advice Erro
 }
 
 type builtinTestAgentSession struct {
-	id       string
-	subagent bool
-	queues   QueueService
+	id        string
+	subagent  bool
+	queues    QueueService
+	workspace *workspace.Workspace
 }
 
 func (s builtinTestAgentSession) SessionID() string {
@@ -33,10 +35,11 @@ func (s builtinTestAgentSession) SessionID() string {
 	}
 	return "session"
 }
-func (builtinTestAgentSession) SessionName() string    { return "test-session" }
-func (s builtinTestAgentSession) IsSubagent() bool     { return s.subagent }
-func (s builtinTestAgentSession) Queues() QueueService { return s.queues }
-func (*agentTestSession) Queues() QueueService         { return nil }
+func (builtinTestAgentSession) SessionName() string               { return "test-session" }
+func (s builtinTestAgentSession) IsSubagent() bool                { return s.subagent }
+func (s builtinTestAgentSession) Workspace() *workspace.Workspace { return s.workspace }
+func (s builtinTestAgentSession) Queues() QueueService            { return s.queues }
+func (*agentTestSession) Queues() QueueService                    { return nil }
 func (builtinTestAgentSession) CreateAgent(context.Context, string, string, string, string, string) (ChildAgent, error) {
 	return nil, errors.New("not implemented")
 }
@@ -54,7 +57,7 @@ func TestQueueToolsHonorCancellation(t *testing.T) {
 				t.Fatal(err)
 			}
 			item := &QueueTool{Kind: kind, Store: store}
-			if _, err := item.Plan(ctx, json.RawMessage(`{"name":"work-now","item":"x"}`), CallContext{SessionID: "session"}); !errors.Is(err, context.Canceled) {
+			if _, err := item.Plan(ctx, json.RawMessage(`{"name":"work-now","item":"x"}`), CallContext{}); !errors.Is(err, context.Canceled) {
 				t.Fatalf("Plan() error = %v, want context canceled", err)
 			}
 		})
@@ -88,8 +91,12 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstState := builtinTestAgentSession{id: "first", queues: firstManager}
-	secondState := builtinTestAgentSession{id: "second", queues: secondManager}
+	ws, err := workspace.New(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstState := builtinTestAgentSession{id: "first", queues: firstManager, workspace: ws}
+	secondState := builtinTestAgentSession{id: "second", queues: secondManager, workspace: ws}
 	first, err := providers.Materialize(firstState)
 	if err != nil {
 		t.Fatal(err)
@@ -98,9 +105,12 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	child, err := providers.Materialize(builtinTestAgentSession{id: "child", subagent: true, queues: firstManager})
+	child, err := providers.Materialize(builtinTestAgentSession{id: "child", subagent: true, queues: firstManager, workspace: ws})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if _, err := providers.Materialize(builtinTestAgentSession{id: "invalid", queues: firstManager}); err == nil {
+		t.Fatal("materialized tools without a workspace")
 	}
 	if _, ok := child.tools["question"]; ok {
 		t.Fatal("question tool was materialized for a subagent")
@@ -117,6 +127,15 @@ func TestBuiltinProvidersDefinitions(t *testing.T) {
 		if item == second.tools[id] {
 			t.Fatalf("tool %q was reused across sessions", id)
 		}
+	}
+	firstRead, ok := unwrapTool(first.tools["read"]).(*ReadTool)
+	if !ok || firstRead.Workspace != ws {
+		t.Fatalf("read tool workspace = %#v, want bound workspace", firstRead)
+	}
+	firstGoal, firstOK := unwrapTool(first.tools["get_goal"]).(*GetGoalTool)
+	secondGoal, secondOK := unwrapTool(second.tools["get_goal"]).(*GetGoalTool)
+	if !firstOK || !secondOK || firstGoal.SessionID != "first" || secondGoal.SessionID != "second" {
+		t.Fatalf("goal tool sessions = %#v, %#v", firstGoal, secondGoal)
 	}
 	for _, id := range []string{"queue_create", "queue_info", "queue_listen", "queue_push", "queue_take"} {
 		firstQueue := first.tools[id].(*QueueTool)

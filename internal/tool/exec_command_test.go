@@ -60,8 +60,8 @@ func TestYieldTimeDescriptionsMentionAutomaticResultDelivery(t *testing.T) {
 		schema     json.RawMessage
 		wantTiming string
 	}{
-		{"exec_command", NewExecCommandTool(nil).JSONSchema(), "Defaults to 10000 ms; effective range is 250-30000 ms."},
-		{"write_stdin", NewWriteStdinTool(nil).JSONSchema(), "Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."},
+		{"exec_command", NewExecCommandTool(nil, nil, "session").JSONSchema(), "Defaults to 10000 ms; effective range is 250-30000 ms."},
+		{"write_stdin", NewWriteStdinTool(nil, "session").JSONSchema(), "Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default."},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

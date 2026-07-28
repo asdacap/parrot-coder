@@ -32,15 +32,12 @@ func mutationToolPlan(toolID string, raw json.RawMessage, planned change.Plan, w
 	return NewPlan(toolID, raw, nil, review, mutationPlan{Change: planned, Workspace: ws})
 }
 
-func executeMutation(ctx context.Context, changes *change.Service, plan Plan, call CallContext) (Result, error) {
-	if changes == nil {
-		changes = call.Changes
-	}
-	if changes == nil || call.Workspace == nil {
+func executeMutation(ctx context.Context, changes *change.Service, ws *workspace.Workspace, plan Plan) (Result, error) {
+	if changes == nil || ws == nil {
 		return Result{}, errors.New("mutation tool requires change and workspace services")
 	}
 	planned, ok := plan.Data.(mutationPlan)
-	if !ok || planned.Workspace == nil || planned.Workspace.Root() != call.Workspace.Root() {
+	if !ok || planned.Workspace == nil || planned.Workspace.Root() != ws.Root() {
 		return Result{}, errors.New("mutation tool received incompatible plan")
 	}
 	if err := changes.Commit(ctx, planned.Workspace, planned.Change); err != nil {

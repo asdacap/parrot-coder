@@ -6,6 +6,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/amirulashraf/parrot-coder/internal/workspace"
 )
 
 type agentTestChild struct {
@@ -33,9 +35,10 @@ type agentTestSession struct {
 	}
 }
 
-func (*agentTestSession) SessionID() string     { return "caller-session" }
-func (s *agentTestSession) SessionName() string { return s.name }
-func (*agentTestSession) IsSubagent() bool      { return true }
+func (*agentTestSession) SessionID() string               { return "caller-session" }
+func (s *agentTestSession) SessionName() string           { return s.name }
+func (*agentTestSession) IsSubagent() bool                { return true }
+func (*agentTestSession) Workspace() *workspace.Workspace { return nil }
 func (s *agentTestSession) CreateAgent(_ context.Context, callerAgent, prompt, agent, model, name string) (ChildAgent, error) {
 	s.created.callerAgent = callerAgent
 	s.created.prompt = prompt
@@ -75,7 +78,7 @@ func TestAgentSendTrustRelationshipMatrix(t *testing.T) {
 			send := &AgentTool{Kind: agentSendID, Session: session, Agents: func(agent string) (bool, error) {
 				return agent == "explorer", nil
 			}}
-			call := CallContext{SessionID: session.SessionID(), Agent: testCase.caller}
+			call := CallContext{Agent: testCase.caller}
 			plan, err := send.Plan(context.Background(), json.RawMessage(`{"session_id":"friendly-target","message":"exact\nmessage"}`), call)
 			if testCase.wantError {
 				if err == nil || !strings.Contains(err.Error(), "cannot message writable agent") {
@@ -124,7 +127,7 @@ func TestAgentToolsContract(t *testing.T) {
 		agentSpawnID: &AgentTool{Kind: agentSpawnID, Session: session, Agents: lookup},
 		agentSendID:  &AgentTool{Kind: agentSendID, Session: session, Agents: lookup},
 	}
-	call := CallContext{SessionID: "root", Agent: "build", ToolCallID: "call-1"}
+	call := CallContext{Agent: "build", ToolCallID: "call-1"}
 	spawn := tools[agentSpawnID]
 	spawnDescriptor := spawn.Descriptor()
 	if description := spawnDescriptor.Description; !strings.Contains(description, "final result will automatically be sent to the caller") || !strings.Contains(description, "blocked") || !strings.Contains(description, "interrupt") {
@@ -136,7 +139,7 @@ func TestAgentToolsContract(t *testing.T) {
 	if schema := string(spawn.JSONSchema()); !strings.Contains(schema, "friendly name for easy identification") || !strings.Contains(schema, "inherit the parent's complete selector") || strings.Contains(schema, "UI name") {
 		t.Fatalf("agent_spawn schema = %s", schema)
 	}
-	if _, err := spawn.Plan(context.Background(), json.RawMessage(`{"prompt":"write","agent":"build"}`), CallContext{SessionID: "root", Agent: "plan"}); err == nil {
+	if _, err := spawn.Plan(context.Background(), json.RawMessage(`{"prompt":"write","agent":"build"}`), CallContext{Agent: "plan"}); err == nil {
 		t.Fatal("read-only caller delegated to writable agent")
 	}
 	execute := func(kind, input string) Result {

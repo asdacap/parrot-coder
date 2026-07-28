@@ -20,14 +20,15 @@ type TaskTool struct {
 	BasePresentation
 	Kind       string
 	Controller TaskController
+	SessionID  string
 }
 
-func NewTaskTools(controller TaskController) []Tool {
+func NewTaskTools(controller TaskController, sessionID string) []Tool {
 	return []Tool{
-		&TaskTool{Kind: "task_interrupt", Controller: controller},
-		&TaskTool{Kind: "task_list_active", Controller: controller},
-		&WaitTool{Kind: managedtask.KindAgent, Controller: controller},
-		&WaitTool{Kind: managedtask.KindShell, Controller: controller},
+		&TaskTool{Kind: "task_interrupt", Controller: controller, SessionID: sessionID},
+		&TaskTool{Kind: "task_list_active", Controller: controller, SessionID: sessionID},
+		&WaitTool{Kind: managedtask.KindAgent, Controller: controller, SessionID: sessionID},
+		&WaitTool{Kind: managedtask.KindShell, Controller: controller, SessionID: sessionID},
 	}
 }
 
@@ -87,8 +88,8 @@ func (i taskInput) identity() (managedtask.Kind, string, error) {
 	}
 }
 
-func (t *TaskTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if t.Controller == nil || call.SessionID == "" {
+func (t *TaskTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
+	if t.Controller == nil || t.SessionID == "" {
 		return Plan{}, errors.New("task: controller and caller session are required")
 	}
 	var input taskInput
@@ -117,13 +118,13 @@ func (t *TaskTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 		if err != nil {
 			return Result{}, err
 		}
-		item, err := t.Controller.InterruptKind(ctx, call.SessionID, identifier, kind)
+		item, err := t.Controller.InterruptKind(ctx, t.SessionID, identifier, kind)
 		if err != nil {
 			return Result{}, err
 		}
 		return taskResult(item), nil
 	}
-	items := t.Controller.ListActive(call.SessionID)
+	items := t.Controller.ListActive(t.SessionID)
 	if items == nil {
 		items = []managedtask.Active{}
 	}
@@ -150,6 +151,7 @@ type WaitTool struct {
 	BasePresentation
 	Kind       managedtask.Kind
 	Controller TaskController
+	SessionID  string
 }
 
 type waitInput struct {
@@ -203,8 +205,8 @@ func (t *WaitTool) DescribeRequest(raw json.RawMessage) (string, error) {
 	return fmt.Sprintf("Wait for %s %s", t.Kind, t.identifier(input)), nil
 }
 
-func (t *WaitTool) Plan(_ context.Context, raw json.RawMessage, call CallContext) (Plan, error) {
-	if t.Controller == nil || call.SessionID == "" {
+func (t *WaitTool) Plan(_ context.Context, raw json.RawMessage, _ CallContext) (Plan, error) {
+	if t.Controller == nil || t.SessionID == "" {
 		return Plan{}, fmt.Errorf("%s: controller and caller session are required", t.ID())
 	}
 	if t.Kind != managedtask.KindAgent && t.Kind != managedtask.KindShell {
@@ -255,7 +257,7 @@ func (t *WaitTool) Execute(ctx context.Context, plan Plan, call CallContext) (Re
 	}
 	defer close(steerWatchDone)
 	started := time.Now()
-	item, err := t.Controller.WaitKind(waitCtx, call.SessionID, t.identifier(input), t.Kind)
+	item, err := t.Controller.WaitKind(waitCtx, t.SessionID, t.identifier(input), t.Kind)
 	item.ElapsedMS = time.Since(started).Milliseconds()
 	waitEnded := errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 	yielded := errors.Is(context.Cause(waitCtx), errWaitSteered) || errors.Is(context.Cause(waitCtx), context.DeadlineExceeded)
