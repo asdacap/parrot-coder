@@ -61,15 +61,12 @@ type agentSession struct {
 	toolExecutor           tool.Executor
 	maxChildPromptBytes    int
 	maxChildResultBytes    int
-	turnFinishListeners    []*turnFinishListener
 }
 
 type LifecycleObserver interface {
-	LifecycleComplete(sessionID string, err error)
-}
-
-type LifecycleStartObserver interface {
 	LifecycleStarted(sessionID string)
+	LifecycleTurnFinished(sessionID, initialMessageID, terminalAssistantID string, err error)
+	LifecycleComplete(sessionID string, err error)
 }
 
 type AgentStatus string
@@ -205,8 +202,10 @@ type turnFinishListener struct {
 	once      sync.Once
 }
 
-func (l *turnFinishListener) notify(ctx context.Context, initialMessageID, terminalAssistantID string, lifecycleErr error) {
-	received, content, err := l.session.messageResponseThrough(ctx, l.messageID, terminalAssistantID)
+func (l *turnFinishListener) LifecycleStarted(string) {}
+
+func (l *turnFinishListener) LifecycleTurnFinished(_, initialMessageID, terminalAssistantID string, lifecycleErr error) {
+	received, content, err := l.session.messageResponseThrough(context.Background(), l.messageID, terminalAssistantID)
 	if !received {
 		if err == nil && initialMessageID != l.messageID {
 			return
@@ -219,6 +218,8 @@ func (l *turnFinishListener) notify(ctx context.Context, initialMessageID, termi
 	}
 	l.once.Do(func() { l.result <- turnFinishResult{content: content, err: err} })
 }
+
+func (l *turnFinishListener) LifecycleComplete(string, error) {}
 
 func (l *turnFinishListener) await(ctx context.Context, interruptOnCancel bool) (string, error) {
 	select {
@@ -389,29 +390,20 @@ func (s *agentSession) sendAndWait(ctx context.Context, content string) (string,
 func (s *agentSession) registerTurnFinishListener(messageID string) (*turnFinishListener, func()) {
 	listener := &turnFinishListener{session: s, messageID: messageID, result: make(chan turnFinishResult, 1)}
 	s.mu.Lock()
-	s.turnFinishListeners = append(s.turnFinishListeners, listener)
+	s.observers = append(s.observers, listener)
 	s.mu.Unlock()
 	var once sync.Once
 	return listener, func() {
 		once.Do(func() {
 			s.mu.Lock()
-			for i, current := range s.turnFinishListeners {
-				if current == listener {
-					s.turnFinishListeners = append(s.turnFinishListeners[:i], s.turnFinishListeners[i+1:]...)
+			for i, observer := range s.observers {
+				if observer == listener {
+					s.observers = append(s.observers[:i], s.observers[i+1:]...)
 					break
 				}
 			}
 			s.mu.Unlock()
 		})
-	}
-}
-
-func (s *agentSession) notifyTurnFinishListeners(initialMessageID, terminalAssistantID string, lifecycleErr error) {
-	s.mu.Lock()
-	listeners := append([]*turnFinishListener(nil), s.turnFinishListeners...)
-	s.mu.Unlock()
-	for _, listener := range listeners {
-		listener.notify(context.Background(), initialMessageID, terminalAssistantID, lifecycleErr)
 	}
 }
 
@@ -543,7 +535,7 @@ func (s *agentSession) abortTurn(state *turnState) {
 	}
 	s.mu.Unlock()
 	state.completion.complete(state.result, state.err)
-	s.notifyTurnFinishListeners(state.messageID, "", state.err)
+	s.turnFinished(state.messageID, "", state.err)
 }
 
 func (s *agentSession) admitLocked(ctx context.Context, messageID, content string) (session.Admission, error) {
@@ -904,7 +896,7 @@ func (s *agentSession) finishTurn(state *turnState, output string, runErr error,
 	state.status = status
 	s.mu.Unlock()
 	state.completion.complete(state.result, runErr)
-	s.notifyTurnFinishListeners(state.messageID, state.latestAssistantID, runErr)
+	s.turnFinished(state.messageID, state.latestAssistantID, runErr)
 	s.events.Publish(event.BrokerEvent{Name: event.TurnCompleted, Payload: state.result})
 	s.completed(runErr)
 	// Admission or Wake can race with runTurn after its final wake check. Only a
@@ -918,16 +910,30 @@ func (s *agentSession) finishTurn(state *turnState, output string, runErr error,
 	}
 }
 
+func (s *agentSession) lifecycleObservers() []LifecycleObserver {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]LifecycleObserver(nil), s.observers...)
+}
+
 func (s *agentSession) started() {
-	for _, observer := range s.observers {
-		if starter, ok := observer.(LifecycleStartObserver); ok {
-			starter.LifecycleStarted(s.dto.ID)
+	for _, observer := range s.lifecycleObservers() {
+		if observer != nil {
+			observer.LifecycleStarted(s.dto.ID)
+		}
+	}
+}
+
+func (s *agentSession) turnFinished(initialMessageID, terminalAssistantID string, err error) {
+	for _, observer := range s.lifecycleObservers() {
+		if observer != nil {
+			observer.LifecycleTurnFinished(s.dto.ID, initialMessageID, terminalAssistantID, err)
 		}
 	}
 }
 
 func (s *agentSession) completed(err error) {
-	for _, observer := range s.observers {
+	for _, observer := range s.lifecycleObservers() {
 		if observer != nil {
 			observer.LifecycleComplete(s.dto.ID, err)
 		}
