@@ -1,5 +1,8 @@
 # Parrot Coder
 
+> **Note:** This project is superseded by
+> [ParrotDotnet](https://github.com/asdacap/parrotdotnet).
+
 Parrot Coder is a local-first coding agent for macOS and Linux, implemented as
 a single Go binary. It provides scrollback-preserving terminal chat, durable SQLite
 sessions and event history, ChatGPT subscription OAuth, OpenAI-compatible
